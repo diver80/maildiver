@@ -29,7 +29,10 @@ func ManifestPaths() ([]string, error) {
 	filename := config.NativeHostName + ".json"
 	switch runtime.GOOS {
 	case "darwin":
+		// Thunderbird reads ~/Library/Mozilla/NativeMessagingHosts; the other two cover
+		// Firefox-style lookups and older builds.
 		return []string{
+			filepath.Join(home, "Library", "Mozilla", "NativeMessagingHosts", filename),
 			filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts", filename),
 			filepath.Join(home, "Library", "Thunderbird", "NativeMessagingHosts", filename),
 		}, nil

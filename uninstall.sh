@@ -15,6 +15,7 @@ if [[ -x "$BIN_PATH" ]]; then
 else
   # Fallback falls Binary bereits gelöscht wurde
   rm -f \
+    "$HOME/Library/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
     "$HOME/Library/Application Support/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
     "$HOME/Library/Thunderbird/NativeMessagingHosts/dev.omathunder.host.json" \
     "$HOME/.mozilla/native-messaging-hosts/dev.omathunder.host.json" \
