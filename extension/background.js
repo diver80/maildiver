@@ -440,11 +440,15 @@ async function runTriage(requestedLanguage = "") {
     classifyErrors: res.classifyErrors || 0,
     classifyError: res.classifyError || "",
   };
+  // Classification can take minutes. Re-read the settings so a switch to read-only or a removed
+  // account during the scan takes effect before anything is moved.
+  const liveCfg = report.readOnly ? cfg : await loadConfig();
+  if (liveCfg.mailbox?.readOnly !== false || !liveCfg.features?.triage) report.readOnly = true;
   if (!report.readOnly) {
     const recorded = [];
     for (const plan of planned) {
       try {
-        recorded.push({ ...(await executePlannedMove(cfg, plan, folders)), scanId });
+        recorded.push({ ...(await executePlannedMove(liveCfg, plan, folders)), scanId });
         report.moved.push(plan);
       } catch (err) {
         report.failed.push({ ...plan, error: errorCode(err) });
@@ -511,16 +515,15 @@ async function collectThreadMessages(primary) {
   return selectThread(primary, candidates, 8);
 }
 
+// Own text of the compose window used last (quote, forward and signature are left out).
 async function getActiveComposeDraft() {
   const tabs = await api.tabs.query({ type: "messageCompose" }).catch(() => []);
   if (!tabs || tabs.length === 0) return null;
-  const details = await api.compose.getComposeDetails(tabs[0].id).catch(() => null);
+  const tab = tabs.find((t) => t.active) || tabs[tabs.length - 1];
+  const details = await api.compose.getComposeDetails(tab.id).catch(() => null);
   if (!details) return null;
-  return {
-    tabId: tabs[0].id,
-    subject: details.subject || "",
-    body: details.plainTextBody || (details.body ? details.body.replace(/<[^>]+>/g, " ").trim() : ""),
-  };
+  const body = details.isPlainText ? details.plainTextBody || "" : details.body || "";
+  return { tabId: tab.id, subject: details.subject || "", body: draftOwnText(body, Boolean(details.isPlainText)) };
 }
 
 // Kanban moves always update OmaThunder's own state. Tags and column folders in Thunderbird
@@ -738,7 +741,11 @@ api.runtime.onMessage.addListener((msg) => {
         const cfg = await loadConfig();
         requireFeature(cfg, "triage");
         const res = await callNative("undo_scan_moves", { scanId: msg.scanId });
-        return { revertReport: await revertRuleMoves(cfg, res?.revertMoves || []) };
+        const report = await revertRuleMoves(cfg, res?.revertMoves || []);
+        // Keep the records of reverts that failed, so "undo" can be tried again.
+        const retry = report.failed.map(({ error: _e, ...m }) => m);
+        if (retry.length > 0) await callNative("record_moves", { moves: retry }).catch(() => {});
+        return { revertReport: report };
       })();
 
     case "omathunder:composeContext":

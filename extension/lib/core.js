@@ -161,6 +161,9 @@
   // A draft consists of the text the user wrote, followed by signature and/or quoted original.
   // The assistant only ever reads and replaces the user's own part.
 
+  // Separator Thunderbird and other clients put above an inline-forwarded or quoted original.
+  const FORWARD_LINE = /^\s*-{3,}\s*(original message|forwarded message|weitergeleitete nachricht|ursprüngliche nachricht|original-nachricht)\s*-*\s*$/i;
+
   function escapeHtml(str) {
     return String(str || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   }
@@ -196,7 +199,7 @@
       const lines = text.split("\n");
       let cut = lines.length;
       for (let i = 0; i < lines.length; i++) {
-        if (lines[i] === "-- " || lines[i].startsWith(">")) {
+        if (lines[i] === "-- " || lines[i].startsWith(">") || FORWARD_LINE.test(lines[i])) {
           cut = i;
           break;
         }

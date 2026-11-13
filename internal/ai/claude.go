@@ -75,6 +75,9 @@ func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt strin
 		"--system-prompt", systemPrompt,
 		"--output-format", "json",
 		"--tools", "",
+		// No MCP servers or connectors: a prompt injection in a mail must not reach any tool.
+		"--strict-mcp-config",
+		"--disallowedTools", "mcp__*",
 		"--no-session-persistence",
 	}
 	if strings.TrimSpace(c.model) != "" {

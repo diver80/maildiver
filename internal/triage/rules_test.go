@@ -66,7 +66,7 @@ func TestPrepareSnippetStripsQuotesAndSignatures(t *testing.T) {
 func TestStoreKanbanMoveAndRuleRollback(t *testing.T) {
 	stStore := NewStoreAt(t.TempDir())
 	_, err := stStore.SaveClassifications([]Classification{
-		{MessageID: "a1", Subject: "Vertrag unterschreiben", Bucket: BucketAction, NeedsAttention: true},
+		{MessageID: "a1", ThreadID: "<hdr-a1@acme.de>", Subject: "Vertrag unterschreiben", Bucket: BucketAction, NeedsAttention: true},
 	})
 	if err != nil {
 		t.Fatal(err)

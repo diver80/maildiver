@@ -120,8 +120,10 @@ func (s *Store) loadLocked() (State, error) {
 	return st, nil
 }
 
+// findPrevClassificationLocked finds the stored card of the same mail. The numeric key only
+// counts when its Message-ID matches: after a Thunderbird restart the number can belong to another mail.
 func findPrevClassificationLocked(st State, c Classification) (string, Classification, bool) {
-	if prev, exists := st.Classifications[c.MessageID]; exists {
+	if prev, exists := st.Classifications[c.MessageID]; exists && prev.ThreadID == c.ThreadID {
 		return c.MessageID, prev, true
 	}
 	if c.ThreadID != "" {

@@ -779,8 +779,12 @@ function renderRightPane() {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.dismiss;
       if (inExtension) {
-        const res = await api.runtime.sendMessage({ type: "omathunder:dismissProposal", id });
-        if (res?.state) snapshot.state = res.state;
+        try {
+          const res = await api.runtime.sendMessage({ type: "omathunder:dismissProposal", id });
+          if (res?.state) snapshot.state = res.state;
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
       } else {
         const prop = (snapshot.state?.proposals || []).find((p) => p.id === id);
         if (prop) prop.status = "dismissed";
@@ -792,8 +796,12 @@ function renderRightPane() {
 
 async function selectTheme(name) {
   if (inExtension && snapshot.connected) {
-    const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: name, mode: "preset" });
-    if (payload) { snapshot.theme = payload; applyPaletteLocally(payload.palette); }
+    try {
+      const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: name, mode: "preset" });
+      if (payload) { snapshot.theme = payload; applyPaletteLocally(payload.palette); }
+    } catch (err) {
+      showMessage(errText(err), "err");
+    }
   } else {
     const pal = (snapshot.themes || []).find((th) => th.name === name);
     if (pal) { snapshot.theme = { palette: pal, source: "preview" }; applyPaletteLocally(pal); }

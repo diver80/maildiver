@@ -31,11 +31,11 @@
 - **Feature flags:** `features.theme`, `features.assistant`, `features.triage` switch the three building blocks independently. The host refuses disabled methods; the extension blocks them as well.
 - **Read-only (`mailbox.readOnly`, default on):** no moves, tags or folder creation. A scan returns `plannedMoves` as a dry run.
 - **Account scope (`mailbox.triageAccountIds`):** only these accounts are scanned, classified and changed. Cross-account moves are rejected.
-- **Auto-move planning lives in Go** (`internal/triage/automove.go`): INBOX only, sender-domain match only, optionally unread only, never out of a rule's folder tree. The extension re-checks each move against the live mailbox before executing it.
+- **Auto-move planning lives in Go** (`internal/triage/automove.go`): INBOX only, sender-domain match only, optionally unread only, never out of a rule's folder tree, never when `Authentication-Results` records `dkim=fail` or `dmarc=fail`. The extension re-checks each move against the live mailbox before executing it.
 - **Message identity:** Thunderbird's numeric message IDs are session-scoped. Stored references are resolved by RFC Message-ID; ambiguous matches are refused before any write.
 - **Single write path:** all mailbox changes go through the `mailbox` helpers in `background.js`, guarded by `requireWritable` / `requireMovable` from `extension/lib/core.js` (unit-tested in `tests/core.test.js`).
 - **Thread context** for the assistant is built from `References` / `In-Reply-To`, not from matching subjects.
-- **CLI backends:** `claude` runs with `--tools ""` and gets the prompt on stdin. `gemini-cli` / `opencode-cli` cannot disable tools and need `ai.allowUnrestrictedCli`.
+- **CLI backends:** `claude` runs with `--tools ""`, `--strict-mcp-config` and `--disallowedTools "mcp__*"` and gets the prompt on stdin. `gemini-cli` / `opencode-cli` cannot disable tools and need `ai.allowUnrestrictedCli`.
 
 ## Writing Assistant
 

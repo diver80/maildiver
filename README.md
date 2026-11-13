@@ -112,11 +112,11 @@ Alle Werte sind in den Einstellungen änderbar.
 |---|---|
 | **Read-only** (Standard) | Keine Änderungen an Mails, Ordnern oder Tags. Scans zeigen geplante Verschiebungen nur als Probelauf. Antwortentwürfe öffnen sich trotzdem – gesendet wird nie automatisch. |
 | **Triage pro Konto** | Nur freigegebene Konten werden gescannt, an die KI geschickt und verändert. Verschieben zwischen Konten ist gesperrt. |
-| **Auto-Move eng gefasst** | Nur aus dem Posteingang, nur bei Treffer über die Absender-Domain, optional nur ungelesene Mails, nie aus Kundenordnern heraus. Vor jedem Verschieben wird die Mail im Postfach erneut geprüft. |
+| **Auto-Move eng gefasst** | Nur aus dem Posteingang, nur bei Treffer über die Absender-Domain, optional nur ungelesene Mails, nie aus Kundenordnern heraus. Mails, bei denen der Mailserver eine fehlgeschlagene DKIM-/DMARC-Prüfung vermerkt hat, werden nie verschoben (gefälschter Absender). Vor jedem Verschieben wird die Mail im Postfach erneut geprüft. |
 | **Eindeutige Mail-Zuordnung** | Gespeicherte Mails werden über ihre Message-ID wiedergefunden. Ist der Treffer nicht eindeutig, passiert nichts. |
 | **Rückgängig** | Verschiebungen eines Scans und einer gelöschten Regel lassen sich zurücknehmen – aber nur für Mails, die noch dort liegen, wo OmaThunder sie hingelegt hat. |
 | **Kein Löschen, kein Senden** | Das Add-on hat die Berechtigungen dafür gar nicht (`messagesDelete`, `compose.send`). |
-| **KI-Backends** | Die Claude-CLI läuft ohne Werkzeuge und erhält den Mailtext über stdin. Gemini-CLI und OpenCode-CLI lassen sich nicht ohne Werkzeuge starten und sind gesperrt, bis du sie ausdrücklich erlaubst. |
+| **KI-Backends** | Die Claude-CLI läuft ohne Werkzeuge und ohne MCP-Server und erhält den Mailtext über stdin. Gemini-CLI und OpenCode-CLI lassen sich nicht ohne Werkzeuge starten und sind gesperrt, bis du sie ausdrücklich erlaubst. |
 
 Mailinhalte gehen nur an das KI-Backend, das du in den Einstellungen gewählt hast. Mit Ollama bleibt alles auf deinem Rechner.
 

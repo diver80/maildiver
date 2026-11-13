@@ -83,22 +83,29 @@ type Handler struct {
 	cfgMu sync.Mutex
 	// AI call budget of the scan in progress (a scan arrives as several classify_batch calls).
 	scanMu    sync.Mutex
-	scanID    string
-	scanCalls int
+	scanCalls map[string]int
+	scanOrder []string
 }
 
 // takeAICall reserves one classifier call for the scan, or reports that the budget is used up.
 func (h *Handler) takeAICall(scanID string, limit int) bool {
 	h.scanMu.Lock()
 	defer h.scanMu.Unlock()
-	if scanID == "" || scanID != h.scanID {
-		h.scanID = scanID
-		h.scanCalls = 0
+	if h.scanCalls == nil {
+		h.scanCalls = map[string]int{}
 	}
-	if h.scanCalls >= limit {
+	// Each scan has its own budget, so interleaved scans (manual + new-mail) cannot reset each other.
+	if _, seen := h.scanCalls[scanID]; !seen {
+		h.scanOrder = append(h.scanOrder, scanID)
+		if len(h.scanOrder) > 20 {
+			delete(h.scanCalls, h.scanOrder[0])
+			h.scanOrder = h.scanOrder[1:]
+		}
+	}
+	if h.scanCalls[scanID] >= limit {
 		return false
 	}
-	h.scanCalls++
+	h.scanCalls[scanID]++
 	return true
 }
 
@@ -187,7 +194,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
-		cfg, _ := config.Load()
+		cfg, err := config.Load()
+		if err != nil {
+			return fail(req.ID, "config unreadable, refusing to overwrite: "+err.Error())
+		}
 		if p.Rules != nil {
 			cfg.Rules = p.Rules
 		}
@@ -204,7 +214,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
-		cfg, _ := config.Load()
+		cfg, err := config.Load()
+		if err != nil {
+			return fail(req.ID, "config unreadable, refusing to overwrite: "+err.Error())
+		}
 		if p.RevertToIncoming && cfg.Mailbox.ReadOnly {
 			return fail(req.ID, ErrReadOnly)
 		}
@@ -306,7 +319,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
-		cfg, _ := config.Load()
+		cfg, err := config.Load()
+		if err != nil {
+			return fail(req.ID, "config unreadable, refusing to overwrite: "+err.Error())
+		}
 		if p.Mode != "" {
 			cfg.Theme.Mode = p.Mode
 		}
@@ -386,8 +402,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					results = append(results, base)
 					continue
 				} else {
-					prev, ok := prevState.Classifications[m.ID]
-					if !ok && m.ThreadID != "" {
+					// Reuse only by Message-ID: numeric IDs restart each Thunderbird session,
+					// so the same number can belong to a different mail.
+					prev, ok := triage.Classification{}, false
+					if m.ThreadID != "" {
 						prev, ok = byThread[m.ThreadID]
 					}
 					if ok && prev.Stage == "stage1-llm" && prev.Subject == m.Subject {

@@ -50,6 +50,11 @@ func planAutoMove(m MessageInput, rules []config.RoutingRule, policy config.Mail
 	if policy.AutoMoveOnlyUnread && !m.Unread {
 		return PlannedMove{}, false
 	}
+	// The From header can be forged. If the receiving server recorded a failed DMARC/DKIM check,
+	// never file the mail into a customer folder where it would look trustworthy.
+	if failedSenderAuth(m.Headers) {
+		return PlannedMove{}, false
+	}
 	rule, ok := MatchDomainRule(m.From, rules)
 	if !ok || !rule.AutoMove {
 		return PlannedMove{}, false
@@ -78,6 +83,19 @@ func planAutoMove(m MessageInput, rules []config.RoutingRule, policy config.Mail
 		TargetFolder:    target,
 		TargetFolderID:  targetID,
 	}, true
+}
+
+func failedSenderAuth(headers map[string]string) bool {
+	for k, v := range headers {
+		if !strings.EqualFold(strings.TrimSpace(k), "authentication-results") {
+			continue
+		}
+		v = strings.ToLower(v)
+		if strings.Contains(v, "dmarc=fail") || strings.Contains(v, "dkim=fail") {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanFolderPath(p string) string {

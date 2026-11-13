@@ -19,7 +19,12 @@ function renderQuickThemes(active) {
   el.querySelectorAll("[data-t]").forEach((b) => {
     b.addEventListener("click", async () => {
       if (inExtension) {
-        await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: b.dataset.t, mode: "preset" });
+        try {
+          await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: b.dataset.t, mode: "preset" });
+        } catch (err) {
+          document.getElementById("popup-out").textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message;
+          return;
+        }
       }
       renderQuickThemes(b.dataset.t);
     });

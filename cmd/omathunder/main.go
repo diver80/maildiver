@@ -54,8 +54,12 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		cfg, _ := config.Load()
-		_ = config.Save(cfg)
+		// Write defaults only for a fresh install; never replace a config that failed to parse.
+		if cfg, err := config.Load(); err == nil {
+			_ = config.Save(cfg)
+		} else {
+			fmt.Fprintf(os.Stderr, "Hinweis: config.json nicht lesbar, unverändert gelassen: %v\n", err)
+		}
 		fmt.Println("omathunder Native Messaging Host registriert:")
 		for _, p := range paths {
 			fmt.Println("  -", p)
@@ -154,7 +158,10 @@ func handleThemeCLI(args []string) {
 		if len(args) < 2 {
 			fatal(fmt.Errorf("usage: omathunder theme set <preset|auto|omarchy>"))
 		}
-		cfg, _ := config.Load()
+		cfg, err := config.Load()
+		if err != nil {
+			fatal(fmt.Errorf("config.json nicht lesbar, nichts geändert: %w", err))
+		}
 		target := args[1]
 		if target == "auto" || target == "omarchy" {
 			cfg.Theme.Mode = target

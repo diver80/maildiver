@@ -86,3 +86,35 @@ func TestStateIsPrunedToNewestMails(t *testing.T) {
 		t.Fatal("oldest unpinned card should be dropped")
 	}
 }
+
+func TestPlanAutoMovesSkipsFailedSenderAuth(t *testing.T) {
+	rules := []config.RoutingRule{{ID: "acme", AccountID: "work", FolderPath: "Kunden/Acme", Domains: []string{"acme.de"}, AutoMove: true}}
+	policy := config.MailboxPolicy{TriageAccountIDs: []string{"work"}}
+	m := MessageInput{ID: "1", ThreadID: "<x@acme.de>", AccountID: "work", Folder: "INBOX", InInbox: true, From: "ceo@acme.de", Unread: true}
+	m.Headers = map[string]string{"authentication-results": "mx.example; dkim=pass; spf=pass; dmarc=pass"}
+	if len(PlanAutoMoves([]MessageInput{m}, rules, policy)) != 1 {
+		t.Fatal("authenticated mail should move")
+	}
+	m.Headers = map[string]string{"Authentication-Results": "mx.example; spf=softfail; dmarc=fail (p=none)"}
+	if got := PlanAutoMoves([]MessageInput{m}, rules, policy); len(got) != 0 {
+		t.Fatalf("spoofed sender must not be filed into the customer folder: %+v", got)
+	}
+}
+
+func TestStoreDoesNotMergeDifferentMailsWithSameNumericID(t *testing.T) {
+	s := NewStoreAt(t.TempDir())
+	old := Classification{MessageID: "7", ThreadID: "y@x", Subject: "Re: Angebot", KanbanColumn: "done", PinnedColumn: true, Bucket: BucketDone}
+	if _, err := s.SaveClassifications([]Classification{old}); err != nil {
+		t.Fatal(err)
+	}
+	// After a restart, a new mail X gets the same numeric ID 7.
+	fresh := Classification{MessageID: "7", ThreadID: "x@x", Subject: "Re: Angebot", Bucket: BucketAction, NeedsAttention: true}
+	st, err := s.SaveClassifications([]Classification{fresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := st.Classifications["7"]
+	if got.ThreadID != "x@x" || got.PinnedColumn || got.KanbanColumn != "action" {
+		t.Fatalf("new mail must not inherit the old card: %+v", got)
+	}
+}

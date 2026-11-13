@@ -154,6 +154,7 @@ async function init() {
   }
   $("theme-style-body").checked = Boolean(cfg?.theme?.styleBody);
   $("theme-mode").value = cfg?.theme?.mode || "auto";
+  const initialTheme = { mode: cfg?.theme?.mode || "auto", preset: cfg?.theme?.preset || "tokyo-night" };
   $("theme-preset").value = cfg?.theme?.preset || "tokyo-night";
   $("clf-backend").value = cfg?.ai?.classifier?.backend || "gemini-api";
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
@@ -195,9 +196,10 @@ async function init() {
         scanLimit: Number($("mb-scan-limit").value) || 20,
         scanDays: Number($("mb-scan-days").value) || 30,
       },
+      // Mode/preset only when changed here: a theme picked in the gallery or popup meanwhile stays.
       theme: {
-        mode: $("theme-mode").value,
-        preset: $("theme-preset").value,
+        ...($("theme-mode").value !== initialTheme.mode ? { mode: $("theme-mode").value } : {}),
+        ...($("theme-preset").value !== initialTheme.preset ? { preset: $("theme-preset").value } : {}),
         styleBody: $("theme-style-body").checked,
       },
       ai: {
