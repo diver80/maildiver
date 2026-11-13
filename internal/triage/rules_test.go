@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 func TestStage0RulesAndCustomerDomains(t *testing.T) {

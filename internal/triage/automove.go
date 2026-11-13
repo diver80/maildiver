@@ -3,7 +3,7 @@ package triage
 import (
 	"strings"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 // PlannedMove is a deterministic auto-move that passed every safety check.

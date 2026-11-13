@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${VERSION:-0.1.0-dev}"
+VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION")}"
+EXT_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT_DIR/extension/manifest.json" | head -1)"
+if [[ "$EXT_VERSION" != "${VERSION%%-*}" ]]; then
+  echo "Version mismatch: VERSION=$VERSION, extension/manifest.json=$EXT_VERSION" >&2
+  exit 1
+fi
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"

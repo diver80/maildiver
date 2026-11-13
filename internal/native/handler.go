@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fhess/omathunder/internal/ai"
-	"github.com/fhess/omathunder/internal/config"
-	"github.com/fhess/omathunder/internal/theme"
-	"github.com/fhess/omathunder/internal/triage"
+	"github.com/diver80/omathunder/internal/ai"
+	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/theme"
+	"github.com/diver80/omathunder/internal/triage"
 )
 
 type Request struct {

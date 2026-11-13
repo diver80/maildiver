@@ -1,3 +1,3 @@
-module github.com/fhess/omathunder
+module github.com/diver80/omathunder
 
 go 1.24

@@ -963,6 +963,17 @@ async function init() {
     const pal = DEMO_THEMES.find((th) => th.name === qs.get("theme"));
     if (pal) snapshot.theme = { palette: pal, source: "preview" };
   }
+  if (!inExtension && qs.get("report") === "dry") {
+    // Preview helper: show a dry-run scan report as it appears in read-only mode.
+    lastReport = {
+      readOnly: true, scanId: "preview", scannedFolders: 3, scannedMessages: 42, aiEnabled: false, aiCalls: 0, aiSkipped: 0,
+      planned: [
+        { subject: "Neue API-Zugänge für Staging-Test", from: "jonas@beta-systems.com", targetFolder: "Kunden/Beta GmbH" },
+        { subject: "Freigabe Q4-Architektur & NDA bis Freitag", from: "laura@acme.de", targetFolder: "Kunden/Acme/Incoming" },
+      ],
+      moved: [], failed: [],
+    };
+  }
   if (!inExtension && qs.get("off")) {
     // Preview helper: ?off=triage,assistant,theme shows the UI with those blocks switched off.
     for (const name of qs.get("off").split(",")) snapshot.config.features[name.trim()] = false;
@@ -977,6 +988,7 @@ async function init() {
   }
   updateLangButtons();
 
+  if (lastReport) renderScanReport();
   if (inExtension) {
     await refreshSnapshot();
     api.runtime.onMessage.addListener((msg) => {

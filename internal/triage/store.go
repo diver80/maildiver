@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 type Proposal struct {

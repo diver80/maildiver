@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fhess/omathunder/internal/config"
-	"github.com/fhess/omathunder/internal/triage"
+	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/triage"
 )
 
 func TestConnRoundTripAndHandlerPing(t *testing.T) {
@@ -339,5 +339,19 @@ func TestUndoScanMovesAndProtocol(t *testing.T) {
 	}
 	if empty := call("undo_scan_moves", map[string]any{"scanId": ""}).Result.(map[string]any)["revertMoves"].([]triage.MovedMessage); len(empty) != 0 {
 		t.Fatalf("an empty scan id must never match older moves, got %+v", empty)
+	}
+}
+
+func TestStableBinaryPathSurvivesBrewUpgrade(t *testing.T) {
+	cases := map[string]string{
+		"/opt/homebrew/Cellar/omathunder/0.2.0/bin/omathunder":              "/opt/homebrew/opt/omathunder/bin/omathunder",
+		"/home/linuxbrew/.linuxbrew/Cellar/omathunder/1.0_1/bin/omathunder": "/home/linuxbrew/.linuxbrew/opt/omathunder/bin/omathunder",
+		"/Users/me/.local/bin/omathunder":                                   "/Users/me/.local/bin/omathunder",
+		"/opt/homebrew/Cellar/other/1.0/bin/omathunder":                     "/opt/homebrew/Cellar/other/1.0/bin/omathunder",
+	}
+	for in, want := range cases {
+		if got := StableBinaryPath(in); got != want {
+			t.Errorf("StableBinaryPath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

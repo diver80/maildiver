@@ -7,8 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 type HostManifest struct {
@@ -46,6 +47,33 @@ func ManifestPaths() ([]string, error) {
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+}
+
+// StableBinaryPath maps a Homebrew Cellar path (…/Cellar/omathunder/<version>/bin/omathunder),
+// which disappears on `brew upgrade`, to the version-independent …/opt/omathunder/bin/omathunder.
+// Other paths are returned unchanged.
+func StableBinaryPath(p string) string {
+	sep := string(filepath.Separator)
+	marker := sep + "Cellar" + sep + "omathunder" + sep
+	i := strings.Index(p, marker)
+	if i < 0 {
+		return p
+	}
+	rest := p[i+len(marker):] // <version>/bin/omathunder
+	j := strings.Index(rest, sep)
+	if j < 0 {
+		return p
+	}
+	return filepath.Join(p[:i], "opt", "omathunder", rest[j+1:])
+}
+
+// ExtensionPackagePath returns the .xpi shipped next to the binary (Homebrew: share/omathunder), if present.
+func ExtensionPackagePath(binaryPath string) string {
+	candidate := filepath.Join(filepath.Dir(filepath.Dir(binaryPath)), "share", "omathunder", "omathunder-extension.xpi")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return ""
 }
 
 // InstallHost registers the Native Messaging Host manifest non-destructively (never touches prefs.js).

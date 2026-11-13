@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fhess/omathunder/internal/ai"
-	"github.com/fhess/omathunder/internal/config"
-	"github.com/fhess/omathunder/internal/native"
-	"github.com/fhess/omathunder/internal/theme"
-	"github.com/fhess/omathunder/internal/triage"
+	"github.com/diver80/omathunder/internal/ai"
+	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/native"
+	"github.com/diver80/omathunder/internal/theme"
+	"github.com/diver80/omathunder/internal/triage"
 )
 
 var version = "0.1.0-dev"
@@ -48,6 +48,8 @@ func main() {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
 		}
+		// Homebrew: register the opt/ path so the host keeps working after `brew upgrade`.
+		exe = native.StableBinaryPath(exe)
 		paths, err := native.InstallHost(exe)
 		if err != nil {
 			fatal(err)
@@ -59,6 +61,10 @@ func main() {
 			fmt.Println("  -", p)
 		}
 		fmt.Println("Thunderbird-Profil und prefs.js blieben vollständig unangetastet.")
+		if xpi := native.ExtensionPackagePath(exe); xpi != "" {
+			fmt.Println("\nAdd-on für Thunderbird (Add-ons und Themes → Zahnrad → Add-on aus Datei installieren):")
+			fmt.Println("  ", xpi)
+		}
 
 	case "uninstall":
 		removed, err := native.UninstallHost()

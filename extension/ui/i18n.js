@@ -95,9 +95,9 @@
       popup_action_needed: "Action nötig",
       popup_open_proposals: "Offene Proposals",
       popup_quick_theme: "Schnell-Theme (live, ohne Neustart)",
-      popup_open_space: "Triage-Space öffnen",
+      popup_open_space: "OmaThunder-Tab öffnen",
       popup_analyze_mail: "Aktuelle Mail mit Agent prüfen",
-      popup_open_opts: "Einstellungen (Gemini / Claude / Ollama)",
+      popup_open_opts: "Einstellungen",
       popup_analyzing: "Analysiere…",
       popup_preview_analyze: "Preview-Modus: in Thunderbird wird hier die geöffnete Mail analysiert.",
 
@@ -336,9 +336,9 @@
       popup_action_needed: "Action Needed",
       popup_open_proposals: "Pending Proposals",
       popup_quick_theme: "Quick Theme (live, no restart)",
-      popup_open_space: "Open Kanban & Triage Space",
+      popup_open_space: "Open OmaThunder tab",
       popup_analyze_mail: "Analyze Current Email with AI",
-      popup_open_opts: "Settings (Gemini / Claude / Ollama)",
+      popup_open_opts: "Settings",
       popup_analyzing: "Analyzing…",
       popup_preview_analyze: "Preview mode: in Thunderbird this analyzes the currently displayed email.",
 

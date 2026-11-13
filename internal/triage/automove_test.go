@@ -3,7 +3,7 @@ package triage
 import (
 	"testing"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 func TestPlanAutoMovesSafetyRules(t *testing.T) {

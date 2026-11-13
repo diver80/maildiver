@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fhess/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/config"
 )
 
 // OmarchyColorsPath returns the live Omarchy colors.toml path on Linux.

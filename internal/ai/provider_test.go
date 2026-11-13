@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhess/omathunder/internal/config"
-	"github.com/fhess/omathunder/internal/triage"
+	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/triage"
 )
 
 func TestGeminiClassifyStructuredOutput(t *testing.T) {
