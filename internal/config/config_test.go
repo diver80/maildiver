@@ -20,6 +20,12 @@ func TestDefaultsAreSafe(t *testing.T) {
 	if len(cfg.Mailbox.TriageAccountIDs) != 0 {
 		t.Fatal("no account may be enabled by default")
 	}
+	if cfg.AI.ClassifyWithAI || cfg.AI.AllowUnrestrictedCLI {
+		t.Fatal("scans must not use AI and unrestricted CLIs must stay blocked by default")
+	}
+	if cfg.Theme.StyleBody {
+		t.Fatal("mail bodies must not be recolored by default")
+	}
 	if !cfg.Mailbox.AutoMoveOnlyUnread {
 		t.Fatal("auto-move must default to unread mails only")
 	}

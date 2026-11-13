@@ -105,7 +105,6 @@ let snapshot = {
   config: {
     features: { theme: true, assistant: true, triage: true },
     mailbox: { readOnly: true, triageAccountIds: ["demo-account"], autoMoveOnlyUnread: true },
-    incomingFolder: "INBOX",
     rules: DEMO_RULES,
     ai: { classifier: { backend: "gemini-api", model: "gemini-4-hydrogen" }, agent: { backend: "claude-cli", model: "" } },
   },
@@ -562,7 +561,6 @@ async function saveRules(nextRules, autoCreateFolders = false) {
     try {
       const res = await api.runtime.sendMessage({
         type: "omathunder:saveRules",
-        incomingFolder: snapshot.config.incomingFolder || "INBOX",
         rules: nextRules,
         autoCreateFolders,
       });

@@ -19,7 +19,7 @@ type ThemeConfig struct {
 	Preset        string `json:"preset"` // e.g. "tokyo-night", "catppuccin", "flexoki-light"
 	LightFallback string `json:"lightFallback"`
 	DarkFallback  string `json:"darkFallback"`
-	StyleBody     bool   `json:"styleBody"`
+	StyleBody     bool   `json:"styleBody"` // also recolor message bodies and the compose editor
 }
 
 type ProviderConfig struct {
@@ -29,10 +29,8 @@ type ProviderConfig struct {
 }
 
 type AIConfig struct {
-	Enabled         bool           `json:"enabled"`
 	Classifier      ProviderConfig `json:"classifier"`
 	Agent           ProviderConfig `json:"agent"`
-	AutoClassify    bool           `json:"autoClassify"`
 	SkipNewsletters bool           `json:"skipNewsletters"`
 	MaxSnippetChars int            `json:"maxSnippetChars"`
 	// ClassifyWithAI sends mails that pass Stage 0 to the classifier model. Off = local estimate only, 0 tokens.
@@ -107,13 +105,12 @@ const (
 )
 
 type Config struct {
-	Language       string        `json:"language,omitempty"` // "auto", "de", "en"
-	Features       FeatureFlags  `json:"features"`
-	Mailbox        MailboxPolicy `json:"mailbox"`
-	Theme          ThemeConfig   `json:"theme"`
-	AI             AIConfig      `json:"ai"`
-	IncomingFolder string        `json:"incomingFolder"` // Usually "INBOX"
-	Rules          []RoutingRule `json:"rules"`
+	Language string        `json:"language,omitempty"` // "auto", "de", "en"
+	Features FeatureFlags  `json:"features"`
+	Mailbox  MailboxPolicy `json:"mailbox"`
+	Theme    ThemeConfig   `json:"theme"`
+	AI       AIConfig      `json:"ai"`
+	Rules    []RoutingRule `json:"rules"`
 }
 
 func Default() Config {
@@ -133,10 +130,10 @@ func Default() Config {
 			Preset:        "tokyo-night",
 			LightFallback: "flexoki-light",
 			DarkFallback:  "tokyo-night",
-			StyleBody:     true,
+			// Recoloring mail bodies can make HTML mails with fixed text colors hard to read: opt-in.
+			StyleBody: false,
 		},
 		AI: AIConfig{
-			Enabled: true,
 			Classifier: ProviderConfig{
 				Backend: "gemini-api",
 				Model:   "gemini-4-hydrogen",
@@ -145,14 +142,13 @@ func Default() Config {
 				Backend: "claude-cli",
 				Model:   "",
 			},
-			AutoClassify:      false,
-			ClassifyWithAI:    true,
+			// Scans cost no tokens until the user switches AI classification on.
+			ClassifyWithAI:    false,
 			MaxAICallsPerScan: defaultMaxAICalls,
 			SkipNewsletters:   true,
 			MaxSnippetChars:   1600,
 		},
-		IncomingFolder: "INBOX",
-		Rules:          []RoutingRule{},
+		Rules: []RoutingRule{},
 	}
 }
 
@@ -231,9 +227,6 @@ func Normalize(cfg Config) Config {
 	}
 	if cfg.AI.MaxAICallsPerScan > maxMaxAICalls {
 		cfg.AI.MaxAICallsPerScan = maxMaxAICalls
-	}
-	if cfg.IncomingFolder == "" {
-		cfg.IncomingFolder = "INBOX"
 	}
 	if cfg.Rules == nil {
 		cfg.Rules = []RoutingRule{}

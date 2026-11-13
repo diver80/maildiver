@@ -17,6 +17,8 @@ let bodyScriptHandle = null;
 let composeScriptHandle = null;
 // Last known feature flags; refreshed from the host config. Theme stays off until the host confirms it.
 let features = { theme: false, assistant: false, triage: false };
+// Whether the theme also recolors message bodies and the compose editor (theme.styleBody).
+let styleBody = false;
 
 async function connectNative() {
   if (nativePort) return nativePort;
@@ -73,21 +75,22 @@ async function applyThemePayload(payload) {
   if (api.theme?.update && payload.thunderbird) {
     await api.theme.update(payload.thunderbird).catch(() => {});
   }
+  if (bodyScriptHandle) {
+    await bodyScriptHandle.unregister().catch(() => {});
+    bodyScriptHandle = null;
+  }
+  if (composeScriptHandle) {
+    await composeScriptHandle.unregister().catch(() => {});
+    composeScriptHandle = null;
+  }
+  if (!styleBody) return;
   if (api.messageDisplayScripts?.register && payload.bodyCss) {
-    if (bodyScriptHandle) {
-      await bodyScriptHandle.unregister().catch(() => {});
-      bodyScriptHandle = null;
-    }
     bodyScriptHandle = await api.messageDisplayScripts.register({
       css: [{ code: payload.bodyCss }],
       js: [{ file: "/content/message-theme.js" }],
     }).catch(() => null);
   }
   if (api.composeScripts?.register && payload.composeCss) {
-    if (composeScriptHandle) {
-      await composeScriptHandle.unregister().catch(() => {});
-      composeScriptHandle = null;
-    }
     composeScriptHandle = await api.composeScripts.register({
       css: [{ code: payload.composeCss }],
       js: [{ file: "/content/compose-theme.js" }],
@@ -116,12 +119,14 @@ async function syncFeatures(cfg, themePayload = null) {
     triage: Boolean(cfg?.features?.triage),
   };
   const themeWasOn = features.theme;
+  const styleBodyChanged = styleBody !== Boolean(cfg?.theme?.styleBody);
+  styleBody = Boolean(cfg?.theme?.styleBody);
   features = next;
   if (!next.theme) {
     if (themeWasOn || currentThemePayload) await removeTheme();
     return;
   }
-  const payload = themePayload || (!themeWasOn ? await callNative("get_theme").catch(() => null) : null);
+  const payload = themePayload || (!themeWasOn || styleBodyChanged ? await callNative("get_theme").catch(() => null) : null);
   if (payload) await applyThemePayload(payload);
 }
 
@@ -395,7 +400,9 @@ async function runTriage() {
   const { messages, folders, scannedFolders } = await collectScanMessages(cfg);
   // Classify in small batches: keeps each native message small and each call within its timeout.
   let res = { results: [], plannedMoves: [], skippedAccounts: 0 };
-  const batchSize = 10;
+  const batchSize = 5;
+  // Unread and newest first, so they get the AI budget before older, already read mails.
+  messages.sort((a, b) => Number(b.unread) - Number(a.unread) || new Date(b.date || 0) - new Date(a.date || 0));
   const scanId = `scan-${Date.now()}`; // lets the host apply one AI budget across all batches
   for (let i = 0; i < messages.length || i === 0; i += batchSize) {
     const part = await callNative("classify_batch", { scanId, messages: messages.slice(i, i + batchSize) }, 300000);
@@ -674,7 +681,7 @@ api.runtime.onMessage.addListener((msg) => {
           }
           nextRules.push(copy);
         }
-        const saved = await callNative("save_rules", { incomingFolder: msg.incomingFolder || "INBOX", rules: nextRules });
+        const saved = await callNative("save_rules", { rules: nextRules });
         return { config: saved, folderNotes };
       })();
 

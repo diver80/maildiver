@@ -276,7 +276,7 @@ func TestClassifyRespectsAISwitchAndBudget(t *testing.T) {
 	if r := call("save_config", map[string]any{
 		"features": map[string]any{"triage": true},
 		"mailbox":  map[string]any{"triageAccountIds": []string{"work"}},
-		"ai":       map[string]any{"maxAiCallsPerScan": 3},
+		"ai":       map[string]any{"classifyWithAi": true, "maxAiCallsPerScan": 3},
 	}); !r.OK {
 		t.Fatal(r.Error)
 	}

@@ -42,6 +42,13 @@ const (
 	ErrAccountNotEnabled = "account_not_enabled"
 )
 
+// Upper bounds for one model call, so a hanging CLI or API cannot block a scan forever.
+// They stay below the extension's own request timeouts (5 mails per batch, 300 s; analyze 120 s).
+const (
+	classifyTimeout = 50 * time.Second
+	analyzeTimeout  = 110 * time.Second
+)
+
 func fail(id, msg string) Response {
 	return Response{ID: id, OK: false, Error: msg}
 }
@@ -162,16 +169,12 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 
 	case "save_rules":
 		var p struct {
-			IncomingFolder string               `json:"incomingFolder"`
-			Rules          []config.RoutingRule `json:"rules"`
+			Rules []config.RoutingRule `json:"rules"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
 		cfg, _ := config.Load()
-		if p.IncomingFolder != "" {
-			cfg.IncomingFolder = p.IncomingFolder
-		}
 		if p.Rules != nil {
 			cfg.Rules = p.Rules
 		}
@@ -379,7 +382,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 				}
 				aiCalls++
 			}
-			c, err := ai.Classify(ctx, cfg.AI, m, cfg.Rules)
+			callCtx, cancel := context.WithTimeout(ctx, classifyTimeout)
+			c, err := ai.Classify(callCtx, cfg.AI, m, cfg.Rules)
+			cancel()
 			if err != nil {
 				// The mail still gets a local heuristic result; report why the AI step failed.
 				classifyErrors++
@@ -418,7 +423,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if analyzeReq.Language == "" && (cfg.Language == "de" || cfg.Language == "en") {
 			analyzeReq.Language = cfg.Language
 		}
-		resp, err := ai.Analyze(ctx, cfg.AI, analyzeReq)
+		callCtx, cancel := context.WithTimeout(ctx, analyzeTimeout)
+		resp, err := ai.Analyze(callCtx, cfg.AI, analyzeReq)
+		cancel()
 		if err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}

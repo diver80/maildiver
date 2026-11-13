@@ -85,13 +85,14 @@ async function init() {
       sel.appendChild(opt);
     }
   }
+  $("theme-style-body").checked = Boolean(cfg?.theme?.styleBody);
   $("theme-mode").value = cfg?.theme?.mode || "auto";
   $("theme-preset").value = cfg?.theme?.preset || "tokyo-night";
   $("clf-backend").value = cfg?.ai?.classifier?.backend || "gemini-api";
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
   $("agent-backend").value = cfg?.ai?.agent?.backend || "claude-cli";
   $("agent-model").value = cfg?.ai?.agent?.model || "";
-  $("ai-classify").checked = cfg?.ai?.classifyWithAi !== false;
+  $("ai-classify").checked = Boolean(cfg?.ai?.classifyWithAi);
   $("ai-max-calls").value = cfg?.ai?.maxAiCallsPerScan || 50;
   $("ai-allow-cli").checked = Boolean(cfg?.ai?.allowUnrestrictedCli);
 
@@ -129,6 +130,7 @@ async function init() {
       theme: {
         mode: $("theme-mode").value,
         preset: $("theme-preset").value,
+        styleBody: $("theme-style-body").checked,
       },
       ai: {
         allowUnrestrictedCli: $("ai-allow-cli").checked,
