@@ -37,6 +37,17 @@
 - **Thread context** for the assistant is built from `References` / `In-Reply-To`, not from matching subjects.
 - **CLI backends:** `claude` runs with `--tools ""` and gets the prompt on stdin. `gemini-cli` / `opencode-cli` cannot disable tools and need `ai.allowUnrestrictedCli`.
 
+## Writing Assistant
+
+- Entry points: `compose_action` popup (`ui/compose.html`) on the draft being written, `message_display_action` popup on the open mail, and the OmaThunder tab.
+- Modes handled by `analyze_thread`: `summarize`, `draft_reply`, `review_draft`, `improve_draft`, `compose_new`. Compose-window requests are `ephemeral`: nothing is stored as a proposal.
+- Drafts are split into the user's own text and the rest (signature, quote) by `splitDraft` in `extension/lib/core.js`. Only the own part is sent to the model and only the own part is replaced; inserting requires an explicit click.
+- Reply proposals open a normal reply window (`beginReply`, optionally reply-all) and write the text above the quote.
+
+## Versioning
+
+`ping` returns the host version and `ProtocolVersion`. The extension compares it with its own `PROTOCOL` constant and shows a warning when they differ. Bump both whenever the messages change incompatibly.
+
 ## Runtime Notes
 
 - The host handles each request in its own goroutine, so a long AI call does not block the UI. Config writes are serialized.

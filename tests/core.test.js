@@ -161,6 +161,36 @@ test("thread is capped but always keeps the primary mail", () => {
   eq(got[7].threadId, "r11");
 });
 
+test("plain-text draft: own text is separated from quote and signature", () => {
+  const body = "Hallo Laura,\n\npasst für mich.\n\nAm 12.11.2026 schrieb Laura Weber:\n> Passt Donnerstag?\n> Gruß";
+  eq(core.draftOwnText(body, true), "Hallo Laura,\n\npasst für mich.");
+  eq(core.replaceDraftOwn(body, true, "Neu."), "Neu.\n\nAm 12.11.2026 schrieb Laura Weber:\n> Passt Donnerstag?\n> Gruß");
+  const withSig = "Text\n\n-- \nFrank\n> alt";
+  eq(core.draftOwnText(withSig, true), "Text");
+  eq(core.replaceDraftOwn(withSig, true, "Neu"), "Neu\n\n-- \nFrank\n> alt");
+  eq(core.replaceDraftOwn("nur eigener Text", true, "Neu"), "Neu");
+});
+
+test("HTML draft: quote and signature survive a replacement", () => {
+  const body = '<html><head><meta charset="utf-8"></head><body><p>Hallo &amp; danke,<br>passt.</p>' +
+    '<div class="moz-cite-prefix">Am 12.11. schrieb Laura:<br></div><blockquote type="cite"><p>Alt</p></blockquote></body></html>';
+  eq(core.draftOwnText(body, false), "Hallo & danke,\npasst.");
+  const next = core.replaceDraftOwn(body, false, "Zeile 1\nZeile 2\n\nAbsatz <2>");
+  eq(next, '<html><head><meta charset="utf-8"></head><body><p>Zeile 1<br>Zeile 2</p><p>Absatz &lt;2&gt;</p>' +
+    '<div class="moz-cite-prefix">Am 12.11. schrieb Laura:<br></div><blockquote type="cite"><p>Alt</p></blockquote></body></html>');
+  const sig = '<body><p>Text</p><div class="moz-signature">-- <br>Frank</div></body>';
+  eq(core.draftOwnText(sig, false), "Text");
+  eq(core.replaceDraftOwn(sig, false, "Neu"), '<body><p>Neu</p><div class="moz-signature">-- <br>Frank</div></body>');
+  eq(core.replaceDraftOwn("<body></body>", false, "Neu"), "<body><p>Neu</p></body>");
+});
+
+test("split never loses content", () => {
+  for (const [body, plain] of [["a\n> b", true], ["<body><p>a</p><blockquote type=\"cite\">b</blockquote></body>", false], ["", true], ["", false]]) {
+    const { head, own, rest } = core.splitDraft(body, plain);
+    eq(head + own + rest, body);
+  }
+});
+
 out(`${count - failed}/${count} core tests passed`);
 if (failed > 0) {
   if (typeof quit === "function") quit(1);

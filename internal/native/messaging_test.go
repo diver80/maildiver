@@ -303,3 +303,41 @@ func TestClassifyRespectsAISwitchAndBudget(t *testing.T) {
 		t.Fatalf("expected a local estimate, got %+v", got)
 	}
 }
+
+func TestUndoScanMovesAndProtocol(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	h := NewHandler(triage.NewStoreAt(t.TempDir()))
+	call := func(method string, params any) Response {
+		raw, _ := json.Marshal(params)
+		return h.Handle(context.Background(), Request{ID: method, Method: method, Params: raw})
+	}
+	ping := call("ping", nil).Result.(map[string]any)
+	if ping["protocol"] != ProtocolVersion || ping["version"] != Version {
+		t.Fatalf("ping must report version and protocol: %v", ping)
+	}
+
+	if r := call("undo_scan_moves", map[string]any{"scanId": "s1"}); r.OK || r.Error != ErrReadOnly {
+		t.Fatalf("undo must be refused in read-only mode: %+v", r)
+	}
+	if r := call("save_config", map[string]any{"mailbox": map[string]any{"readOnly": false, "triageAccountIds": []string{"work"}}}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	moves := []map[string]any{
+		{"messageId": "1", "accountId": "work", "ruleId": "r", "scanId": "s1"},
+		{"messageId": "2", "accountId": "work", "ruleId": "r", "scanId": "s2"},
+	}
+	if r := call("record_moves", map[string]any{"moves": moves}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	got := call("undo_scan_moves", map[string]any{"scanId": "s1"}).Result.(map[string]any)["revertMoves"].([]triage.MovedMessage)
+	if len(got) != 1 || got[0].MessageID != "1" {
+		t.Fatalf("expected only the moves of scan s1, got %+v", got)
+	}
+	if again := call("undo_scan_moves", map[string]any{"scanId": "s1"}).Result.(map[string]any)["revertMoves"].([]triage.MovedMessage); len(again) != 0 {
+		t.Fatalf("a scan can only be undone once, got %+v", again)
+	}
+	if empty := call("undo_scan_moves", map[string]any{"scanId": ""}).Result.(map[string]any)["revertMoves"].([]triage.MovedMessage); len(empty) != 0 {
+		t.Fatalf("an empty scan id must never match older moves, got %+v", empty)
+	}
+}

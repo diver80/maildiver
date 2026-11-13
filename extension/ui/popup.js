@@ -53,6 +53,7 @@ async function init() {
       if (features) {
         document.getElementById("quick-theme-card").style.display = features.theme ? "" : "none";
         document.getElementById("btn-analyze-mail").style.display = features.assistant ? "" : "none";
+        document.getElementById("btn-draft-reply").style.display = features.assistant ? "" : "none";
         document.getElementById("stats-grid").style.display = features.triage || features.assistant ? "" : "none";
         document.getElementById("popup-readonly").style.display =
           features.triage && snap.config?.mailbox?.readOnly !== false ? "" : "none";
@@ -68,6 +69,53 @@ async function init() {
     if (inExtension && api.runtime.openOptionsPage) api.runtime.openOptionsPage();
     else window.location.href = "options.html";
   });
+  document.getElementById("btn-draft-reply").addEventListener("click", async () => {
+    const out = document.getElementById("popup-out");
+    const note = (text) => {
+      const card = document.createElement("div");
+      card.className = "oma-card oma-muted";
+      card.textContent = text;
+      out.innerHTML = "";
+      out.appendChild(card);
+    };
+    note(t("popup_analyzing"));
+    if (!inExtension) return;
+    try {
+      const res = await api.runtime.sendMessage({
+        type: "omathunder:analyzeMessage",
+        mode: "draft_reply",
+        language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
+      });
+      const prop = (res.proposals || []).find((p) => p.kind === "draft_reply");
+      if (!prop) return note(res.answer || t("popup_no_draft"));
+      out.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "oma-card";
+      box.style.cssText = "white-space:pre-wrap; max-height:200px; overflow-y:auto; font-size:12px;";
+      box.textContent = prop.body;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex; gap:6px; margin-top:8px;";
+      for (const [label, replyAll] of [[t("ai_reply"), false], [t("ai_reply_all"), true]]) {
+        const b = document.createElement("button");
+        b.className = replyAll ? "oma-btn" : "oma-btn primary";
+        b.style.cssText = "flex:1; justify-content:center;";
+        b.textContent = label;
+        b.addEventListener("click", async () => {
+          try {
+            await api.runtime.sendMessage({ type: "omathunder:applyProposal", proposal: prop, replyAll });
+            window.close();
+          } catch (err) {
+            note(window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message);
+          }
+        });
+        row.appendChild(b);
+      }
+      out.append(box, row);
+    } catch (err) {
+      note(window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message);
+    }
+  });
+
   document.getElementById("btn-analyze-mail").addEventListener("click", async () => {
     const out = document.getElementById("popup-out");
     out.innerHTML = `<div class="oma-card oma-muted">${t("popup_analyzing")}</div>`;

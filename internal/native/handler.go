@@ -33,6 +33,13 @@ type Response struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// Version is the host build version (set by main from the linker flag).
+var Version = "dev"
+
+// ProtocolVersion changes whenever the messages between extension and host change incompatibly.
+// The extension compares it with its own value and asks the user to update the older side.
+const ProtocolVersion = 3
+
 // Stable error codes the extension translates for the UI.
 const (
 	ErrTriageDisabled    = "feature_disabled:triage"
@@ -63,6 +70,9 @@ type DoctorReport struct {
 	CLIs            map[string]bool      `json:"clis"`
 	EnvKeys         map[string]bool      `json:"envKeys"`
 	ManifestPaths   []string             `json:"manifestPaths"`
+	HostVersion     string               `json:"hostVersion"`
+	Protocol        int                  `json:"protocol"`
+	EnvFile         string               `json:"envFile"`
 	Features        config.FeatureFlags  `json:"features"`
 	Mailbox         config.MailboxPolicy `json:"mailbox"`
 }
@@ -122,6 +132,9 @@ func BuildDoctorReport() DoctorReport {
 		CLIs:            clis,
 		EnvKeys:         envKeys,
 		ManifestPaths:   paths,
+		HostVersion:     Version,
+		Protocol:        ProtocolVersion,
+		EnvFile:         EnvFilePath(),
 		Features:        cfg.Features,
 		Mailbox:         cfg.Mailbox,
 	}
@@ -137,7 +150,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	}
 	switch req.Method {
 	case "ping":
-		return Response{ID: req.ID, OK: true, Result: map[string]string{"status": "pong", "version": "0.1.0"}}
+		return Response{ID: req.ID, OK: true, Result: map[string]any{"status": "pong", "version": Version, "protocol": ProtocolVersion}}
 
 	case "doctor":
 		return Response{ID: req.ID, OK: true, Result: BuildDoctorReport()}
@@ -241,6 +254,22 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		return Response{ID: req.ID, OK: true, Result: st}
 
+	case "undo_scan_moves":
+		var p struct {
+			ScanID string `json:"scanId"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		if cfg, _ := config.Load(); cfg.Mailbox.ReadOnly {
+			return fail(req.ID, ErrReadOnly)
+		}
+		moves, err := h.store.PopMovedByScan(p.ScanID)
+		if err != nil {
+			return fail(req.ID, err.Error())
+		}
+		return Response{ID: req.ID, OK: true, Result: map[string]any{"revertMoves": moves}}
+
 	case "move_kanban":
 		var p struct {
 			MessageID string `json:"messageId"`
@@ -306,6 +335,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	case "classify_batch":
 		var p struct {
 			Force    bool                  `json:"force"`
+			Language string                `json:"language"`
 			ScanID   string                `json:"scanId"`
 			Messages []triage.MessageInput `json:"messages"`
 		}
@@ -315,6 +345,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		cfg, _ := config.Load()
 		if !cfg.Features.Triage {
 			return fail(req.ID, ErrTriageDisabled)
+		}
+		cfg.AI.Language = cfg.Language
+		if p.Language == "de" || p.Language == "en" {
+			cfg.AI.Language = p.Language
 		}
 		if len(cfg.Mailbox.TriageAccountIDs) == 0 {
 			return fail(req.ID, ErrNoTriageAccounts)
@@ -371,13 +405,13 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 				}
 			}
 			if !cfg.AI.ClassifyWithAI {
-				results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "Lokale Schätzung (KI-Klassifikation ausgeschaltet)"))
+				results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "sum_ai_off", "Lokale Schätzung (KI-Klassifikation ausgeschaltet)"))
 				continue
 			}
 			if _, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); !matched {
 				if !h.takeAICall(p.ScanID, cfg.AI.MaxAICallsPerScan) {
 					aiSkipped++
-					results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "Lokale Schätzung (KI-Limit pro Scan erreicht)"))
+					results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "sum_ai_limit", "Lokale Schätzung (KI-Limit pro Scan erreicht)"))
 					continue
 				}
 				aiCalls++
@@ -429,8 +463,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
-		for _, prop := range resp.Proposals {
-			_, _ = h.store.AddProposal(prop)
+		if !analyzeReq.Ephemeral {
+			for _, prop := range resp.Proposals {
+				_, _ = h.store.AddProposal(prop)
+			}
 		}
 		return Response{ID: req.ID, OK: true, Result: resp}
 

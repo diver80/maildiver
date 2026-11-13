@@ -44,6 +44,11 @@
     "default_popup": "ui/popup.html",
     "default_icon": "icons/icon.svg"
   },
+  "compose_action": {
+    "default_title": "OmaThunder AI",
+    "default_popup": "ui/compose.html",
+    "default_icon": "icons/icon.svg"
+  },
   "options_ui": {
     "page": "ui/options.html",
     "open_in_tab": true

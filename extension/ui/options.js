@@ -33,6 +33,69 @@ function renderAccounts(accounts, enabledIds) {
   }
 }
 
+function backendReady(backend, doctor) {
+  const clis = doctor?.clis || {};
+  const keys = doctor?.envKeys || {};
+  switch (backend) {
+    case "gemini-api": return keys.GEMINI_API_KEY ? ["ok", "st_key_found"] : ["warn", "st_key_missing"];
+    case "claude-api": return keys.ANTHROPIC_API_KEY ? ["ok", "st_key_found"] : ["warn", "st_key_missing"];
+    case "claude-cli": return clis.claude ? ["ok", "st_cli_found"] : ["warn", "st_cli_missing"];
+    case "gemini-cli": return clis.gemini ? ["ok", "st_cli_found"] : ["warn", "st_cli_missing"];
+    case "opencode-cli": return clis.opencode ? ["ok", "st_cli_found"] : ["warn", "st_cli_missing"];
+    case "ollama": return clis.ollama ? ["ok", "st_cli_found"] : ["warn", "st_cli_missing"];
+    default: return ["warn", "st_cli_missing"];
+  }
+}
+
+// Shows whether host, versions and the configured AI backends are ready, so failures are explainable.
+function renderStatus(snap) {
+  const box = $("status-rows");
+  box.innerHTML = "";
+  const row = (label, kind, text, sub = "") => {
+    const el = document.createElement("div");
+    el.className = "status-row";
+    const l = document.createElement("div");
+    l.textContent = label;
+    const r = document.createElement("div");
+    const badge = document.createElement("span");
+    badge.className = `oma-badge ${kind}`;
+    badge.textContent = text;
+    r.appendChild(badge);
+    if (sub) {
+      const s = document.createElement("div");
+      s.className = "oma-muted check-sub";
+      s.textContent = sub;
+      r.appendChild(s);
+    }
+    el.append(l, r);
+    box.appendChild(el);
+  };
+  if (!inExtension) {
+    row(t("st_host"), "accent", t("host_preview"));
+    return;
+  }
+  if (!snap?.connected) {
+    row(t("st_host"), "err", t("st_host_off"), `${t("host_offline_body")} ${snap?.error || ""}`);
+    return;
+  }
+  row(t("st_host"), "ok", t("st_host_on", { version: snap.host?.version || "?" }));
+  if (snap.protocolOk === false) {
+    row(t("st_versions"), "err", t("st_versions_bad"), t("host_mismatch", { host: snap.host?.version, ext: snap.extensionVersion }));
+  } else {
+    row(t("st_versions"), "ok", t("st_versions_ok", { ext: snap.extensionVersion }));
+  }
+  const ai = snap.config?.ai || {};
+  const [aKind, aKey] = backendReady(ai.agent?.backend, snap.doctor);
+  row(t("st_assistant"), aKind, `${ai.agent?.backend}: ${t(aKey)}`);
+  if (ai.classifyWithAi) {
+    const [cKind, cKey] = backendReady(ai.classifier?.backend, snap.doctor);
+    row(t("st_classifier"), cKind, `${ai.classifier?.backend}: ${t(cKey)}`);
+  } else {
+    row(t("st_classifier"), "ok", t("report_ai_off"));
+  }
+  row(t("st_keys"), "accent", snap.doctor?.envFile || "–", t("st_keys_desc"));
+}
+
 function updateDependentFields() {
   const triageOn = $("feat-triage").checked;
   document.querySelectorAll(".safety input:not(#mb-readonly)").forEach((el) => {
@@ -48,9 +111,11 @@ async function init() {
   let cfg = null;
   let accounts = PREVIEW_ACCOUNTS;
   let hostThemes = null;
+  let lastSnap = null;
   if (inExtension) {
     const snap = await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch(() => null);
     cfg = snap?.config;
+    lastSnap = snap;
     accounts = snap?.accounts || [];
     hostThemes = snap?.themes || null;
   }
@@ -63,6 +128,8 @@ async function init() {
     window.OMA_I18N.setLang(langPref);
     window.OMA_I18N.applyDom();
   }
+  renderStatus(lastSnap);
+  $("mb-scan-new").checked = Boolean(mb.scanOnNewMail);
   $("feat-theme").checked = Boolean(features.theme);
   $("feat-assistant").checked = Boolean(features.assistant);
   $("feat-triage").checked = Boolean(features.triage);
@@ -124,6 +191,7 @@ async function init() {
         readOnly: $("mb-readonly").checked,
         triageAccountIds: [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value),
         autoMoveOnlyUnread: $("mb-only-unread").checked,
+        scanOnNewMail: $("mb-scan-new").checked,
         scanLimit: Number($("mb-scan-limit").value) || 20,
         scanDays: Number($("mb-scan-days").value) || 30,
       },
@@ -155,6 +223,7 @@ async function init() {
       const res = await api.runtime.sendMessage({ type: "omathunder:saveConfig", config: patch });
       if (res?.config) cfg = res.config;
       st.textContent = t("opts_saved");
+      renderStatus(await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch(() => lastSnap));
     } catch (err) {
       st.textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : String(err?.message || err);
     }

@@ -157,7 +157,96 @@
     return [primary, ...others].sort(byDate);
   }
 
+  // --- Compose drafts -------------------------------------------------------
+  // A draft consists of the text the user wrote, followed by signature and/or quoted original.
+  // The assistant only ever reads and replaces the user's own part.
+
+  function escapeHtml(str) {
+    return String(str || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function textToHtml(text) {
+    return String(text || "")
+      .trim()
+      .split(/\n{2,}/)
+      .map((para) => `<p>${escapeHtml(para).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+  }
+
+  function htmlToText(html) {
+    return String(html || "")
+      .replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  // Splits a draft body into head (HTML up to <body>), the user's own part, and the rest
+  // (signature, quote, closing tags). head + own + rest is always the unchanged body.
+  function splitDraft(body, isPlainText) {
+    const text = String(body || "");
+    if (isPlainText) {
+      const lines = text.split("\n");
+      let cut = lines.length;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === "-- " || lines[i].startsWith(">")) {
+          cut = i;
+          break;
+        }
+      }
+      // Pull the "On … wrote:" line above the quote into the quoted part.
+      if (cut < lines.length && lines[cut].startsWith(">")) {
+        let j = cut - 1;
+        while (j >= 0 && lines[j].trim() === "") j--;
+        if (j >= 0 && /:\s*$/.test(lines[j])) cut = j;
+      }
+      const own = lines.slice(0, cut).join("\n") + (cut > 0 && cut < lines.length ? "\n" : "");
+      return { head: "", own, rest: lines.slice(cut).join("\n") };
+    }
+    const bodyOpen = text.match(/<body[^>]*>/i);
+    const start = bodyOpen ? bodyOpen.index + bodyOpen[0].length : 0;
+    const after = text.slice(start);
+    const markers = [
+      /<div[^>]*class="[^"]*moz-cite-prefix/i,
+      /<blockquote[^>]*type="cite"/i,
+      /<div[^>]*class="[^"]*moz-signature/i,
+      /<pre[^>]*class="[^"]*moz-signature/i,
+      /<div[^>]*class="[^"]*moz-forward-container/i,
+      /<\/body>/i,
+    ];
+    let cut = after.length;
+    for (const re of markers) {
+      const m = after.match(re);
+      if (m && m.index < cut) cut = m.index;
+    }
+    return { head: text.slice(0, start), own: after.slice(0, cut), rest: after.slice(cut) };
+  }
+
+  // The user's own text of a draft, as plain text.
+  function draftOwnText(body, isPlainText) {
+    const { own } = splitDraft(body, isPlainText);
+    return isPlainText ? own.trim() : htmlToText(own);
+  }
+
+  // Returns the draft body with the user's own part replaced; signature and quote stay untouched.
+  function replaceDraftOwn(body, isPlainText, newText) {
+    const { head, rest } = splitDraft(body, isPlainText);
+    if (isPlainText) {
+      const text = String(newText || "").trim();
+      return rest ? `${text}\n\n${rest}` : text;
+    }
+    return `${head}${textToHtml(newText)}${rest}`;
+  }
+
   const api = {
+    textToHtml, htmlToText, splitDraft, draftOwnText, replaceDraftOwn,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,

@@ -116,6 +116,15 @@ func UninstallHost() ([]string, error) {
 	return removed, nil
 }
 
+// EnvFilePath is the optional shell file the host wrapper loads API keys from (macOS/Linux).
+func EnvFilePath() string {
+	cfgDir, err := config.ConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(cfgDir, "env")
+}
+
 func wrapperLocation() (string, error) {
 	cfgDir, err := config.ConfigDir()
 	if err != nil {

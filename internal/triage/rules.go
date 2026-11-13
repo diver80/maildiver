@@ -57,6 +57,7 @@ type Classification struct {
 	Bucket         Bucket   `json:"bucket"`
 	Urgency        string   `json:"urgency"` // "high", "medium", "low"
 	Summary        string   `json:"summary"`
+	SummaryKey     string   `json:"summaryKey,omitempty"` // UI text key for locally generated summaries
 	ActionHint     string   `json:"actionHint,omitempty"`
 	Deadline       string   `json:"deadline,omitempty"`
 	Amount         string   `json:"amount,omitempty"`
@@ -180,6 +181,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.KanbanColumn = "done"
 		base.Urgency = "low"
 		base.Summary = "Mailingliste / Newsletter (Header-Regel)"
+		base.SummaryKey = "sum_newsletter"
 		base.Tags = []string{"oma-newsletter"}
 		base.NeedsAttention = false
 		return base, true
@@ -194,6 +196,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.KanbanColumn = BucketToKanban(BucketFYI, msg.Unread)
 		base.Urgency = "low"
 		base.Summary = "Automatische Benachrichtigung (Stage-0-Regel)"
+		base.SummaryKey = "sum_automated"
 		base.Tags = []string{"oma-fyi"}
 		base.NeedsAttention = false
 		return base, true
@@ -205,6 +208,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.KanbanColumn = "invoice"
 		base.Urgency = "medium"
 		base.Summary = "Rechnung / Beleg erkannt (zur Prüfung)"
+		base.SummaryKey = "sum_invoice"
 		base.ActionHint = "Prüfen & ablegen"
 		base.Tags = []string{"oma-invoice"}
 		base.NeedsAttention = msg.Unread

@@ -33,6 +33,8 @@ type AIConfig struct {
 	Agent           ProviderConfig `json:"agent"`
 	SkipNewsletters bool           `json:"skipNewsletters"`
 	MaxSnippetChars int            `json:"maxSnippetChars"`
+	// Language is the UI language for generated texts ("de" or "en"); set per request, never stored.
+	Language string `json:"-"`
 	// ClassifyWithAI sends mails that pass Stage 0 to the classifier model. Off = local estimate only, 0 tokens.
 	ClassifyWithAI bool `json:"classifyWithAi"`
 	// MaxAICallsPerScan caps classifier calls per scan; mails beyond it get the local estimate
@@ -71,6 +73,8 @@ type MailboxPolicy struct {
 	TriageAccountIDs []string `json:"triageAccountIds"`
 	// AutoMoveOnlyUnread restricts deterministic auto-moves to unread inbox mails.
 	AutoMoveOnlyUnread bool `json:"autoMoveOnlyUnread"`
+	// ScanOnNewMail runs a triage scan automatically when new mail arrives (same limits as a manual scan).
+	ScanOnNewMail bool `json:"scanOnNewMail"`
 	// ScanLimit is the number of newest mails scanned per folder.
 	ScanLimit int `json:"scanLimit"`
 	// ScanDays limits scans to mails received within the last N days.

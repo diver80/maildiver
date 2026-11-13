@@ -110,6 +110,41 @@ let snapshot = {
   },
 };
 
+// Inside Thunderbird never show the preview's sample data: start empty until the host answers.
+if (inExtension) {
+  snapshot = {
+    connected: false,
+    themes: [],
+    folders: [],
+    accounts: [],
+    state: { classifications: {}, proposals: [] },
+    theme: null,
+    config: { features: {}, mailbox: {}, rules: [] },
+  };
+}
+let editingRuleId = null;
+
+function hostOffline() {
+  return inExtension && !snapshot.connected;
+}
+
+function offlineHtml() {
+  return `<div class="notice oma-card">
+    <strong>${escapeHtml(t("host_offline_title"))}</strong>
+    <div>${escapeHtml(t("host_offline_body"))}</div>
+    ${snapshot.error ? `<div class="oma-muted oma-mono" style="font-size:11px;">${escapeHtml(snapshot.error)}</div>` : ""}
+    <button class="oma-btn primary" data-retry>${escapeHtml(t("host_retry"))}</button>
+  </div>`;
+}
+
+function summaryText(c) {
+  if (c.summaryKey) {
+    const local = t(c.summaryKey);
+    if (local !== c.summaryKey) return local;
+  }
+  return c.summary;
+}
+
 function feature(name) {
   return Boolean(snapshot.config?.features?.[name]);
 }
@@ -255,6 +290,12 @@ function renderMain() {
   const titles = { kanban: t("view_kanban"), rules: t("view_rules"), themes: t("view_themes") };
   document.getElementById("view-title").textContent = titles[currentView] || "OmaThunder";
 
+  if (hostOffline()) {
+    container.innerHTML = offlineHtml();
+    container.querySelector("[data-retry]").addEventListener("click", () => refreshSnapshot());
+    return;
+  }
+
   if ((currentView === "kanban" || currentView === "rules") && !feature("triage")) {
     container.innerHTML = noticeHtml(t("feat_off_triage"));
     bindSettingsButtons(container);
@@ -286,10 +327,11 @@ function renderMain() {
                 </div>
                 <div class="k-card-title">${escapeHtml(c.subject)}</div>
                 <div class="k-card-from">${escapeHtml(c.from)}</div>
-                <div class="k-card-sum">${escapeHtml(c.summary)}</div>
+                <div class="k-card-sum">${escapeHtml(summaryText(c))}</div>
                 <div class="k-card-actions">
                   <span class="oma-mono oma-muted" style="font-size:10px;">${escapeHtml(c.deadline || c.amount || c.folder || "")}</span>
                   <div style="display:flex; gap:4px;">
+                    ${inExtension ? `<button class="mini-btn" data-open-id="${escapeHtml(c.messageId)}" title="${escapeHtml(t("card_open"))}">↗</button>` : ""}
                     ${idx > 0 ? `<button class="mini-btn" data-move-id="${escapeHtml(c.messageId)}" data-move-col="${cols[idx - 1].id}" title="${escapeHtml(t("card_prev"))}">←</button>` : ""}
                     ${idx < cols.length - 1 ? `<button class="mini-btn" data-move-id="${escapeHtml(c.messageId)}" data-move-col="${cols[idx + 1].id}" title="${escapeHtml(t("card_next"))}">→</button>` : ""}
                   </div>
@@ -324,6 +366,17 @@ function renderMain() {
       });
     });
 
+    container.querySelectorAll("[data-open-id]").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await api.runtime.sendMessage({ type: "omathunder:openMessage", messageId: btn.dataset.openId });
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
     container.querySelectorAll("[data-move-id]").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -344,7 +397,7 @@ function renderMain() {
     const accountName = (id) => (snapshot.accounts || []).find((a) => a.id === id)?.name || id || "—";
     container.innerHTML = `
       <div class="oma-card" style="margin-bottom:14px;">
-        <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(t("rules_new_title"))}</div>
+        <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(t(editingRuleId ? "rules_edit_title" : "rules_new_title"))}</div>
         <div class="oma-muted" style="font-size:11.5px; margin-bottom:10px;">
           ${escapeHtml(t("rules_new_desc"))}
         </div>
@@ -367,7 +420,7 @@ function renderMain() {
             <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("rules_lbl_domains"))}</label>
             <input class="oma-input" id="rule-domains" placeholder="${escapeHtml(t("rules_ph_domains"))}" />
           </div>
-          <button class="oma-btn primary" id="btn-add-rule" ${accounts.length === 0 ? "disabled" : ""}>${escapeHtml(t("rules_btn_add"))}</button>
+          <button class="oma-btn primary" id="btn-add-rule" ${accounts.length === 0 ? "disabled" : ""}>${escapeHtml(t(editingRuleId ? "rules_btn_save" : "rules_btn_add"))}</button>
         </div>
         <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer;">
@@ -415,13 +468,32 @@ function renderMain() {
                 <td class="oma-mono">${escapeHtml((r.domains || []).join(", "))}</td>
                 <td><input type="checkbox" data-toggle-move="${escapeHtml(r.id)}" ${r.autoMove ? "checked" : ""} /></td>
                 <td><input type="checkbox" data-toggle-scan="${escapeHtml(r.id)}" ${r.includeInScan ? "checked" : ""} /></td>
-                <td style="text-align:right;"><button class="oma-btn ghost" data-del-rule="${escapeHtml(r.id)}">${escapeHtml(t("rules_btn_delete"))}</button></td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="oma-btn ghost" data-edit-rule="${escapeHtml(r.id)}">${escapeHtml(t("rules_btn_edit"))}</button>
+                  <button class="oma-btn ghost" data-del-rule="${escapeHtml(r.id)}">${escapeHtml(t("rules_btn_delete"))}</button>
+                </td>
               </tr>`;
             }).join("")}
           </tbody>
         </table>
       </div>
     `;
+
+    const editing = editingRuleId ? rules.find((r) => r.id === editingRuleId) : null;
+    if (editing) {
+      if (editing.accountId) document.getElementById("rule-account").value = editing.accountId;
+      document.getElementById("rule-customer").value = editing.customer || "";
+      document.getElementById("rule-folder").value = editing.folderPath || "";
+      document.getElementById("rule-domains").value = (editing.domains || []).join(", ");
+      document.getElementById("rule-col-waiting").value = editing.columnFolders?.waiting || "";
+      document.getElementById("rule-col-done").value = editing.columnFolders?.done || "";
+    }
+    container.querySelectorAll("[data-edit-rule]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        editingRuleId = editingRuleId === btn.dataset.editRule ? null : btn.dataset.editRule;
+        renderMain();
+      });
+    });
 
     document.getElementById("btn-add-rule").addEventListener("click", async () => {
       const customer = document.getElementById("rule-customer").value.trim();
@@ -438,6 +510,17 @@ function renderMain() {
       if (doneSub) columnFolders.done = doneSub;
 
       const folderObj = (snapshot.folders || []).find((f) => f.accountId === accountId && f.path.toLowerCase() === folderPath.toLowerCase());
+      if (editing) {
+        // Keep the rule's identity and switches; replace what the form shows.
+        const { columnFolders: _old, ...kept } = editing;
+        const updated = {
+          ...kept, customer, accountId, folderPath, folderId: folderObj?.id || "", domains,
+          ...(Object.keys(columnFolders).length ? { columnFolders } : {}),
+        };
+        editingRuleId = null;
+        await saveRules((snapshot.config?.rules || []).map((r) => (r.id === updated.id ? updated : r)), autoCreate);
+        return;
+      }
       const nextRules = [...(snapshot.config?.rules || []), {
         id: `rule-${Date.now()}`,
         customer,
@@ -531,10 +614,22 @@ function renderScanReport() {
     ${rep.classifyErrors ? `<div style="margin-top:6px;"><span class="oma-badge warn">${escapeHtml(t("report_classify_error", { count: rep.classifyErrors }))}</span>
       <div class="oma-muted" style="font-size:11px; margin-top:3px;">${escapeHtml(errText(new Error(rep.classifyError)))}</div></div>` : ""}
     ${list}
+    ${!rep.readOnly && (rep.moved || []).length > 0 && rep.scanId ? `<div style="margin-top:8px;"><button class="oma-btn" data-undo-scan>${escapeHtml(t("report_undo"))}</button></div>` : ""}
   </div>`;
   el.querySelector("[data-close-report]").addEventListener("click", () => {
     lastReport = null;
     el.style.display = "none";
+  });
+  el.querySelector("[data-undo-scan]")?.addEventListener("click", async () => {
+    try {
+      const res = await api.runtime.sendMessage({ type: "omathunder:undoScan", scanId: rep.scanId });
+      lastReport = null;
+      const r = res?.revertReport || { reverted: 0, skipped: [], failed: [] };
+      await refreshSnapshot();
+      showMessage(t("revert_report", { reverted: r.reverted, skipped: r.skipped.length, failed: r.failed.length }), r.failed.length ? "warn" : "ok");
+    } catch (err) {
+      showMessage(errText(err), "err");
+    }
   });
 }
 
@@ -606,13 +701,13 @@ async function renderDisplayedMailInfo() {
 }
 
 function renderRightPane() {
-  const assistantOn = !inExtension || feature("assistant");
+  const assistantOn = !inExtension || (feature("assistant") && !hostOffline());
   const offEl = document.getElementById("ai-off");
   offEl.style.display = assistantOn ? "none" : "";
   document.getElementById("ai-mode-tabs").style.display = assistantOn ? "" : "none";
   document.getElementById("ai-pane-body").style.display = assistantOn ? "" : "none";
   if (!assistantOn) {
-    offEl.innerHTML = noticeHtml(t("feat_off_assistant"));
+    offEl.innerHTML = hostOffline() ? "" : noticeHtml(t("feat_off_assistant"));
     bindSettingsButtons(offEl);
     document.getElementById("proposal-count").textContent = "";
     return;
@@ -658,7 +753,8 @@ function renderRightPane() {
       <div class="oma-muted" style="font-size:11.5px;">${escapeHtml(p.summary)}</div>
       ${p.body ? `<div class="proposal-preview">${escapeHtml(p.body)}</div>` : ""}
       <div style="display:flex; gap:8px;">
-        <button class="oma-btn primary" data-apply="${escapeHtml(p.id)}" style="flex:1; justify-content:center;">${escapeHtml(t("ai_apply_tb"))}</button>
+        <button class="oma-btn primary" data-apply="${escapeHtml(p.id)}" style="flex:1; justify-content:center;">${escapeHtml(t(p.kind === "draft_reply" ? "ai_reply" : "ai_apply"))}</button>
+        ${p.kind === "draft_reply" ? `<button class="oma-btn" data-apply="${escapeHtml(p.id)}" data-reply-all="1">${escapeHtml(t("ai_reply_all"))}</button>` : ""}
         <button class="oma-btn ghost" data-dismiss="${escapeHtml(p.id)}">${escapeHtml(t("ai_dismiss"))}</button>
       </div>
     </div>
@@ -670,7 +766,7 @@ function renderRightPane() {
       if (!prop) return;
       if (inExtension) {
         try {
-          const res = await api.runtime.sendMessage({ type: "omathunder:applyProposal", proposal: prop });
+          const res = await api.runtime.sendMessage({ type: "omathunder:applyProposal", proposal: prop, replyAll: Boolean(btn.dataset.replyAll) });
           if (res?.state) snapshot.state = res.state;
         } catch (err) {
           showMessage(errText(err), "err");
@@ -816,7 +912,7 @@ async function init() {
     btn.textContent = t("btn_scanning");
     try {
       if (inExtension && snapshot.connected) {
-        const res = await api.runtime.sendMessage({ type: "omathunder:triageInbox" });
+        const res = await api.runtime.sendMessage({ type: "omathunder:triageInbox", language: window.OMA_I18N ? window.OMA_I18N.getLang() : "" });
         lastReport = res?.moveReport || null;
         await refreshSnapshot();
         renderScanReport();
@@ -884,6 +980,11 @@ async function init() {
   if (inExtension) {
     await refreshSnapshot();
     api.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === "omathunder:scanFinished") {
+        lastReport = msg.report || null;
+        refreshSnapshot().then(renderScanReport);
+        return;
+      }
       if (msg?.type === "omathunder:themeChanged" && msg.payload && feature("theme")) {
         snapshot.theme = msg.payload;
         applyPaletteLocally(msg.payload.palette);
@@ -912,7 +1013,7 @@ async function init() {
 }
 
 async function refreshSnapshot() {
-  const res = await api.runtime.sendMessage({ type: "omathunder:getSnapshot" });
+  const res = await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch((err) => ({ connected: false, error: String(err?.message || err) }));
   if (res) {
     snapshot = { ...snapshot, ...res, themes: res.themes || snapshot.themes, state: res.state || snapshot.state, folders: res.folders || snapshot.folders };
     if (res.config?.language && res.config.language !== "auto" && window.OMA_I18N) {
@@ -927,6 +1028,9 @@ async function refreshSnapshot() {
   renderCustomerFilterBar();
   renderMain();
   renderRightPane();
+  if (snapshot.connected && snapshot.protocolOk === false) {
+    showMessage(t("host_mismatch", { host: snapshot.host?.version, ext: snapshot.extensionVersion }), "err");
+  }
 }
 
 init();

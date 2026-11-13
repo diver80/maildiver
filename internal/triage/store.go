@@ -23,8 +23,6 @@ type Proposal struct {
 	Body       string   `json:"body,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	FolderPath string   `json:"folderPath,omitempty"`
-	EventStart string   `json:"eventStart,omitempty"`
-	EventTitle string   `json:"eventTitle,omitempty"`
 	Status     string   `json:"status"` // "pending", "applied", "dismissed"
 	CreatedAt  string   `json:"createdAt"`
 }
@@ -36,6 +34,7 @@ type MovedMessage struct {
 	HeaderMessageID  string `json:"headerMessageId,omitempty"`
 	AccountID        string `json:"accountId,omitempty"`
 	RuleID           string `json:"ruleId"`
+	ScanID           string `json:"scanId,omitempty"` // scan that moved the mail, for "undo last scan"
 	OriginalFolder   string `json:"originalFolder"`
 	OriginalFolderID string `json:"originalFolderId,omitempty"`
 	TargetFolder     string `json:"targetFolder"`
@@ -353,6 +352,31 @@ func (s *Store) PopMovedByRule(ruleID string) ([]MovedMessage, State, error) {
 		return nil, st, err
 	}
 	return popped, st, nil
+}
+
+// PopMovedByScan removes and returns the moves one scan made, so they can be undone.
+func (s *Store) PopMovedByScan(scanID string) ([]MovedMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	var popped []MovedMessage
+	kept := make([]MovedMessage, 0, len(st.MovedMessages))
+	for _, m := range st.MovedMessages {
+		if scanID != "" && m.ScanID == scanID {
+			popped = append(popped, m)
+		} else {
+			kept = append(kept, m)
+		}
+	}
+	if len(popped) == 0 {
+		return nil, nil
+	}
+	st.MovedMessages = kept
+	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return popped, s.writeLocked(st)
 }
 
 func (s *Store) AddProposal(p Proposal) (State, error) {

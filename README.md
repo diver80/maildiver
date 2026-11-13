@@ -58,6 +58,26 @@ Danach in Thunderbird: **Add-ons & Themes → Zahnrad → Add-on aus Datei insta
 
 *(Hinweis zur Signatur bei lokalem `.xpi` vor ATN-Release: Zum schnellen Testen in Thunderbird lässt sich das Add-on über „Temporäres Add-on laden“ (`about:debugging`) testen, ohne irgendwelche Signatur-Einstellungen im Profil zu verändern.)*
 
+## KI-Zugänge einrichten
+
+Thunderbird startet den Host ohne deine Shell-Umgebung. API-Keys liest er deshalb aus einer eigenen Datei:
+
+* macOS: `~/Library/Application Support/omathunder/env`
+* Linux: `~/.config/omathunder/env`
+
+```bash
+export GEMINI_API_KEY=...        # für das Backend "Gemini API"
+export ANTHROPIC_API_KEY=...     # für das Backend "Anthropic Claude API"
+```
+
+Danach Thunderbird neu starten. Die Claude-CLI braucht keinen Eintrag, sie nutzt ihre eigene Anmeldung. Die Einstellungsseite zeigt oben unter **Status**, ob Host, Versionen, Keys und Programme gefunden wurden.
+
+## Schreibassistent
+
+* **Im Verfassen-Fenster** (Knopf „OmaThunder AI“): Entwurf verbessern, Entwurf gegen die Ursprungsmail prüfen, Antwort formulieren oder eine Mail aus Stichpunkten schreiben. Das Ergebnis siehst du zuerst im Popup; erst „einsetzen“ schreibt es in den Entwurf. Ersetzt wird nur dein eigener Text, Zitat und Signatur bleiben.
+* **An der geöffneten Mail** (Knopf „OmaThunder AI“): zusammenfassen oder Antwort formulieren, wahlweise als „Allen antworten“.
+* **Im OmaThunder-Tab:** dieselben Funktionen für die geöffnete Mail oder eine Board-Karte.
+
 ## Tests
 
 ```bash

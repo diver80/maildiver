@@ -4,8 +4,10 @@ const api = typeof messenger !== "undefined" ? messenger : browser;
 const {
   PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, requireWritable,
   requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
-  normalizeSubjectForThread, parseMessageIds, selectThread,
+  normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn,
 } = OmaCore;
+// Must match ProtocolVersion in internal/native/handler.go.
+const PROTOCOL = 3;
 const HOST_NAME = "dev.omathunder.host";
 
 let nativePort = null;
@@ -392,7 +394,13 @@ async function executePlannedMove(cfg, plan, folders) {
   };
 }
 
-async function runTriage() {
+function uiLanguage(cfg, requested = "") {
+  if (requested === "de" || requested === "en") return requested;
+  if (cfg?.language === "de" || cfg?.language === "en") return cfg.language;
+  return (api.i18n?.getUILanguage?.() || "en").toLowerCase().startsWith("de") ? "de" : "en";
+}
+
+async function runTriage(requestedLanguage = "") {
   const cfg = await loadConfig();
   requireFeature(cfg, "triage");
   if (triageAccountIds(cfg).size === 0) throw new PolicyError("no_triage_accounts");
@@ -405,7 +413,7 @@ async function runTriage() {
   messages.sort((a, b) => Number(b.unread) - Number(a.unread) || new Date(b.date || 0) - new Date(a.date || 0));
   const scanId = `scan-${Date.now()}`; // lets the host apply one AI budget across all batches
   for (let i = 0; i < messages.length || i === 0; i += batchSize) {
-    const part = await callNative("classify_batch", { scanId, messages: messages.slice(i, i + batchSize) }, 300000);
+    const part = await callNative("classify_batch", { scanId, language: uiLanguage(cfg, requestedLanguage), messages: messages.slice(i, i + batchSize) }, 300000);
     res = {
       ...part,
       results: [...res.results, ...(part.results || [])],
@@ -420,6 +428,7 @@ async function runTriage() {
   const planned = res.plannedMoves || [];
   const report = {
     readOnly: cfg.mailbox?.readOnly !== false,
+    scanId,
     scannedFolders,
     scannedMessages: messages.length,
     planned,
@@ -435,7 +444,7 @@ async function runTriage() {
     const recorded = [];
     for (const plan of planned) {
       try {
-        recorded.push(await executePlannedMove(cfg, plan, folders));
+        recorded.push({ ...(await executePlannedMove(cfg, plan, folders)), scanId });
         report.moved.push(plan);
       } catch (err) {
         report.failed.push({ ...plan, error: errorCode(err) });
@@ -542,7 +551,18 @@ async function applyKanbanSideEffects(cfg, messageId, column) {
   return { applied: true };
 }
 
-async function applyProposalInThunderbird(proposal) {
+// Writes text into an open compose window. Only the user's own part of the draft is replaced;
+// signature and quoted original stay. This is the user's own unsent draft, so it works in read-only mode.
+async function writeIntoCompose(tabId, text) {
+  const details = await api.compose.getComposeDetails(tabId);
+  if (details.isPlainText) {
+    await api.compose.setComposeDetails(tabId, { plainTextBody: replaceDraftOwn(details.plainTextBody || "", true, text) });
+  } else {
+    await api.compose.setComposeDetails(tabId, { body: replaceDraftOwn(details.body || "", false, text) });
+  }
+}
+
+async function applyProposalInThunderbird(proposal, { replyAll = false } = {}) {
   if (!proposal) throw new Error("Proposal missing");
   const cfg = await loadConfig();
   requireFeature(cfg, "assistant");
@@ -550,11 +570,17 @@ async function applyProposalInThunderbird(proposal) {
   if (!live) throw new PolicyError("message_not_found");
 
   if (proposal.kind === "draft_reply") {
-    // Opens a compose window only. Nothing is saved or sent without the user. Allowed in read-only mode.
-    await api.compose.beginReply(live.id, {
-      plainTextBody: proposal.body || "",
-      subject: proposal.subject || undefined,
-    });
+    // Opens a normal reply window (with quote and signature) and puts the text above the quote.
+    // Nothing is saved or sent without the user. Allowed in read-only mode.
+    const tab = await api.compose.beginReply(live.id, replyAll ? "replyToAll" : "replyToSender");
+    try {
+      await writeIntoCompose(tab.id, proposal.body || "");
+    } catch (_) {
+      await new Promise((resolve) => setTimeout(resolve, 700)); // editor not ready yet
+      await writeIntoCompose(tab.id, proposal.body || "").catch(() => {
+        throw new PolicyError("draft_insert_failed");
+      });
+    }
   } else if (proposal.kind === "add_tags" && Array.isArray(proposal.tags) && proposal.tags.length > 0) {
     const defs = proposal.tags.map((tag) => ({ key: tag.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"), label: tag }));
     await mailbox.addTags(cfg, live, defs);
@@ -607,6 +633,48 @@ async function revertRuleMoves(cfg, revertMoves) {
   return report;
 }
 
+async function composeContext(tabId) {
+  const details = await api.compose.getComposeDetails(tabId);
+  const body = details.isPlainText ? details.plainTextBody || "" : details.body || "";
+  return {
+    details,
+    ownText: draftOwnText(body, Boolean(details.isPlainText)),
+    subject: details.subject || "",
+    relatedMessageId: details.relatedMessageId || null,
+  };
+}
+
+// Runs the assistant for the draft in a compose window. The result is returned to the popup and
+// only written into the draft when the user clicks "insert".
+async function composeAssist(msg) {
+  const cfg = await loadConfig();
+  requireFeature(cfg, "assistant");
+  const ctx = await composeContext(msg.tabId);
+  let primary = null;
+  let threadMessages = [];
+  if (ctx.relatedMessageId) {
+    const header = await api.messages.get(ctx.relatedMessageId).catch(() => null);
+    if (header) {
+      primary = await buildMessageInput(header);
+      threadMessages = await collectThreadMessages(primary);
+    }
+  }
+  if ((msg.mode === "review_draft" || msg.mode === "improve_draft") && !ctx.ownText) throw new PolicyError("draft_empty");
+  if (msg.mode === "draft_reply" && !primary) throw new PolicyError("no_related_message");
+  const res = await callNative("analyze_thread", {
+    mode: msg.mode,
+    ephemeral: true,
+    language: uiLanguage(cfg, msg.language),
+    tone: msg.tone || "freundlich",
+    question: msg.question || "",
+    userDraft: msg.mode === "draft_reply" ? "" : ctx.ownText,
+    primaryMessage: primary || { id: "", subject: ctx.subject, from: "", bodyText: "" },
+    threadMessages,
+  }, 120000);
+  const draft = (res.proposals || []).find((p) => p.kind === "draft_reply");
+  return { answer: res.answer || "", reviewIssues: res.reviewIssues || [], text: draft?.body || "", provider: res.provider };
+}
+
 function broadcastToUI(message) {
   api.runtime.sendMessage(message).catch(() => {});
 }
@@ -618,6 +686,7 @@ api.runtime.onMessage.addListener((msg) => {
       return (async () => {
         try {
           const cfg = await loadConfig();
+          const ping = await callNative("ping");
           const [themePayload, themes, stateData, doctor, folderData] = await Promise.all([
             callNative("get_theme"),
             callNative("list_themes"),
@@ -627,6 +696,9 @@ api.runtime.onMessage.addListener((msg) => {
           ]);
           return {
             connected: true,
+            host: { version: ping?.version || "?", protocol: ping?.protocol ?? 0, expectedProtocol: PROTOCOL },
+            protocolOk: ping?.protocol === PROTOCOL,
+            extensionVersion: api.runtime.getManifest().version,
             theme: themePayload,
             themes,
             state: stateData.state,
@@ -640,6 +712,7 @@ api.runtime.onMessage.addListener((msg) => {
           const folderData = await listAccountFolders().catch(() => ({ folders: [], accounts: [] }));
           return {
             connected: false,
+            extensionVersion: api.runtime.getManifest().version,
             error: String(err?.message || err),
             theme: currentThemePayload,
             folders: folderData.folders,
@@ -658,7 +731,32 @@ api.runtime.onMessage.addListener((msg) => {
       })();
 
     case "omathunder:triageInbox":
-      return runTriage();
+      return runTriage(msg.language || "");
+
+    case "omathunder:undoScan":
+      return (async () => {
+        const cfg = await loadConfig();
+        requireFeature(cfg, "triage");
+        const res = await callNative("undo_scan_moves", { scanId: msg.scanId });
+        return { revertReport: await revertRuleMoves(cfg, res?.revertMoves || []) };
+      })();
+
+    case "omathunder:composeContext":
+      return (async () => {
+        const ctx = await composeContext(msg.tabId);
+        return { ownText: ctx.ownText, subject: ctx.subject, hasRelated: Boolean(ctx.relatedMessageId) };
+      })();
+
+    case "omathunder:composeAssist":
+      return composeAssist(msg);
+
+    case "omathunder:composeApply":
+      return (async () => {
+        const cfg = await loadConfig();
+        requireFeature(cfg, "assistant");
+        await writeIntoCompose(msg.tabId, msg.text || "");
+        return { ok: true };
+      })();
 
     case "omathunder:saveRules":
       return (async () => {
@@ -752,7 +850,7 @@ api.runtime.onMessage.addListener((msg) => {
       return getActiveComposeDraft();
 
     case "omathunder:applyProposal":
-      return applyProposalInThunderbird(msg.proposal);
+      return applyProposalInThunderbird(msg.proposal, { replyAll: Boolean(msg.replyAll) });
 
     case "omathunder:dismissProposal":
       return callNative("update_proposal", { id: msg.id, status: "dismissed" });
@@ -766,10 +864,16 @@ api.runtime.onMessage.addListener((msg) => {
 
     case "omathunder:openMessage":
       return (async () => {
-        const id = Number(msg.messageId);
-        if (Number.isFinite(id) && api.messageDisplay?.open) {
-          await api.messageDisplay.open({ messageId: id });
-        }
+        const snap = await callNative("get_state").catch(() => null);
+        const cls = snap?.state?.classifications?.[String(msg.messageId)];
+        const live = cls
+          ? await resolveMessage(
+              { messageId: msg.messageId, headerMessageId: cls.threadId, accountId: cls.accountId, folderId: cls.folderId },
+              { strict: false },
+            )
+          : null;
+        if (!live) throw new PolicyError("message_not_found");
+        await api.messageDisplay.open({ messageId: live.id });
         return { ok: true };
       })();
 
@@ -781,6 +885,23 @@ api.runtime.onMessage.addListener((msg) => {
       })();
   }
   return false;
+});
+
+// Optional: scan automatically when new mail arrives. Same limits and safety rules as a manual scan.
+let newMailTimer = null;
+api.messages?.onNewMailReceived?.addListener(() => {
+  if (!features.triage) return;
+  clearTimeout(newMailTimer);
+  newMailTimer = setTimeout(async () => {
+    try {
+      const cfg = await loadConfig();
+      if (!cfg.features?.triage || !cfg.mailbox?.scanOnNewMail) return;
+      const res = await runTriage();
+      broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport });
+    } catch (err) {
+      console.info("OmaThunder auto scan skipped:", errorCode(err));
+    }
+  }, 20000);
 });
 
 async function bootstrap() {

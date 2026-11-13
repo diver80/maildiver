@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>OmaThunder</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    body { width: 400px; padding: 14px; }
+    .hdr { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 10px; }
+    .hdr img { width: 22px; height: 22px; border-radius: 5px; }
+    .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+    .mode { padding: 7px 6px; border-radius: 6px; font-size: 11.5px; font-weight: 600; text-align: center; cursor: pointer;
+      border: 1px solid var(--oma-border); background: var(--oma-bg-dark); }
+    .mode.active { border-color: var(--oma-accent); background: var(--oma-selection); }
+    .mode:disabled { opacity: 0.45; cursor: not-allowed; }
+    .tones { display: flex; gap: 6px; margin: 6px 0 8px; }
+    .tone { flex: 1; padding: 4px 6px; border-radius: 5px; font-size: 11px; text-align: center; cursor: pointer;
+      border: 1px solid var(--oma-border); background: var(--oma-bg-darker); }
+    .tone.active { border-color: var(--oma-accent); background: var(--oma-selection); }
+    .result { font-size: 12px; white-space: pre-wrap; background: var(--oma-bg-darker); border: 1px solid var(--oma-border);
+      border-radius: 6px; padding: 8px; max-height: 220px; overflow-y: auto; }
+    ul.issues { margin: 6px 0; padding-left: 18px; color: var(--oma-yellow); font-size: 11.5px; }
+  </style>
+</head>
+<body>
+  <div class="hdr"><img src="../icons/icon.svg" alt="" /><span data-i18n="cmp_title">OmaThunder Schreibassistent</span></div>
+
+  <div class="modes">
+    <button class="mode active" data-mode="improve_draft" data-i18n="cmp_mode_improve">Entwurf verbessern</button>
+    <button class="mode" data-mode="review_draft" data-i18n="cmp_mode_review">Entwurf prüfen</button>
+    <button class="mode" data-mode="draft_reply" data-i18n="cmp_mode_reply">Antwort formulieren</button>
+    <button class="mode" data-mode="compose_new" data-i18n="cmp_mode_new">Aus Stichpunkten schreiben</button>
+  </div>
+
+  <div class="oma-muted" style="font-size:11px;" data-i18n="ai_tone">Tonfall</div>
+  <div class="tones">
+    <button class="tone" data-tone="kurz" data-i18n="tone_kurz">Kurz</button>
+    <button class="tone active" data-tone="freundlich" data-i18n="tone_freundlich">Freundlich</button>
+    <button class="tone" data-tone="formal" data-i18n="tone_formal">Formal</button>
+  </div>
+  <textarea class="oma-textarea" id="cmp-notes" rows="3" data-i18n-ph="cmp_notes_ph"></textarea>
+  <div class="oma-muted" id="cmp-hint" style="font-size:11px; margin-top:4px;"></div>
+  <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+    <button class="oma-btn primary" id="cmp-run" data-i18n="cmp_run">Los</button>
+  </div>
+
+  <div id="cmp-out" style="margin-top:10px;"></div>
+  <script src="i18n.js"></script>
+  <script src="compose.js"></script>
+</body>
+</html>

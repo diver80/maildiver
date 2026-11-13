@@ -13,6 +13,7 @@
     .check input { margin-top: 3px; }
     .check-sub { font-size: 11.5px; margin-top: 2px; }
     .accounts { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 4px; }
+    .status-row { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-top: 8px; }
     .safety { border-left: 3px solid var(--oma-yellow); padding-left: 12px; margin-top: 14px; }
   </style>
 </head>
@@ -26,6 +27,11 @@
       </div>
     </div>
     <button class="oma-btn primary" id="btn-save" data-i18n="opts_save">Speichern</button>
+  </div>
+
+  <div class="oma-card section">
+    <div class="title" data-i18n="opts_sec_status">Status</div>
+    <div id="status-rows"></div>
   </div>
 
   <div class="oma-card section">
@@ -43,6 +49,7 @@
       <div style="margin-top:12px; font-weight:600;" data-i18n="opts_triage_accounts">Konten für Triage</div>
       <div class="oma-muted check-sub" data-i18n="opts_triage_accounts_desc"></div>
       <div class="accounts" id="triage-accounts"></div>
+      <label class="check"><input type="checkbox" id="mb-scan-new" /><span data-i18n="opts_scan_new"></span></label>
       <label class="check"><input type="checkbox" id="mb-only-unread" /><span data-i18n="opts_only_unread"></span></label>
       <div class="field">
         <label data-i18n="opts_scan_limit">Neueste Mails pro Ordner</label>

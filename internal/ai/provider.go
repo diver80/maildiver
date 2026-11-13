@@ -12,8 +12,9 @@ import (
 )
 
 type AnalyzeRequest struct {
-	Mode           string                `json:"mode,omitempty"`     // "summarize", "draft_reply", "review_draft"
-	Language       string                `json:"language,omitempty"` // "de" or "en"
+	Mode           string                `json:"mode,omitempty"`      // "summarize", "draft_reply", "review_draft", "improve_draft", "compose_new"
+	Ephemeral      bool                  `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
+	Language       string                `json:"language,omitempty"`  // "de" or "en"
 	Question       string                `json:"question"`
 	UserDraft      string                `json:"userDraft,omitempty"`
 	Tone           string                `json:"tone,omitempty"` // "kurz", "freundlich", "formal"
@@ -97,7 +98,7 @@ Return ONLY valid JSON matching this schema:
 {
   "bucket": "action|waiting|invoice|event|fyi|newsletter",
   "urgency": "high|medium|low",
-  "summary": "1 concise German or English sentence summarizing what matters",
+  "summary": "1 concise sentence in the requested language summarizing what matters",
   "actionHint": "short next step if action is needed, else empty string",
   "deadline": "YYYY-MM-DD or extracted timeframe if present, else empty",
   "amount": "extracted invoice/payment amount if present, else empty",
@@ -112,11 +113,13 @@ that the user explicitly reviews and approves with one click.
 
 When mode is "summarize": summarize the thread concisely (key facts, open questions, deadlines/amounts).
 When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal.
+When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so it is clearer and fits the requested tone; keep every fact, commitment and the draft's language; emit the rewritten text as a "draft_reply" proposal.
+When mode is "compose_new": write a new email from the owner's notes (there may be no thread); emit it as a "draft_reply" proposal.
 When mode is "review_draft": compare the owner's draft inside <owner_draft> against all questions, commitments, and tone in the thread; list any missed points or tone/clarity improvements in "reviewIssues" and emit an improved "draft_reply" proposal.
 
 Return ONLY valid JSON matching this schema:
 {
-  "answer": "Clear, concise German response (summary, reasoning, or review verdict)",
+  "answer": "Clear, concise response in the requested response language (summary, reasoning, or review verdict)",
   "reviewIssues": ["optional bullet point for review_draft mode"],
   "proposals": [
     {
@@ -154,7 +157,11 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 		"snippet":     snippet,
 	}
 	rawJSON, _ := json.MarshalIndent(payload, "", "  ")
-	userPrompt := fmt.Sprintf("<untrusted_email>\n%s\n</untrusted_email>", string(rawJSON))
+	lang := "German"
+	if cfg.Language == "en" {
+		lang = "English"
+	}
+	userPrompt := fmt.Sprintf("Write \"summary\" and \"actionHint\" in %s.\n\n<untrusted_email>\n%s\n</untrusted_email>", lang, string(rawJSON))
 
 	completer := CompleterFor(cfg, cfg.Classifier)
 	out, err := completer.Complete(ctx, classifierSystemPrompt, userPrompt, true)
@@ -211,14 +218,15 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 
 // ClassifyLocal classifies without any model call (0 tokens): Stage 0 rules, then the keyword estimate.
 // The result is not cached as an AI result, so a later scan with AI enabled classifies the mail properly.
-func ClassifyLocal(cfg config.AIConfig, msg triage.MessageInput, rules []config.RoutingRule, note string) triage.Classification {
+func ClassifyLocal(cfg config.AIConfig, msg triage.MessageInput, rules []config.RoutingRule, noteKey, note string) triage.Classification {
 	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters, rules)
 	if matched {
 		return base
 	}
 	c := heuristicFallbackClassification(base, msg, triage.PrepareSnippet(msg.BodyText, cfg.MaxSnippetChars))
-	if note != "" {
+	if noteKey != "" {
 		c.Summary = note
+		c.SummaryKey = noteKey
 	}
 	return c
 }
@@ -277,6 +285,10 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Summarize the entire thread concisely with key facts, deadlines, and open questions."
 			case "review_draft":
 				question = "Review my reply draft against the thread: are any questions missed, does the tone fit, and can it be clearer?"
+			case "improve_draft":
+				question = "Rewrite my draft so it is clearer and fits the requested tone. Keep all facts."
+			case "compose_new":
+				question = "Write the email from my notes."
 			default:
 				question = "Draft a fitting reply as a draft_reply proposal."
 			}
@@ -286,6 +298,10 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Fasse den gesamten Thread kurz mit Kernpunkten, Fristen und offenen Fragen zusammen."
 			case "review_draft":
 				question = "Prüfe meinen Antwort-Entwurf gegen den Thread: Fehlen Antworten auf Fragen, stimmt der Ton und gibt es eine klarere Formulierung?"
+			case "improve_draft":
+				question = "Formuliere meinen Entwurf klarer und im gewünschten Ton. Behalte alle Fakten bei."
+			case "compose_new":
+				question = "Schreibe die E-Mail aus meinen Stichpunkten."
 			default:
 				question = "Formuliere eine passende Antwort als draft_reply Proposal."
 			}
@@ -321,8 +337,6 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 			Body       string   `json:"body"`
 			Tags       []string `json:"tags"`
 			FolderPath string   `json:"folderPath"`
-			EventTitle string   `json:"eventTitle"`
-			EventStart string   `json:"eventStart"`
 		} `json:"proposals"`
 	}
 	if err := ExtractJSON(out, &parsed); err != nil {
@@ -348,8 +362,6 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 			Body:       p.Body,
 			Tags:       p.Tags,
 			FolderPath: p.FolderPath,
-			EventTitle: p.EventTitle,
-			EventStart: p.EventStart,
 			Status:     "pending",
 			CreatedAt:  now.Format(time.RFC3339),
 		})
@@ -431,7 +443,8 @@ func heuristicFallbackClassification(base triage.Classification, msg triage.Mess
 	base.Bucket = bucket
 	base.KanbanColumn = triage.BucketToKanban(bucket, needs || msg.Unread)
 	base.Urgency = urgency
-	base.Summary = "Lokaler Fallback (kein LLM-Key/CLI aktiv)"
+	base.Summary = "Lokale Schätzung (KI-Klassifikation nicht erreichbar)"
+	base.SummaryKey = "sum_local_fallback"
 	base.ActionHint = hint
 	base.Stage = "stage0-fallback"
 	base.Model = "heuristic"
