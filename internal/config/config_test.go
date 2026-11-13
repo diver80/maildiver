@@ -1,0 +1,105 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestDefaultsAreSafe(t *testing.T) {
+	cfg := Default()
+	if !cfg.Features.Theme || !cfg.Features.Assistant {
+		t.Fatalf("theme and assistant should default on: %+v", cfg.Features)
+	}
+	if cfg.Features.Triage {
+		t.Fatal("triage must default off")
+	}
+	if !cfg.Mailbox.ReadOnly {
+		t.Fatal("mailbox must default to read-only")
+	}
+	if len(cfg.Mailbox.TriageAccountIDs) != 0 {
+		t.Fatal("no account may be enabled by default")
+	}
+	if !cfg.Mailbox.AutoMoveOnlyUnread {
+		t.Fatal("auto-move must default to unread mails only")
+	}
+}
+
+func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	legacy := `{"language":"de","incomingFolder":"INBOX","rules":[{"id":"r1","customer":"Acme","folderPath":"Kunden/Acme","domains":["acme.de"],"autoMove":true,"includeInScan":true}]}`
+	if err := os.MkdirAll(filepath.Join(dir, AppID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, AppID, "config.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Features.Triage || !cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 0 {
+		t.Fatalf("legacy config must load with triage off and read-only on: %+v %+v", cfg.Features, cfg.Mailbox)
+	}
+	if len(cfg.Rules) != 1 || cfg.Rules[0].ID != "r1" {
+		t.Fatalf("legacy rules lost: %+v", cfg.Rules)
+	}
+}
+
+func TestApplyPatchKeepsAbsentFields(t *testing.T) {
+	base := Default()
+	base.Rules = []RoutingRule{{ID: "keep", Customer: "Keep", FolderPath: "Kunden/Keep", Domains: []string{"keep.de"}}}
+	base.Mailbox.TriageAccountIDs = []string{"account1"}
+
+	next, err := ApplyPatch(base, []byte(`{"language":"en","features":{"triage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Language != "en" || !next.Features.Triage {
+		t.Fatalf("patch not applied: %+v", next)
+	}
+	if !next.Features.Theme || !next.Features.Assistant {
+		t.Fatalf("nested fields absent from patch must be kept: %+v", next.Features)
+	}
+	if len(next.Rules) != 1 || next.Rules[0].ID != "keep" {
+		t.Fatalf("rules absent from patch must be kept: %+v", next.Rules)
+	}
+	if len(next.Mailbox.TriageAccountIDs) != 1 || !next.Mailbox.ReadOnly {
+		t.Fatalf("mailbox absent from patch must be kept: %+v", next.Mailbox)
+	}
+}
+
+func TestApplyPatchReplacesRulesWithoutStaleFields(t *testing.T) {
+	base := Default()
+	base.Rules = []RoutingRule{{ID: "old", FolderPath: "Kunden/Old", AutoMove: true, ColumnFolders: map[string]string{"done": "Kunden/Old/Done"}}}
+	base.Mailbox.TriageAccountIDs = []string{"a1", "a2"}
+
+	next, err := ApplyPatch(base, []byte(`{"rules":[{"id":"new","folderPath":"Kunden/New","domains":["new.de"]}],"mailbox":{"triageAccountIds":["a2"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Rules) != 1 || next.Rules[0].ID != "new" {
+		t.Fatalf("rules not replaced: %+v", next.Rules)
+	}
+	if next.Rules[0].AutoMove || len(next.Rules[0].ColumnFolders) != 0 {
+		t.Fatalf("fields of the replaced rule leaked into the new one: %+v", next.Rules[0])
+	}
+	if len(next.Mailbox.TriageAccountIDs) != 1 || next.Mailbox.TriageAccountIDs[0] != "a2" {
+		t.Fatalf("account list not replaced: %+v", next.Mailbox.TriageAccountIDs)
+	}
+	if !next.Mailbox.ReadOnly {
+		t.Fatal("readOnly absent from mailbox patch must be kept")
+	}
+}
+
+func TestMailboxPolicy(t *testing.T) {
+	p := MailboxPolicy{ReadOnly: false, TriageAccountIDs: []string{"a1"}}
+	if !p.CanWrite("a1") || p.CanWrite("a2") || p.CanWrite("") {
+		t.Fatal("CanWrite must only allow enabled accounts")
+	}
+	p.ReadOnly = true
+	if p.CanWrite("a1") {
+		t.Fatal("read-only must block writes")
+	}
+}

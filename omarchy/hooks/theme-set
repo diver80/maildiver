@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Optional Omarchy theme-set hook: touches a timestamp file so omathunder
+# pushes the updated colors.toml immediately without waiting for the next poll.
+set -euo pipefail
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omathunder"
+mkdir -p "$STATE_DIR"
+date +%s > "$STATE_DIR/theme-trigger"

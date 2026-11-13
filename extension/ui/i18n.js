@@ -1,0 +1,412 @@
+/* global browser, messenger */
+(function () {
+  const api = typeof messenger !== "undefined" ? messenger : typeof browser !== "undefined" ? browser : null;
+
+  const DICT = {
+    de: {
+      // Navigation & Topbar
+      nav_kanban: "Kanban-Board",
+      nav_rules: "Ordner & Domains",
+      nav_themes: "Omarchy Themes",
+      view_kanban: "Mail-Kanban",
+      view_rules: "Kunden-Ordner & Domain-Regeln",
+      view_themes: "Omarchy Theme Gallery",
+      btn_settings: "Einstellungen",
+      btn_scan: "Inbox & Ordner scannen",
+      btn_scanning: "Scanne…",
+      host_active: "Go Host aktiv",
+      host_preview: "UI Preview",
+      host_offline: "Host offline",
+      pipeline_title: "KI-Pipeline",
+      pipeline_s0: "Stage 0: Domains + Header",
+      stage0_savings: "Stage 0 spart {pct}% Tokens",
+
+      // Kanban & Filters
+      col_incoming: "Incoming",
+      col_action: "Action nötig",
+      col_waiting: "Wartet",
+      col_invoice: "Rechnung / Termin",
+      col_done: "Erledigt",
+      filter_customer: "Kunde:",
+      filter_all: "Alle Kunden",
+      filter_unassigned: "Ohne Zuordnung",
+      card_prev: "Zurück",
+      card_next: "Weiter",
+      badge_inbox: "INBOX",
+
+      // Rules Table
+      rules_new_title: "Neue Ordner ↔ Domain-Zuordnung",
+      rules_new_desc: "Ordnet Absenderdomains deterministisch (Stage 0, 0 Tokens) einem Kundenordner zu. Sub-Ordner bleiben flexibel (optional pro Kanban-Spalte mappbar).",
+      rules_lbl_customer: "Kunde / Label",
+      rules_ph_customer: "z. B. Acme GmbH",
+      rules_lbl_folder: "Ziel-Ordner (Incoming)",
+      rules_ph_folder: "z. B. Kunden/Acme/Incoming",
+      rules_lbl_domains: "Domains (kommagetrennt)",
+      rules_ph_domains: "acme.de, acme-cloud.io",
+      rules_btn_add: "Hinzufügen",
+      rules_autocreate: "Fehlende Ordner automatisch in Thunderbird anlegen",
+      rules_sub_summary: "Optionale Sub-Ordner pro Kanban-Spalte (z. B. Erledigt / Wartet)",
+      rules_sub_waiting: "Sub-Ordner für „Wartet“",
+      rules_sub_waiting_ph: "optional, z. B. Kunden/Acme/Wartet",
+      rules_sub_done: "Sub-Ordner für „Erledigt“",
+      rules_sub_done_ph: "optional, z. B. Kunden/Acme/Erledigt",
+      rules_th_customer: "Kunde",
+      rules_th_folder: "Ordner-Pfad & Sub-Ordner",
+      rules_th_domains: "Domains",
+      rules_th_automove: "Auto-Move",
+      rules_th_scan: "Kanban-Scan",
+      rules_empty: "Noch keine Kunden-Regeln angelegt.",
+      rules_sub_flex: "Alle Sub-Ordner flexibel gescannt",
+      rules_btn_delete: "Löschen",
+      del_modal_title: "Zuordnung löschen?",
+      del_modal_body: "Regel für „{customer}“ ({folder} ← {domains}) entfernen?",
+      del_modal_revert: "Per Auto-Move einsortierte Mails wieder zurück in <strong>Incoming (INBOX)</strong> verschieben",
+      btn_cancel: "Abbrechen",
+
+      // AI Assistant Drawer
+      ai_title: "KI-Assistent",
+      ai_proposals_count: "{count} Proposals",
+      ai_tab_summarize: "Zusammenfassen",
+      ai_tab_draft: "Formulieren",
+      ai_tab_review: "Review",
+      ai_select_mail: "Mail auswählen",
+      ai_tone: "Tonfall",
+      tone_kurz: "Kurz",
+      tone_freundlich: "Freundlich",
+      tone_formal: "Formal",
+      ai_your_draft: "Dein Antwort-Entwurf",
+      ai_load_compose: "Aus Thunderbird laden",
+      ai_draft_ph: "Eigenen Entwurf hier einfügen oder direkt aus dem offenen Compose-Fenster laden…",
+      ai_question_ph: "Stichpunkte / Fokus (z. B. Donnerstag 10 Uhr zusagen, NDA erwähnen)…",
+      ai_btn_summarize: "Thread zusammenfassen",
+      ai_btn_draft: "Antwort formulieren",
+      ai_btn_review: "Entwurf reviewen",
+      ai_working: "KI arbeitet ({mode})…",
+      ai_no_proposals: "Keine offenen Proposals. Vorschläge landen immer zuerst hier zum Review.",
+      ai_one_click: "1-Klick Review",
+      ai_apply_tb: "In Thunderbird öffnen",
+      ai_dismiss: "Verwerfen",
+      ai_preview_note: "Im aktiven Thunderbird-Setup wird hier der gesamte Thread zusammengefasst, formuliert oder dein Entwurf gegen offene Fragen geprüft.",
+
+      // Popup
+      popup_ready: "Bereit",
+      popup_host_active: "Host aktiv",
+      popup_setup_needed: "Setup nötig",
+      popup_action_needed: "Action nötig",
+      popup_open_proposals: "Offene Proposals",
+      popup_quick_theme: "Schnell-Theme (live, ohne Neustart)",
+      popup_open_space: "Triage-Space öffnen",
+      popup_analyze_mail: "Aktuelle Mail mit Agent prüfen",
+      popup_open_opts: "Einstellungen (Gemini / Claude / Ollama)",
+      popup_analyzing: "Analysiere…",
+      popup_preview_analyze: "Preview-Modus: in Thunderbird wird hier die geöffnete Mail analysiert.",
+
+      // Options
+      opts_title: "OmaThunder Einstellungen",
+      opts_subtitle: "Omarchy Theme-Sync + 3-Stufen-KI (Gemini / Claude / OpenCode / Ollama)",
+      opts_save: "Speichern",
+      opts_saved: "Gespeichert & Theme live aktualisiert.",
+      opts_preview_saved: "Preview-Modus: Konfiguration validiert.",
+      opts_sec_theme: "Omarchy & Sprache",
+      opts_lang_lbl: "UI-Sprache",
+      opts_lang_auto: "Auto (Thunderbird / System)",
+      opts_lang_de: "Deutsch",
+      opts_lang_en: "English",
+      opts_theme_mode: "Theme-Modus",
+      opts_theme_auto: "Auto (Omarchy live auf Linux, Dark/Light-Preset auf macOS)",
+      opts_theme_omarchy: "Immer Omarchy colors.toml",
+      opts_theme_preset: "Festes Preset wählen",
+      opts_preset: "Preset",
+      opts_sec_s1: "Triage – Stufe 1: Schnelle Mail-Klassifikation",
+      opts_s1_desc: "Läuft nur für Mails, die Stage-0-Header-Regeln (Newsletter, Bots, Rechnungen) passieren.",
+      opts_clf_backend: "Classifier-Backend",
+      opts_model_id: "Modell-ID",
+      opts_sec_s2: "KI-Assistent – Stufe 2: Thread-Agent (Proposals)",
+      opts_s2_desc: "Erzeugt nur reviewbare Entwürfe/Aktionen — sendet niemals automatisch.",
+      opts_agent_backend: "Agent-Backend",
+      opts_agent_model: "Modell (optional)",
+      opts_agent_model_ph: "leer = CLI-Standard",
+
+      // Features, safety & reports
+      opts_sec_features: "Funktionen & Sicherheit",
+      opts_features_desc: "Die drei Bausteine lassen sich einzeln einschalten. Empfehlung: zuerst Theme und KI-Assistent, Triage erst nach erfolgreichen Tests.",
+      opts_feat_theme: "Theme-Sync (Omarchy-Farben in Thunderbird)",
+      opts_feat_assistant: "KI-Schreibassistent (Zusammenfassen, Formulieren, Review)",
+      opts_feat_triage: "Triage (Scan, Kanban, Kunden-Regeln, Auto-Move)",
+      opts_readonly: "Read-only: keine Änderungen an Mails, Ordnern und Tags",
+      opts_readonly_desc: "Scans zeigen geplante Verschiebungen nur als Probelauf. Antwort-Entwürfe öffnen sich weiterhin als Compose-Fenster – gesendet wird nie automatisch.",
+      opts_triage_accounts: "Konten für Triage",
+      opts_triage_accounts_desc: "Nur diese Konten werden gescannt, an die KI-Klassifikation geschickt und (ohne Read-only) verändert.",
+      opts_no_accounts: "Keine Konten gefunden.",
+      opts_only_unread: "Auto-Move nur für ungelesene Mails",
+      opts_scan_limit: "Neueste Mails pro Ordner",
+      opts_scan_days: "Zeitraum (Tage)",
+      feat_off_triage: "Triage ist ausgeschaltet. Schalte sie in den Einstellungen ein, wenn du so weit bist – am besten zuerst im Read-only-Modus.",
+      feat_off_theme: "Theme-Sync ist ausgeschaltet.",
+      feat_off_assistant: "Der KI-Assistent ist ausgeschaltet.",
+      btn_open_settings: "Einstellungen öffnen",
+      badge_readonly: "Read-only",
+      badge_readonly_title: "OmaThunder ändert keine Mails, Ordner oder Tags",
+      no_triage_accounts_hint: "Noch kein Konto für Triage freigegeben.",
+      report_title_dry: "Probelauf (Read-only): {count} Mails würden verschoben",
+      report_title_live: "{moved} Mails verschoben, {failed} fehlgeschlagen",
+      report_none: "Keine Mail erfüllt die Auto-Move-Bedingungen.",
+      report_scanned: "{messages} Mails in {folders} Ordnern gescannt",
+      report_close: "Schließen",
+      revert_report: "{reverted} zurückverschoben, {skipped} übersprungen, {failed} fehlgeschlagen",
+      rules_lbl_account: "Konto",
+      rules_no_account: "Gib zuerst in den Einstellungen ein Konto für Triage frei.",
+      rules_folder_note: "Ordner wurde nicht angelegt: {reason}",
+      del_modal_revert_ro: "Im Read-only-Modus nicht verfügbar.",
+      ai_current_mail: "Geöffnete Mail in Thunderbird",
+      ai_no_displayed: "Keine Mail geöffnet – wähle in Thunderbird eine Mail aus.",
+      ai_use_displayed: "Geöffnete Mail verwenden",
+      err_read_only: "Read-only-Modus: OmaThunder ändert keine Mails, Ordner oder Tags.",
+      err_feature_disabled_triage: "Triage ist ausgeschaltet.",
+      err_feature_disabled_assistant: "Der KI-Assistent ist ausgeschaltet.",
+      err_feature_disabled_theme: "Theme-Sync ist ausgeschaltet.",
+      err_no_triage_accounts: "Kein Konto für Triage freigegeben (Einstellungen).",
+      err_account_not_enabled: "Dieses Konto ist nicht für Triage freigegeben.",
+      err_cross_account_move: "Verschieben zwischen Konten ist gesperrt.",
+      err_message_not_found: "Mail nicht (mehr) eindeutig gefunden – nichts verändert.",
+      err_message_moved_meanwhile: "Mail wurde inzwischen verschoben – nicht angefasst.",
+      err_message_read_meanwhile: "Mail wurde inzwischen gelesen – nicht verschoben.",
+      err_target_folder_missing: "Zielordner existiert in diesem Konto nicht.",
+      err_proposal_unsupported: "Dieser Vorschlagstyp wird noch nicht unterstützt.",
+      err_no_message_displayed: "Keine Mail geöffnet – wähle in Thunderbird eine Mail aus.",
+    },
+    en: {
+      // Navigation & Topbar
+      nav_kanban: "Kanban Board",
+      nav_rules: "Folders & Domains",
+      nav_themes: "Omarchy Themes",
+      view_kanban: "Mail Kanban",
+      view_rules: "Customer Folders & Domain Rules",
+      view_themes: "Omarchy Theme Gallery",
+      btn_settings: "Settings",
+      btn_scan: "Scan Inbox & Folders",
+      btn_scanning: "Scanning…",
+      host_active: "Go Host Active",
+      host_preview: "UI Preview",
+      host_offline: "Host Offline",
+      pipeline_title: "AI Pipeline",
+      pipeline_s0: "Stage 0: Domains + Headers",
+      stage0_savings: "Stage 0 saves {pct}% tokens",
+
+      // Kanban & Filters
+      col_incoming: "Incoming",
+      col_action: "Action Needed",
+      col_waiting: "Waiting",
+      col_invoice: "Invoice / Event",
+      col_done: "Done",
+      filter_customer: "Customer:",
+      filter_all: "All Customers",
+      filter_unassigned: "Unassigned",
+      card_prev: "Back",
+      card_next: "Next",
+      badge_inbox: "INBOX",
+
+      // Rules Table
+      rules_new_title: "New Folder ↔ Domain Mapping",
+      rules_new_desc: "Routes sender domains deterministically (Stage 0, 0 tokens) into a customer folder. Subfolders stay flexible (optionally mappable per Kanban column).",
+      rules_lbl_customer: "Customer / Label",
+      rules_ph_customer: "e.g. Acme GmbH",
+      rules_lbl_folder: "Target Folder (Incoming)",
+      rules_ph_folder: "e.g. Customers/Acme/Incoming",
+      rules_lbl_domains: "Domains (comma-separated)",
+      rules_ph_domains: "acme.de, acme-cloud.io",
+      rules_btn_add: "Add Rule",
+      rules_autocreate: "Automatically create missing folders in Thunderbird",
+      rules_sub_summary: "Optional subfolders per Kanban column (e.g. Waiting / Done)",
+      rules_sub_waiting: "Subfolder for “Waiting”",
+      rules_sub_waiting_ph: "optional, e.g. Customers/Acme/Waiting",
+      rules_sub_done: "Subfolder for “Done”",
+      rules_sub_done_ph: "optional, e.g. Customers/Acme/Done",
+      rules_th_customer: "Customer",
+      rules_th_folder: "Folder Path & Subfolders",
+      rules_th_domains: "Domains",
+      rules_th_automove: "Auto-Move",
+      rules_th_scan: "Kanban Scan",
+      rules_empty: "No customer routing rules configured yet.",
+      rules_sub_flex: "All subfolders scanned flexibly",
+      rules_btn_delete: "Delete",
+      del_modal_title: "Delete routing rule?",
+      del_modal_body: "Remove rule for “{customer}” ({folder} ← {domains})?",
+      del_modal_revert: "Move auto-sorted emails back to <strong>Incoming (INBOX)</strong>",
+      btn_cancel: "Cancel",
+
+      // AI Assistant Drawer
+      ai_title: "AI Assistant",
+      ai_proposals_count: "{count} Proposals",
+      ai_tab_summarize: "Summarize",
+      ai_tab_draft: "Draft Reply",
+      ai_tab_review: "Review Draft",
+      ai_select_mail: "Select an email",
+      ai_tone: "Tone",
+      tone_kurz: "Concise",
+      tone_freundlich: "Friendly",
+      tone_formal: "Formal",
+      ai_your_draft: "Your Reply Draft",
+      ai_load_compose: "Load from Thunderbird",
+      ai_draft_ph: "Paste your reply draft here or load it from the active compose window…",
+      ai_question_ph: "Key points / focus (e.g. confirm Thursday 10am, mention NDA)…",
+      ai_btn_summarize: "Summarize Thread",
+      ai_btn_draft: "Draft Reply",
+      ai_btn_review: "Review Draft",
+      ai_working: "AI working ({mode})…",
+      ai_no_proposals: "No pending proposals. Suggestions always appear here first for your review.",
+      ai_one_click: "1-Click Review",
+      ai_apply_tb: "Open in Thunderbird",
+      ai_dismiss: "Dismiss",
+      ai_preview_note: "When connected to Thunderbird, the full thread is summarized, a reply is drafted, or your own draft is checked against open questions.",
+
+      // Popup
+      popup_ready: "Ready",
+      popup_host_active: "Host Active",
+      popup_setup_needed: "Setup Needed",
+      popup_action_needed: "Action Needed",
+      popup_open_proposals: "Pending Proposals",
+      popup_quick_theme: "Quick Theme (live, no restart)",
+      popup_open_space: "Open Kanban & Triage Space",
+      popup_analyze_mail: "Analyze Current Email with AI",
+      popup_open_opts: "Settings (Gemini / Claude / Ollama)",
+      popup_analyzing: "Analyzing…",
+      popup_preview_analyze: "Preview mode: in Thunderbird this analyzes the currently displayed email.",
+
+      // Options
+      opts_title: "OmaThunder Settings",
+      opts_subtitle: "Omarchy Theme Sync + 3-Stage AI (Gemini / Claude / OpenCode / Ollama)",
+      opts_save: "Save",
+      opts_saved: "Saved & theme updated live.",
+      opts_preview_saved: "Preview mode: configuration validated.",
+      opts_sec_theme: "Omarchy Theme & Language",
+      opts_lang_lbl: "UI Language",
+      opts_lang_auto: "Auto (Thunderbird / System)",
+      opts_lang_de: "Deutsch",
+      opts_lang_en: "English",
+      opts_theme_mode: "Theme Mode",
+      opts_theme_auto: "Auto (live Omarchy on Linux, Dark/Light preset on macOS)",
+      opts_theme_omarchy: "Always Omarchy colors.toml",
+      opts_theme_preset: "Fixed Preset",
+      opts_preset: "Preset",
+      opts_sec_s1: "Triage – Stage 1: Fast Mail Classification",
+      opts_s1_desc: "Runs only for emails that pass Stage-0 header rules (newsletters, bots, invoices).",
+      opts_clf_backend: "Classifier Backend",
+      opts_model_id: "Model ID",
+      opts_sec_s2: "AI Assistant – Stage 2: Thread Agent (Proposals)",
+      opts_s2_desc: "Generates reviewable drafts and actions only — never sends automatically.",
+      opts_agent_backend: "Agent Backend",
+      opts_agent_model: "Model (optional)",
+      opts_agent_model_ph: "empty = CLI default",
+
+      // Features, safety & reports
+      opts_sec_features: "Features & Safety",
+      opts_features_desc: "The three building blocks can be switched on individually. Recommended: start with theme and AI assistant, enable triage after successful tests.",
+      opts_feat_theme: "Theme sync (Omarchy colors in Thunderbird)",
+      opts_feat_assistant: "AI writing assistant (summarize, draft, review)",
+      opts_feat_triage: "Triage (scan, Kanban, customer rules, auto-move)",
+      opts_readonly: "Read-only: no changes to mails, folders or tags",
+      opts_readonly_desc: "Scans only report planned moves as a dry run. Reply drafts still open as compose windows – nothing is ever sent automatically.",
+      opts_triage_accounts: "Triage accounts",
+      opts_triage_accounts_desc: "Only these accounts are scanned, sent to AI classification and (without read-only) changed.",
+      opts_no_accounts: "No accounts found.",
+      opts_only_unread: "Auto-move unread mails only",
+      opts_scan_limit: "Newest mails per folder",
+      opts_scan_days: "Time window (days)",
+      feat_off_triage: "Triage is switched off. Enable it in the settings when you are ready – ideally in read-only mode first.",
+      feat_off_theme: "Theme sync is switched off.",
+      feat_off_assistant: "The AI assistant is switched off.",
+      btn_open_settings: "Open settings",
+      badge_readonly: "Read-only",
+      badge_readonly_title: "OmaThunder does not change mails, folders or tags",
+      no_triage_accounts_hint: "No account enabled for triage yet.",
+      report_title_dry: "Dry run (read-only): {count} mails would be moved",
+      report_title_live: "{moved} mails moved, {failed} failed",
+      report_none: "No mail meets the auto-move conditions.",
+      report_scanned: "Scanned {messages} mails in {folders} folders",
+      report_close: "Close",
+      revert_report: "{reverted} moved back, {skipped} skipped, {failed} failed",
+      rules_lbl_account: "Account",
+      rules_no_account: "Enable an account for triage in the settings first.",
+      rules_folder_note: "Folder was not created: {reason}",
+      del_modal_revert_ro: "Not available in read-only mode.",
+      ai_current_mail: "Mail open in Thunderbird",
+      ai_no_displayed: "No mail open – select a mail in Thunderbird.",
+      ai_use_displayed: "Use open mail",
+      err_read_only: "Read-only mode: OmaThunder does not change mails, folders or tags.",
+      err_feature_disabled_triage: "Triage is switched off.",
+      err_feature_disabled_assistant: "The AI assistant is switched off.",
+      err_feature_disabled_theme: "Theme sync is switched off.",
+      err_no_triage_accounts: "No account enabled for triage (settings).",
+      err_account_not_enabled: "This account is not enabled for triage.",
+      err_cross_account_move: "Moving mails between accounts is blocked.",
+      err_message_not_found: "Mail not found unambiguously – nothing changed.",
+      err_message_moved_meanwhile: "Mail was moved in the meantime – left untouched.",
+      err_message_read_meanwhile: "Mail was read in the meantime – not moved.",
+      err_target_folder_missing: "Target folder does not exist in this account.",
+      err_proposal_unsupported: "This proposal type is not supported yet.",
+      err_no_message_displayed: "No mail open – select a mail in Thunderbird.",
+    },
+  };
+
+  function detectLang(pref) {
+    try {
+      const qsLang = new URLSearchParams(window.location.search).get("lang");
+      if (qsLang === "de" || qsLang === "en") return qsLang;
+    } catch (_) {}
+    if (pref === "de" || pref === "en") return pref;
+    try {
+      const stored = localStorage.getItem("omathunder_lang");
+      if (stored === "de" || stored === "en") return stored;
+    } catch (_) {}
+    const ui = (api?.i18n?.getUILanguage?.() || navigator.language || "en").toLowerCase();
+    return ui.startsWith("de") ? "de" : "en";
+  }
+
+  let activeLang = detectLang("auto");
+
+  function setLang(lang) {
+    activeLang = detectLang(lang);
+    try {
+      if (lang === "de" || lang === "en") localStorage.setItem("omathunder_lang", lang);
+      else if (lang === "auto") localStorage.removeItem("omathunder_lang");
+    } catch (_) {}
+    document.documentElement.lang = activeLang;
+    return activeLang;
+  }
+
+  function getLang() {
+    return activeLang;
+  }
+
+  function t(key, vars = {}) {
+    const dict = DICT[activeLang] || DICT.en;
+    let str = dict[key] ?? DICT.en[key] ?? key;
+    for (const [k, v] of Object.entries(vars)) {
+      str = str.replaceAll(`{${k}}`, String(v));
+    }
+    return str;
+  }
+
+  function applyDom(root = document) {
+    root.querySelectorAll("[data-i18n]").forEach((el) => {
+      el.textContent = t(el.dataset.i18n);
+    });
+    root.querySelectorAll("[data-i18n-html]").forEach((el) => {
+      el.innerHTML = t(el.dataset.i18nHtml);
+    });
+    root.querySelectorAll("[data-i18n-ph]").forEach((el) => {
+      el.placeholder = t(el.dataset.i18nPh);
+    });
+  }
+
+  // Translates host/background error codes such as "read_only" or "feature_disabled:triage".
+  function errText(err) {
+    const code = String(err?.message || err || "");
+    const key = `err_${code.replace(/[^a-z_]/gi, "_")}`;
+    const translated = t(key);
+    return translated === key ? code : translated;
+  }
+
+  window.OMA_I18N = { setLang, getLang, detectLang, t, applyDom, errText };
+})();

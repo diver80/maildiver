@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "omathunder",
+  "name": "OmaThunder",
+  "version": "0.1.0",
+  "author": "fhess",
+  "license": "MIT",
+  "description": "Live Omarchy theme sync and multi-stage Gemini/Claude/Ollama AI triage companion for Thunderbird.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "omarchy/BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaThunder",
+    "description": "Shows Thunderbird emails that actually need action (filtered from newsletters) and pending AI proposals.",
+    "category": "Communication",
+    "aliases": ["thunderbird", "mail", "email", "triage"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

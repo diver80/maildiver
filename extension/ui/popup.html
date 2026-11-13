@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>OmaThunder Popup</title>
+  <link rel="stylesheet" href="common.css" />
+  <style id="oma-dynamic-vars"></style>
+  <style>
+    body { width: 350px; padding: 14px; }
+    .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .hdr-left { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .hdr-left img { width: 22px; height: 22px; border-radius: 5px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .stat { background: var(--oma-bg-elevated); border: 1px solid var(--oma-border); border-radius: 7px; padding: 9px 10px; }
+    .stat-num { font-size: 18px; font-weight: 700; font-family: var(--oma-mono); }
+    .stat-lbl { font-size: 11px; color: var(--oma-fg-muted); }
+    .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .pill {
+      padding: 4px 8px; border-radius: 6px; font-size: 11px;
+      border: 1px solid var(--oma-border); background: var(--oma-bg-dark); cursor: pointer;
+    }
+    .pill.active { border-color: var(--oma-accent); background: var(--oma-selection); }
+  </style>
+</head>
+<body>
+  <div class="hdr">
+    <div class="hdr-left">
+      <img src="../icons/icon.svg" alt="" />
+      <span>OmaThunder</span>
+    </div>
+    <div style="display:flex; gap:6px;">
+      <span class="oma-badge warn" id="popup-readonly" style="display:none;" data-i18n="badge_readonly">Read-only</span>
+      <span class="oma-badge ok" id="popup-status" data-i18n="popup_ready">Bereit</span>
+    </div>
+  </div>
+
+  <div class="grid-2" id="stats-grid">
+    <div class="stat"><div class="stat-num" id="st-action">2</div><div class="stat-lbl" data-i18n="popup_action_needed">Action nötig</div></div>
+    <div class="stat"><div class="stat-num" id="st-proposals">2</div><div class="stat-lbl" data-i18n="popup_open_proposals">Offene Proposals</div></div>
+  </div>
+
+  <div class="oma-card" id="quick-theme-card" style="margin-bottom:10px;">
+    <div style="font-weight:600; font-size:12px;" data-i18n="popup_quick_theme">Schnell-Theme (live, ohne Neustart)</div>
+    <div class="pills" id="quick-themes"></div>
+  </div>
+
+  <div style="display:flex; flex-direction:column; gap:7px;">
+    <button class="oma-btn primary" id="btn-open-space" style="justify-content:center;" data-i18n="popup_open_space">Triage-Space öffnen</button>
+    <button class="oma-btn" id="btn-analyze-mail" style="justify-content:center;" data-i18n="popup_analyze_mail">Aktuelle Mail mit Agent prüfen</button>
+    <button class="oma-btn ghost" id="btn-open-opts" style="justify-content:center;" data-i18n="popup_open_opts">Einstellungen (Gemini / Claude / Ollama)</button>
+  </div>
+
+  <div id="popup-out" style="margin-top:10px;"></div>
+  <script src="i18n.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

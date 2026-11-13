@@ -1,0 +1,51 @@
+{
+  "manifest_version": 2,
+  "name": "OmaThunder — Omarchy Theme & AI Triage",
+  "version": "0.1.0",
+  "description": "Live Omarchy theming (chrome, message body, compose) and 3-stage Gemini/Claude/Ollama AI triage with reviewable proposals.",
+  "author": "omathunder",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "omathunder@omathunder.dev",
+      "strict_min_version": "128.0"
+    }
+  },
+  "icons": {
+    "32": "icons/icon.svg",
+    "64": "icons/icon.svg",
+    "128": "icons/icon.svg"
+  },
+  "permissions": [
+    "theme",
+    "nativeMessaging",
+    "accountsRead",
+    "accountsFolders",
+    "messagesRead",
+    "messagesMove",
+    "messagesUpdate",
+    "messagesTags",
+    "messagesTagsList",
+    "compose",
+    "storage",
+    "tabs",
+    "menus",
+    "notifications"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "browser_action": {
+    "default_title": "OmaThunder",
+    "default_popup": "ui/popup.html",
+    "default_icon": "icons/icon.svg"
+  },
+  "message_display_action": {
+    "default_title": "OmaThunder AI",
+    "default_popup": "ui/popup.html",
+    "default_icon": "icons/icon.svg"
+  },
+  "options_ui": {
+    "page": "ui/options.html",
+    "open_in_tab": true
+  }
+}

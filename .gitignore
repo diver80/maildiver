@@ -1,0 +1,20 @@
+# Binaries and release outputs
+/dist/
+/build/
+*.xpi
+*.exe
+*.tar.gz
+*.zip
+
+# Go artifacts
+*.test
+*.out
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local state / screenshots generated during test runs
+/tmp/

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>OmaThunder Einstellungen</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    body { max-width: 760px; margin: 28px auto; padding: 0 18px 40px; }
+    .section { margin-bottom: 18px; }
+    .field { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: center; margin-top: 10px; }
+    .title { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+    .check { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; cursor: pointer; }
+    .check input { margin-top: 3px; }
+    .check-sub { font-size: 11.5px; margin-top: 2px; }
+    .accounts { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 4px; }
+    .safety { border-left: 3px solid var(--oma-yellow); padding-left: 12px; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <img src="../icons/icon.svg" width="32" height="32" style="border-radius:7px;" alt="" />
+      <div>
+        <div style="font-size:18px; font-weight:700;" data-i18n="opts_title">OmaThunder Einstellungen</div>
+        <div class="oma-muted" data-i18n="opts_subtitle">Omarchy Theme-Sync + 3-Stufen-KI (Gemini / Claude / OpenCode / Ollama)</div>
+      </div>
+    </div>
+    <button class="oma-btn primary" id="btn-save" data-i18n="opts_save">Speichern</button>
+  </div>
+
+  <div class="oma-card section">
+    <div class="title" data-i18n="opts_sec_features">Funktionen &amp; Sicherheit</div>
+    <div class="oma-muted" data-i18n="opts_features_desc"></div>
+    <label class="check"><input type="checkbox" id="feat-theme" /><span data-i18n="opts_feat_theme"></span></label>
+    <label class="check"><input type="checkbox" id="feat-assistant" /><span data-i18n="opts_feat_assistant"></span></label>
+    <label class="check"><input type="checkbox" id="feat-triage" /><span data-i18n="opts_feat_triage"></span></label>
+
+    <div class="safety">
+      <label class="check">
+        <input type="checkbox" id="mb-readonly" />
+        <span><strong data-i18n="opts_readonly"></strong><div class="oma-muted check-sub" data-i18n="opts_readonly_desc"></div></span>
+      </label>
+      <div style="margin-top:12px; font-weight:600;" data-i18n="opts_triage_accounts">Konten für Triage</div>
+      <div class="oma-muted check-sub" data-i18n="opts_triage_accounts_desc"></div>
+      <div class="accounts" id="triage-accounts"></div>
+      <label class="check"><input type="checkbox" id="mb-only-unread" /><span data-i18n="opts_only_unread"></span></label>
+      <div class="field">
+        <label data-i18n="opts_scan_limit">Neueste Mails pro Ordner</label>
+        <input class="oma-input" id="mb-scan-limit" type="number" min="1" max="200" />
+      </div>
+      <div class="field">
+        <label data-i18n="opts_scan_days">Zeitraum (Tage)</label>
+        <input class="oma-input" id="mb-scan-days" type="number" min="1" max="365" />
+      </div>
+    </div>
+  </div>
+
+  <div class="oma-card section">
+    <div class="title" data-i18n="opts_sec_theme">1. Omarchy &amp; Sprache</div>
+    <div class="field">
+      <label data-i18n="opts_lang_lbl">UI-Sprache</label>
+      <select class="oma-select" id="ui-lang">
+        <option value="auto" data-i18n="opts_lang_auto">Auto (Thunderbird / System)</option>
+        <option value="de" data-i18n="opts_lang_de">Deutsch</option>
+        <option value="en" data-i18n="opts_lang_en">English</option>
+      </select>
+    </div>
+    <div class="field">
+      <label data-i18n="opts_theme_mode">Theme-Modus</label>
+      <select class="oma-select" id="theme-mode">
+        <option value="auto" data-i18n="opts_theme_auto">Auto (Omarchy live auf Linux, Dark/Light-Preset auf macOS)</option>
+        <option value="omarchy" data-i18n="opts_theme_omarchy">Immer Omarchy colors.toml</option>
+        <option value="preset" data-i18n="opts_theme_preset">Festes Preset wählen</option>
+      </select>
+    </div>
+    <div class="field">
+      <label data-i18n="opts_preset">Preset</label>
+      <select class="oma-select" id="theme-preset">
+        <option value="tokyo-night">Tokyo Night</option>
+        <option value="catppuccin">Catppuccin Mocha</option>
+        <option value="catppuccin-latte">Catppuccin Latte</option>
+        <option value="nord">Nord</option>
+        <option value="gruvbox">Gruvbox Dark</option>
+        <option value="kanagawa">Kanagawa</option>
+        <option value="rose-pine">Rosé Pine</option>
+        <option value="everforest">Everforest</option>
+        <option value="osaka-jade">Osaka Jade</option>
+        <option value="flexoki-light">Flexoki Light</option>
+        <option value="matte-black">Matte Black</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="oma-card section">
+    <div class="title" data-i18n="opts_sec_s1">2. Stufe 1: Schnelle Mail-Klassifikation</div>
+    <div class="oma-muted" data-i18n="opts_s1_desc">Läuft nur für Mails, die Stage-0-Header-Regeln (Newsletter, Bots, Rechnungen) passieren.</div>
+    <div class="field">
+      <label data-i18n="opts_clf_backend">Classifier-Backend</label>
+      <select class="oma-select" id="clf-backend">
+        <option value="gemini-api">Gemini API (z. B. gemini-4-hydrogen)</option>
+        <option value="gemini-cli">Gemini CLI</option>
+        <option value="claude-api">Anthropic Claude API (Haiku)</option>
+        <option value="ollama">Ollama (100 % lokal)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label data-i18n="opts_model_id">Modell-ID</label>
+      <input class="oma-input" id="clf-model" value="gemini-4-hydrogen" />
+    </div>
+  </div>
+
+  <div class="oma-card section">
+    <div class="title" data-i18n="opts_sec_s2">3. Stufe 2: Deep Thread-Agent (Proposals)</div>
+    <div class="oma-muted" data-i18n="opts_s2_desc">Erzeugt nur reviewbare Entwürfe/Aktionen — sendet niemals automatisch.</div>
+    <div class="field">
+      <label data-i18n="opts_agent_backend">Agent-Backend</label>
+      <select class="oma-select" id="agent-backend">
+        <option value="claude-cli">Claude Code CLI</option>
+        <option value="gemini-cli">Gemini CLI</option>
+        <option value="opencode-cli">OpenCode CLI</option>
+        <option value="claude-api">Anthropic Claude API</option>
+        <option value="gemini-api">Gemini API</option>
+        <option value="ollama">Ollama</option>
+      </select>
+    </div>
+    <div class="field">
+      <label data-i18n="opts_agent_model">Modell (optional)</label>
+      <input class="oma-input" id="agent-model" data-i18n-ph="opts_agent_model_ph" placeholder="leer = CLI-Standard" />
+    </div>
+  </div>
+
+  <div id="save-status" class="oma-muted"></div>
+  <script src="i18n.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
