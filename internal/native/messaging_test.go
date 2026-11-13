@@ -259,3 +259,47 @@ func TestHostAnswersEveryConcurrentRequest(t *testing.T) {
 type syncWriter struct{ w *bytes.Buffer }
 
 func (s *syncWriter) Write(p []byte) (int, error) { return s.w.Write(p) }
+
+func TestClassifyRespectsAISwitchAndBudget(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	h := NewHandler(triage.NewStoreAt(t.TempDir()))
+	call := func(method string, params any) Response {
+		raw, _ := json.Marshal(params)
+		return h.Handle(context.Background(), Request{ID: method, Method: method, Params: raw})
+	}
+	mail := func(id string, unread bool) triage.MessageInput {
+		return triage.MessageInput{ID: id, ThreadID: "<" + id + "@x>", AccountID: "work", Folder: "INBOX", From: "a@kunde.de", Subject: "Frage " + id, Unread: unread}
+	}
+	if r := call("save_config", map[string]any{
+		"features": map[string]any{"triage": true},
+		"mailbox":  map[string]any{"triageAccountIds": []string{"work"}},
+		"ai":       map[string]any{"maxAiCallsPerScan": 3},
+	}); !r.OK {
+		t.Fatal(r.Error)
+	}
+
+	// One scan in two batches: the budget of 3 spans both. (No API key: each attempt fails fast.)
+	r1 := call("classify_batch", map[string]any{"scanId": "s1", "messages": []triage.MessageInput{mail("1", false), mail("2", true)}}).Result.(map[string]any)
+	r2 := call("classify_batch", map[string]any{"scanId": "s1", "messages": []triage.MessageInput{mail("3", true), mail("4", true), mail("5", true)}}).Result.(map[string]any)
+	if r1["aiCalls"] != 2 || r2["aiCalls"] != 1 || r2["aiSkipped"] != 2 {
+		t.Fatalf("budget not shared across batches: %v/%v then %v/%v", r1["aiCalls"], r1["aiSkipped"], r2["aiCalls"], r2["aiSkipped"])
+	}
+	// A new scan starts with a fresh budget.
+	if r := call("classify_batch", map[string]any{"scanId": "s2", "messages": []triage.MessageInput{mail("6", true)}}).Result.(map[string]any); r["aiCalls"] != 1 {
+		t.Fatalf("new scan should get a fresh budget: %v", r)
+	}
+
+	if r := call("save_config", map[string]any{"ai": map[string]any{"classifyWithAi": false}}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	off := call("classify_batch", map[string]any{"scanId": "s3", "messages": []triage.MessageInput{mail("7", true)}}).Result.(map[string]any)
+	if off["aiCalls"] != 0 || off["classifyErrors"] != 0 || off["aiEnabled"] != false {
+		t.Fatalf("AI switch off must not call the classifier: %v", off)
+	}
+	if got := off["results"].([]triage.Classification); len(got) != 1 || got[0].Stage == "stage1-llm" {
+		t.Fatalf("expected a local estimate, got %+v", got)
+	}
+}

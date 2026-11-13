@@ -35,6 +35,11 @@ type AIConfig struct {
 	AutoClassify    bool           `json:"autoClassify"`
 	SkipNewsletters bool           `json:"skipNewsletters"`
 	MaxSnippetChars int            `json:"maxSnippetChars"`
+	// ClassifyWithAI sends mails that pass Stage 0 to the classifier model. Off = local estimate only, 0 tokens.
+	ClassifyWithAI bool `json:"classifyWithAi"`
+	// MaxAICallsPerScan caps classifier calls per scan; mails beyond it get the local estimate
+	// and are picked up by a later scan.
+	MaxAICallsPerScan int `json:"maxAiCallsPerScan"`
 	// AllowUnrestrictedCLI permits the gemini-cli and opencode-cli backends. They cannot be started
 	// with tools disabled, so a prompt injection in a mail could trigger tool use. Off by default.
 	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
@@ -93,10 +98,12 @@ func (p MailboxPolicy) CanWrite(accountID string) bool {
 }
 
 const (
-	defaultScanLimit = 20
-	maxScanLimit     = 200
-	defaultScanDays  = 30
-	maxScanDays      = 365
+	defaultMaxAICalls = 50
+	maxMaxAICalls     = 1000
+	defaultScanLimit  = 20
+	maxScanLimit      = 200
+	defaultScanDays   = 30
+	maxScanDays       = 365
 )
 
 type Config struct {
@@ -138,9 +145,11 @@ func Default() Config {
 				Backend: "claude-cli",
 				Model:   "",
 			},
-			AutoClassify:    false,
-			SkipNewsletters: true,
-			MaxSnippetChars: 1600,
+			AutoClassify:      false,
+			ClassifyWithAI:    true,
+			MaxAICallsPerScan: defaultMaxAICalls,
+			SkipNewsletters:   true,
+			MaxSnippetChars:   1600,
 		},
 		IncomingFolder: "INBOX",
 		Rules:          []RoutingRule{},
@@ -216,6 +225,12 @@ func Load() (Config, error) {
 func Normalize(cfg Config) Config {
 	if cfg.AI.MaxSnippetChars <= 0 {
 		cfg.AI.MaxSnippetChars = 1600
+	}
+	if cfg.AI.MaxAICallsPerScan <= 0 {
+		cfg.AI.MaxAICallsPerScan = defaultMaxAICalls
+	}
+	if cfg.AI.MaxAICallsPerScan > maxMaxAICalls {
+		cfg.AI.MaxAICallsPerScan = maxMaxAICalls
 	}
 	if cfg.IncomingFolder == "" {
 		cfg.IncomingFolder = "INBOX"

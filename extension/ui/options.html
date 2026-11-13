@@ -94,6 +94,14 @@
   <div class="oma-card section">
     <div class="title" data-i18n="opts_sec_s1">2. Stufe 1: Schnelle Mail-Klassifikation</div>
     <div class="oma-muted" data-i18n="opts_s1_desc">Läuft nur für Mails, die Stage-0-Header-Regeln (Newsletter, Bots, Rechnungen) passieren.</div>
+    <label class="check">
+      <input type="checkbox" id="ai-classify" />
+      <span><span data-i18n="opts_ai_classify"></span><div class="oma-muted check-sub" data-i18n="opts_ai_classify_desc"></div></span>
+    </label>
+    <div class="field">
+      <label data-i18n="opts_ai_max_calls">Max. KI-Aufrufe pro Scan</label>
+      <input class="oma-input" id="ai-max-calls" type="number" min="1" max="1000" />
+    </div>
     <div class="field">
       <label data-i18n="opts_clf_backend">Classifier-Backend</label>
       <select class="oma-select" id="clf-backend">

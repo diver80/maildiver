@@ -396,13 +396,16 @@ async function runTriage() {
   // Classify in small batches: keeps each native message small and each call within its timeout.
   let res = { results: [], plannedMoves: [], skippedAccounts: 0 };
   const batchSize = 10;
+  const scanId = `scan-${Date.now()}`; // lets the host apply one AI budget across all batches
   for (let i = 0; i < messages.length || i === 0; i += batchSize) {
-    const part = await callNative("classify_batch", { messages: messages.slice(i, i + batchSize) }, 300000);
+    const part = await callNative("classify_batch", { scanId, messages: messages.slice(i, i + batchSize) }, 300000);
     res = {
       ...part,
       results: [...res.results, ...(part.results || [])],
       plannedMoves: [...res.plannedMoves, ...(part.plannedMoves || [])],
       skippedAccounts: res.skippedAccounts + (part.skippedAccounts || 0),
+      aiCalls: (res.aiCalls || 0) + (part.aiCalls || 0),
+      aiSkipped: (res.aiSkipped || 0) + (part.aiSkipped || 0),
       classifyErrors: (res.classifyErrors || 0) + (part.classifyErrors || 0),
       classifyError: res.classifyError || part.classifyError || "",
     };
@@ -415,6 +418,9 @@ async function runTriage() {
     planned,
     moved: [],
     failed: [],
+    aiEnabled: res.aiEnabled !== false,
+    aiCalls: res.aiCalls || 0,
+    aiSkipped: res.aiSkipped || 0,
     classifyErrors: res.classifyErrors || 0,
     classifyError: res.classifyError || "",
   };

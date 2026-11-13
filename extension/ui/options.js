@@ -91,6 +91,8 @@ async function init() {
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
   $("agent-backend").value = cfg?.ai?.agent?.backend || "claude-cli";
   $("agent-model").value = cfg?.ai?.agent?.model || "";
+  $("ai-classify").checked = cfg?.ai?.classifyWithAi !== false;
+  $("ai-max-calls").value = cfg?.ai?.maxAiCallsPerScan || 50;
   $("ai-allow-cli").checked = Boolean(cfg?.ai?.allowUnrestrictedCli);
 
   $("feat-triage").addEventListener("change", updateDependentFields);
@@ -130,6 +132,8 @@ async function init() {
       },
       ai: {
         allowUnrestrictedCli: $("ai-allow-cli").checked,
+        classifyWithAi: $("ai-classify").checked,
+        maxAiCallsPerScan: Number($("ai-max-calls").value) || 50,
         classifier: {
           backend: $("clf-backend").value,
           model: $("clf-model").value.trim(),

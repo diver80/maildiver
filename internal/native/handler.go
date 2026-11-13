@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,6 +64,25 @@ type Handler struct {
 	store *triage.Store
 	// cfgMu serializes load-modify-save cycles on the config file; requests run concurrently.
 	cfgMu sync.Mutex
+	// AI call budget of the scan in progress (a scan arrives as several classify_batch calls).
+	scanMu    sync.Mutex
+	scanID    string
+	scanCalls int
+}
+
+// takeAICall reserves one classifier call for the scan, or reports that the budget is used up.
+func (h *Handler) takeAICall(scanID string, limit int) bool {
+	h.scanMu.Lock()
+	defer h.scanMu.Unlock()
+	if scanID == "" || scanID != h.scanID {
+		h.scanID = scanID
+		h.scanCalls = 0
+	}
+	if h.scanCalls >= limit {
+		return false
+	}
+	h.scanCalls++
+	return true
 }
 
 func NewHandler(store *triage.Store) *Handler {
@@ -283,6 +303,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	case "classify_batch":
 		var p struct {
 			Force    bool                  `json:"force"`
+			ScanID   string                `json:"scanId"`
 			Messages []triage.MessageInput `json:"messages"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -319,6 +340,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		results := make([]triage.Classification, 0, len(allowed))
 		classifyErrors := 0
 		firstClassifyError := ""
+		aiCalls, aiSkipped := 0, 0
+		// Unread mails get the AI budget first.
+		sort.SliceStable(allowed, func(i, j int) bool { return allowed[i].Unread && !allowed[j].Unread })
 		for _, m := range allowed {
 			if !p.Force {
 				if base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); matched {
@@ -343,6 +367,18 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					}
 				}
 			}
+			if !cfg.AI.ClassifyWithAI {
+				results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "Lokale Schätzung (KI-Klassifikation ausgeschaltet)"))
+				continue
+			}
+			if _, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); !matched {
+				if !h.takeAICall(p.ScanID, cfg.AI.MaxAICallsPerScan) {
+					aiSkipped++
+					results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "Lokale Schätzung (KI-Limit pro Scan erreicht)"))
+					continue
+				}
+				aiCalls++
+			}
 			c, err := ai.Classify(ctx, cfg.AI, m, cfg.Rules)
 			if err != nil {
 				// The mail still gets a local heuristic result; report why the AI step failed.
@@ -362,6 +398,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			"plannedMoves":    triage.PlanAutoMoves(allowed, cfg.Rules, cfg.Mailbox),
 			"readOnly":        cfg.Mailbox.ReadOnly,
 			"skippedAccounts": skipped,
+			"aiCalls":         aiCalls,
+			"aiSkipped":       aiSkipped,
+			"aiEnabled":       cfg.AI.ClassifyWithAI,
 			"classifyErrors":  classifyErrors,
 			"classifyError":   firstClassifyError,
 			"barSummary":      triage.ComputeBarSummary(st),

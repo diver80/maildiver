@@ -209,6 +209,20 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 	}, nil
 }
 
+// ClassifyLocal classifies without any model call (0 tokens): Stage 0 rules, then the keyword estimate.
+// The result is not cached as an AI result, so a later scan with AI enabled classifies the mail properly.
+func ClassifyLocal(cfg config.AIConfig, msg triage.MessageInput, rules []config.RoutingRule, note string) triage.Classification {
+	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters, rules)
+	if matched {
+		return base
+	}
+	c := heuristicFallbackClassification(base, msg, triage.PrepareSnippet(msg.BodyText, cfg.MaxSnippetChars))
+	if note != "" {
+		c.Summary = note
+	}
+	return c
+}
+
 // Analyze runs Stage 2 deep thread summary, reply formulation, or draft review.
 func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (AnalyzeResponse, error) {
 	type threadMsg struct {

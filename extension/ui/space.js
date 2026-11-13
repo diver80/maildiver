@@ -527,6 +527,8 @@ function renderScanReport() {
       <button class="mini-btn" data-close-report>${escapeHtml(t("report_close"))}</button>
     </div>
     <div class="oma-muted" style="font-size:11px;">${escapeHtml(t("report_scanned", { messages: rep.scannedMessages ?? 0, folders: rep.scannedFolders ?? 0 }))}</div>
+    <div class="oma-muted" style="font-size:11px;">${escapeHtml(rep.aiEnabled === false ? t("report_ai_off") : t("report_ai_calls", { calls: rep.aiCalls ?? 0 }))}</div>
+    ${rep.aiSkipped ? `<div style="margin-top:6px;"><span class="oma-badge warn">${escapeHtml(t("report_ai_skipped", { count: rep.aiSkipped }))}</span></div>` : ""}
     ${rep.classifyErrors ? `<div style="margin-top:6px;"><span class="oma-badge warn">${escapeHtml(t("report_classify_error", { count: rep.classifyErrors }))}</span>
       <div class="oma-muted" style="font-size:11px; margin-top:3px;">${escapeHtml(errText(new Error(rep.classifyError)))}</div></div>` : ""}
     ${list}
