@@ -2,176 +2,176 @@
 
 # OmaThunder
 
-**Omarchy-Themes, KI-Schreibassistent und Mail-Triage für Thunderbird – auf Omarchy Linux und macOS.**
+**Omarchy themes, an AI writing assistant and mail triage for Thunderbird – on Omarchy Linux and macOS.**
 
-OmaThunder besteht aus einem Thunderbird-Add-on und einem kleinen Hilfsprogramm (Go), das lokal neben Thunderbird läuft. Die drei Bausteine lassen sich einzeln einschalten:
+OmaThunder consists of a Thunderbird add-on and a small helper program (Go) that runs locally next to Thunderbird. Its three building blocks can be switched on individually:
 
-| Baustein | Was er tut | Standard |
+| Building block | What it does | Default |
 |---|---|---|
-| **Theme-Sync** | Färbt Thunderbird in einem der 22 Omarchy-Themes. Unter Omarchy folgt es live dem aktiven Theme. | an |
-| **KI-Schreibassistent** | Fasst Mails zusammen, formuliert Antworten, prüft und verbessert deine Entwürfe – direkt im Verfassen-Fenster. | an |
-| **Triage** | Scannt Posteingang und Kundenordner, sortiert Mails auf ein Kanban-Board und verschiebt Mails von Kunden-Domains in deren Ordner. | aus |
+| **Theme sync** | Colors Thunderbird in one of 22 Omarchy themes. On Omarchy it follows the active theme live. | on |
+| **AI writing assistant** | Summarizes mails, drafts replies, reviews and improves your drafts – right in the compose window. | on |
+| **Triage** | Scans the inbox and customer folders, sorts mails onto a Kanban board and moves mails from customer domains into their folders. | off |
 
-Gesendet oder gelöscht wird nie etwas. Änderungen an Mails, Ordnern oder Tags sind standardmäßig gesperrt (Read-only).
+Nothing is ever sent or deleted. Changes to mails, folders or tags are blocked by default (read-only).
 
-> **Status:** frühe Version (0.2). Getestet sind Go-Host und Kernlogik per Unit-Tests; der Betrieb in Thunderbird selbst ist noch wenig erprobt. Windows wird gebaut, ist aber ungetestet.
+> **Status:** early version (0.2). The Go host and the core logic are covered by unit tests; running inside Thunderbird has seen little real-world use so far. Windows builds are produced but untested.
 
 ---
 
 ## Installation
 
-Voraussetzung: Thunderbird 128 oder neuer.
+Requires Thunderbird 128 or newer.
 
 ### Homebrew (macOS, Linux)
 
 ```bash
 brew install diver80/tap/omathunder
-omathunder setup        # meldet das Hilfsprogramm bei Thunderbird an (einmalig)
+omathunder setup        # registers the helper program with Thunderbird (once)
 ```
 
-Danach in Thunderbird: **Add-ons und Themes → Zahnrad → Add-on aus Datei installieren** und diese Datei wählen:
+Then in Thunderbird: **Add-ons and Themes → gear icon → Install Add-on From File** and pick:
 
 ```
 $(brew --prefix)/opt/omathunder/share/omathunder/omathunder-extension.xpi
 ```
 
-`omathunder setup` zeigt den genauen Pfad an. Nach einem `brew upgrade omathunder` die `.xpi` erneut installieren, damit Add-on und Hilfsprogramm zusammenpassen. Die Einstellungsseite warnt, wenn sie es nicht tun.
+`omathunder setup` prints the exact path. After `brew upgrade omathunder`, install the `.xpi` again so add-on and helper program match – the settings page warns when they don't.
 
-### Aus dem Quellcode
+### From source
 
 ```bash
 git clone https://github.com/diver80/omathunder.git && cd omathunder
-./build.sh        # Tests, Binaries und dist/omathunder-extension.xpi
-./install.sh      # Binary nach ~/.local/bin, Anmeldung bei Thunderbird
+./build.sh        # tests, binaries and dist/omathunder-extension.xpi
+./install.sh      # binary to ~/.local/bin, registration with Thunderbird
 ```
 
-Anschließend `dist/omathunder-extension.xpi` wie oben in Thunderbird installieren.
+Then install `dist/omathunder-extension.xpi` in Thunderbird as described above.
 
-`setup` und `install.sh` legen nur die Native-Messaging-Anmeldung und ein kleines Startskript an. Thunderbirds Profil und `prefs.js` fassen sie nicht an.
-
----
-
-## Empfohlener Einstieg
-
-1. **Einstellungen öffnen** (Add-on-Optionen oder Knopf im OmaThunder-Tab). Oben unter **Status** muss alles grün sein: Host verbunden, Versionen passen, KI-Backend gefunden.
-2. **Theme und Schreibassistent nutzen.** Triage bleibt aus.
-3. **Triage einschalten, Read-only bleibt an.** Nur das Konto mit den Kundenordnern freigeben, KI-Klassifikation aus lassen. Einen Scan starten und den **Probelauf** prüfen: Er zeigt, welche Mails verschoben würden.
-4. Regeln prüfen (Spalte **Konto**), Auto-Move gezielt pro Regel einschalten.
-5. Erst dann **Read-only ausschalten**. Jeder Scan lässt sich danach über „Verschiebungen dieses Scans zurücknehmen“ rückgängig machen.
+`setup` and `install.sh` only create the native messaging registration and a small launcher script. They never touch Thunderbird's profile or `prefs.js`.
 
 ---
 
-## Schreibassistent
+## Getting started
 
-![Schreibassistent im Verfassen-Fenster](docs/screenshots/compose-assistant.png)
-
-* **Im Verfassen-Fenster** (Knopf „OmaThunder AI“): Entwurf verbessern, Entwurf gegen die Ursprungsmail prüfen, Antwort formulieren oder aus Stichpunkten schreiben. Das Ergebnis erscheint zuerst im Popup; erst „einsetzen“ schreibt es in den Entwurf. Ersetzt wird nur dein eigener Text – Zitat und Signatur bleiben.
-* **An der geöffneten Mail** (Knopf „OmaThunder AI“): zusammenfassen oder Antwort formulieren, auch als „Allen antworten“.
-* **Im OmaThunder-Tab:** dieselben Funktionen für die geöffnete Mail oder eine Board-Karte, inklusive Review deines Entwurfs.
-
-Als Kontext dient der Gesprächsverlauf, verknüpft über die Mail-Header `References` / `In-Reply-To` – nicht nur ein gleicher Betreff. Jede Anfrage ist ein einzelner KI-Aufruf auf deinen Klick.
-
-![Review eines Antwort-Entwurfs](docs/screenshots/space-review.png)
-
-## Triage: Kanban und Kunden-Regeln
-
-![Kanban-Board mit Probelauf im Read-only-Modus](docs/screenshots/space-kanban.png)
-
-* **Board** mit fünf Spalten (Incoming, Action nötig, Wartet, Rechnung/Termin, Erledigt), Filter nach Kunde, Drag & Drop. Karten öffnen die Mail in Thunderbird.
-* **Kunden-Regeln** ordnen Absender-Domains einem Kundenordner zu. Optional verschiebt OmaThunder neue Mails aus dem Posteingang dorthin und mappt Board-Spalten auf Unterordner (z. B. „Erledigt“).
-* **Stufe 0 (lokal, 0 Tokens):** Newsletter, Bot-Mails, Abwesenheitsnotizen und Rechnungen werden über Header und Betreff erkannt. Sicherheits- und Transaktionsmails (Passwort-Reset, Codes, Bestellungen) werden nie automatisch als unwichtig eingestuft.
-* **Stufe 1 (optional, KI):** Was Stufe 0 nicht einordnet, klassifiziert ein schnelles Modell – Gemini API, Claude API, Ollama (lokal) oder eine CLI.
-
-![Kunden-Ordner und Domain-Regeln](docs/screenshots/space-rules.png)
-
-### Token-Verbrauch
-
-* Gescannt wird nur auf Klick (optional zusätzlich bei neuer Mail) und nur die neuesten **20 Mails pro Ordner** der letzten **30 Tage**.
-* **KI-Klassifikation ist standardmäßig aus** – ein Scan kostet dann nichts, die Einordnung ist eine lokale Schätzung.
-* Eingeschaltet gilt eine harte Grenze von **50 KI-Aufrufen pro Scan**; ungelesene Mails zuerst. Bereits klassifizierte Mails werden nicht erneut abgefragt.
-* Der Scan-Bericht zeigt, wie viele Aufrufe gemacht und wie viele Mails nur geschätzt wurden.
-
-Alle Werte sind in den Einstellungen änderbar.
-
-## Theme-Sync
-
-![Theme-Galerie](docs/screenshots/space-themes.png)
-
-* Färbt Toolbars, Tabs, Ordnerliste und Popups über die Theme-Schnittstelle von Thunderbird – ohne Neustart.
-* Optional auch Mail-Inhalt und Editor (standardmäßig aus, weil HTML-Mails mit fest eingestellten Farben sonst schwer lesbar werden können).
-* **Omarchy:** folgt live `~/.local/state/omarchy/current/theme/colors.toml`.
-* **macOS:** eines der 22 eingebetteten Omarchy-Themes wählen (Galerie, Popup, Einstellungen oder `omathunder theme set nord`) oder automatisch dem Hell-/Dunkel-Modus folgen.
-
-![Mail-Kanban im Theme Flexoki Light](docs/screenshots/space-kanban-light.png)
+1. **Open the settings** (add-on options, or the button in the OmaThunder tab). Everything under **Status** should be green: host connected, versions match, AI backend found.
+2. **Use theme and writing assistant.** Leave triage off.
+3. **Switch triage on, keep read-only on.** Enable only the account that holds your customer folders and leave AI classification off. Run a scan and check the **dry run**: it lists which mails would be moved.
+4. Check your rules (column **Account**) and enable auto-move per rule where you want it.
+5. Only then **switch read-only off**. Every scan can be undone afterwards via "Undo this scan's moves".
 
 ---
 
-## Sicherheit
+## Writing assistant
 
-| Schutz | Wirkung |
+![Writing assistant in the compose window](docs/screenshots/compose-assistant.png)
+
+* **In the compose window** ("OmaThunder AI" button): improve your draft, review it against the original mail, draft a reply, or write a mail from notes. The result shows up in the popup first; only "insert" writes it into the draft. Only your own text is replaced – quote and signature stay untouched.
+* **On the open mail** ("OmaThunder AI" button): summarize or draft a reply, also as "Reply all".
+* **In the OmaThunder tab:** the same functions for the open mail or a board card, including a review of your draft.
+
+The conversation is used as context, linked through the `References` / `In-Reply-To` headers – not just by a matching subject. Every request is a single AI call, triggered by your click.
+
+![Reviewing a reply draft](docs/screenshots/space-review.png)
+
+## Triage: Kanban and customer rules
+
+![Kanban board with a dry run in read-only mode](docs/screenshots/space-kanban.png)
+
+* **Board** with five columns (Incoming, Action needed, Waiting, Invoice/Event, Done), filter by customer, drag & drop. Cards open the mail in Thunderbird.
+* **Customer rules** map sender domains to a customer folder. Optionally OmaThunder moves new inbox mails there and maps board columns to subfolders (e.g. "Done").
+* **Stage 0 (local, 0 tokens):** newsletters, bot mails, out-of-office replies and invoices are recognized by headers and subject. Security and transaction mails (password resets, codes, orders) are never automatically marked as unimportant.
+* **Stage 1 (optional, AI):** whatever stage 0 cannot place is classified by a fast model – Gemini API, Claude API, Ollama (local) or a CLI.
+
+![Customer folders and domain rules](docs/screenshots/space-rules.png)
+
+### Token usage
+
+* Scans only run on click (optionally also on new mail) and only cover the newest **20 mails per folder** from the last **30 days**.
+* **AI classification is off by default** – a scan then costs nothing and the classification is a local estimate.
+* When it is on, a hard limit of **50 AI calls per scan** applies, unread mails first. Mails that were already classified are not sent again.
+* The scan report shows how many calls were made and how many mails were only estimated.
+
+All values can be changed in the settings.
+
+## Theme sync
+
+![Theme gallery](docs/screenshots/space-themes.png)
+
+* Colors toolbars, tabs, folder pane and popups through Thunderbird's theme API – no restart needed.
+* Optionally also message bodies and the editor (off by default, because HTML mails with fixed text colors can otherwise become hard to read).
+* **Omarchy:** follows `~/.local/state/omarchy/current/theme/colors.toml` live.
+* **macOS:** pick one of the 22 bundled Omarchy themes (gallery, popup, settings or `omathunder theme set nord`) or follow the system's light/dark mode.
+
+![Mail Kanban in the Flexoki Light theme](docs/screenshots/space-kanban-light.png)
+
+---
+
+## Safety
+
+| Protection | Effect |
 |---|---|
-| **Read-only** (Standard) | Keine Änderungen an Mails, Ordnern oder Tags. Scans zeigen geplante Verschiebungen nur als Probelauf. Antwortentwürfe öffnen sich trotzdem – gesendet wird nie automatisch. |
-| **Triage pro Konto** | Nur freigegebene Konten werden gescannt, an die KI geschickt und verändert. Verschieben zwischen Konten ist gesperrt. |
-| **Auto-Move eng gefasst** | Nur aus dem Posteingang, nur bei Treffer über die Absender-Domain, optional nur ungelesene Mails, nie aus Kundenordnern heraus. Mails, bei denen der Mailserver eine fehlgeschlagene DKIM-/DMARC-Prüfung vermerkt hat, werden nie verschoben (gefälschter Absender). Vor jedem Verschieben wird die Mail im Postfach erneut geprüft. |
-| **Eindeutige Mail-Zuordnung** | Gespeicherte Mails werden über ihre Message-ID wiedergefunden. Ist der Treffer nicht eindeutig, passiert nichts. |
-| **Rückgängig** | Verschiebungen eines Scans und einer gelöschten Regel lassen sich zurücknehmen – aber nur für Mails, die noch dort liegen, wo OmaThunder sie hingelegt hat. |
-| **Kein Löschen, kein Senden** | Das Add-on hat die Berechtigungen dafür gar nicht (`messagesDelete`, `compose.send`). |
-| **KI-Backends** | Die Claude-CLI läuft ohne Werkzeuge und ohne MCP-Server und erhält den Mailtext über stdin. Gemini-CLI und OpenCode-CLI lassen sich nicht ohne Werkzeuge starten und sind gesperrt, bis du sie ausdrücklich erlaubst. |
+| **Read-only** (default) | No changes to mails, folders or tags. Scans only report planned moves as a dry run. Reply drafts still open – nothing is ever sent automatically. |
+| **Triage per account** | Only enabled accounts are scanned, sent to the AI and changed. Moving mails between accounts is blocked. |
+| **Narrow auto-move** | Only from the inbox, only on a sender-domain match, optionally only unread mails, never out of customer folders. Mails for which the mail server recorded a failed DKIM/DMARC check are never moved (forged sender). Each mail is checked again in the mailbox right before it is moved. |
+| **Unambiguous mail lookup** | Stored mails are found again by their Message-ID. If the match is ambiguous, nothing happens. |
+| **Undo** | Moves of a scan or of a deleted rule can be undone – but only for mails still in the folder OmaThunder put them in. |
+| **No deleting, no sending** | The add-on does not even have the permissions for it (`messagesDelete`, `compose.send`). |
+| **AI backends** | The Claude CLI runs without tools and without MCP servers and receives the mail text via stdin. Gemini CLI and OpenCode CLI cannot be started without tools and stay blocked until you explicitly allow them. |
 
-Mailinhalte gehen nur an das KI-Backend, das du in den Einstellungen gewählt hast. Mit Ollama bleibt alles auf deinem Rechner.
+Mail content only goes to the AI backend you chose in the settings. With Ollama everything stays on your machine.
 
-## Einstellungen
+## Settings
 
-![Einstellungen mit Status, Funktionen und Sicherheit](docs/screenshots/options.png)
+![Settings with status, features and safety](docs/screenshots/options.png)
 
-### KI-Zugänge einrichten
+### Setting up AI access
 
-Thunderbird startet das Hilfsprogramm ohne deine Shell-Umgebung. API-Keys liest es deshalb aus einer eigenen Datei:
+Thunderbird starts the helper program without your shell environment, so API keys are read from a separate file:
 
 * macOS: `~/Library/Application Support/omathunder/env`
 * Linux: `~/.config/omathunder/env`
 
 ```bash
-export GEMINI_API_KEY=...        # Backend "Gemini API"
-export ANTHROPIC_API_KEY=...     # Backend "Anthropic Claude API"
+export GEMINI_API_KEY=...        # backend "Gemini API"
+export ANTHROPIC_API_KEY=...     # backend "Anthropic Claude API"
 ```
 
-Danach Thunderbird neu starten. Die Claude-CLI braucht keinen Eintrag, sie nutzt ihre eigene Anmeldung. Der Abschnitt **Status** in den Einstellungen zeigt, ob Keys und Programme gefunden wurden.
+Restart Thunderbird afterwards. The Claude CLI needs no entry; it uses its own login. The **Status** section of the settings shows whether keys and programs were found.
 
 ---
 
-## Kommandozeile
+## Command line
 
 ```bash
-omathunder setup            # bei Thunderbird anmelden
-omathunder doctor           # Status: Omarchy, CLIs, API-Keys, Anmeldung
-omathunder theme list       # alle 22 Themes
-omathunder theme set nord   # Theme direkt setzen
-omathunder bar-summary      # Zahlen für die Omarchy-Leiste
-omathunder classify --subject "..." --from "..." --body "..."   # Test-Klassifikation (ruft die KI auf)
-omathunder uninstall        # Anmeldung, Einstellungen und Zustand entfernen
+omathunder setup            # register with Thunderbird
+omathunder doctor           # status: Omarchy, CLIs, API keys, registration
+omathunder theme list       # all 22 themes
+omathunder theme set nord   # set a theme directly
+omathunder bar-summary      # numbers for the Omarchy bar
+omathunder classify --subject "..." --from "..." --body "..."   # test classification (calls the AI)
+omathunder uninstall        # remove registration, settings and state
 ```
 
-## Deinstallation
+## Uninstall
 
 ```bash
 omathunder uninstall && brew uninstall omathunder   # Homebrew
-./uninstall.sh                                      # Installation aus dem Quellcode
+./uninstall.sh                                      # installed from source
 ```
 
-Danach das Add-on im Thunderbird-Add-on-Manager entfernen. `uninstall` löscht auch deine Regeln und Einstellungen. Mails und Thunderbird-Profil bleiben unberührt.
+Then remove the add-on in Thunderbird's add-on manager. `uninstall` also deletes your rules and settings. Mails and the Thunderbird profile stay untouched.
 
-## Entwicklung
+## Development
 
 ```bash
-go test ./...               # Host: Config, Auto-Move-Regeln, Read-only, Nebenläufigkeit
-node tests/core.test.js     # Kernlogik des Add-ons (macOS ohne Node: jsc tests/core.test.js)
-./build.sh                  # beide Testläufe, Binaries für macOS/Linux/Windows, .xpi, SHA256SUMS
-./release.sh                # Tag, GitHub-Release und Werte für die Homebrew-Formel
+go test ./...               # host: config, auto-move rules, read-only, concurrency
+node tests/core.test.js     # add-on core logic (macOS without Node: jsc tests/core.test.js)
+./build.sh                  # both test runs, binaries for macOS/Linux/Windows, .xpi, SHA256SUMS
+./release.sh                # tag, GitHub release and values for the Homebrew formula
 ```
 
-Aufbau und Sicherheitsmodell: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Architecture and safety model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Lizenz
+## License
 
-MIT – siehe [LICENSE](LICENSE).
+MIT – see [LICENSE](LICENSE).
