@@ -556,7 +556,8 @@ async function applyKanbanSideEffects(cfg, messageId, column) {
 
 // Writes text into an open compose window. Only the user's own part of the draft is replaced;
 // signature and quoted original stay. This is the user's own unsent draft, so it works in read-only mode.
-async function writeIntoCompose(tabId, text) {
+async function writeIntoCompose(tabId, rawText) {
+  const text = String(rawText || "").replace(/\r\n?/g, "\n");
   const details = await api.compose.getComposeDetails(tabId);
   if (details.isPlainText) {
     await api.compose.setComposeDetails(tabId, { plainTextBody: replaceDraftOwn(details.plainTextBody || "", true, text) });
@@ -675,7 +676,15 @@ async function composeAssist(msg) {
     threadMessages,
   }, 120000);
   const draft = (res.proposals || []).find((p) => p.kind === "draft_reply");
-  return { answer: res.answer || "", reviewIssues: res.reviewIssues || [], text: draft?.body || "", provider: res.provider };
+  // Some backends answer with the mail text instead of a proposal: then that text is the draft.
+  const writing = msg.mode !== "review_draft";
+  const text = draft?.body || (writing ? res.answer || "" : "");
+  return {
+    answer: draft || !writing ? res.answer || "" : "",
+    reviewIssues: res.reviewIssues || [],
+    text,
+    provider: res.provider,
+  };
 }
 
 function broadcastToUI(message) {

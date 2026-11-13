@@ -133,6 +133,7 @@ async function init() {
         });
         const card = document.createElement("div");
         card.className = "oma-card";
+        card.classList.add("oma-pre");
         card.textContent = res.answer || "";
         out.innerHTML = "";
         out.appendChild(card);

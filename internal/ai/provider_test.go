@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/diver80/omathunder/internal/config"
 	"github.com/diver80/omathunder/internal/triage"
@@ -118,5 +119,26 @@ func TestUnrestrictedCLIBackendsNeedOptIn(t *testing.T) {
 	cfg.AllowUnrestrictedCLI = true
 	if _, ok := CompleterFor(cfg, config.ProviderConfig{Backend: "opencode-cli"}).(*CLICompleter); !ok {
 		t.Fatal("opt-in must enable the CLI backend")
+	}
+}
+
+func TestWritingResultIsAlwaysInsertable(t *testing.T) {
+	now := time.Now()
+	req := AnalyzeRequest{PrimaryMessage: triage.MessageInput{ID: "7", ThreadID: "a@x"}}
+	text := "Hallo Laura,\n\npasst gut.\n\nViele Grüße"
+
+	got := ensureDraftProposal(AnalyzeResponse{Mode: "compose_new", Answer: text}, req, now)
+	if len(got.Proposals) != 1 || got.Proposals[0].Body != text || got.Answer != "" {
+		t.Fatalf("answer text must become the draft, line breaks intact: %+v", got)
+	}
+	if got.Proposals[0].ThreadID != "a@x" || got.Proposals[0].Kind != "draft_reply" {
+		t.Fatalf("draft must reference the mail: %+v", got.Proposals[0])
+	}
+	withDraft := AnalyzeResponse{Mode: "draft_reply", Answer: "Kurz und freundlich.", Proposals: []triage.Proposal{{Kind: "draft_reply", Body: text}}}
+	if got := ensureDraftProposal(withDraft, req, now); len(got.Proposals) != 1 || got.Answer == "" {
+		t.Fatalf("an existing draft must stay as is: %+v", got)
+	}
+	if got := ensureDraftProposal(AnalyzeResponse{Mode: "summarize", Answer: text}, req, now); len(got.Proposals) != 0 {
+		t.Fatalf("summaries are not drafts: %+v", got)
 	}
 }

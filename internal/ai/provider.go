@@ -117,6 +117,11 @@ When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so 
 When mode is "compose_new": write a new email from the owner's notes (there may be no thread); emit it as a "draft_reply" proposal.
 When mode is "review_draft": compare the owner's draft inside <owner_draft> against all questions, commitments, and tone in the thread; list any missed points or tone/clarity improvements in "reviewIssues" and emit an improved "draft_reply" proposal.
 
+For draft_reply, improve_draft, compose_new and review_draft, the complete email text goes ONLY into
+proposals[0].body (kind "draft_reply"), with greeting, paragraphs and closing separated by "\n" line
+breaks and a blank line ("\n\n") between paragraphs. Do not repeat the email text in "answer";
+"answer" is one short sentence about what you did.
+
 Return ONLY valid JSON matching this schema:
 {
   "answer": "Clear, concise response in the requested response language (summary, reasoning, or review verdict)",
@@ -339,16 +344,18 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 			FolderPath string   `json:"folderPath"`
 		} `json:"proposals"`
 	}
+	now := time.Now().UTC()
 	if err := ExtractJSON(out, &parsed); err != nil {
-		return AnalyzeResponse{
+		// No JSON: in a writing mode the raw text is the mail itself.
+		resp := AnalyzeResponse{
 			Mode:     mode,
 			Answer:   strings.TrimSpace(out),
 			Provider: completer.Name(),
 			Model:    completer.ModelName(),
-		}, nil
+		}
+		return ensureDraftProposal(resp, req, now), nil
 	}
 
-	now := time.Now().UTC()
 	proposals := make([]triage.Proposal, 0, len(parsed.Proposals))
 	for i, p := range parsed.Proposals {
 		proposals = append(proposals, triage.Proposal{
@@ -367,14 +374,45 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		})
 	}
 
-	return AnalyzeResponse{
+	return ensureDraftProposal(AnalyzeResponse{
 		Mode:         mode,
 		Answer:       parsed.Answer,
 		ReviewIssues: parsed.ReviewIssues,
 		Proposals:    proposals,
 		Provider:     completer.Name(),
 		Model:        completer.ModelName(),
-	}, nil
+	}, req, now), nil
+}
+
+// ensureDraftProposal makes every writing result insertable: when the model put the mail text into
+// "answer" instead of a draft_reply proposal, that text becomes the proposal and the answer is cleared.
+func ensureDraftProposal(resp AnalyzeResponse, req AnalyzeRequest, now time.Time) AnalyzeResponse {
+	switch resp.Mode {
+	case "draft_reply", "improve_draft", "compose_new":
+	default:
+		return resp
+	}
+	for _, p := range resp.Proposals {
+		if p.Kind == "draft_reply" && strings.TrimSpace(p.Body) != "" {
+			return resp
+		}
+	}
+	body := strings.TrimSpace(resp.Answer)
+	if body == "" {
+		return resp
+	}
+	resp.Proposals = append(resp.Proposals, triage.Proposal{
+		ID:        fmt.Sprintf("prop-%d-text", now.UnixMilli()),
+		Kind:      "draft_reply",
+		MessageID: req.PrimaryMessage.ID,
+		ThreadID:  req.PrimaryMessage.ThreadID,
+		Title:     "Entwurf",
+		Body:      body,
+		Status:    "pending",
+		CreatedAt: now.Format(time.RFC3339),
+	})
+	resp.Answer = ""
+	return resp
 }
 
 // ExtractJSON strips optional markdown fences and unmarshals the first JSON object.

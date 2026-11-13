@@ -170,6 +170,7 @@
 
   function textToHtml(text) {
     return String(text || "")
+      .replace(/\r\n?/g, "\n")
       .trim()
       .split(/\n{2,}/)
       .map((para) => `<p>${escapeHtml(para).replace(/\n/g, "<br>")}</p>`)
@@ -245,6 +246,8 @@
       const text = String(newText || "").trim();
       return rest ? `${text}\n\n${rest}` : text;
     }
+    // A body without <body> (editor not loaded yet) still needs a document around the text.
+    if (!head && !/<\/body>/i.test(rest)) return `<html><body>${textToHtml(newText)}${rest}</body></html>`;
     return `${head}${textToHtml(newText)}${rest}`;
   }
 

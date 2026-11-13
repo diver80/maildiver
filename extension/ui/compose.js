@@ -13,7 +13,7 @@ let context = { ownText: "", hasRelated: false };
 
 function card(text, muted = false) {
   const el = document.createElement("div");
-  el.className = `oma-card${muted ? " oma-muted" : ""}`;
+  el.className = `oma-card oma-pre${muted ? " oma-muted" : ""}`;
   el.textContent = text;
   return el;
 }

@@ -39,6 +39,12 @@ button, input, select, textarea {
   color: var(--oma-fg);
 }
 
+/* AI answers and drafts keep their line breaks. */
+.oma-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .oma-btn {
   display: inline-flex;
   align-items: center;

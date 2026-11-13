@@ -182,6 +182,7 @@ test("HTML draft: quote and signature survive a replacement", () => {
   eq(core.draftOwnText(sig, false), "Text");
   eq(core.replaceDraftOwn(sig, false, "Neu"), '<body><p>Neu</p><div class="moz-signature">-- <br>Frank</div></body>');
   eq(core.replaceDraftOwn("<body></body>", false, "Neu"), "<body><p>Neu</p></body>");
+  eq(core.replaceDraftOwn("", false, "Hallo,\r\n\r\nZeile 1\r\nZeile 2"), "<html><body><p>Hallo,</p><p>Zeile 1<br>Zeile 2</p></body></html>");
 });
 
 test("inline forward is not treated as the user's text", () => {

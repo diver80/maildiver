@@ -952,7 +952,7 @@ async function init() {
         const issuesHtml = (res.reviewIssues || []).length
           ? `<ul style="margin:6px 0 0; padding-left:18px; color:var(--oma-yellow);">${res.reviewIssues.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`
           : "";
-        ansEl.innerHTML = `<div class="oma-card"><strong>${escapeHtml(res.provider || "Agent")}</strong><p style="margin:6px 0 0;">${escapeHtml(res.answer)}</p>${issuesHtml}</div>`;
+        ansEl.innerHTML = `<div class="oma-card"><strong>${escapeHtml(res.provider || "Agent")}</strong><p class="oma-pre" style="margin:6px 0 0;">${escapeHtml(res.answer)}</p>${issuesHtml}</div>`;
         await refreshSnapshot();
       } catch (err) {
         ansEl.innerHTML = `<div class="oma-card oma-muted">${escapeHtml(errText(err))}</div>`;
