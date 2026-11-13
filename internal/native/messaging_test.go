@@ -219,3 +219,43 @@ func TestHandlerEnforcesFeaturesReadOnlyAndAccounts(t *testing.T) {
 		t.Fatalf("feature patches must not reset other flags: %+v", cfg.Features)
 	}
 }
+
+func TestHostAnswersEveryConcurrentRequest(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var wire bytes.Buffer
+	client := NewConn(nil, &wire)
+	const n = 25
+	for i := 0; i < n; i++ {
+		method := "ping"
+		if i%2 == 1 {
+			method = "get_config"
+		}
+		if err := client.Write(Request{ID: string(rune('A' + i)), Method: method}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := RunHost(context.Background(), &wire, &syncWriter{w: &out}); err != nil {
+		t.Fatal(err)
+	}
+	respConn := NewConn(&out, nil)
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		var resp Response
+		if err := respConn.Read(&resp); err != nil {
+			t.Fatalf("response %d: %v", i, err)
+		}
+		if !resp.OK {
+			t.Fatalf("request %s failed: %s", resp.ID, resp.Error)
+		}
+		seen[resp.ID] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("expected %d distinct responses, got %d", n, len(seen))
+	}
+}
+
+type syncWriter struct{ w *bytes.Buffer }
+
+func (s *syncWriter) Write(p []byte) (int, error) { return s.w.Write(p) }

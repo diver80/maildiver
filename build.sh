@@ -11,6 +11,16 @@ mkdir -p "$DIST_DIR"
 echo "==> Running Go unit tests..."
 (cd "$ROOT_DIR" && go test ./...)
 
+echo "==> Running extension unit tests..."
+JSC="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc"
+if command -v node >/dev/null 2>&1; then
+  (cd "$ROOT_DIR" && node tests/core.test.js)
+elif [[ -x "$JSC" ]]; then
+  (cd "$ROOT_DIR" && "$JSC" tests/core.test.js)
+else
+  echo "  (skipped: neither node nor jsc found)"
+fi
+
 TARGETS=(
   "darwin/arm64"
   "darwin/amd64"

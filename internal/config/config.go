@@ -35,6 +35,9 @@ type AIConfig struct {
 	AutoClassify    bool           `json:"autoClassify"`
 	SkipNewsletters bool           `json:"skipNewsletters"`
 	MaxSnippetChars int            `json:"maxSnippetChars"`
+	// AllowUnrestrictedCLI permits the gemini-cli and opencode-cli backends. They cannot be started
+	// with tools disabled, so a prompt injection in a mail could trigger tool use. Off by default.
+	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
 }
 
 // RoutingRule maps sender domains to a customer label and Thunderbird folder (with optional flexible subfolders).

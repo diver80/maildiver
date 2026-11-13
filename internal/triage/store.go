@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 
 type Proposal struct {
 	ID         string   `json:"id"`
-	Kind       string   `json:"kind"` // "draft_reply", "add_tags", "calendar_event", "move_folder"
+	Kind       string   `json:"kind"` // "draft_reply", "add_tags", "move_folder"
 	MessageID  string   `json:"messageId"`
 	ThreadID   string   `json:"threadId,omitempty"`
 	Title      string   `json:"title"`
@@ -163,11 +164,37 @@ func (s *Store) SaveClassifications(items []Classification) (State, error) {
 		}
 		st.Classifications[c.MessageID] = c
 	}
+	pruneClassifications(&st, maxClassifications)
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.writeLocked(st); err != nil {
 		return st, err
 	}
 	return st, nil
+}
+
+// maxClassifications bounds the board so the state stays far below Thunderbird's 1 MB message limit.
+const maxClassifications = 400
+
+// pruneClassifications keeps the newest mails (by date) and drops the oldest ones beyond the limit.
+// Cards the user placed manually are kept as long as possible.
+func pruneClassifications(st *State, limit int) {
+	if len(st.Classifications) <= limit {
+		return
+	}
+	ids := make([]string, 0, len(st.Classifications))
+	for id := range st.Classifications {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := st.Classifications[ids[i]], st.Classifications[ids[j]]
+		if a.PinnedColumn != b.PinnedColumn {
+			return a.PinnedColumn
+		}
+		return a.Date > b.Date
+	})
+	for _, id := range ids[limit:] {
+		delete(st.Classifications, id)
+	}
 }
 
 // RetainAccounts drops classifications of accounts that are no longer enabled for triage.

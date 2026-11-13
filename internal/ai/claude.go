@@ -69,8 +69,9 @@ func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt strin
 	if _, err := exec.LookPath("claude"); err != nil {
 		return "", fmt.Errorf("claude CLI nicht im PATH gefunden")
 	}
+	// The mail text goes in via stdin so it never shows up in the process list.
 	args := []string{
-		"-p", userPrompt,
+		"-p",
 		"--system-prompt", systemPrompt,
 		"--output-format", "json",
 		"--tools", "",
@@ -81,6 +82,7 @@ func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt strin
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = os.TempDir()
+	cmd.Stdin = strings.NewReader(userPrompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

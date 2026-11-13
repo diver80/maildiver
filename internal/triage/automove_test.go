@@ -67,3 +67,22 @@ func TestPlanAutoMovesFolderMatchNeverMoves(t *testing.T) {
 		t.Fatalf("folder-based match must not move: %+v", got)
 	}
 }
+
+func TestStateIsPrunedToNewestMails(t *testing.T) {
+	st := State{Classifications: map[string]Classification{}}
+	for i := 0; i < 30; i++ {
+		id := string(rune('a' + i))
+		st.Classifications[id] = Classification{MessageID: id, Date: "2026-11-" + string(rune('0'+i/10)) + string(rune('0'+i%10))}
+	}
+	st.Classifications["old-pinned"] = Classification{MessageID: "old-pinned", Date: "2020-01-01", PinnedColumn: true}
+	pruneClassifications(&st, 10)
+	if len(st.Classifications) != 10 {
+		t.Fatalf("expected 10 cards, got %d", len(st.Classifications))
+	}
+	if _, ok := st.Classifications["old-pinned"]; !ok {
+		t.Fatal("cards the user placed manually must survive pruning")
+	}
+	if _, ok := st.Classifications["a"]; ok {
+		t.Fatal("oldest unpinned card should be dropped")
+	}
+}

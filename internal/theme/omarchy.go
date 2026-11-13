@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/fhess/omathunder/internal/config"
 )
@@ -185,8 +187,26 @@ func loadOmarchyLive() (Palette, string, bool) {
 	return p, "omarchy:" + path, true
 }
 
-// IsSystemLight detects OS light/dark preference on macOS and Linux.
+var (
+	systemLightMu      sync.Mutex
+	systemLightValue   bool
+	systemLightChecked time.Time
+)
+
+// IsSystemLight reports the OS light/dark preference. The lookup starts a helper process,
+// so the result is cached for a few seconds: the theme watcher asks about once per second.
 func IsSystemLight() bool {
+	systemLightMu.Lock()
+	defer systemLightMu.Unlock()
+	if !systemLightChecked.IsZero() && time.Since(systemLightChecked) < 5*time.Second {
+		return systemLightValue
+	}
+	systemLightValue = detectSystemLight()
+	systemLightChecked = time.Now()
+	return systemLightValue
+}
+
+func detectSystemLight() bool {
 	if runtime.GOOS == "darwin" {
 		out, err := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle").Output()
 		if err != nil {

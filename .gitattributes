@@ -1,0 +1,4 @@
+# Keep LF everywhere: shell scripts and the native host wrapper break with CRLF.
+* text=auto eol=lf
+*.png binary
+*.xpi binary

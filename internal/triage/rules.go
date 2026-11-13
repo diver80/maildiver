@@ -36,7 +36,6 @@ type MessageInput struct {
 	BodyText    string            `json:"bodyText"`
 	Snippet     string            `json:"snippet,omitempty"`
 	Unread      bool              `json:"unread"`
-	HasReply    bool              `json:"hasReply,omitempty"`
 	Attachments []string          `json:"attachments,omitempty"`
 }
 
@@ -186,10 +185,11 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		return base, true
 	}
 
-	// 2. Automated CI / bots / noreply without invoice keywords
-	if strings.Contains(h["auto-submitted"], "auto-") ||
-		strings.Contains(fromLower, "notifications@github.com") ||
-		(strings.Contains(fromLower, "noreply@") && !looksLikeInvoice(subjLower, msg.Attachments)) {
+	// 2. Automated notifications (CI, bots, out-of-office). Security and transaction mails
+	// (password resets, verification codes, orders, payments) are never downgraded here:
+	// they go on to Stage 1 like any personal mail. A bare "noreply@" sender is not enough either.
+	automated := strings.Contains(h["auto-submitted"], "auto-") || strings.Contains(fromLower, "notifications@github.com")
+	if automated && !looksLikeInvoice(subjLower, msg.Attachments) && !looksTransactional(subjLower) {
 		base.Bucket = BucketFYI
 		base.KanbanColumn = BucketToKanban(BucketFYI, msg.Unread)
 		base.Urgency = "low"
@@ -208,17 +208,6 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.ActionHint = "Prüfen & ablegen"
 		base.Tags = []string{"oma-invoice"}
 		base.NeedsAttention = msg.Unread
-		return base, true
-	}
-
-	// 4. Thread where the user already replied and no newer unread inbound exists
-	if msg.HasReply && !msg.Unread {
-		base.Bucket = BucketWaiting
-		base.KanbanColumn = "waiting"
-		base.Urgency = "low"
-		base.Summary = "Wartet auf Antwort der Gegenseite"
-		base.Tags = []string{"oma-waiting"}
-		base.NeedsAttention = false
 		return base, true
 	}
 
@@ -258,6 +247,21 @@ func normalizeHeaders(in map[string]string) map[string]string {
 		out[strings.ToLower(strings.TrimSpace(k))] = strings.ToLower(strings.TrimSpace(v))
 	}
 	return out
+}
+
+// looksTransactional reports subjects that usually need the user's attention even when sent by a machine.
+func looksTransactional(subjLower string) bool {
+	keywords := []string{
+		"passwort", "password", "kennwort", "verifi", "bestätig", "confirm", "sicherheit", "security",
+		"anmeldung", "login", "sign-in", "sign in", "code", "bestellung", "order", "zahlung", "payment",
+		"mahnung", "kündigung", "frist", "deadline", "ablauf", "expir",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(subjLower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeInvoice(subjLower string, attachments []string) bool {

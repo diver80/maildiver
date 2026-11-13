@@ -103,3 +103,20 @@ func TestClaudeAPIAgentReviewDraft(t *testing.T) {
 		t.Fatalf("unexpected review response: %+v", resp)
 	}
 }
+
+func TestUnrestrictedCLIBackendsNeedOptIn(t *testing.T) {
+	cfg := config.Default().AI
+	for _, backend := range []string{"gemini-cli", "opencode-cli"} {
+		p := config.ProviderConfig{Backend: backend}
+		if _, err := CompleterFor(cfg, p).Complete(context.Background(), "s", "u", false); err == nil || err.Error() != ErrUnrestrictedCLI {
+			t.Fatalf("%s must be refused by default, got %v", backend, err)
+		}
+	}
+	if _, ok := CompleterFor(cfg, config.ProviderConfig{Backend: "claude-cli"}).(*ClaudeCLI); !ok {
+		t.Fatal("claude-cli runs with tools disabled and must stay available")
+	}
+	cfg.AllowUnrestrictedCLI = true
+	if _, ok := CompleterFor(cfg, config.ProviderConfig{Backend: "opencode-cli"}).(*CLICompleter); !ok {
+		t.Fatal("opt-in must enable the CLI backend")
+	}
+}

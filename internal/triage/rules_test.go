@@ -105,3 +105,28 @@ func TestStoreKanbanMoveAndRuleRollback(t *testing.T) {
 		t.Fatalf("expected clean rollback pop & folder restore, got popped=%+v cls=%+v err=%v", popped, st.Classifications["a99"], err)
 	}
 }
+
+func TestStage0DoesNotHideTransactionalMail(t *testing.T) {
+	cases := []struct {
+		name    string
+		msg     MessageInput
+		matched bool
+	}{
+		{"bare noreply sender goes to Stage 1", MessageInput{From: "noreply@shop.example", Subject: "Ihr Paket ist unterwegs"}, false},
+		{"password reset is not downgraded", MessageInput{From: "noreply@bank.example", Subject: "Passwort zurücksetzen", Headers: map[string]string{"Auto-Submitted": "auto-generated"}}, false},
+		{"verification code is not downgraded", MessageInput{From: "no-reply@svc.example", Subject: "Your verification code", Headers: map[string]string{"Auto-Submitted": "auto-generated"}}, false},
+		{"CI notification is FYI", MessageInput{From: "notifications@github.com", Subject: "[repo] Run failed"}, true},
+		{"out-of-office is FYI", MessageInput{From: "max@acme.de", Subject: "Abwesend bis Montag", Headers: map[string]string{"Auto-Submitted": "auto-replied"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, matched := EvaluateStage0(tc.msg, true, nil)
+			if matched != tc.matched {
+				t.Fatalf("matched=%v, want %v (%+v)", matched, tc.matched, c)
+			}
+			if matched && c.Bucket != BucketFYI {
+				t.Fatalf("expected FYI bucket, got %s", c.Bucket)
+			}
+		})
+	}
+}

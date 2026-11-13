@@ -91,6 +91,7 @@ async function init() {
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
   $("agent-backend").value = cfg?.ai?.agent?.backend || "claude-cli";
   $("agent-model").value = cfg?.ai?.agent?.model || "";
+  $("ai-allow-cli").checked = Boolean(cfg?.ai?.allowUnrestrictedCli);
 
   $("feat-triage").addEventListener("change", updateDependentFields);
   $("ui-lang").addEventListener("change", (e) => {
@@ -128,6 +129,7 @@ async function init() {
         preset: $("theme-preset").value,
       },
       ai: {
+        allowUnrestrictedCli: $("ai-allow-cli").checked,
         classifier: {
           backend: $("clf-backend").value,
           model: $("clf-model").value.trim(),

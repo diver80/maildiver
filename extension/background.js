@@ -1,5 +1,11 @@
-/* global browser, messenger */
+/* global browser, messenger, OmaCore */
 const api = typeof messenger !== "undefined" ? messenger : browser;
+// Pure decision logic (unit-tested in tests/core.test.js); this file only talks to Thunderbird.
+const {
+  PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, requireWritable,
+  requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
+  normalizeSubjectForThread, parseMessageIds, selectThread,
+} = OmaCore;
 const HOST_NAME = "dev.omathunder.host";
 
 let nativePort = null;
@@ -123,38 +129,15 @@ async function syncFeatures(cfg, themePayload = null) {
 // Safety layer: every change to mails, folders or tags goes through these helpers.
 // ---------------------------------------------------------------------------
 
-class PolicyError extends Error {
-  constructor(code) {
-    super(code);
-    this.code = code;
-  }
-}
-
 async function loadConfig() {
   const cfg = await callNative("get_config");
   await syncFeatures(cfg);
   return cfg;
 }
 
-function requireFeature(cfg, name) {
-  if (!cfg?.features?.[name]) throw new PolicyError(`feature_disabled:${name}`);
-}
-
-function triageAccountIds(cfg) {
-  return new Set(cfg?.mailbox?.triageAccountIds || []);
-}
-
-// Throws unless OmaThunder may change mails/folders/tags in this account.
-function requireWritable(cfg, accountId) {
-  if (cfg?.mailbox?.readOnly !== false) throw new PolicyError("read_only");
-  if (!accountId || !triageAccountIds(cfg).has(accountId)) throw new PolicyError("account_not_enabled");
-}
-
 const mailbox = {
   async move(cfg, header, targetFolder) {
-    const accountId = header?.folder?.accountId;
-    requireWritable(cfg, accountId);
-    if (!targetFolder || targetFolder.accountId !== accountId) throw new PolicyError("cross_account_move");
+    requireMovable(cfg, header, targetFolder);
     await api.messages.move([header.id], targetFolder.id);
   },
   async addTags(cfg, header, tagDefs, { replacePrefix = "" } = {}) {
@@ -166,8 +149,7 @@ const mailbox = {
       }
     }
     // Keep the user's own tags; only replace OmaThunder's status tags when asked to.
-    const kept = (header.tags || []).filter((t) => !(replacePrefix && t.startsWith(replacePrefix)));
-    const merged = [...new Set([...kept, ...tagDefs.map((d) => d.key)])];
+    const merged = mergeTags(header.tags, tagDefs.map((d) => d.key), replacePrefix);
     await api.messages.update(header.id, { tags: merged });
   },
   async createFolder(cfg, accountId, parentId, name) {
@@ -233,26 +215,8 @@ async function listAllFolders() {
   return folders;
 }
 
-function isInboxFolder(f) {
-  if (!f) return false;
-  if (f.type === "inbox" || (f.specialUse || []).includes("inbox")) return true;
-  return (f.path || "").replace(/^\/+/, "").toLowerCase() === "inbox";
-}
-
 function findAllInboxes(folders) {
   return folders.filter(isInboxFolder);
-}
-
-// Finds a folder strictly inside one account (no fallback to other accounts).
-function findFolderInAccount(folders, accountId, folderId, folderPath) {
-  if (!accountId) return null;
-  if (folderId) {
-    const byId = folders.find((f) => f.id === folderId && f.accountId === accountId);
-    if (byId) return byId;
-  }
-  const needle = (folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase();
-  if (!needle) return null;
-  return folders.find((f) => f.accountId === accountId && f.path.toLowerCase() === needle) || null;
 }
 
 // Creates missing folders of a path inside one account (only when writes are allowed there).
@@ -353,19 +317,11 @@ async function resolveMessage(ref, { strict = true } = {}) {
   const numId = Number(ref?.messageId);
   if (Number.isInteger(numId) && numId > 0) {
     const direct = await api.messages.get(numId).catch(() => null);
-    if (direct && hdrId && direct.headerMessageId === hdrId) return direct;
-    if (direct && !hdrId && !strict) return direct;
+    if (acceptDirectHit(ref, direct, strict)) return direct;
   }
   if (!hdrId || !api.messages?.query) return null;
   const res = await api.messages.query({ headerMessageId: hdrId }).catch(() => null);
-  let candidates = res?.messages || [];
-  if (ref.folderId) {
-    const inFolder = candidates.filter((m) => m.folder?.id === ref.folderId);
-    if (inFolder.length === 1) return inFolder[0];
-  }
-  if (ref.accountId) candidates = candidates.filter((m) => m.folder?.accountId === ref.accountId);
-  if (candidates.length === 1) return candidates[0];
-  return strict ? null : candidates[0] || null;
+  return pickMessageCandidate(ref, res?.messages || [], strict);
 }
 
 // Returns the newest `limit` mails of a folder received within the last `days` days.
@@ -373,47 +329,29 @@ async function listRecentMessages(folder, limit, days) {
   const since = new Date(Date.now() - days * 86400000);
   let page = await api.messages.query({ folderId: folder.id, fromDate: since }).catch(() => null);
   if (!page) page = await api.messages.list(folder.id).catch(() => null);
-  const recent = [];
+  const all = [];
   let pages = 0;
   while (page) {
-    for (const m of page.messages || []) {
-      if (!m.date || new Date(m.date) >= since) recent.push(m);
-    }
+    all.push(...(page.messages || []));
     if (!page.id || ++pages >= 20) break;
     page = await api.messages.continueList(page.id).catch(() => null);
   }
-  recent.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-  return recent.slice(0, limit);
+  return newestSince(all, since, limit);
 }
 
 // Scans only accounts enabled for triage: their INBOX plus rule folders (with subfolders) marked for the board.
 async function collectScanMessages(cfg) {
-  const enabled = triageAccountIds(cfg);
   const limit = cfg?.mailbox?.scanLimit || 20;
   const days = cfg?.mailbox?.scanDays || 30;
   const folders = await listAllFolders();
-  const scan = new Map();
-  for (const inbox of findAllInboxes(folders)) {
-    if (enabled.has(inbox.accountId)) scan.set(inbox.id, inbox);
-  }
-  for (const rule of cfg?.rules || []) {
-    if (!rule.includeInScan) continue;
-    const root = (rule.folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase();
-    if (!root) continue;
-    for (const f of folders) {
-      if (!enabled.has(f.accountId)) continue;
-      if (rule.accountId && f.accountId !== rule.accountId) continue;
-      const path = f.path.toLowerCase();
-      if (path === root || path.startsWith(`${root}/`)) scan.set(f.id, f);
-    }
-  }
+  const scanFolders = selectScanFolders(cfg, folders);
   const messages = [];
-  for (const f of scan.values()) {
+  for (const f of scanFolders) {
     for (const header of await listRecentMessages(f, limit, days)) {
       messages.push(await buildMessageInput(header));
     }
   }
-  return { messages, folders, scannedFolders: scan.size };
+  return { messages, folders, scannedFolders: scanFolders.length };
 }
 
 // Executes one move the host planned. Re-checks everything against the live mailbox first.
@@ -465,6 +403,8 @@ async function runTriage() {
       results: [...res.results, ...(part.results || [])],
       plannedMoves: [...res.plannedMoves, ...(part.plannedMoves || [])],
       skippedAccounts: res.skippedAccounts + (part.skippedAccounts || 0),
+      classifyErrors: (res.classifyErrors || 0) + (part.classifyErrors || 0),
+      classifyError: res.classifyError || part.classifyError || "",
     };
   }
   const planned = res.plannedMoves || [];
@@ -475,6 +415,8 @@ async function runTriage() {
     planned,
     moved: [],
     failed: [],
+    classifyErrors: res.classifyErrors || 0,
+    classifyError: res.classifyError || "",
   };
   if (!report.readOnly) {
     const recorded = [];
@@ -516,31 +458,35 @@ async function getActiveDisplayedMessage() {
   return header ? buildMessageInput(header) : null;
 }
 
-function normalizeSubjectForThread(subj) {
-  return (subj || "").replace(/^(?:re|aw|fwd|wg):\s*/gi, "").trim();
-}
-
+// Collects the conversation of a mail. Membership is decided by the References / In-Reply-To
+// headers; the subject search only supplies candidates, so unrelated mails with the same
+// subject ("Rechnung", "Angebot") never end up in the AI prompt.
 async function collectThreadMessages(primary) {
   if (!primary || !api.messages?.query) return primary ? [primary] : [];
-  const baseSubj = normalizeSubjectForThread(primary.subject);
-  if (!baseSubj) return [primary];
-  const queryRes = await api.messages.query({
-    accountId: primary.accountId || undefined,
-    subject: baseSubj,
-  }).catch(() => ({ messages: [] }));
+  const headers = new Map();
+  const add = (list) => {
+    for (const h of list || []) {
+      const key = h.headerMessageId || "";
+      if (key && key !== primary.threadId && !headers.has(key)) headers.set(key, h);
+    }
+  };
 
-  const seen = new Set([primary.threadId || primary.id]);
-  const list = [primary];
-  for (const h of (queryRes.messages || []).slice(0, 16)) {
-    if (normalizeSubjectForThread(h.subject).toLowerCase() !== baseSubj.toLowerCase()) continue;
-    const key = h.headerMessageId || String(h.id);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    list.push(await buildMessageInput(h));
-    if (list.length >= 8) break;
+  // Earlier mails named in the primary mail's own headers.
+  const ancestors = parseMessageIds(primary.headers?.references, primary.headers?.["in-reply-to"]).slice(-8);
+  for (const id of ancestors) {
+    const res = await api.messages.query({ headerMessageId: id }).catch(() => null);
+    add((res?.messages || []).slice(0, 1));
   }
-  list.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
-  return list;
+  // Later replies cannot be looked up by header, so search by subject and verify the link below.
+  const baseSubj = normalizeSubjectForThread(primary.subject);
+  if (baseSubj) {
+    const res = await api.messages.query({ accountId: primary.accountId || undefined, subject: baseSubj }).catch(() => null);
+    add((res?.messages || []).filter((h) => normalizeSubjectForThread(h.subject).toLowerCase() === baseSubj.toLowerCase()).slice(0, 16));
+  }
+
+  const candidates = [];
+  for (const h of [...headers.values()].slice(0, 24)) candidates.push(await buildMessageInput(h));
+  return selectThread(primary, candidates, 8);
 }
 
 async function getActiveComposeDraft() {

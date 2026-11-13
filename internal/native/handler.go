@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/fhess/omathunder/internal/ai"
@@ -60,6 +61,8 @@ type DoctorReport struct {
 
 type Handler struct {
 	store *triage.Store
+	// cfgMu serializes load-modify-save cycles on the config file; requests run concurrently.
+	cfgMu sync.Mutex
 }
 
 func NewHandler(store *triage.Store) *Handler {
@@ -97,7 +100,14 @@ func BuildDoctorReport() DoctorReport {
 	}
 }
 
+// configWriters are the methods that change the config file.
+var configWriters = map[string]bool{"save_config": true, "save_rules": true, "delete_rule": true, "set_theme": true}
+
 func (h *Handler) Handle(ctx context.Context, req Request) Response {
+	if configWriters[req.Method] {
+		h.cfgMu.Lock()
+		defer h.cfgMu.Unlock()
+	}
 	switch req.Method {
 	case "ping":
 		return Response{ID: req.ID, OK: true, Result: map[string]string{"status": "pong", "version": "0.1.0"}}
@@ -307,6 +317,8 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 
 		results := make([]triage.Classification, 0, len(allowed))
+		classifyErrors := 0
+		firstClassifyError := ""
 		for _, m := range allowed {
 			if !p.Force {
 				if base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); matched {
@@ -331,7 +343,14 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					}
 				}
 			}
-			c, _ := ai.Classify(ctx, cfg.AI, m, cfg.Rules)
+			c, err := ai.Classify(ctx, cfg.AI, m, cfg.Rules)
+			if err != nil {
+				// The mail still gets a local heuristic result; report why the AI step failed.
+				classifyErrors++
+				if firstClassifyError == "" {
+					firstClassifyError = err.Error()
+				}
+			}
 			results = append(results, c)
 		}
 		st, err := h.store.SaveClassifications(results)
@@ -343,7 +362,8 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			"plannedMoves":    triage.PlanAutoMoves(allowed, cfg.Rules, cfg.Mailbox),
 			"readOnly":        cfg.Mailbox.ReadOnly,
 			"skippedAccounts": skipped,
-			"state":           st,
+			"classifyErrors":  classifyErrors,
+			"classifyError":   firstClassifyError,
 			"barSummary":      triage.ComputeBarSummary(st),
 		}}
 
@@ -391,6 +411,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 }
 
 // RunHost runs the stdio Native Messaging loop plus a lightweight Omarchy theme watcher.
+// Every request is handled in its own goroutine, so a long AI call does not block the UI.
 func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
 	store, err := triage.OpenStore()
 	if err != nil {
@@ -403,6 +424,8 @@ func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
 	defer cancelWatch()
 	go watchThemeChanges(watchCtx, conn)
 
+	var pending sync.WaitGroup
+	defer pending.Wait()
 	for {
 		var req Request
 		if err := conn.Read(&req); err != nil {
@@ -411,16 +434,21 @@ func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			return err
 		}
-		resp := handler.Handle(ctx, req)
-		if err := conn.Write(resp); err != nil {
-			return err
-		}
+		pending.Add(1)
+		go func(req Request) {
+			defer pending.Done()
+			resp := handler.Handle(ctx, req)
+			if err := conn.Write(resp); err != nil {
+				// e.g. a response above Thunderbird's 1 MB limit: answer with an error instead of dying.
+				_ = conn.Write(fail(req.ID, "response could not be sent: "+err.Error()))
+			}
+		}(req)
 	}
 }
 
 func watchThemeChanges(ctx context.Context, conn *Conn) {
 	lastHash := currentThemeFingerprint()
-	ticker := time.NewTicker(800 * time.Millisecond)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {

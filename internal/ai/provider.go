@@ -38,6 +38,26 @@ type TextCompleter interface {
 	Complete(ctx context.Context, systemPrompt, userPrompt string, expectJSON bool) (string, error)
 }
 
+// ErrUnrestrictedCLI is returned for CLI backends that cannot run with tools disabled.
+const ErrUnrestrictedCLI = "cli_backend_not_allowed"
+
+type refusedCompleter struct{ name, model string }
+
+func (r refusedCompleter) Name() string      { return r.name }
+func (r refusedCompleter) ModelName() string { return r.model }
+func (r refusedCompleter) Complete(context.Context, string, string, bool) (string, error) {
+	return "", fmt.Errorf(ErrUnrestrictedCLI)
+}
+
+// CompleterFor returns the backend for a provider. gemini-cli and opencode-cli run with their
+// tools enabled and receive the mail text as a process argument, so they need an explicit opt-in.
+func CompleterFor(ai config.AIConfig, p config.ProviderConfig) TextCompleter {
+	if (p.Backend == "gemini-cli" || p.Backend == "opencode-cli") && !ai.AllowUnrestrictedCLI {
+		return refusedCompleter{name: p.Backend, model: p.Model}
+	}
+	return NewCompleter(p)
+}
+
 func NewCompleter(cfg config.ProviderConfig) TextCompleter {
 	switch cfg.Backend {
 	case "gemini-api":
@@ -100,15 +120,13 @@ Return ONLY valid JSON matching this schema:
   "reviewIssues": ["optional bullet point for review_draft mode"],
   "proposals": [
     {
-      "kind": "draft_reply|add_tags|calendar_event|move_folder",
+      "kind": "draft_reply|add_tags|move_folder",
       "title": "Short button label for the user",
       "summary": "Why this action helps",
       "subject": "Reply subject (for draft_reply)",
       "body": "Suggested plain-text reply body (for draft_reply)",
       "tags": ["tag-name"],
-      "folderPath": "optional folder path (for move_folder)",
-      "eventTitle": "Event title (for calendar_event)",
-      "eventStart": "ISO-8601 or date string (for calendar_event)"
+      "folderPath": "existing folder path (for move_folder)"
     }
   ]
 }`
@@ -138,7 +156,7 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 	rawJSON, _ := json.MarshalIndent(payload, "", "  ")
 	userPrompt := fmt.Sprintf("<untrusted_email>\n%s\n</untrusted_email>", string(rawJSON))
 
-	completer := NewCompleter(cfg.Classifier)
+	completer := CompleterFor(cfg, cfg.Classifier)
 	out, err := completer.Complete(ctx, classifierSystemPrompt, userPrompt, true)
 	if err != nil {
 		return heuristicFallbackClassification(base, msg, snippet), err
@@ -272,7 +290,7 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	}
 	fmt.Fprintf(&promptBuilder, "<untrusted_email_context>\n%s\n</untrusted_email_context>", string(ctxJSON))
 
-	completer := NewCompleter(cfg.Agent)
+	completer := CompleterFor(cfg, cfg.Agent)
 	out, err := completer.Complete(ctx, agentSystemPrompt, promptBuilder.String(), true)
 	if err != nil {
 		return AnalyzeResponse{}, err
