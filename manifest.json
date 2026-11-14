@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omathunder",
   "name": "OmaThunder",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "author": "diver80",
   "license": "MIT",
   "description": "Live Omarchy theme sync and multi-stage Gemini/Claude/Ollama AI triage companion for Thunderbird.",

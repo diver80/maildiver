@@ -6,7 +6,8 @@
   <link rel="stylesheet" href="common.css" />
   <style id="oma-dynamic-vars"></style>
   <style>
-    body { width: 350px; padding: 14px; }
+    body { width: 360px; padding: 14px; }
+    body.is-window { width: 100%; max-width: 520px; margin: 0 auto; }
     .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .hdr-left { display: flex; align-items: center; gap: 8px; font-weight: 700; }
     .hdr-left img { width: 22px; height: 22px; border-radius: 5px; }
@@ -20,6 +21,17 @@
       border: 1px solid var(--oma-border); background: var(--oma-bg-dark); cursor: pointer;
     }
     .pill.active { border-color: var(--oma-accent); background: var(--oma-selection); }
+    .sel-card { margin-bottom: 10px; padding: 10px 12px; }
+    .sel-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sel-sub { font-size: 11px; color: var(--oma-fg-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lang-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--oma-border); }
+    .lang-row .pills { margin-top: 0; }
+    .ask-row { display: flex; gap: 6px; margin-top: 8px; }
+    .ask-row input { flex: 1; padding: 5px 8px; font-size: 11.5px; }
+    .btn-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .oma-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .summary-box { max-height: 260px; overflow-y: auto; font-size: 12px; line-height: 1.5; }
+    .sug-box { border: 1px solid var(--oma-border); border-radius: 6px; padding: 8px 10px; background: var(--oma-bg-darker); margin-top: 8px; font-size: 11.5px; }
   </style>
 </head>
 <body>
@@ -44,11 +56,32 @@
     <div class="pills" id="quick-themes"></div>
   </div>
 
+  <div class="oma-card sel-card" id="popup-ai-card">
+    <div class="sel-title" id="popup-sel-title" data-i18n="popup_sel_none">Keine Mail ausgewählt</div>
+    <div class="sel-sub" id="popup-sel-sub" style="display:none;"></div>
+    <div class="lang-row">
+      <span class="oma-muted" style="font-size:11px;" data-i18n="popup_out_lang">Ausgabesprache</span>
+      <div class="pills" id="popup-lang-pills">
+        <button class="pill active" data-target-lang="" data-i18n="popup_lang_auto">Auto</button>
+        <button class="pill" data-target-lang="de" data-i18n="popup_lang_de">DE</button>
+        <button class="pill" data-target-lang="en" data-i18n="popup_lang_en">EN</button>
+      </div>
+    </div>
+    <div class="ask-row">
+      <input class="oma-input" id="popup-question" type="text" data-i18n-ph="popup_question_ph" />
+      <button class="oma-btn" id="btn-ask-mail" style="padding:5px 10px; font-size:11.5px;" data-i18n="popup_btn_ask">Fragen</button>
+    </div>
+  </div>
+
   <div style="display:flex; flex-direction:column; gap:7px;">
-    <button class="oma-btn primary" id="btn-open-space" style="justify-content:center;" data-i18n="popup_open_space">Triage-Space öffnen</button>
-    <button class="oma-btn" id="btn-analyze-mail" style="justify-content:center;" data-i18n="popup_analyze_mail">Aktuelle Mail mit Agent prüfen</button>
+    <button class="oma-btn primary" id="btn-open-space" style="justify-content:center;" data-i18n="popup_open_space">OmaThunder-Tab öffnen</button>
+    <button class="oma-btn" id="btn-analyze-mail" style="justify-content:center;" data-i18n="popup_summarize_one">Mail / Thread zusammenfassen</button>
+    <div class="btn-row-2" id="popup-ai-extras">
+      <button class="oma-btn" id="btn-extract-ics" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_extract_ics">Termine (.ics)</button>
+      <button class="oma-btn" id="btn-suggest-filter" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_suggest_filter">Filterregel vorschlagen</button>
+    </div>
     <button class="oma-btn" id="btn-draft-reply" style="justify-content:center;" data-i18n="popup_draft_reply">Antwort formulieren</button>
-    <button class="oma-btn ghost" id="btn-open-opts" style="justify-content:center;" data-i18n="popup_open_opts">Einstellungen (Gemini / Claude / Ollama)</button>
+    <button class="oma-btn ghost" id="btn-open-opts" style="justify-content:center;" data-i18n="popup_open_opts">Einstellungen</button>
   </div>
 
   <div id="popup-out" style="margin-top:10px;"></div>

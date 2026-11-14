@@ -45,17 +45,19 @@ type AIConfig struct {
 	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
 }
 
-// RoutingRule maps sender domains to a customer label and Thunderbird folder (with optional flexible subfolders).
+// RoutingRule maps sender domains (and optional sender/subject filters) to a label and Thunderbird folder.
 type RoutingRule struct {
-	ID            string            `json:"id"`
-	Customer      string            `json:"customer"`
-	AccountID     string            `json:"accountId,omitempty"`     // Thunderbird account ID for multi-account disambiguation & auto-create
-	FolderPath    string            `json:"folderPath"`              // e.g. "Kunden/Acme" or "Kunden/Acme/Incoming"
-	FolderID      string            `json:"folderId,omitempty"`      // Thunderbird folder ID if bound from UI
-	Domains       []string          `json:"domains"`                 // e.g. ["acme.de", "acme-corp.com"]
-	AutoMove      bool              `json:"autoMove"`                // Stage-0 deterministic move from INBOX -> FolderPath
-	IncludeInScan bool              `json:"includeInScan"`           // Scan this folder + subfolders for the Kanban board
-	ColumnFolders map[string]string `json:"columnFolders,omitempty"` // Optional: action/waiting/done -> subfolderPath
+	ID              string            `json:"id"`
+	Customer        string            `json:"customer"`
+	AccountID       string            `json:"accountId,omitempty"` // Thunderbird account ID for multi-account disambiguation & auto-create
+	FolderPath      string            `json:"folderPath"`          // e.g. "Kunden/Acme" or "Kunden/Acme/Incoming"
+	FolderID        string            `json:"folderId,omitempty"`  // Thunderbird folder ID if bound from UI
+	Domains         []string          `json:"domains"`             // e.g. ["acme.de", "acme-corp.com"]
+	FromContains    []string          `json:"fromContains,omitempty"`
+	SubjectContains []string          `json:"subjectContains,omitempty"`
+	AutoMove        bool              `json:"autoMove"`                // Stage-0 deterministic move from INBOX -> FolderPath
+	IncludeInScan   bool              `json:"includeInScan"`           // Scan this folder + subfolders for the Kanban board
+	ColumnFolders   map[string]string `json:"columnFolders,omitempty"` // Optional: action/waiting/done -> subfolderPath
 }
 
 // FeatureFlags switches the three independent OmaThunder building blocks on or off.

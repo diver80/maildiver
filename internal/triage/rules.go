@@ -99,30 +99,73 @@ func MatchDomainRule(from string, rules []config.RoutingRule) (config.RoutingRul
 	return MatchDomainRuleForAccount(from, "", rules)
 }
 
-// MatchDomainRuleForAccount finds the first rule matching both sender domain and account scope.
-func MatchDomainRuleForAccount(from, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	dom := ExtractSenderDomain(from)
-	if dom == "" {
-		return config.RoutingRule{}, false
+func containsAnyFold(haystack string, needles []string) bool {
+	if len(needles) == 0 {
+		return true
 	}
-	for _, r := range rules {
-		if !ruleMatchesAccount(r, accountID) {
-			continue
+	h := strings.ToLower(haystack)
+	for _, n := range needles {
+		c := strings.ToLower(strings.TrimSpace(n))
+		if c != "" && strings.Contains(h, c) {
+			return true
 		}
+	}
+	return false
+}
+
+func ruleMatchesMessageSenderAndSubject(r config.RoutingRule, m MessageInput) bool {
+	if !ruleMatchesAccount(r, m.AccountID) {
+		return false
+	}
+	hasDomains := false
+	for _, d := range r.Domains {
+		if strings.TrimSpace(strings.TrimPrefix(d, "@")) != "" {
+			hasDomains = true
+			break
+		}
+	}
+	if hasDomains {
+		dom := ExtractSenderDomain(m.From)
+		if dom == "" {
+			return false
+		}
+		matchedDom := false
 		for _, candidate := range r.Domains {
 			c := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(candidate, "@")))
-			if c == "" {
-				continue
+			if c != "" && (dom == c || strings.HasSuffix(dom, "."+c)) {
+				matchedDom = true
+				break
 			}
-			if dom == c || strings.HasSuffix(dom, "."+c) {
-				return r, true
-			}
+		}
+		if !matchedDom {
+			return false
+		}
+	}
+	if !containsAnyFold(m.From, r.FromContains) {
+		return false
+	}
+	if !containsAnyFold(m.Subject, r.SubjectContains) {
+		return false
+	}
+	return hasDomains || len(r.FromContains) > 0 || len(r.SubjectContains) > 0
+}
+
+// MatchMessageRuleForAccount finds the first rule whose domain, sender, and subject conditions match m.
+func MatchMessageRuleForAccount(m MessageInput, rules []config.RoutingRule) (config.RoutingRule, bool) {
+	for _, r := range rules {
+		if ruleMatchesMessageSenderAndSubject(r, m) {
+			return r, true
 		}
 	}
 	return config.RoutingRule{}, false
 }
 
-// MatchRoutingRule finds the customer for a mail: first by sender domain, then by the folder it lives in.
+// MatchDomainRuleForAccount finds the first rule matching both sender domain and account scope.
+func MatchDomainRuleForAccount(from, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
+	return MatchMessageRuleForAccount(MessageInput{From: from, AccountID: accountID}, rules)
+}
+
+// MatchRoutingRule finds the customer for a mail: first by sender/subject rule, then by the folder it lives in.
 // It labels mails for the board only; auto-moves use PlanAutoMoves, which is stricter.
 func MatchRoutingRule(from, currentFolder string, rules []config.RoutingRule) (config.RoutingRule, bool) {
 	return MatchRoutingRuleForAccount(from, currentFolder, "", rules)
@@ -130,13 +173,18 @@ func MatchRoutingRule(from, currentFolder string, rules []config.RoutingRule) (c
 
 // MatchRoutingRuleForAccount finds the customer for a mail scoped to accountID.
 func MatchRoutingRuleForAccount(from, currentFolder, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	if r, ok := MatchDomainRuleForAccount(from, accountID, rules); ok {
+	return MatchRoutingRuleForMessage(MessageInput{From: from, Folder: currentFolder, AccountID: accountID}, rules)
+}
+
+// MatchRoutingRuleForMessage finds the rule for a full message (matching rules first, then folder path).
+func MatchRoutingRuleForMessage(msg MessageInput, rules []config.RoutingRule) (config.RoutingRule, bool) {
+	if r, ok := MatchMessageRuleForAccount(msg, rules); ok {
 		return r, true
 	}
-	if currentFolder != "" {
-		curLower := strings.ToLower(strings.Trim(strings.TrimSpace(currentFolder), "/"))
+	if msg.Folder != "" {
+		curLower := strings.ToLower(strings.Trim(strings.TrimSpace(msg.Folder), "/"))
 		for _, r := range rules {
-			if !ruleMatchesAccount(r, accountID) {
+			if !ruleMatchesAccount(r, msg.AccountID) {
 				continue
 			}
 			fp := strings.ToLower(strings.Trim(strings.TrimSpace(r.FolderPath), "/"))
@@ -184,7 +232,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		Model:     "deterministic",
 	}
 
-	if rule, ok := MatchRoutingRuleForAccount(msg.From, msg.Folder, msg.AccountID, rules); ok {
+	if rule, ok := MatchRoutingRuleForMessage(msg, rules); ok {
 		base.Customer = rule.Customer
 		base.MatchedRuleID = rule.ID
 		base.TargetFolder = rule.FolderPath

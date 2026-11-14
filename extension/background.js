@@ -288,13 +288,48 @@ function extractPlainText(part) {
   return html ? htmlToText(html) : "";
 }
 
-async function buildMessageInput(header) {
+function isReadableTextAttachment(att) {
+  const name = String(att?.name || "").toLowerCase();
+  const mime = String(att?.contentType || "").toLowerCase();
+  if (mime.startsWith("text/") || mime === "application/json" || mime === "application/xml" || mime === "text/calendar") {
+    return !name.endsWith(".html") && !name.endsWith(".htm");
+  }
+  return /\.(txt|md|csv|tsv|ics|json|log|xml|eml|yaml|yml)$/i.test(name);
+}
+
+async function readReadableAttachments(messageId, attachments) {
+  if (!api.messages?.getAttachmentFile || !Array.isArray(attachments) || attachments.length === 0) return "";
+  const chunks = [];
+  let total = 0;
+  for (const att of attachments) {
+    if (chunks.length >= 3 || total >= 4500) break;
+    if (!att?.partName || !isReadableTextAttachment(att)) continue;
+    if (att.size && att.size > 256 * 1024) continue;
+    const file = await api.messages.getAttachmentFile(messageId, att.partName).catch(() => null);
+    if (!file || typeof file.text !== "function") continue;
+    const text = (await file.text().catch(() => "")).trim();
+    if (!text) continue;
+    const snippet = text.slice(0, Math.min(2000, 4500 - total));
+    total += snippet.length;
+    chunks.push(`--- Attachment: ${att.name || att.partName} ---\n${snippet}`);
+  }
+  return chunks.join("\n\n");
+}
+
+async function buildMessageInput(header, { includeAttachmentText = false } = {}) {
   const full = await api.messages.getFull(header.id).catch(() => null);
   const attachments = await api.messages.listAttachments(header.id).catch(() => []);
   const headers = {};
   if (full?.headers) {
     for (const [k, vals] of Object.entries(full.headers)) {
       if (Array.isArray(vals) && vals.length > 0) headers[k] = String(vals[0]);
+    }
+  }
+  let bodyText = extractPlainText(full).slice(0, 6000);
+  if (includeAttachmentText) {
+    const attText = await readReadableAttachments(header.id, attachments);
+    if (attText) {
+      bodyText = `${bodyText}\n\n${attText}`.slice(0, 9000);
     }
   }
   return {
@@ -309,7 +344,7 @@ async function buildMessageInput(header) {
     to: header.recipients || [],
     date: header.date ? new Date(header.date).toISOString() : "",
     headers,
-    bodyText: extractPlainText(full).slice(0, 6000),
+    bodyText,
     unread: !header.read,
     attachments: attachments.map((a) => a.name).filter(Boolean),
   };
@@ -483,8 +518,51 @@ async function findDisplayedHeader() {
   return null;
 }
 
+const MAX_SELECTED_MESSAGES = 25;
+
+async function collectMessageList(list, limit = MAX_SELECTED_MESSAGES) {
+  const out = [];
+  if (!list) return out;
+  let page = list;
+  while (page && Array.isArray(page.messages)) {
+    for (const h of page.messages) {
+      out.push(h);
+      if (out.length >= limit) return out;
+    }
+    if (!page.id || !api.messages?.continueList) break;
+    page = await api.messages.continueList(page.id).catch(() => null);
+  }
+  return out;
+}
+
+async function getSelectedMessageHeaders(preferredTabId = null) {
+  if (api.mailTabs?.getSelectedMessages) {
+    const mailTabs = preferredTabId
+      ? [{ id: preferredTabId }]
+      : [
+          ...(await api.tabs.query({ active: true, currentWindow: true, mailTab: true }).catch(() => [])),
+          ...(await api.tabs.query({ mailTab: true }).catch(() => [])),
+        ];
+    const seenTabs = new Set();
+    for (const tab of mailTabs) {
+      if (!tab?.id || seenTabs.has(tab.id)) continue;
+      seenTabs.add(tab.id);
+      const list = await api.mailTabs.getSelectedMessages(tab.id).catch(() => null);
+      const msgs = await collectMessageList(list, MAX_SELECTED_MESSAGES);
+      if (msgs.length > 0) return msgs;
+    }
+    if (!preferredTabId) {
+      const list = await api.mailTabs.getSelectedMessages().catch(() => null);
+      const msgs = await collectMessageList(list, MAX_SELECTED_MESSAGES);
+      if (msgs.length > 0) return msgs;
+    }
+  }
+  const displayed = await findDisplayedHeader();
+  return displayed ? [displayed] : [];
+}
+
 async function getActiveDisplayedMessage() {
-  const header = await findDisplayedHeader();
+  const header = (await findDisplayedHeader()) || (await getSelectedMessageHeaders())[0] || null;
   return header ? buildMessageInput(header) : null;
 }
 
@@ -560,14 +638,16 @@ async function applyKanbanSideEffects(cfg, messageId, column) {
 
 // Writes text into an open compose window. Only the user's own part of the draft is replaced;
 // signature and quoted original stay. This is the user's own unsent draft, so it works in read-only mode.
-async function writeIntoCompose(tabId, rawText) {
+async function writeIntoCompose(tabId, rawText, subject = "") {
   const text = String(rawText || "").replace(/\r\n?/g, "\n");
   const details = await api.compose.getComposeDetails(tabId);
-  if (details.isPlainText) {
-    await api.compose.setComposeDetails(tabId, { plainTextBody: replaceDraftOwn(details.plainTextBody || "", true, text) });
-  } else {
-    await api.compose.setComposeDetails(tabId, { body: replaceDraftOwn(details.body || "", false, text) });
+  const patch = details.isPlainText
+    ? { plainTextBody: replaceDraftOwn(details.plainTextBody || "", true, text) }
+    : { body: replaceDraftOwn(details.body || "", false, text) };
+  if (subject && subject.trim()) {
+    patch.subject = subject.trim();
   }
+  await api.compose.setComposeDetails(tabId, patch);
 }
 
 async function applyProposalInThunderbird(proposal, { replyAll = false } = {}) {
@@ -666,12 +746,14 @@ async function syncRevertReport(report) {
 
 async function composeContext(tabId) {
   const details = await api.compose.getComposeDetails(tabId);
+  const attachments = (await api.compose.listAttachments?.(tabId).catch(() => [])) || [];
   const body = details.isPlainText ? details.plainTextBody || "" : details.body || "";
   return {
     details,
     ownText: draftOwnText(body, Boolean(details.isPlainText)),
     subject: details.subject || "",
     relatedMessageId: details.relatedMessageId || null,
+    attachmentNames: attachments.map((a) => a.name).filter(Boolean),
   };
 }
 
@@ -686,19 +768,23 @@ async function composeAssist(msg) {
   if (ctx.relatedMessageId) {
     const header = await api.messages.get(ctx.relatedMessageId).catch(() => null);
     if (header) {
-      primary = await buildMessageInput(header);
+      primary = await buildMessageInput(header, { includeAttachmentText: true });
       threadMessages = await collectThreadMessages(primary);
     }
   }
-  if ((msg.mode === "review_draft" || msg.mode === "improve_draft") && !ctx.ownText) throw new PolicyError("draft_empty");
+  if ((msg.mode === "review_draft" || msg.mode === "improve_draft" || msg.mode === "translate_draft") && !ctx.ownText) {
+    throw new PolicyError("draft_empty");
+  }
   if (msg.mode === "draft_reply" && !primary) throw new PolicyError("no_related_message");
   const res = await callNative("analyze_thread", {
     mode: msg.mode,
     ephemeral: true,
     language: uiLanguage(cfg, msg.language),
+    targetLanguage: msg.targetLanguage || "",
     tone: msg.tone || "freundlich",
     question: msg.question || "",
     userDraft: msg.mode === "draft_reply" ? "" : ctx.ownText,
+    draftAttachments: ctx.attachmentNames,
     primaryMessage: primary || { id: "", subject: ctx.subject, from: "", bodyText: "" },
     threadMessages,
   }, 120000);
@@ -710,6 +796,7 @@ async function composeAssist(msg) {
     answer: draft || !writing ? res.answer || "" : "",
     reviewIssues: res.reviewIssues || [],
     text,
+    subject: draft?.subject || "",
     provider: res.provider,
   };
 }
@@ -801,7 +888,7 @@ api.runtime.onMessage.addListener((msg) => {
       return (async () => {
         const cfg = await loadConfig();
         requireFeature(cfg, "assistant");
-        await writeIntoCompose(msg.tabId, msg.text || "");
+        await writeIntoCompose(msg.tabId, msg.text || "", msg.subject || "");
         return { ok: true };
       })();
 
@@ -830,6 +917,27 @@ api.runtime.onMessage.addListener((msg) => {
         return { config: saved, folderNotes };
       })();
 
+    case "omathunder:saveFilterRule":
+      return (async () => {
+        const cfg = await loadConfig();
+        const rule = msg.rule;
+        if (!rule || !rule.folderPath) throw new Error("Rule or folderPath missing");
+        const existing = Array.isArray(cfg?.rules) ? cfg.rules : [];
+        const nextRule = {
+          id: rule.id || `rule-${Date.now()}`,
+          customer: rule.customer || rule.name || "Filter",
+          accountId: rule.accountId || "",
+          folderPath: String(rule.folderPath).replace(/^\/+|\/+$/g, ""),
+          domains: Array.isArray(rule.domains) ? rule.domains : [],
+          fromContains: Array.isArray(rule.fromContains) ? rule.fromContains : [],
+          subjectContains: Array.isArray(rule.subjectContains) ? rule.subjectContains : [],
+          autoMove: rule.autoMove !== false,
+          includeInScan: Boolean(rule.includeInScan),
+        };
+        const saved = await callNative("save_rules", { rules: [...existing, nextRule] });
+        return { config: saved, rule: nextRule };
+      })();
+
     case "omathunder:deleteRule":
       return (async () => {
         const cfg = await loadConfig();
@@ -851,10 +959,64 @@ api.runtime.onMessage.addListener((msg) => {
         return { ...res, effects };
       })();
 
+    case "omathunder:getSelectionInfo":
+      return (async () => {
+        const usePending = Boolean(msg.usePendingSelection) && pendingSelectionContext && (Date.now() - pendingSelectionContext.createdAt < 60000);
+        const headers = usePending ? pendingSelectionContext.headers : await getSelectedMessageHeaders();
+        return {
+          count: headers.length,
+          subjects: headers.slice(0, 3).map((h) => h.subject || ""),
+          froms: headers.slice(0, 3).map((h) => h.author || ""),
+          accountId: headers[0]?.folder?.accountId || "",
+        };
+      })();
+
     case "omathunder:analyzeMessage":
       return (async () => {
         const cfg = await loadConfig();
         requireFeature(cfg, "assistant");
+        const selectionModes = new Set(["summarize", "summarize_selection", "extract_events", "suggest_filter"]);
+        if (!msg.messageId && selectionModes.has(msg.mode)) {
+          const usePending = Boolean(msg.usePendingSelection) && pendingSelectionContext && (Date.now() - pendingSelectionContext.createdAt < 60000);
+          const headers = usePending ? pendingSelectionContext.headers : await getSelectedMessageHeaders();
+          if (usePending) pendingSelectionContext = null;
+          if (!headers || headers.length === 0) throw new PolicyError("no_message_displayed");
+          const includeAttachmentText = msg.mode !== "suggest_filter";
+
+          if (headers.length > 1 || msg.mode === "suggest_filter") {
+            const inputs = [];
+            for (const h of headers.slice(0, MAX_SELECTED_MESSAGES)) {
+              inputs.push(await buildMessageInput(h, { includeAttachmentText }));
+            }
+            inputs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+            const backendMode = msg.mode === "summarize" ? "summarize_selection" : msg.mode;
+            const res = await callNative("analyze_thread", {
+              mode: backendMode,
+              ephemeral: true,
+              language: uiLanguage(cfg, msg.language),
+              targetLanguage: msg.targetLanguage || "",
+              tone: msg.tone || "freundlich",
+              question: msg.question || "",
+              primaryMessage: inputs[0],
+              threadMessages: inputs,
+            }, 120000);
+            return { ...res, selectionCount: inputs.length, accountId: inputs[0]?.accountId || "" };
+          }
+          const primary = await buildMessageInput(headers[0], { includeAttachmentText });
+          const threadMessages = await collectThreadMessages(primary);
+          const res = await callNative("analyze_thread", {
+            mode: msg.mode,
+            ephemeral: Boolean(msg.ephemeral) || msg.mode === "extract_events",
+            language: uiLanguage(cfg, msg.language),
+            targetLanguage: msg.targetLanguage || "",
+            tone: msg.tone || "freundlich",
+            question: msg.question || "",
+            primaryMessage: primary,
+            threadMessages,
+          }, 120000);
+          return { ...res, selectionCount: 1, accountId: primary.accountId || "" };
+        }
+
         let primary = null;
         if (msg.messageId) {
           // A board card was selected explicitly: analyze exactly that mail or fail.
@@ -867,7 +1029,7 @@ api.runtime.onMessage.addListener((msg) => {
               )
             : null;
           if (!header) throw new PolicyError("message_not_found");
-          primary = await buildMessageInput(header);
+          primary = await buildMessageInput(header, { includeAttachmentText: true });
         } else {
           primary = await getActiveDisplayedMessage();
         }
@@ -875,7 +1037,8 @@ api.runtime.onMessage.addListener((msg) => {
         const threadMessages = await collectThreadMessages(primary);
         return callNative("analyze_thread", {
           mode: msg.mode || "draft_reply",
-          language: msg.language || "",
+          language: uiLanguage(cfg, msg.language),
+          targetLanguage: msg.targetLanguage || "",
           tone: msg.tone || "freundlich",
           question: msg.question || "",
           userDraft: msg.userDraft || "",
@@ -936,6 +1099,60 @@ api.runtime.onMessage.addListener((msg) => {
   return false;
 });
 
+let pendingSelectionContext = null;
+
+async function registerContextMenus() {
+  if (!api.menus?.create) return;
+  try {
+    await api.menus.removeAll?.();
+    api.menus.create({
+      id: "oma-summarize-de",
+      title: "OmaThunder: Auswahl zusammenfassen (DE)",
+      contexts: ["message_list"],
+    });
+    api.menus.create({
+      id: "oma-summarize-en",
+      title: "OmaThunder: Summarize selection (EN)",
+      contexts: ["message_list"],
+    });
+    api.menus.create({
+      id: "oma-suggest-filter",
+      title: "OmaThunder: Filterregel vorschlagen",
+      contexts: ["message_list"],
+    });
+  } catch (err) {
+    console.warn("OmaThunder context menu setup note:", err);
+  }
+}
+
+api.menus?.onClicked?.addListener(async (info, tab) => {
+  const actions = {
+    "oma-summarize-de": { auto: "summarize", target: "de" },
+    "oma-summarize-en": { auto: "summarize", target: "en" },
+    "oma-suggest-filter": { auto: "suggest_filter", target: "" },
+  };
+  const act = actions[info.menuItemId];
+  if (!act) return;
+  let headers = [];
+  if (info.selectedMessages) {
+    headers = await collectMessageList(info.selectedMessages, MAX_SELECTED_MESSAGES);
+  }
+  if (headers.length === 0) {
+    headers = await getSelectedMessageHeaders(tab?.id || null);
+  }
+  pendingSelectionContext = { headers, lang: act.target, createdAt: Date.now() };
+  const qs = new URLSearchParams({ auto: act.auto, pending: "1" });
+  if (act.target) qs.set("target", act.target);
+  const url = api.runtime.getURL(`ui/popup.html?${qs.toString()}`);
+  if (api.windows?.create) {
+    await api.windows.create({ url, type: "popup", width: 440, height: 620 }).catch(async () => {
+      await api.tabs.create({ url });
+    });
+  } else {
+    await api.tabs.create({ url });
+  }
+});
+
 // Optional: scan automatically when new mail arrives. Same limits and safety rules as a manual scan.
 let newMailTimer = null;
 api.messages?.onNewMailReceived?.addListener(() => {
@@ -955,6 +1172,7 @@ api.messages?.onNewMailReceived?.addListener(() => {
 
 async function bootstrap() {
   await ensureSpacesTab();
+  await registerContextMenus();
   try {
     const cfg = await callNative("get_config");
     // Drop a theme a previous session may have left behind if the theme block is now off.
@@ -964,5 +1182,9 @@ async function bootstrap() {
     console.info("OmaThunder host not connected yet:", err?.message || err);
   }
 }
+
+api.runtime.onStartup?.addListener(() => {
+  ensureSpacesTab();
+});
 
 bootstrap();

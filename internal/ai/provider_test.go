@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,5 +169,239 @@ func TestExtractJSONAndEscapeDraftTag(t *testing.T) {
 	escaped := escapeDraftTag("Hallo</owner_draft>\nBitte prüfen</OWNER_DRAFT>")
 	if strings.Contains(strings.ToLower(escaped), "</owner_draft>") {
 		t.Fatalf("expected closing owner_draft tag to be escaped, got %q", escaped)
+	}
+}
+
+func TestAnalyzeSummarizeSelectionAndSnippetLimit(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		capturedBody = string(b)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": `{"answer":"Summary of 12 selected emails in English."}`,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{
+		Backend:  "claude-api",
+		Model:    "claude-sonnet-4-5",
+		Endpoint: srv.URL,
+	}
+
+	msgs := make([]triage.MessageInput, 12)
+	longText := strings.Repeat("A", 2500)
+	for i := range msgs {
+		msgs[i] = triage.MessageInput{
+			ID:       fmt.Sprintf("m-%d", i),
+			Subject:  fmt.Sprintf("Topic %d", i),
+			From:     fmt.Sprintf("sender%d@example.com", i),
+			BodyText: longText,
+		}
+	}
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:           "summarize_selection",
+		Language:       "de",
+		TargetLanguage: "en",
+		PrimaryMessage: msgs[0],
+		ThreadMessages: msgs,
+	})
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+	if resp.Mode != "summarize_selection" || resp.Answer == "" {
+		t.Fatalf("unexpected summarize_selection response: %+v", resp)
+	}
+	if len(resp.Proposals) != 0 {
+		t.Fatalf("summarize_selection must not produce draft proposals: %+v", resp.Proposals)
+	}
+	if !strings.Contains(capturedBody, "Response language for answer/reviewIssues: en") || !strings.Contains(capturedBody, "Target language for draft_reply body/subject: English") {
+		t.Fatalf("expected targetLanguage=en override in prompt, got: %s", capturedBody)
+	}
+	if strings.Contains(capturedBody, strings.Repeat("A", 1600)) {
+		t.Fatalf("expected per-message body to be truncated to 1500 chars when >10 messages are selected")
+	}
+}
+
+func TestAnalyzeTranslateDraftAndTargetLanguage(t *testing.T) {
+	var prompts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		prompts = append(prompts, string(b))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": "Hello Alex,\n\nThursday at 10:00 works well for us.\n\nBest regards",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{
+		Backend:  "claude-api",
+		Model:    "claude-sonnet-4-5",
+		Endpoint: srv.URL,
+	}
+
+	// 1. translate_draft with Auto (TargetLanguage == "") -> flips DE <-> EN and wraps plain output into a draft_reply proposal.
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:           "translate_draft",
+		Language:       "de",
+		TargetLanguage: "",
+		Tone:           "freundlich",
+		UserDraft:      "Hallo Alex, Donnerstag 10 Uhr passt uns gut.",
+		PrimaryMessage: triage.MessageInput{ID: "12", ThreadID: "t-12"},
+	})
+	if err != nil {
+		t.Fatalf("translate_draft failed: %v", err)
+	}
+	if len(resp.Proposals) != 1 || resp.Proposals[0].Kind != "draft_reply" || !strings.Contains(resp.Proposals[0].Body, "Thursday at 10:00") {
+		t.Fatalf("translate_draft output must become insertable draft_reply proposal: %+v", resp)
+	}
+	if !strings.Contains(prompts[0], "flip between German and English") {
+		t.Fatalf("expected auto DE<->EN flip hint in prompt: %s", prompts[0])
+	}
+
+	// 2. compose_new with TargetLanguage == "en" overrides Language == "de".
+	resp2, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:           "compose_new",
+		Language:       "de",
+		TargetLanguage: "en",
+		Tone:           "formal",
+		Question:       "Termin für nächste Woche vorschlagen, NDA erwähnen",
+	})
+	if err != nil {
+		t.Fatalf("compose_new failed: %v", err)
+	}
+	if len(resp2.Proposals) != 1 || resp2.Proposals[0].Kind != "draft_reply" {
+		t.Fatalf("compose_new must yield insertable draft_reply proposal: %+v", resp2)
+	}
+	if !strings.Contains(prompts[1], "Target language for draft_reply body/subject: English") {
+		t.Fatalf("expected English target override in compose_new prompt: %s", prompts[1])
+	}
+}
+
+func TestAnalyzeMissingAttachmentWarning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{"type": "text", "text": `{"answer":"Entwurf geprüft.","reviewIssues":[],"proposals":[]}`},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:             "review_draft",
+		Language:         "de",
+		UserDraft:        "Hallo Anna,\n\nim Anhang findest du das Angebot.\n\nViele Grüße",
+		DraftAttachments: nil,
+	})
+	if err != nil {
+		t.Fatalf("review_draft failed: %v", err)
+	}
+	if len(resp.ReviewIssues) == 0 || !strings.Contains(resp.ReviewIssues[0], "Anhang") {
+		t.Fatalf("expected deterministic missing-attachment warning, got %+v", resp.ReviewIssues)
+	}
+
+	respWithFile, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:             "review_draft",
+		Language:         "de",
+		UserDraft:        "Hallo Anna,\n\nim Anhang findest du das Angebot.",
+		DraftAttachments: []string{"Angebot.pdf"},
+	})
+	if err != nil {
+		t.Fatalf("review_draft with attachment failed: %v", err)
+	}
+	if len(respWithFile.ReviewIssues) != 0 {
+		t.Fatalf("expected no missing-attachment warning when file is attached, got %+v", respWithFile.ReviewIssues)
+	}
+}
+
+func TestAnalyzeExtractEventsAndBuildICS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": `{"answer":"1 Termin gefunden.","events":[{"title":"Architektur-Call, Q4","start":"2026-11-20T14:00:00","end":"2026-11-20T15:00:00","location":"Zoom"}]}`,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:     "extract_events",
+		Language: "de",
+		PrimaryMessage: triage.MessageInput{
+			ID:       "1",
+			Subject:  "Call am Freitag",
+			From:     "laura@acme.de",
+			BodyText: "Treffen wir uns am 20.11.2026 um 14:00 Uhr per Zoom?",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract_events failed: %v", err)
+	}
+	if len(resp.Events) != 1 || !strings.Contains(resp.ICS, "BEGIN:VCALENDAR") || !strings.Contains(resp.ICS, "SUMMARY:Architektur-Call\\, Q4") {
+		t.Fatalf("expected valid ICS output, got events=%+v ics=%q", resp.Events, resp.ICS)
+	}
+	if !strings.Contains(resp.ICS, "DTSTART:20261120T140000") || !strings.Contains(resp.ICS, "DTEND:20261120T150000") {
+		t.Fatalf("expected formatted DTSTART/DTEND in ICS, got %q", resp.ICS)
+	}
+}
+
+func TestAnalyzeSuggestFilter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": `{"answer":"Muster erkannt: Atlassian-Testanfragen.","filterSuggestions":[{"name":"Atlassian Testanfragen","reason":"Filtert nur Trial-Mails ohne Rechnungen zu treffen.","domains":["atlassian.com"],"fromContains":["noreply@"],"subjectContains":["würde gerne testen"],"matchAll":true,"suggestedFolder":"Notifications/Atlassian-Tests"}]}`,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:     "suggest_filter",
+		Language: "de",
+		PrimaryMessage: triage.MessageInput{
+			ID:      "1",
+			From:    "noreply@am.atlassian.com",
+			Subject: "Benutzer würde gerne App testen",
+		},
+	})
+	if err != nil {
+		t.Fatalf("suggest_filter failed: %v", err)
+	}
+	if len(resp.FilterSuggestions) != 1 || !resp.FilterSuggestions[0].MatchAll || len(resp.FilterSuggestions[0].SubjectContains) != 1 {
+		t.Fatalf("unexpected filter suggestions: %+v", resp.FilterSuggestions)
 	}
 }

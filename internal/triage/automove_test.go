@@ -119,6 +119,53 @@ func TestStoreDoesNotMergeDifferentMailsWithSameNumericID(t *testing.T) {
 	}
 }
 
+func TestPlanAutoMovesSubjectAndFromContains(t *testing.T) {
+	rules := []config.RoutingRule{{
+		ID:              "atlassian-trials",
+		Customer:        "Atlassian Testanfragen",
+		AccountID:       "work",
+		FolderPath:      "Notifications/Atlassian-Tests",
+		Domains:         []string{"atlassian.com"},
+		FromContains:    []string{"noreply@"},
+		SubjectContains: []string{"würde gerne", "would like to try"},
+		AutoMove:        true,
+	}}
+	policy := config.MailboxPolicy{TriageAccountIDs: []string{"work"}}
+
+	trialMail := MessageInput{
+		ID:        "10",
+		ThreadID:  "<trial@atlassian.com>",
+		AccountID: "work",
+		Folder:    "INBOX",
+		InInbox:   true,
+		From:      "Atlassian <noreply@am.atlassian.com>",
+		Subject:   "Max Mustermann würde gerne Jira Service Management testen",
+	}
+	billingMail := MessageInput{
+		ID:        "11",
+		ThreadID:  "<bill@atlassian.com>",
+		AccountID: "work",
+		Folder:    "INBOX",
+		InInbox:   true,
+		From:      "Atlassian Billing <billing@atlassian.com>",
+		Subject:   "Invoice #AT-9912 due",
+	}
+	supportMail := MessageInput{
+		ID:        "12",
+		ThreadID:  "<sup@atlassian.com>",
+		AccountID: "work",
+		Folder:    "INBOX",
+		InInbox:   true,
+		From:      "Atlassian <noreply@am.atlassian.com>",
+		Subject:   "Security alert: API token created",
+	}
+
+	got := PlanAutoMoves([]MessageInput{trialMail, billingMail, supportMail}, rules, policy)
+	if len(got) != 1 || got[0].MessageID != "10" || got[0].TargetFolder != "Notifications/Atlassian-Tests" {
+		t.Fatalf("expected only trial mail to match fine-grained rule, got %+v", got)
+	}
+}
+
 func TestPlanAutoMovesMultiAccountSameDomain(t *testing.T) {
 	rules := []config.RoutingRule{
 		{ID: "r-priv", Customer: "Acme Priv", AccountID: "priv", FolderPath: "Privat/Acme", FolderID: "f-priv", Domains: []string{"acme.de"}, AutoMove: true},

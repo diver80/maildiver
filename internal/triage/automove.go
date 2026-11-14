@@ -55,7 +55,7 @@ func planAutoMove(m MessageInput, rules []config.RoutingRule, policy config.Mail
 	if failedSenderAuth(m.Headers) {
 		return PlannedMove{}, false
 	}
-	rule, ok := MatchDomainRuleForAccount(m.From, m.AccountID, rules)
+	rule, ok := MatchMessageRuleForAccount(m, rules)
 	if !ok || !rule.AutoMove {
 		return PlannedMove{}, false
 	}

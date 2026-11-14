@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 
 let mode = "improve_draft";
 let tone = "freundlich";
+let targetLang = "";
 let tabId = null;
 let context = { ownText: "", hasRelated: false };
 
@@ -24,9 +25,10 @@ function updateHint() {
     review_draft: context.ownText ? "cmp_hint_review" : "cmp_hint_empty",
     draft_reply: context.hasRelated ? "cmp_hint_reply" : "cmp_hint_no_related",
     compose_new: "cmp_hint_new",
+    translate_draft: context.ownText ? "cmp_hint_translate" : "cmp_hint_empty",
   };
   $("cmp-hint").textContent = t(hints[mode]);
-  const needsDraft = mode === "improve_draft" || mode === "review_draft";
+  const needsDraft = mode === "improve_draft" || mode === "review_draft" || mode === "translate_draft";
   $("cmp-run").disabled = (needsDraft && !context.ownText) || (mode === "draft_reply" && !context.hasRelated);
 }
 
@@ -45,6 +47,20 @@ function showResult(res) {
     out.appendChild(ul);
   }
   if (!res.text) return;
+  let subjectCheckbox = null;
+  const proposedSubject = (res.subject || "").trim();
+  if (proposedSubject && proposedSubject !== (context.subject || "").trim()) {
+    const subjRow = document.createElement("label");
+    subjRow.style.cssText = "display:flex; align-items:flex-start; gap:6px; margin-top:8px; padding:6px 8px; border-radius:6px; background:var(--oma-bg-darker); border:1px solid var(--oma-border); font-size:11.5px; cursor:pointer;";
+    subjectCheckbox = document.createElement("input");
+    subjectCheckbox.type = "checkbox";
+    subjectCheckbox.checked = !context.subject || mode === "compose_new" || mode === "translate_draft";
+    subjectCheckbox.style.marginTop = "2px";
+    const span = document.createElement("span");
+    span.textContent = `${t("cmp_subject_prefix")}: ${proposedSubject}`;
+    subjRow.append(subjectCheckbox, span);
+    out.appendChild(subjRow);
+  }
   const box = document.createElement("div");
   box.className = "result";
   box.textContent = res.text;
@@ -59,7 +75,12 @@ function showResult(res) {
   apply.textContent = t(context.ownText ? "cmp_replace" : "cmp_insert");
   apply.addEventListener("click", async () => {
     try {
-      await api.runtime.sendMessage({ type: "omathunder:composeApply", tabId, text: res.text });
+      await api.runtime.sendMessage({
+        type: "omathunder:composeApply",
+        tabId,
+        text: res.text,
+        subject: subjectCheckbox?.checked ? proposedSubject : "",
+      });
       window.close();
     } catch (err) {
       out.appendChild(card(errText(err), true));
@@ -93,6 +114,13 @@ async function init() {
       tone = btn.dataset.tone;
     });
   });
+  document.querySelectorAll(".tlang").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tlang").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      targetLang = btn.dataset.targetLang || "";
+    });
+  });
 
   if (inExtension) {
     try {
@@ -120,7 +148,14 @@ async function init() {
   $("cmp-run").addEventListener("click", async () => {
     const out = $("cmp-out");
     out.innerHTML = "";
-    out.appendChild(card(t("ai_working", { mode: t(`cmp_mode_${{ improve_draft: "improve", review_draft: "review", draft_reply: "reply", compose_new: "new" }[mode]}`) }), true));
+    const modeKeys = {
+      improve_draft: "improve",
+      review_draft: "review",
+      draft_reply: "reply",
+      compose_new: "new",
+      translate_draft: "translate",
+    };
+    out.appendChild(card(t("ai_working", { mode: t(`cmp_mode_${modeKeys[mode] || "new"}`) }), true));
     if (!inExtension) return;
     $("cmp-run").disabled = true;
     try {
@@ -129,6 +164,7 @@ async function init() {
         tabId,
         mode,
         tone,
+        targetLanguage: targetLang,
         question: $("cmp-notes").value,
         language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
       });
@@ -138,6 +174,7 @@ async function init() {
       out.appendChild(card(errText(err), true));
     } finally {
       $("cmp-run").disabled = false;
+      updateHint();
     }
   });
 }
