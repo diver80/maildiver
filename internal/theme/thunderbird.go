@@ -24,11 +24,9 @@ func BuildPayload(p Palette, source string) Payload {
 	if p.IsLight {
 		scheme = "light"
 	}
-	contrastFg := "#0f1117"
+	contrastFg := "#ffffff"
 	if isLightColor(p.Accent) {
 		contrastFg = "#101218"
-	} else {
-		contrastFg = "#ffffff"
 	}
 
 	tb := ThunderbirdTheme{

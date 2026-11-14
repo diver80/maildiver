@@ -3,6 +3,7 @@ package triage
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/diver80/omathunder/internal/config"
 )
@@ -128,5 +129,84 @@ func TestStage0DoesNotHideTransactionalMail(t *testing.T) {
 				t.Fatalf("expected FYI bucket, got %s", c.Bucket)
 			}
 		})
+	}
+}
+
+func TestPrepareSnippetUTF8AndExactSignature(t *testing.T) {
+	// "--" without trailing space should NOT cut off the body; "-- " (RFC 3676) should.
+	raw := "Punkt 1: Prüfung läuft\n--\nPunkt 2: Überweisung 500 €\n\n-- \nSignaturzeile"
+	got := PrepareSnippet(raw, 200)
+	if !strings.Contains(got, "Punkt 2: Überweisung 500 €") {
+		t.Fatalf("inline '--' must not cut body, got %q", got)
+	}
+	if strings.Contains(got, "Signaturzeile") {
+		t.Fatalf("RFC 3676 '-- ' must strip signature, got %q", got)
+	}
+
+	// Truncating multi-byte UTF-8 runes must preserve valid UTF-8 and fit maxRunes (+ ellipsis).
+	longUTF8 := strings.Repeat("äöü€—", 30)
+	trunc := PrepareSnippet(longUTF8, 12)
+	if !utf8.ValidString(trunc) {
+		t.Fatalf("truncated snippet produced invalid UTF-8: %q", trunc)
+	}
+	if utf8.RuneCountInString(trunc) != 13 || !strings.HasSuffix(trunc, "…") {
+		t.Fatalf("expected 12 runes + ellipsis, got %d runes (%q)", utf8.RuneCountInString(trunc), trunc)
+	}
+}
+
+func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
+	s := NewStoreAt(t.TempDir())
+	if _, err := s.SaveClassifications([]Classification{
+		{MessageID: "1", ThreadID: "<1@x>", Subject: "Kickoff", Bucket: BucketEvent, KanbanColumn: "invoice", NeedsAttention: true, Date: "2026-11-10T10:00:00Z"},
+		{MessageID: "2", ThreadID: "<2@x>", Subject: "Vertrag A", Bucket: BucketAction, Urgency: "high", NeedsAttention: true, Date: "2026-11-11T10:00:00Z"},
+		{MessageID: "3", ThreadID: "<3@x>", Subject: "Vertrag B", Bucket: BucketAction, Urgency: "high", NeedsAttention: true, Date: "2026-11-11T10:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddProposal(Proposal{ID: "p1", Status: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.MoveKanban("1", "invalid-col"); err == nil {
+		t.Fatal("expected invalid kanban column to fail")
+	}
+	if _, err := s.UpdateProposalStatus("p1", "invalid-status"); err == nil {
+		t.Fatal("expected invalid proposal status to fail")
+	}
+
+	// Verify BarSummary counts EventCount for BucketEvent even in invoice column, and is deterministic.
+	st, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := ComputeBarSummary(st)
+	if sum.EventCount != 1 {
+		t.Fatalf("expected EventCount=1, got %d", sum.EventCount)
+	}
+	if sum.TopHeadline != "Vertrag A" {
+		t.Fatalf("expected deterministic tie-break by MessageID ('Vertrag A'), got %q", sum.TopHeadline)
+	}
+
+	// Verify PopMovedByScan restores Folder & FolderID and keeps MatchedRuleID/Customer.
+	if _, err := s.SaveClassifications([]Classification{
+		{MessageID: "50", ThreadID: "<50@x>", AccountID: "work", Customer: "Acme", MatchedRuleID: "r1", Folder: "INBOX", FolderID: "f-in"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordMoves([]MovedMessage{
+		{MessageID: "51", OldMessageID: "50", HeaderMessageID: "<50@x>", AccountID: "work", RuleID: "r1", ScanID: "scan-1", OriginalFolder: "INBOX", OriginalFolderID: "f-in", TargetFolder: "Kunden/Acme", TargetFolderID: "f-acme"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	popped, err := s.PopMovedByScan("scan-1")
+	if err != nil || len(popped) != 1 {
+		t.Fatalf("PopMovedByScan failed: popped=%+v err=%v", popped, err)
+	}
+	st2, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st2.Classifications["51"]; got.Folder != "INBOX" || got.FolderID != "f-in" || got.MatchedRuleID != "r1" {
+		t.Fatalf("expected PopMovedByScan to restore folder while keeping rule attribution, got %+v", got)
 	}
 }

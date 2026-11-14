@@ -11,6 +11,16 @@ const QUICK_THEMES = [
   { name: "flexoki-light", label: "Flexoki Light" },
 ];
 
+function applyTheme(themePayload, themeEnabled = true) {
+  const el = document.getElementById("oma-dynamic-vars");
+  if (!el) return;
+  if (!themeEnabled || !themePayload?.uiCssVars) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = themePayload.uiCssVars;
+}
+
 function renderQuickThemes(active) {
   const el = document.getElementById("quick-themes");
   el.innerHTML = QUICK_THEMES.map((t) =>
@@ -20,7 +30,8 @@ function renderQuickThemes(active) {
     b.addEventListener("click", async () => {
       if (inExtension) {
         try {
-          await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: b.dataset.t, mode: "preset" });
+          const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: b.dataset.t, mode: "preset" });
+          if (payload) applyTheme(payload, true);
         } catch (err) {
           document.getElementById("popup-out").textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message;
           return;
@@ -53,6 +64,8 @@ async function init() {
         document.getElementById("st-action").textContent = snap.barSummary.actionCount ?? 0;
         document.getElementById("st-proposals").textContent = snap.barSummary.pendingProposals ?? 0;
       }
+      const themeEnabled = snap.config?.features?.theme !== false;
+      applyTheme(snap.theme, themeEnabled);
       if (snap.theme?.palette?.name) renderQuickThemes(snap.theme.palette.name);
       const features = snap.config?.features;
       if (features) {
@@ -63,6 +76,12 @@ async function init() {
         document.getElementById("popup-readonly").style.display =
           features.triage && snap.config?.mailbox?.readOnly !== false ? "" : "none";
       }
+      api.runtime.onMessage.addListener((msg) => {
+        if (msg?.type === "omathunder:themeChanged" && msg.payload) {
+          applyTheme(msg.payload, snap.config?.features?.theme !== false);
+          if (msg.payload.palette?.name) renderQuickThemes(msg.payload.palette.name);
+        }
+      });
     }
   }
 

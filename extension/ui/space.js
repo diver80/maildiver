@@ -178,31 +178,21 @@ function bindSettingsButtons(root) {
   root.querySelectorAll("[data-open-settings]").forEach((b) => b.addEventListener("click", openSettings));
 }
 
-function applyPaletteLocally(p) {
+function applyPaletteLocally(themeOrPalette) {
+  if (!themeOrPalette) return;
+  const p = themeOrPalette.palette || themeOrPalette;
   if (!p) return;
   if (inExtension && !feature("theme")) {
     document.getElementById("oma-dynamic-vars").textContent = "";
     document.getElementById("theme-label").textContent = "";
     return;
   }
-  const contrast = p.isLight ? "#ffffff" : "#0f1117";
-  document.getElementById("oma-dynamic-vars").textContent = `:root {
-    --oma-bg: ${p.background};
-    --oma-bg-dark: ${p.darkBackground || p.background};
-    --oma-bg-darker: ${p.darkerBackground || p.darkBackground || p.background};
-    --oma-bg-elevated: ${p.lighterBackground || p.background};
-    --oma-fg: ${p.foreground};
-    --oma-fg-muted: ${p.darkForeground || p.foreground};
-    --oma-accent: ${p.accent};
-    --oma-accent-fg: ${contrast};
-    --oma-selection: ${p.selection || p.lighterBackground};
-    --oma-border: ${p.border || p.selection};
-    --oma-green: ${p.green || "#9ece6a"};
-    --oma-yellow: ${p.yellow || "#e0af68"};
-    --oma-red: ${p.red || "#f7768e"};
-    color-scheme: ${p.isLight ? "light" : "dark"};
-  }`;
-  document.getElementById("theme-label").textContent = `Theme: ${p.label || p.name}`;
+  const cssVars = themeOrPalette.uiCssVars
+    || (window.OmaCore && window.OmaCore.buildThemeVars ? window.OmaCore.buildThemeVars(p) : "");
+  if (cssVars) {
+    document.getElementById("oma-dynamic-vars").textContent = cssVars;
+  }
+  document.getElementById("theme-label").textContent = `Theme: ${p.label || p.name || ""}`;
 }
 
 function escapeHtml(str) {
@@ -505,9 +495,11 @@ function renderMain() {
       const accountId = document.getElementById("rule-account").value;
       if (!accountId || !customer || !folderPath || domains.length === 0) return;
 
-      const columnFolders = {};
+      const columnFolders = { ...(editing?.columnFolders || {}) };
       if (waitSub) columnFolders.waiting = waitSub;
+      else delete columnFolders.waiting;
       if (doneSub) columnFolders.done = doneSub;
+      else delete columnFolders.done;
 
       const folderObj = (snapshot.folders || []).find((f) => f.accountId === accountId && f.path.toLowerCase() === folderPath.toLowerCase());
       if (editing) {
@@ -798,13 +790,13 @@ async function selectTheme(name) {
   if (inExtension && snapshot.connected) {
     try {
       const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: name, mode: "preset" });
-      if (payload) { snapshot.theme = payload; applyPaletteLocally(payload.palette); }
+      if (payload) { snapshot.theme = payload; applyPaletteLocally(payload); }
     } catch (err) {
       showMessage(errText(err), "err");
     }
   } else {
     const pal = (snapshot.themes || []).find((th) => th.name === name);
-    if (pal) { snapshot.theme = { palette: pal, source: "preview" }; applyPaletteLocally(pal); }
+    if (pal) { snapshot.theme = { palette: pal, source: "preview" }; applyPaletteLocally(snapshot.theme); }
   }
   renderMain();
 }
@@ -1007,7 +999,7 @@ async function init() {
       }
       if (msg?.type === "omathunder:themeChanged" && msg.payload && feature("theme")) {
         snapshot.theme = msg.payload;
-        applyPaletteLocally(msg.payload.palette);
+        applyPaletteLocally(msg.payload);
         renderMain();
       }
     });
@@ -1024,7 +1016,7 @@ async function init() {
         </ul>
       </div>`;
     }
-    applyPaletteLocally(snapshot.theme?.palette);
+    applyPaletteLocally(snapshot.theme);
     renderCounts();
     renderCustomerFilterBar();
     renderMain();
@@ -1043,7 +1035,7 @@ async function refreshSnapshot() {
     }
     if (selectedMessageId && !getAllItems().some((c) => c.messageId === selectedMessageId)) selectedMessageId = null;
   }
-  applyPaletteLocally(snapshot.theme?.palette);
+  applyPaletteLocally(snapshot.theme);
   renderCounts();
   renderCustomerFilterBar();
   renderMain();

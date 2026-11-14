@@ -145,7 +145,11 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 	if matched {
 		return base, nil
 	}
+	return ClassifyWithBase(ctx, cfg, msg, base)
+}
 
+// ClassifyWithBase runs Stage 1 LLM classification using a precomputed Stage 0 base result.
+func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput, base triage.Classification) (triage.Classification, error) {
 	snippet := msg.Snippet
 	if snippet == "" {
 		snippet = triage.PrepareSnippet(msg.BodyText, cfg.MaxSnippetChars)
@@ -228,6 +232,11 @@ func ClassifyLocal(cfg config.AIConfig, msg triage.MessageInput, rules []config.
 	if matched {
 		return base
 	}
+	return ClassifyLocalWithBase(cfg, msg, base, noteKey, note)
+}
+
+// ClassifyLocalWithBase produces a local heuristic estimate from a precomputed Stage 0 base result.
+func ClassifyLocalWithBase(cfg config.AIConfig, msg triage.MessageInput, base triage.Classification, noteKey, note string) triage.Classification {
 	c := heuristicFallbackClassification(base, msg, triage.PrepareSnippet(msg.BodyText, cfg.MaxSnippetChars))
 	if noteKey != "" {
 		c.Summary = note
@@ -321,7 +330,7 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	}
 	fmt.Fprintf(&promptBuilder, "Owner request: %s\n\n", question)
 	if strings.TrimSpace(req.UserDraft) != "" {
-		fmt.Fprintf(&promptBuilder, "<owner_draft>\n%s\n</owner_draft>\n\n", req.UserDraft)
+		fmt.Fprintf(&promptBuilder, "<owner_draft>\n%s\n</owner_draft>\n\n", escapeDraftTag(req.UserDraft))
 	}
 	fmt.Fprintf(&promptBuilder, "<untrusted_email_context>\n%s\n</untrusted_email_context>", string(ctxJSON))
 
@@ -384,6 +393,11 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	}, req, now), nil
 }
 
+func escapeDraftTag(s string) string {
+	// Prevent quoted text pasted into a draft from prematurely closing the <owner_draft> delimiter.
+	return strings.NewReplacer("</owner_draft>", "<\\/owner_draft>", "</OWNER_DRAFT>", "<\\/OWNER_DRAFT>").Replace(s)
+}
+
 // ensureDraftProposal makes every writing result insertable: when the model put the mail text into
 // "answer" instead of a draft_reply proposal, that text becomes the proposal and the answer is cleared.
 func ensureDraftProposal(resp AnalyzeResponse, req AnalyzeRequest, now time.Time) AnalyzeResponse {
@@ -415,22 +429,26 @@ func ensureDraftProposal(resp AnalyzeResponse, req AnalyzeRequest, now time.Time
 	return resp
 }
 
-// ExtractJSON strips optional markdown fences and unmarshals the first JSON object.
+// ExtractJSON strips optional markdown fences and decodes the first JSON object.
 func ExtractJSON(raw string, dst any) error {
 	s := strings.TrimSpace(raw)
-	if strings.HasPrefix(s, "```") {
-		if nl := strings.IndexByte(s, '\n'); nl != -1 {
-			s = s[nl+1:]
+	if idx := strings.Index(s, "```"); idx != -1 {
+		after := s[idx+3:]
+		if nl := strings.IndexByte(after, '\n'); nl != -1 {
+			after = after[nl+1:]
 		}
-		if end := strings.LastIndex(s, "```"); end != -1 {
-			s = s[:end]
+		if end := strings.Index(after, "```"); end != -1 {
+			s = strings.TrimSpace(after[:end])
 		}
-		s = strings.TrimSpace(s)
 	}
-	start := strings.IndexByte(s, '{')
-	end := strings.LastIndexByte(s, '}')
-	if start >= 0 && end > start {
-		s = s[start : end+1]
+	if start := strings.IndexByte(s, '{'); start >= 0 {
+		dec := json.NewDecoder(strings.NewReader(s[start:]))
+		if err := dec.Decode(dst); err == nil {
+			return nil
+		}
+		if end := strings.LastIndexByte(s, '}'); end > start {
+			return json.Unmarshal([]byte(s[start:end+1]), dst)
+		}
 	}
 	return json.Unmarshal([]byte(s), dst)
 }

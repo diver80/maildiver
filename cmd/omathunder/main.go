@@ -25,6 +25,7 @@ func main() {
 	}
 
 	native.Version = version
+	native.LoadEnvFile()
 	cmd := os.Args[1]
 	// When Thunderbird launches the Native Messaging Host directly on some platforms,
 	// it passes the manifest path as the sole argument.

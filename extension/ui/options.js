@@ -5,6 +5,16 @@ const inExtension = Boolean(api?.runtime?.sendMessage);
 const t = (k, vars) => (window.OMA_I18N ? window.OMA_I18N.t(k, vars) : k);
 const $ = (id) => document.getElementById(id);
 
+function applyTheme(themePayload, themeEnabled = true) {
+  const el = $("oma-dynamic-vars");
+  if (!el) return;
+  if (!themeEnabled || !themePayload?.uiCssVars) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = themePayload.uiCssVars;
+}
+
 const PREVIEW_ACCOUNTS = [
   { id: "account1", name: "Firma (IMAP)" },
   { id: "account2", name: "Privat (Gmail)" },
@@ -122,6 +132,8 @@ async function init() {
   const features = cfg?.features || { theme: true, assistant: true, triage: false };
   const mb = cfg?.mailbox || { readOnly: true, triageAccountIds: [], autoMoveOnlyUnread: true, scanLimit: 20, scanDays: 30 };
 
+  applyTheme(lastSnap?.theme, features.theme !== false);
+
   const langPref = cfg?.language || "auto";
   $("ui-lang").value = langPref;
   if (window.OMA_I18N && langPref !== "auto") {
@@ -158,11 +170,21 @@ async function init() {
   $("theme-preset").value = cfg?.theme?.preset || "tokyo-night";
   $("clf-backend").value = cfg?.ai?.classifier?.backend || "gemini-api";
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
+  $("clf-endpoint").value = cfg?.ai?.classifier?.endpoint || "";
   $("agent-backend").value = cfg?.ai?.agent?.backend || "claude-cli";
   $("agent-model").value = cfg?.ai?.agent?.model || "";
+  $("agent-endpoint").value = cfg?.ai?.agent?.endpoint || "";
   $("ai-classify").checked = Boolean(cfg?.ai?.classifyWithAi);
   $("ai-max-calls").value = cfg?.ai?.maxAiCallsPerScan || 50;
   $("ai-allow-cli").checked = Boolean(cfg?.ai?.allowUnrestrictedCli);
+
+  if (inExtension) {
+    api.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === "omathunder:themeChanged" && msg.payload) {
+        applyTheme(msg.payload, $("feat-theme").checked);
+      }
+    });
+  }
 
   $("feat-triage").addEventListener("change", updateDependentFields);
   $("ui-lang").addEventListener("change", (e) => {
@@ -209,10 +231,12 @@ async function init() {
         classifier: {
           backend: $("clf-backend").value,
           model: $("clf-model").value.trim(),
+          endpoint: $("clf-endpoint").value.trim(),
         },
         agent: {
           backend: $("agent-backend").value,
           model: $("agent-model").value.trim(),
+          endpoint: $("agent-endpoint").value.trim(),
         },
       },
     };
@@ -223,7 +247,12 @@ async function init() {
     }
     try {
       const res = await api.runtime.sendMessage({ type: "omathunder:saveConfig", config: patch });
-      if (res?.config) cfg = res.config;
+      if (res?.config) {
+        cfg = res.config;
+        initialTheme.mode = res.config.theme?.mode || initialTheme.mode;
+        initialTheme.preset = res.config.theme?.preset || initialTheme.preset;
+      }
+      applyTheme(res?.theme, $("feat-theme").checked);
       st.textContent = t("opts_saved");
       renderStatus(await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch(() => lastSnap));
     } catch (err) {

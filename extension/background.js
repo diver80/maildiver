@@ -4,7 +4,7 @@ const api = typeof messenger !== "undefined" ? messenger : browser;
 const {
   PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, requireWritable,
   requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
-  normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn,
+  normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn, htmlToText,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
@@ -267,21 +267,25 @@ async function ensureFolderPath(cfg, accountId, folderPath) {
   return currentFolder;
 }
 
-function extractPlainText(part) {
+function findPartText(part, mimePrefix) {
   if (!part) return "";
-  if (part.contentType && part.contentType.toLowerCase().startsWith("text/plain") && part.body) {
+  if (part.contentType && part.contentType.toLowerCase().startsWith(mimePrefix) && part.body) {
     return part.body;
   }
   if (Array.isArray(part.parts)) {
     for (const child of part.parts) {
-      const text = extractPlainText(child);
-      if (text) return text;
+      const found = findPartText(child, mimePrefix);
+      if (found) return found;
     }
   }
-  if (part.contentType && part.contentType.toLowerCase().startsWith("text/html") && part.body) {
-    return part.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  }
   return "";
+}
+
+function extractPlainText(part) {
+  const plain = findPartText(part, "text/plain");
+  if (plain) return plain;
+  const html = findPartText(part, "text/html");
+  return html ? htmlToText(html) : "";
 }
 
 async function buildMessageInput(header) {
@@ -599,11 +603,11 @@ async function applyProposalInThunderbird(proposal, { replyAll = false } = {}) {
   return callNative("update_proposal", { id: proposal.id, status: "applied" });
 }
 
-// Moves mails that a deleted rule had auto-moved back to where they came from.
+// Moves mails that a deleted rule or undone scan had auto-moved back to where they came from.
 // Only touches mails that are still in the folder OmaThunder moved them to.
 async function revertRuleMoves(cfg, revertMoves) {
   const { folders } = await listAccountFolders();
-  const report = { reverted: 0, skipped: [], failed: [] };
+  const report = { reverted: 0, revertedMoves: [], skipped: [], failed: [] };
   for (const m of revertMoves) {
     try {
       const live = await resolveMessage({
@@ -629,12 +633,35 @@ async function revertRuleMoves(cfg, revertMoves) {
         findAllInboxes(folders).find((f) => f.accountId === accountId);
       if (!dest) throw new PolicyError("target_folder_missing");
       await mailbox.move(cfg, live, dest);
+
+      let newId = String(live.id);
+      if (m.headerMessageId) {
+        const post = await api.messages.query({ headerMessageId: m.headerMessageId, folderId: dest.id }).catch(() => null);
+        if (post?.messages?.[0]?.id) newId = String(post.messages[0].id);
+      }
+      report.revertedMoves.push({
+        messageId: newId,
+        oldMessageId: String(live.id),
+        headerMessageId: m.headerMessageId || "",
+        originalFolder: dest.path,
+        originalFolderId: dest.id,
+      });
       report.reverted++;
     } catch (err) {
       report.failed.push({ ...m, error: errorCode(err) });
     }
   }
   return report;
+}
+
+async function syncRevertReport(report) {
+  if (report.revertedMoves?.length > 0) {
+    await callNative("sync_reverts", { moves: report.revertedMoves }).catch(() => {});
+  }
+  const retry = (report.failed || []).map(({ error: _e, ...m }) => m);
+  if (retry.length > 0) {
+    await callNative("record_moves", { moves: retry }).catch(() => {});
+  }
 }
 
 async function composeContext(tabId) {
@@ -751,16 +778,20 @@ api.runtime.onMessage.addListener((msg) => {
         requireFeature(cfg, "triage");
         const res = await callNative("undo_scan_moves", { scanId: msg.scanId });
         const report = await revertRuleMoves(cfg, res?.revertMoves || []);
-        // Keep the records of reverts that failed, so "undo" can be tried again.
-        const retry = report.failed.map(({ error: _e, ...m }) => m);
-        if (retry.length > 0) await callNative("record_moves", { moves: retry }).catch(() => {});
+        await syncRevertReport(report);
         return { revertReport: report };
       })();
 
     case "omathunder:composeContext":
       return (async () => {
+        if (!currentThemePayload) await loadConfig().catch(() => {});
         const ctx = await composeContext(msg.tabId);
-        return { ownText: ctx.ownText, subject: ctx.subject, hasRelated: Boolean(ctx.relatedMessageId) };
+        return {
+          ownText: ctx.ownText,
+          subject: ctx.subject,
+          hasRelated: Boolean(ctx.relatedMessageId),
+          theme: features.theme ? currentThemePayload : null,
+        };
       })();
 
     case "omathunder:composeAssist":
@@ -806,7 +837,9 @@ api.runtime.onMessage.addListener((msg) => {
         const revert = Boolean(msg.revertToIncoming);
         const res = await callNative("delete_rule", { ruleId: msg.ruleId, revertToIncoming: revert });
         if (!revert || !Array.isArray(res?.revertMoves) || res.revertMoves.length === 0) return res;
-        return { ...res, revertReport: await revertRuleMoves(cfg, res.revertMoves) };
+        const report = await revertRuleMoves(cfg, res.revertMoves);
+        await syncRevertReport(report);
+        return { ...res, revertReport: report };
       })();
 
     case "omathunder:moveKanban":

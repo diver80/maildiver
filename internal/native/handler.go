@@ -283,6 +283,19 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		return Response{ID: req.ID, OK: true, Result: map[string]any{"revertMoves": moves}}
 
+	case "sync_reverts":
+		var p struct {
+			Moves []triage.MovedMessage `json:"moves"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		st, err := h.store.SyncRevertedFolders(p.Moves)
+		if err != nil {
+			return fail(req.ID, err.Error())
+		}
+		return Response{ID: req.ID, OK: true, Result: st}
+
 	case "move_kanban":
 		var p struct {
 			MessageID string `json:"messageId"`
@@ -318,6 +331,14 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
+		}
+		if p.Mode != "" && p.Mode != "auto" && p.Mode != "omarchy" && p.Mode != "preset" {
+			return fail(req.ID, "invalid theme mode: "+p.Mode)
+		}
+		if p.Preset != "" {
+			if _, ok := theme.GetPreset(p.Preset); !ok {
+				return fail(req.ID, "unknown theme preset: "+p.Preset)
+			}
 		}
 		cfg, err := config.Load()
 		if err != nil {
@@ -397,45 +418,47 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		// Unread mails get the AI budget first.
 		sort.SliceStable(allowed, func(i, j int) bool { return allowed[i].Unread && !allowed[j].Unread })
 		for _, m := range allowed {
+			base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules)
 			if !p.Force {
-				if base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); matched {
+				if matched {
 					results = append(results, base)
 					continue
-				} else {
-					// Reuse only by Message-ID: numeric IDs restart each Thunderbird session,
-					// so the same number can belong to a different mail.
-					prev, ok := triage.Classification{}, false
-					if m.ThreadID != "" {
-						prev, ok = byThread[m.ThreadID]
-					}
-					if ok && prev.Stage == "stage1-llm" && prev.Subject == m.Subject {
-						prev.MessageID = m.ID
-						prev.AccountID = m.AccountID
-						prev.Folder = m.Folder
-						prev.FolderID = m.FolderID
-						prev.Customer = base.Customer
-						prev.MatchedRuleID = base.MatchedRuleID
-						prev.TargetFolder = base.TargetFolder
-						prev.TargetFolderID = base.TargetFolderID
-						results = append(results, prev)
-						continue
-					}
 				}
-			}
-			if !cfg.AI.ClassifyWithAI {
-				results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "sum_ai_off", "Lokale Schätzung (KI-Klassifikation ausgeschaltet)"))
-				continue
-			}
-			if _, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules); !matched {
-				if !h.takeAICall(p.ScanID, cfg.AI.MaxAICallsPerScan) {
-					aiSkipped++
-					results = append(results, ai.ClassifyLocal(cfg.AI, m, cfg.Rules, "sum_ai_limit", "Lokale Schätzung (KI-Limit pro Scan erreicht)"))
+				// Reuse only by Message-ID: numeric IDs restart each Thunderbird session,
+				// so the same number can belong to a different mail.
+				prev, ok := triage.Classification{}, false
+				if m.ThreadID != "" {
+					prev, ok = byThread[m.ThreadID]
+				}
+				if ok && prev.Stage == "stage1-llm" && prev.Subject == m.Subject {
+					prev.MessageID = m.ID
+					prev.AccountID = m.AccountID
+					prev.Folder = m.Folder
+					prev.FolderID = m.FolderID
+					prev.Customer = base.Customer
+					prev.MatchedRuleID = base.MatchedRuleID
+					prev.TargetFolder = base.TargetFolder
+					prev.TargetFolderID = base.TargetFolderID
+					results = append(results, prev)
 					continue
 				}
-				aiCalls++
 			}
+			if matched {
+				results = append(results, base)
+				continue
+			}
+			if !cfg.AI.ClassifyWithAI {
+				results = append(results, ai.ClassifyLocalWithBase(cfg.AI, m, base, "sum_ai_off", "Lokale Schätzung (KI-Klassifikation ausgeschaltet)"))
+				continue
+			}
+			if !h.takeAICall(p.ScanID, cfg.AI.MaxAICallsPerScan) {
+				aiSkipped++
+				results = append(results, ai.ClassifyLocalWithBase(cfg.AI, m, base, "sum_ai_limit", "Lokale Schätzung (KI-Limit pro Scan erreicht)"))
+				continue
+			}
+			aiCalls++
 			callCtx, cancel := context.WithTimeout(ctx, classifyTimeout)
-			c, err := ai.Classify(callCtx, cfg.AI, m, cfg.Rules)
+			c, err := ai.ClassifyWithBase(callCtx, cfg.AI, m, base)
 			cancel()
 			if err != nil {
 				// The mail still gets a local heuristic result; report why the AI step failed.

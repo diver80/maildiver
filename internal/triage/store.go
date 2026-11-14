@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -220,7 +221,19 @@ func (s *Store) RetainAccounts(policy config.MailboxPolicy) (State, error) {
 	return st, s.writeLocked(st)
 }
 
+func validKanbanColumn(col string) bool {
+	switch col {
+	case "incoming", "action", "waiting", "invoice", "done":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) MoveKanban(messageID, column string) (State, error) {
+	if !validKanbanColumn(column) {
+		return State{}, fmt.Errorf("invalid kanban column: %s", column)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.loadLocked()
@@ -297,6 +310,95 @@ func (s *Store) RecordMoves(entries []MovedMessage) (State, error) {
 	return st, nil
 }
 
+// SyncRevertedFolders updates classification keys and folders after a revert move back to Inbox.
+func (s *Store) SyncRevertedFolders(entries []MovedMessage) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return st, err
+	}
+	changed := false
+	for _, e := range entries {
+		lookupID := e.OldMessageID
+		if lookupID == "" {
+			lookupID = e.MessageID
+		}
+		c, ok := st.Classifications[lookupID]
+		if !ok && e.HeaderMessageID != "" {
+			for k, item := range st.Classifications {
+				if item.ThreadID == e.HeaderMessageID {
+					lookupID = k
+					c = item
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok {
+			continue
+		}
+		if e.MessageID != "" && e.MessageID != lookupID {
+			delete(st.Classifications, lookupID)
+			c.MessageID = e.MessageID
+		}
+		if e.OriginalFolder != "" {
+			c.Folder = e.OriginalFolder
+		}
+		if e.OriginalFolderID != "" {
+			c.FolderID = e.OriginalFolderID
+		}
+		st.Classifications[c.MessageID] = c
+		changed = true
+	}
+	if !changed {
+		return st, nil
+	}
+	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.writeLocked(st); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+func restoreClassificationFoldersLocked(st *State, popped []MovedMessage, clearRule bool) {
+	if len(popped) == 0 {
+		return
+	}
+	revertedByMsgID := make(map[string]MovedMessage, len(popped))
+	revertedByHdrID := make(map[string]MovedMessage, len(popped))
+	for _, m := range popped {
+		if m.MessageID != "" {
+			revertedByMsgID[m.MessageID] = m
+		}
+		if m.HeaderMessageID != "" {
+			revertedByHdrID[m.HeaderMessageID] = m
+		}
+	}
+	for id, c := range st.Classifications {
+		m, ok := revertedByMsgID[id]
+		if !ok && c.ThreadID != "" {
+			m, ok = revertedByHdrID[c.ThreadID]
+		}
+		if !ok {
+			continue
+		}
+		if clearRule {
+			c.Customer = ""
+			c.MatchedRuleID = ""
+			c.TargetFolder = ""
+			c.TargetFolderID = ""
+		}
+		if m.OriginalFolder != "" {
+			c.Folder = m.OriginalFolder
+		}
+		if m.OriginalFolderID != "" {
+			c.FolderID = m.OriginalFolderID
+		}
+		st.Classifications[id] = c
+	}
+}
+
 // PopMovedByRule removes and returns all tracked moves associated with a ruleId (for clean rollback to Incoming).
 func (s *Store) PopMovedByRule(ruleID string) ([]MovedMessage, State, error) {
 	s.mu.Lock()
@@ -307,47 +409,14 @@ func (s *Store) PopMovedByRule(ruleID string) ([]MovedMessage, State, error) {
 	}
 	var popped []MovedMessage
 	kept := make([]MovedMessage, 0, len(st.MovedMessages))
-	revertedByMsgID := map[string]MovedMessage{}
-	revertedByHdrID := map[string]MovedMessage{}
 	for _, m := range st.MovedMessages {
 		if m.RuleID == ruleID {
 			popped = append(popped, m)
-			if m.MessageID != "" {
-				revertedByMsgID[m.MessageID] = m
-			}
-			if m.HeaderMessageID != "" {
-				revertedByHdrID[m.HeaderMessageID] = m
-			}
 		} else {
 			kept = append(kept, m)
 		}
 	}
-	for id, c := range st.Classifications {
-		if m, ok := revertedByMsgID[id]; ok {
-			c.Customer = ""
-			c.MatchedRuleID = ""
-			c.TargetFolder = ""
-			c.TargetFolderID = ""
-			if m.OriginalFolder != "" {
-				c.Folder = m.OriginalFolder
-			}
-			if m.OriginalFolderID != "" {
-				c.FolderID = m.OriginalFolderID
-			}
-			st.Classifications[id] = c
-		} else if c.ThreadID != "" {
-			if m, ok := revertedByHdrID[c.ThreadID]; ok {
-				c.Customer = ""
-				c.MatchedRuleID = ""
-				c.TargetFolder = ""
-				c.TargetFolderID = ""
-				if m.OriginalFolder != "" {
-					c.Folder = m.OriginalFolder
-				}
-				st.Classifications[id] = c
-			}
-		}
-	}
+	restoreClassificationFoldersLocked(&st, popped, true)
 	st.MovedMessages = kept
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.writeLocked(st); err != nil {
@@ -376,6 +445,7 @@ func (s *Store) PopMovedByScan(scanID string) ([]MovedMessage, error) {
 	if len(popped) == 0 {
 		return nil, nil
 	}
+	restoreClassificationFoldersLocked(&st, popped, false)
 	st.MovedMessages = kept
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	return popped, s.writeLocked(st)
@@ -405,7 +475,19 @@ func (s *Store) AddProposal(p Proposal) (State, error) {
 	return st, nil
 }
 
+func validProposalStatus(status string) bool {
+	switch status {
+	case "pending", "applied", "dismissed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) UpdateProposalStatus(id, status string) (State, error) {
+	if !validProposalStatus(status) {
+		return State{}, fmt.Errorf("invalid proposal status: %s", status)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.loadLocked()
@@ -435,9 +517,37 @@ func (s *Store) writeLocked(st State) error {
 	return writeAtomicJSON(s.bar, ComputeBarSummary(st))
 }
 
+func urgencyRank(u string) int {
+	switch u {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
 func ComputeBarSummary(st State) BarSummary {
 	b := BarSummary{UpdatedAt: st.UpdatedAt}
+	items := make([]Classification, 0, len(st.Classifications))
 	for _, c := range st.Classifications {
+		items = append(items, c)
+	}
+	// Deterministic ordering so TopHeadline always picks the highest-priority / newest mail.
+	sort.Slice(items, func(i, j int) bool {
+		ri, rj := urgencyRank(items[i].Urgency), urgencyRank(items[j].Urgency)
+		if ri != rj {
+			return ri > rj
+		}
+		if items[i].Date != items[j].Date {
+			return items[i].Date > items[j].Date
+		}
+		return items[i].MessageID < items[j].MessageID
+	})
+	for _, c := range items {
 		switch c.KanbanColumn {
 		case "action", "incoming":
 			if c.NeedsAttention {
@@ -450,7 +560,11 @@ func ComputeBarSummary(st State) BarSummary {
 			b.WaitingCount++
 		case "invoice":
 			if c.NeedsAttention {
-				b.InvoiceCount++
+				if c.Bucket == BucketEvent {
+					b.EventCount++
+				} else {
+					b.InvoiceCount++
+				}
 			}
 		}
 	}

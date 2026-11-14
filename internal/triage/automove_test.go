@@ -118,3 +118,25 @@ func TestStoreDoesNotMergeDifferentMailsWithSameNumericID(t *testing.T) {
 		t.Fatalf("new mail must not inherit the old card: %+v", got)
 	}
 }
+
+func TestPlanAutoMovesMultiAccountSameDomain(t *testing.T) {
+	rules := []config.RoutingRule{
+		{ID: "r-priv", Customer: "Acme Priv", AccountID: "priv", FolderPath: "Privat/Acme", FolderID: "f-priv", Domains: []string{"acme.de"}, AutoMove: true},
+		{ID: "r-work", Customer: "Acme Work", AccountID: "work", FolderPath: "Kunden/Acme", FolderID: "f-work", Domains: []string{"acme.de"}, AutoMove: true},
+	}
+	policy := config.MailboxPolicy{TriageAccountIDs: []string{"priv", "work"}}
+	msg := MessageInput{
+		ID:        "10",
+		ThreadID:  "<m10@acme.de>",
+		AccountID: "work",
+		Folder:    "INBOX",
+		FolderID:  "work-inbox",
+		InInbox:   true,
+		From:      "laura@acme.de",
+		Unread:    true,
+	}
+	got := PlanAutoMoves([]MessageInput{msg}, rules, policy)
+	if len(got) != 1 || got[0].RuleID != "r-work" || got[0].TargetFolderID != "f-work" {
+		t.Fatalf("expected work rule to match without being shadowed by priv rule, got %+v", got)
+	}
+}

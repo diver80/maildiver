@@ -199,6 +199,34 @@ test("split never loses content", () => {
   }
 });
 
+test("isLightHex and buildThemeVars calculate accent contrast independently of isLight", () => {
+  eq(core.isLightHex("#ffffff"), true);
+  eq(core.isLightHex("#f9e2af"), true);
+  eq(core.isLightHex("#1e1e2e"), false);
+  eq(core.isLightHex("#2e3440"), false);
+  eq(core.isLightHex("invalid"), false);
+
+  const darkWithBrightAccent = core.buildThemeVars({
+    name: "tokyo-night",
+    isLight: false,
+    background: "#1a1b26",
+    foreground: "#c0caf5",
+    accent: "#7aa2f7",
+  });
+  eq(darkWithBrightAccent.includes("--oma-accent-fg: #101218;"), true);
+  eq(darkWithBrightAccent.includes("color-scheme: dark;"), true);
+
+  const lightWithDarkAccent = core.buildThemeVars({
+    name: "catppuccin-latte",
+    isLight: true,
+    background: "#eff1f5",
+    foreground: "#4c4f69",
+    accent: "#1e66f5",
+  });
+  eq(lightWithDarkAccent.includes("--oma-accent-fg: #ffffff;"), true);
+  eq(lightWithDarkAccent.includes("color-scheme: light;"), true);
+});
+
 out(`${count - failed}/${count} core tests passed`);
 if (failed > 0) {
   if (typeof quit === "function") quit(1);

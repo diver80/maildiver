@@ -99,6 +99,16 @@ async function init() {
       const tabs = await api.tabs.query({ active: true, currentWindow: true });
       tabId = tabs[0]?.id ?? null;
       context = await api.runtime.sendMessage({ type: "omathunder:composeContext", tabId });
+      if (context?.theme?.uiCssVars) {
+        const el = $("oma-dynamic-vars");
+        if (el) el.textContent = context.theme.uiCssVars;
+      }
+      api.runtime.onMessage.addListener((msg) => {
+        if (msg?.type === "omathunder:themeChanged" && msg.payload?.uiCssVars) {
+          const el = $("oma-dynamic-vars");
+          if (el) el.textContent = msg.payload.uiCssVars;
+        }
+      });
     } catch (err) {
       $("cmp-out").appendChild(card(errText(err), true));
     }

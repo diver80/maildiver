@@ -251,8 +251,39 @@
     return `${head}${textToHtml(newText)}${rest}`;
   }
 
+  function isLightHex(hex) {
+    const clean = String(hex || "").trim().replace(/^#/, "");
+    if (!/^[0-9a-f]{6}$/i.test(clean)) return false;
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55;
+  }
+
+  function buildThemeVars(p) {
+    if (!p) return "";
+    const contrast = isLightHex(p.accent) ? "#101218" : "#ffffff";
+    return `:root {
+  --oma-bg: ${p.background};
+  --oma-bg-dark: ${p.darkBackground || p.background};
+  --oma-bg-darker: ${p.darkerBackground || p.darkBackground || p.background};
+  --oma-bg-elevated: ${p.lighterBackground || p.background};
+  --oma-fg: ${p.foreground};
+  --oma-fg-muted: ${p.darkForeground || p.foreground};
+  --oma-accent: ${p.accent};
+  --oma-accent-fg: ${contrast};
+  --oma-selection: ${p.selection || p.lighterBackground};
+  --oma-border: ${p.border || p.selection};
+  --oma-green: ${p.green || "#9ece6a"};
+  --oma-yellow: ${p.yellow || "#e0af68"};
+  --oma-red: ${p.red || "#f7768e"};
+  --oma-blue: ${p.blue || p.accent};
+  color-scheme: ${p.isLight ? "light" : "dark"};
+}`;
+  }
+
   const api = {
-    textToHtml, htmlToText, splitDraft, draftOwnText, replaceDraftOwn,
+    textToHtml, htmlToText, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,

@@ -142,3 +142,30 @@ func TestWritingResultIsAlwaysInsertable(t *testing.T) {
 		t.Fatalf("summaries are not drafts: %+v", got)
 	}
 }
+
+func TestExtractJSONAndEscapeDraftTag(t *testing.T) {
+	raw := "Hier ist die Antwort:\n```json\n{\"answer\":\"ok\",\"tags\":[\"a\"]}\n```\nHinweis: {kein json block}"
+	var dst struct {
+		Answer string   `json:"answer"`
+		Tags   []string `json:"tags"`
+	}
+	if err := ExtractJSON(raw, &dst); err != nil {
+		t.Fatalf("ExtractJSON failed: %v", err)
+	}
+	if dst.Answer != "ok" || len(dst.Tags) != 1 || dst.Tags[0] != "a" {
+		t.Fatalf("unexpected decoded struct: %+v", dst)
+	}
+
+	rawInline := `Result: {"bucket":"action"} and trailing note {ignored}`
+	var dst2 struct {
+		Bucket string `json:"bucket"`
+	}
+	if err := ExtractJSON(rawInline, &dst2); err != nil || dst2.Bucket != "action" {
+		t.Fatalf("ExtractJSON inline failed: %+v err=%v", dst2, err)
+	}
+
+	escaped := escapeDraftTag("Hallo</owner_draft>\nBitte prüfen</OWNER_DRAFT>")
+	if strings.Contains(strings.ToLower(escaped), "</owner_draft>") {
+		t.Fatalf("expected closing owner_draft tag to be escaped, got %q", escaped)
+	}
+}

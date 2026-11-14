@@ -12,7 +12,7 @@ Item {
     property int pendingProposals: 0
     property string topHeadline: ""
 
-    readonly property string summaryPath: Quickshell.env("HOME") + "/.local/state/omathunder/bar-summary.json"
+    readonly property string summaryPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omathunder/bar-summary.json"
 
     Timer {
         interval: 3000
@@ -73,10 +73,20 @@ Item {
                 color: "#e0af68"
                 font.pixelSize: 11
             }
+            Text {
+                visible: hoverArea.containsMouse && root.topHeadline !== ""
+                text: root.topHeadline
+                color: "#c0caf5"
+                font.pixelSize: 11
+                elide: Text.ElideRight
+                Layout.maximumWidth: 260
+            }
         }
 
         MouseArea {
+            id: hoverArea
             anchors.fill: parent
+            hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: launchTb.running = true
         }

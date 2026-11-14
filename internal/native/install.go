@@ -147,13 +147,57 @@ func UninstallHost() ([]string, error) {
 	return removed, nil
 }
 
-// EnvFilePath is the optional shell file the host wrapper loads API keys from (macOS/Linux).
+// EnvFilePath is the optional shell file the host wrapper loads API keys from (macOS/Linux/Windows).
 func EnvFilePath() string {
 	cfgDir, err := config.ConfigDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(cfgDir, "env")
+}
+
+// LoadEnvFile reads key/value pairs (e.g. `export GEMINI_API_KEY=...`) from EnvFilePath
+// into the current process environment without overwriting variables already set.
+// This ensures CLI commands (`doctor`, `classify`) and Windows hosts see the same keys as the POSIX wrapper.
+func LoadEnvFile() {
+	path := EnvFilePath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export") && len(line) > len("export") && (line[6] == ' ' || line[6] == '\t') {
+			line = strings.TrimSpace(line[6:])
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		val := strings.TrimSpace(line[eq+1:])
+		if key == "" || strings.ContainsAny(key, " \t") {
+			continue
+		}
+		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+			val = val[1 : len(val)-1]
+		} else if idx := strings.Index(val, " #"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		if val != "" && os.Getenv(key) == "" {
+			_ = os.Setenv(key, val)
+		}
+	}
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func wrapperLocation() (string, error) {
@@ -182,7 +226,9 @@ func writeHostWrapper(absBin string) (string, error) {
 	} else {
 		cfgDir := filepath.Dir(wrapper)
 		envFile := filepath.Join(cfgDir, "env")
-		content = fmt.Sprintf("#!/bin/sh\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH\"\n[ -f %q ] && . %q\nexec %q host \"$@\"\n", envFile, envFile, absBin)
+		qEnv := shellQuote(envFile)
+		qBin := shellQuote(absBin)
+		content = fmt.Sprintf("#!/bin/sh\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH\"\n[ -f %s ] && . %s\nexec %s host \"$@\"\n", qEnv, qEnv, qBin)
 	}
 	if err := os.WriteFile(wrapper, []byte(content), perm); err != nil {
 		return "", err

@@ -126,6 +126,8 @@
       opts_agent_backend: "Agent-Backend",
       opts_agent_model: "Modell (optional)",
       opts_agent_model_ph: "leer = CLI-Standard",
+      opts_endpoint: "Endpoint (optional)",
+      opts_endpoint_ph: "leer = Standard-URL (z. B. http://127.0.0.1:11434)",
 
       // Status, compose assistant, triage extras
       opts_sec_status: "Status",
@@ -367,6 +369,8 @@
       opts_agent_backend: "Agent Backend",
       opts_agent_model: "Model (optional)",
       opts_agent_model_ph: "empty = CLI default",
+      opts_endpoint: "Endpoint (optional)",
+      opts_endpoint_ph: "empty = default URL (e.g. http://127.0.0.1:11434)",
 
       // Status, compose assistant, triage extras
       opts_sec_status: "Status",

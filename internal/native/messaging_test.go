@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/diver80/omathunder/internal/config"
@@ -353,5 +355,81 @@ func TestStableBinaryPathSurvivesBrewUpgrade(t *testing.T) {
 		if got := StableBinaryPath(in); got != want {
 			t.Errorf("StableBinaryPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestLoadEnvFileAndShellQuote(t *testing.T) {
+	cfgRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgRoot)
+	t.Setenv("OMATHUNDER_TEST_KEY", "")
+	t.Setenv("OMATHUNDER_TEST_PLAIN", "")
+	t.Setenv("OMATHUNDER_TEST_EXISTING", "from-env")
+
+	envPath := EnvFilePath()
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "# comment\nexport OMATHUNDER_TEST_KEY=\"secret-val\"\nOMATHUNDER_TEST_PLAIN=abc # inline comment\nOMATHUNDER_TEST_EXISTING=from-file\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	LoadEnvFile()
+	if got := os.Getenv("OMATHUNDER_TEST_KEY"); got != "secret-val" {
+		t.Fatalf("expected exported quoted key loaded, got %q", got)
+	}
+	if got := os.Getenv("OMATHUNDER_TEST_PLAIN"); got != "abc" {
+		t.Fatalf("expected plain key without inline comment, got %q", got)
+	}
+	if got := os.Getenv("OMATHUNDER_TEST_EXISTING"); got != "from-env" {
+		t.Fatalf("expected existing env var preserved, got %q", got)
+	}
+
+	if q := shellQuote("/Users/O'Brien/bin/omathunder"); q != `'/Users/O'"'"'Brien/bin/omathunder'` {
+		t.Fatalf("unexpected shellQuote output: %s", q)
+	}
+}
+
+func TestHandlerSetThemeValidationAndSyncReverts(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := triage.NewStoreAt(t.TempDir())
+	h := NewHandler(store)
+	call := func(method string, params any) Response {
+		raw, _ := json.Marshal(params)
+		return h.Handle(context.Background(), Request{ID: method, Method: method, Params: raw})
+	}
+
+	if r := call("set_theme", map[string]any{"mode": "bogus"}); r.OK {
+		t.Fatalf("expected invalid mode rejected, got %+v", r)
+	}
+	if r := call("set_theme", map[string]any{"mode": "preset", "preset": "non-existent-theme"}); r.OK {
+		t.Fatalf("expected unknown preset rejected, got %+v", r)
+	}
+	if r := call("set_theme", map[string]any{"mode": "preset", "preset": "nord"}); !r.OK {
+		t.Fatalf("expected valid preset nord to succeed, got %s", r.Error)
+	}
+
+	if _, err := store.SaveClassifications([]triage.Classification{
+		{MessageID: "100", ThreadID: "<msg@acme.de>", AccountID: "work", Folder: "Kunden/Acme", FolderID: "f-acme"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := call("sync_reverts", map[string]any{
+		"moves": []map[string]any{
+			{"messageId": "101", "oldMessageId": "100", "headerMessageId": "<msg@acme.de>", "originalFolder": "INBOX", "originalFolderId": "f-inbox"},
+		},
+	}); !r.OK {
+		t.Fatalf("sync_reverts failed: %s", r.Error)
+	}
+	st, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, oldExists := st.Classifications["100"]; oldExists {
+		t.Fatalf("expected old numeric ID 100 migrated after revert")
+	}
+	if got := st.Classifications["101"]; got.Folder != "INBOX" || got.FolderID != "f-inbox" {
+		t.Fatalf("expected reverted classification at ID 101 in INBOX, got %+v", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/diver80/omathunder/internal/config"
 )
@@ -89,13 +90,25 @@ func ExtractSenderDomain(from string) string {
 	return ""
 }
 
+func ruleMatchesAccount(rule config.RoutingRule, accountID string) bool {
+	return rule.AccountID == "" || accountID == "" || rule.AccountID == accountID
+}
+
 // MatchDomainRule finds the first rule whose domains match the sender (exact or subdomain).
 func MatchDomainRule(from string, rules []config.RoutingRule) (config.RoutingRule, bool) {
+	return MatchDomainRuleForAccount(from, "", rules)
+}
+
+// MatchDomainRuleForAccount finds the first rule matching both sender domain and account scope.
+func MatchDomainRuleForAccount(from, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
 	dom := ExtractSenderDomain(from)
 	if dom == "" {
 		return config.RoutingRule{}, false
 	}
 	for _, r := range rules {
+		if !ruleMatchesAccount(r, accountID) {
+			continue
+		}
 		for _, candidate := range r.Domains {
 			c := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(candidate, "@")))
 			if c == "" {
@@ -112,13 +125,21 @@ func MatchDomainRule(from string, rules []config.RoutingRule) (config.RoutingRul
 // MatchRoutingRule finds the customer for a mail: first by sender domain, then by the folder it lives in.
 // It labels mails for the board only; auto-moves use PlanAutoMoves, which is stricter.
 func MatchRoutingRule(from, currentFolder string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	if r, ok := MatchDomainRule(from, rules); ok {
+	return MatchRoutingRuleForAccount(from, currentFolder, "", rules)
+}
+
+// MatchRoutingRuleForAccount finds the customer for a mail scoped to accountID.
+func MatchRoutingRuleForAccount(from, currentFolder, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
+	if r, ok := MatchDomainRuleForAccount(from, accountID, rules); ok {
 		return r, true
 	}
 	if currentFolder != "" {
-		curLower := strings.ToLower(currentFolder)
+		curLower := strings.ToLower(strings.Trim(strings.TrimSpace(currentFolder), "/"))
 		for _, r := range rules {
-			fp := strings.ToLower(strings.TrimSpace(r.FolderPath))
+			if !ruleMatchesAccount(r, accountID) {
+				continue
+			}
+			fp := strings.ToLower(strings.Trim(strings.TrimSpace(r.FolderPath), "/"))
 			if fp != "" && (curLower == fp || strings.HasPrefix(curLower, fp+"/")) {
 				return r, true
 			}
@@ -163,7 +184,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		Model:     "deterministic",
 	}
 
-	if rule, ok := MatchRoutingRule(msg.From, msg.Folder, rules); ok {
+	if rule, ok := MatchRoutingRuleForAccount(msg.From, msg.Folder, msg.AccountID, rules); ok {
 		base.Customer = rule.Customer
 		base.MatchedRuleID = rule.ID
 		base.TargetFolder = rule.FolderPath
@@ -226,10 +247,11 @@ func PrepareSnippet(body string, maxChars int) string {
 	lines := strings.Split(body, "\n")
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "--" || trimmed == "-- " {
+		rawLine := strings.TrimRight(line, "\r")
+		if rawLine == "-- " {
 			break
 		}
+		trimmed := strings.TrimSpace(rawLine)
 		if strings.HasPrefix(trimmed, ">") {
 			continue
 		}
@@ -239,8 +261,9 @@ func PrepareSnippet(body string, maxChars int) string {
 	cleaned = urlRE.ReplaceAllString(cleaned, "[link]")
 	cleaned = whitespaceRE.ReplaceAllString(cleaned, " ")
 	cleaned = strings.TrimSpace(cleaned)
-	if len(cleaned) > maxChars {
-		return cleaned[:maxChars] + "…"
+	if utf8.RuneCountInString(cleaned) > maxChars {
+		runes := []rune(cleaned)
+		return string(runes[:maxChars]) + "…"
 	}
 	return cleaned
 }

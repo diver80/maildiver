@@ -23,8 +23,9 @@ if [[ -x "$PREBUILT" ]]; then
   echo "==> Installiere vorab gebautes Binary: $PREBUILT -> $BIN_PATH"
   cp "$PREBUILT" "$BIN_PATH"
 elif command -v go >/dev/null 2>&1; then
-  echo "==> Baue omathunder lokal nach $BIN_PATH..."
-  (cd "$ROOT_DIR" && CGO_ENABLED=0 go build -trimpath -o "$BIN_PATH" ./cmd/omathunder)
+  VERSION="$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "dev")"
+  echo "==> Baue omathunder ($VERSION) lokal nach $BIN_PATH..."
+  (cd "$ROOT_DIR" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "$BIN_PATH" ./cmd/omathunder)
 else
   echo "Weder vorab gebautes Binary ($PREBUILT) noch Go gefunden." >&2
   exit 1
