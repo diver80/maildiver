@@ -567,4 +567,64 @@ func TestArchiveExportAndStatsRPC(t *testing.T) {
 	}
 }
 
+func TestRemoveClassificationsAndReadDoneFiltering(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := triage.NewStoreAt(t.TempDir())
+	h := NewHandler(store)
+	call := func(method string, params any) Response {
+		raw, _ := json.Marshal(params)
+		return h.Handle(context.Background(), Request{ID: method, Method: method, Params: raw})
+	}
+	if r := call("save_config", map[string]any{
+		"features": map[string]any{"triage": true},
+		"mailbox":  map[string]any{"triageAccountIds": []string{"work"}, "kanbanAccountIds": []string{"work"}},
+	}); !r.OK {
+		t.Fatal(r.Error)
+	}
+
+	r := call("classify_batch", map[string]any{
+		"scanId": "s-done",
+		"messages": []triage.MessageInput{
+			{
+				ID: "nl-read", ThreadID: "<nl-read@x>", AccountID: "work", Folder: "INBOX",
+				Subject: "Read newsletter", From: "news@example.com",
+				Headers: map[string]string{"List-Unsubscribe": "<mailto:u@example.com>"},
+				Unread:  false,
+			},
+			{
+				ID: "nl-unread", ThreadID: "<nl-unread@x>", AccountID: "work", Folder: "INBOX",
+				Subject: "Unread newsletter", From: "news@example.com",
+				Headers: map[string]string{"List-Unsubscribe": "<mailto:u@example.com>"},
+				Unread:  true,
+			},
+		},
+	})
+	if !r.OK {
+		t.Fatalf("classify_batch failed: %s", r.Error)
+	}
+	st, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := st.Classifications["nl-read"]; exists {
+		t.Fatalf("read newsletter should not be persisted into Done")
+	}
+	if _, exists := st.Classifications["nl-unread"]; !exists {
+		t.Fatalf("unread newsletter should be persisted into Done")
+	}
+
+	rem := call("remove_classifications", map[string]any{"ids": []string{"nl-unread"}})
+	if !rem.OK {
+		t.Fatalf("remove_classifications failed: %s", rem.Error)
+	}
+	stAfter, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stAfter.Classifications) != 0 {
+		t.Fatalf("expected all classifications removed, got %+v", stAfter.Classifications)
+	}
+}
+
 

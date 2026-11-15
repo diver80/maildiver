@@ -2,8 +2,8 @@
 const api = typeof messenger !== "undefined" ? messenger : browser;
 // Pure decision logic (unit-tested in tests/core.test.js); this file only talks to Thunderbird.
 const {
-  PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, requireWritable,
-  requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
+  PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
+  requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
   normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn, htmlToText,
   isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
   requireArchiveDelete, matchArchiveCandidate,
@@ -538,7 +538,39 @@ function uiLanguage(cfg, requested = "") {
   return (api.i18n?.getUILanguage?.() || "en").toLowerCase().startsWith("de") ? "de" : "en";
 }
 
-async function runTriage(requestedLanguage = "", accountId = "") {
+async function pruneStaleReadDone(cfg, scannedMessages, accountId = "") {
+  const scannedIds = new Set((scannedMessages || []).map((m) => String(m.id)));
+  const scannedThreadIds = new Set((scannedMessages || []).map((m) => m.threadId).filter(Boolean));
+  const enabledKanban = kanbanAccountIds(cfg);
+  const snap = await callNative("get_state").catch(() => null);
+  const staleDoneIds = [];
+  for (const [key, cls] of Object.entries(snap?.state?.classifications || {})) {
+    if ((cls.kanbanColumn || "incoming") !== "done") continue;
+    if (accountId && cls.accountId !== accountId) continue;
+    if (!accountId && !enabledKanban.has(cls.accountId)) continue;
+    if (scannedIds.has(key) || (cls.threadId && scannedThreadIds.has(cls.threadId))) continue;
+    const live = await resolveMessage({
+      messageId: key,
+      headerMessageId: cls.threadId || "",
+      accountId: cls.accountId || "",
+      folderId: cls.folderId || "",
+    }, { strict: false }).catch(() => null);
+    if (live && live.read) staleDoneIds.push(key);
+  }
+  if (staleDoneIds.length > 0) {
+    await callNative("remove_classifications", { ids: staleDoneIds }).catch(() => null);
+  }
+}
+
+let triageQueue = Promise.resolve();
+
+function runTriage(requestedLanguage = "", accountId = "") {
+  const job = triageQueue.catch(() => {}).then(() => runTriageInternal(requestedLanguage, accountId));
+  triageQueue = job.catch(() => {});
+  return job;
+}
+
+async function runTriageInternal(requestedLanguage = "", accountId = "") {
   const cfg = await loadConfig();
   requireFeature(cfg, "triage");
   if (triageAccountIds(cfg).size === 0) throw new PolicyError("no_triage_accounts");
@@ -598,6 +630,7 @@ async function runTriage(requestedLanguage = "", accountId = "") {
       });
     }
   }
+  await pruneStaleReadDone(liveCfg, messages, accountId).catch(() => {});
   return { ...res, moveReport: report };
 }
 
@@ -1128,6 +1161,7 @@ api.runtime.onMessage.addListener((msg) => {
         let alreadyRead = 0;
         let skipped = 0;
         let failed = 0;
+        const cleanedIds = [];
         for (const ref of refs) {
           try {
             const live = await resolveMessage(ref, { strict: true });
@@ -1137,16 +1171,35 @@ api.runtime.onMessage.addListener((msg) => {
             }
             if (live.read) {
               alreadyRead++;
+              if (ref?.messageId) cleanedIds.push(String(ref.messageId));
               continue;
             }
             await mailbox.markRead(cfg, live, true);
             marked++;
+            if (ref?.messageId) cleanedIds.push(String(ref.messageId));
           } catch (err) {
             if (err instanceof PolicyError) skipped++;
             else failed++;
           }
         }
-        return { marked, alreadyRead, skipped, failed };
+        let nextState = null;
+        let removed = 0;
+        if (column === "done" && cleanedIds.length > 0) {
+          nextState = await callNative("remove_classifications", { ids: cleanedIds }).catch(() => null);
+          if (nextState?.state) {
+            removed = cleanedIds.length;
+            broadcastToUI({ type: "omathunder:stateChanged", state: nextState.state, barSummary: nextState.barSummary || null });
+          }
+        }
+        return {
+          marked,
+          alreadyRead,
+          skipped,
+          failed,
+          removed,
+          state: nextState?.state || null,
+          barSummary: nextState?.barSummary || null,
+        };
       })();
 
     case "omathunder:getSelectionInfo":
@@ -1820,21 +1873,121 @@ api.menus?.onClicked?.addListener(async (info, tab) => {
   }
 });
 
-// Optional: scan automatically when new mail arrives. Same limits and safety rules as a manual scan.
+// Live Kanban sync: automatically scan newly arrived mail (when scanOnNewMail is active) and prune
+// Done-read or deleted/trashed messages so board counters stay aligned with Thunderbird.
 let newMailTimer = null;
-api.messages?.onNewMailReceived?.addListener(() => {
-  if (!features.triage) return;
+let pendingNewMailAccounts = new Set();
+let pendingNewMailAll = false;
+
+api.messages?.onNewMailReceived?.addListener((folder) => {
+  if (folder?.accountId) pendingNewMailAccounts.add(folder.accountId);
+  else pendingNewMailAll = true;
+
   clearTimeout(newMailTimer);
   newMailTimer = setTimeout(async () => {
+    const scanAll = pendingNewMailAll;
+    const accIds = [...pendingNewMailAccounts];
+    pendingNewMailAccounts.clear();
+    pendingNewMailAll = false;
     try {
       const cfg = await loadConfig();
-      if (!cfg.features?.triage || !cfg.mailbox?.scanOnNewMail) return;
-      const res = await runTriage();
-      broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport });
+      if (!hostConnected || !cfg.features?.triage || !cfg.mailbox?.scanOnNewMail) return;
+      const enabled = kanbanAccountIds(cfg);
+      if (enabled.size === 0) return;
+      if (scanAll || accIds.length === 0) {
+        const res = await runTriage();
+        broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport });
+      } else {
+        for (const accId of accIds) {
+          if (!enabled.has(accId)) continue;
+          const res = await runTriage("", accId);
+          broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport, accountId: accId });
+        }
+      }
     } catch (err) {
       console.info("OmaThunder auto scan skipped:", errorCode(err));
     }
-  }, 20000);
+  }, 3500);
+});
+
+let boardSyncTimer = null;
+const pendingDoneReadRefs = [];
+const pendingDeleteRefs = [];
+
+function scheduleBoardSync() {
+  clearTimeout(boardSyncTimer);
+  boardSyncTimer = setTimeout(async () => {
+    const doneReads = pendingDoneReadRefs.splice(0, pendingDoneReadRefs.length);
+    const deletes = pendingDeleteRefs.splice(0, pendingDeleteRefs.length);
+    if (doneReads.length === 0 && deletes.length === 0) return;
+    try {
+      const cfg = await loadConfig();
+      if (!hostConnected || !cfg.features?.triage) return;
+      const snap = await callNative("get_state").catch(() => null);
+      const entries = Object.entries(snap?.state?.classifications || {});
+      if (entries.length === 0) return;
+
+      const doneReadIds = new Set(doneReads.map((r) => r.id).filter(Boolean));
+      const doneReadThreads = new Set(doneReads.map((r) => r.headerMessageId).filter(Boolean));
+      const deleteIds = new Set(deletes.map((r) => r.id).filter(Boolean));
+      const deleteThreads = new Set(deletes.map((r) => r.headerMessageId).filter(Boolean));
+
+      const toRemove = [];
+      for (const [key, cls] of entries) {
+        const deleted = deleteIds.has(key) || (cls.threadId && deleteThreads.has(cls.threadId));
+        const readDone = (cls.kanbanColumn || "incoming") === "done"
+          && (doneReadIds.has(key) || (cls.threadId && doneReadThreads.has(cls.threadId)));
+        if (deleted || readDone) toRemove.push(key);
+      }
+      if (toRemove.length === 0) return;
+      const res = await callNative("remove_classifications", { ids: toRemove }).catch(() => null);
+      if (res?.state) {
+        broadcastToUI({ type: "omathunder:stateChanged", state: res.state, barSummary: res.barSummary || null });
+      }
+    } catch (err) {
+      console.info("OmaThunder live board sync note:", errorCode(err));
+    }
+  }, 300);
+}
+
+api.messages?.onUpdated?.addListener((message, changedProperties) => {
+  if (!features.triage || !hostConnected) return;
+  if (changedProperties?.read === true && message) {
+    pendingDoneReadRefs.push({
+      id: message.id != null ? String(message.id) : "",
+      headerMessageId: message.headerMessageId || "",
+    });
+    scheduleBoardSync();
+  }
+});
+
+api.messages?.onDeleted?.addListener(async (messages) => {
+  if (!features.triage || !hostConnected) return;
+  const list = await collectMessageList(messages, 200).catch(() => []);
+  if (list.length === 0) return;
+  for (const m of list) {
+    pendingDeleteRefs.push({
+      id: m.id != null ? String(m.id) : "",
+      headerMessageId: m.headerMessageId || "",
+    });
+  }
+  scheduleBoardSync();
+});
+
+api.messages?.onMoved?.addListener(async (originalMessages, movedMessages) => {
+  if (!features.triage || !hostConnected) return;
+  const moved = await collectMessageList(movedMessages, 200).catch(() => []);
+  const toTrash = moved.some((m) => m?.folder?.type === "trash" || m?.folder?.type === "junk");
+  if (!toTrash) return;
+  const originals = await collectMessageList(originalMessages, 200).catch(() => []);
+  for (const m of originals) {
+    if (m?.folder?.type === "trash" || m?.folder?.type === "junk") continue;
+    pendingDeleteRefs.push({
+      id: m.id != null ? String(m.id) : "",
+      headerMessageId: m.headerMessageId || "",
+    });
+  }
+  if (pendingDeleteRefs.length > 0) scheduleBoardSync();
 });
 
 async function bootstrap() {

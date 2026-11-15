@@ -346,6 +346,10 @@ function getFilteredItems() {
   return items.filter((c) => c.space === selectedSpace);
 }
 
+function isOpenKanbanCard(c) {
+  return window.OmaCore?.isOpenKanbanCard ? window.OmaCore.isOpenKanbanCard(c) : Boolean(c) && (c.kanbanColumn || "incoming") !== "done";
+}
+
 function renderKanbanAccountNav() {
   const nav = document.getElementById("kanban-account-nav");
   const parentBtn = document.querySelector('.nav-item[data-view="kanban"]');
@@ -362,12 +366,12 @@ function renderKanbanAccountNav() {
     nav.innerHTML = "";
     return;
   }
-  const all = getAllItems();
+  const openAll = getAllItems().filter(isOpenKanbanCard);
   nav.style.display = "flex";
   nav.innerHTML = accounts.map((acc) => {
     const count = inExtension && snapshot.connected
-      ? all.filter((c) => c.accountId === acc.id).length
-      : all.length;
+      ? openAll.filter((c) => c.accountId === acc.id).length
+      : openAll.length;
     const isActive = currentView === "kanban" && selectedAccountId === acc.id;
     const label = acc.name || acc.id;
     return `<button class="nav-subitem ${isActive ? "active" : ""}" data-kanban-acc="${escapeHtml(acc.id)}" title="${escapeHtml(label)}">
@@ -398,9 +402,12 @@ function renderKanbanAccountNav() {
 
 function renderCounts() {
   const all = getAllItems();
+  const openAll = all.filter(isOpenKanbanCard);
   const scoped = getAccountScopedItems();
   const triageCounts = feature("triage") && !standaloneMode();
-  document.getElementById("cnt-kanban").textContent = triageCounts ? all.length : "–";
+  const cntKanban = document.getElementById("cnt-kanban");
+  cntKanban.textContent = triageCounts ? openAll.length : "–";
+  cntKanban.title = t("cnt_kanban_open_title");
   document.getElementById("cnt-rules").textContent = triageCounts ? (snapshot.config?.rules || []).length : "–";
   const cntArchive = document.getElementById("cnt-archive");
   if (cntArchive) cntArchive.textContent = triageCounts ? (archiveStatsData.fileCount ?? 0) : "–";
@@ -455,8 +462,10 @@ function renderSpaceFilterBar() {
     ...[...spaces].sort().map((c) => ({ key: c, label: c })),
     { key: "UNASSIGNED", label: t("filter_unassigned") },
   ];
+  const autoSyncOn = Boolean(snapshot.config?.mailbox?.scanOnNewMail);
   bar.innerHTML = `<span class="oma-muted" style="font-size:11px; margin-right:4px;">${escapeHtml(t("filter_space"))}</span>` +
-    pills.map((p) => `<button class="filter-pill ${selectedSpace === p.key ? "active" : ""}" data-space="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join("");
+    pills.map((p) => `<button class="filter-pill ${selectedSpace === p.key ? "active" : ""}" data-space="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join("") +
+    `<button class="filter-pill ${autoSyncOn ? "active" : ""}" id="btn-toggle-autosync" style="margin-left:auto;" title="${escapeHtml(t("kanban_autosync_title"))}">${escapeHtml(autoSyncOn ? t("kanban_autosync_on") : t("kanban_autosync_off"))}</button>`;
 
   bar.querySelectorAll("[data-space]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -465,6 +474,28 @@ function renderSpaceFilterBar() {
       renderSpaceFilterBar();
       renderRightPane();
     });
+  });
+
+  document.getElementById("btn-toggle-autosync")?.addEventListener("click", async () => {
+    const nextVal = !Boolean(snapshot.config?.mailbox?.scanOnNewMail);
+    if (inExtension && snapshot.connected) {
+      try {
+        const res = await api.runtime.sendMessage({
+          type: "omathunder:saveConfig",
+          config: { mailbox: { scanOnNewMail: nextVal } },
+        });
+        if (res?.config) snapshot.config = res.config;
+      } catch (err) {
+        showMessage(errText(err), "err");
+        return;
+      }
+    } else {
+      snapshot.config = {
+        ...(snapshot.config || {}),
+        mailbox: { ...(snapshot.config?.mailbox || {}), scanOnNewMail: nextVal },
+      };
+    }
+    renderSpaceFilterBar();
   });
 }
 
@@ -572,16 +603,33 @@ function renderMain() {
             folderId: c.folderId || "",
           })),
         });
+        if (res?.state) {
+          snapshot.state = res.state;
+          if (res?.barSummary) snapshot.barSummary = res.barSummary;
+        } else {
+          await refreshSnapshot();
+        }
+        if (selectedMessageId && !snapshot.state?.classifications?.[selectedMessageId]) {
+          selectedMessageId = null;
+        }
+        renderCounts();
+        renderSpaceFilterBar();
+        renderMain();
+        renderRightPane();
         showMessage(t("kanban_mark_read_report", {
           marked: res?.marked ?? 0,
           alreadyRead: res?.alreadyRead ?? 0,
+          removed: res?.removed ?? 0,
           skipped: res?.skipped ?? 0,
         }), res?.failed ? "warn" : "ok");
       } catch (err) {
         showMessage(errText(err), "err");
       } finally {
-        btn.disabled = false;
-        btn.textContent = t("kanban_mark_done_read");
+        const liveBtn = document.getElementById("btn-done-mark-read");
+        if (liveBtn) {
+          liveBtn.disabled = false;
+          liveBtn.textContent = t("kanban_mark_done_read");
+        }
       }
     });
 
@@ -1950,17 +1998,37 @@ async function init() {
 
   if (lastReport) renderScanReport();
   if (inExtension) {
+    let lastAutoRefreshAt = Date.now();
     await refreshSnapshot();
     api.runtime.onMessage.addListener((msg) => {
       if (msg?.type === "omathunder:scanFinished") {
         lastReport = msg.report || null;
+        lastAutoRefreshAt = Date.now();
         refreshSnapshot().then(renderScanReport);
+        return;
+      }
+      if (msg?.type === "omathunder:stateChanged" && msg.state) {
+        snapshot.state = msg.state;
+        if (msg.barSummary) snapshot.barSummary = msg.barSummary;
+        if (selectedMessageId && !snapshot.state?.classifications?.[selectedMessageId]) {
+          selectedMessageId = null;
+        }
+        renderCounts();
+        renderSpaceFilterBar();
+        renderMain();
+        renderRightPane();
         return;
       }
       if (msg?.type === "omathunder:themeChanged" && msg.payload && feature("theme")) {
         snapshot.theme = msg.payload;
         applyPaletteLocally(msg.payload);
         renderMain();
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && Date.now() - lastAutoRefreshAt > 2000) {
+        lastAutoRefreshAt = Date.now();
+        refreshSnapshot();
       }
     });
   } else {

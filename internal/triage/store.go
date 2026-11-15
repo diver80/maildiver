@@ -140,6 +140,13 @@ func findPrevClassificationLocked(st State, c Classification) (string, Classific
 }
 
 func (s *Store) SaveClassifications(items []Classification) (State, error) {
+	return s.SaveScanBatch(items, nil)
+}
+
+// SaveScanBatch merges newly scanned classifications into the store. When isRead is provided,
+// cards whose effective column is "done" and whose Thunderbird message is already read are omitted
+// (and any previous entry for the same mail is removed) so Done stays clean.
+func (s *Store) SaveScanBatch(items []Classification, isRead map[string]bool) (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.loadLocked()
@@ -166,9 +173,41 @@ func (s *Store) SaveClassifications(items []Classification) (State, error) {
 		if c.KanbanColumn == "" {
 			c.KanbanColumn = BucketToKanban(c.Bucket, c.NeedsAttention)
 		}
+		if isRead != nil && c.KanbanColumn == "done" && isRead[c.MessageID] {
+			delete(st.Classifications, c.MessageID)
+			continue
+		}
 		st.Classifications[c.MessageID] = c
 	}
 	pruneClassifications(&st, maxClassifications)
+	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.writeLocked(st); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+// RemoveClassifications deletes the given message IDs from the Kanban board state.
+func (s *Store) RemoveClassifications(ids []string) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return st, err
+	}
+	changed := false
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := st.Classifications[id]; ok {
+			delete(st.Classifications, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return st, nil
+	}
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.writeLocked(st); err != nil {
 		return st, err

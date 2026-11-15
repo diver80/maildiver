@@ -247,3 +247,64 @@ func TestStoreDismissProposals(t *testing.T) {
 		t.Fatalf("expected applied proposal p3 to stay 'applied', got %q", p3Status)
 	}
 }
+
+func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
+	s := NewStoreAt(t.TempDir())
+	// Seed an unread newsletter in Done and a pinned read newsletter in Action.
+	_, err := s.SaveScanBatch([]Classification{
+		{MessageID: "nl-unread", ThreadID: "<nl1@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "nl-pinned", ThreadID: "<nl2@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "act-read", ThreadID: "<act@x>", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
+	}, map[string]bool{
+		"nl-unread": false,
+		"nl-pinned": false,
+		"act-read":  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MoveKanban("nl-pinned", "action"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-scan: nl-unread is now read -> removed from Done; nl-pinned stays in Action even though read;
+	// brand new already-read nl-new-read is not added at all.
+	st, err := s.SaveScanBatch([]Classification{
+		{MessageID: "nl-unread-newid", ThreadID: "<nl1@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "nl-pinned", ThreadID: "<nl2@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "nl-new-read", ThreadID: "<nl3@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "act-read", ThreadID: "<act@x>", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
+	}, map[string]bool{
+		"nl-unread-newid": true,
+		"nl-pinned":       true,
+		"nl-new-read":     true,
+		"act-read":        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := st.Classifications["nl-unread"]; exists {
+		t.Fatalf("expected previously unread Done card to be removed once read")
+	}
+	if _, exists := st.Classifications["nl-unread-newid"]; exists {
+		t.Fatalf("expected newly scanned read Done card not to be saved")
+	}
+	if _, exists := st.Classifications["nl-new-read"]; exists {
+		t.Fatalf("expected already-read Done card to be omitted")
+	}
+	if got := st.Classifications["nl-pinned"]; got.KanbanColumn != "action" {
+		t.Fatalf("expected pinned card in action to survive even when read, got %+v", got)
+	}
+	if _, exists := st.Classifications["act-read"]; !exists {
+		t.Fatalf("expected read card in action column to stay on board")
+	}
+
+	st2, err := s.RemoveClassifications([]string{"act-read", "non-existent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := st2.Classifications["act-read"]; exists {
+		t.Fatalf("expected RemoveClassifications to delete act-read")
+	}
+}
+

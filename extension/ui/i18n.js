@@ -35,9 +35,13 @@
       badge_inbox: "INBOX",
       kanban_no_accounts: "Kein Konto für das Kanban-Board aktiviert. Du kannst in den Einstellungen pro Postfach entscheiden, ob nur Spaces/Filter oder auch Kanban aktiv sein soll.",
       kanban_mark_done_read: "✓ Gelesen",
-      kanban_mark_done_read_title: "Alle Mails in „Erledigt“ in Thunderbird als gelesen markieren",
+      kanban_mark_done_read_title: "Alle Mails in „Erledigt“ in Thunderbird als gelesen markieren und vom Board räumen",
       kanban_mark_read_working: "Markiere…",
-      kanban_mark_read_report: "{marked} als gelesen markiert ({alreadyRead} bereits gelesen, {skipped} übersprungen)",
+      kanban_mark_read_report: "{marked} als gelesen markiert ({alreadyRead} bereits gelesen, {removed} aufgeräumt, {skipped} übersprungen)",
+      cnt_kanban_open_title: "Offene Kanban-Karten (ohne Erledigt)",
+      kanban_autosync_on: "Auto-Sync: AN",
+      kanban_autosync_off: "Auto-Sync: AUS",
+      kanban_autosync_title: "Board automatisch aktualisieren, sobald neue E-Mails ankommen",
 
       // Rules Table
       rules_new_title: "Neue Space ↔ Domain-Zuordnung",
@@ -470,9 +474,13 @@
       badge_inbox: "INBOX",
       kanban_no_accounts: "No account enabled for the Kanban board. You can toggle Kanban per account in settings while keeping Spaces & Filters active.",
       kanban_mark_done_read: "✓ Read",
-      kanban_mark_done_read_title: "Mark all emails in Done as read in Thunderbird",
+      kanban_mark_done_read_title: "Mark all emails in Done as read in Thunderbird and clear them from the board",
       kanban_mark_read_working: "Marking…",
-      kanban_mark_read_report: "Marked {marked} as read ({alreadyRead} already read, {skipped} skipped)",
+      kanban_mark_read_report: "Marked {marked} as read ({alreadyRead} already read, {removed} cleared, {skipped} skipped)",
+      cnt_kanban_open_title: "Open Kanban cards (excluding Done)",
+      kanban_autosync_on: "Auto-Sync: ON",
+      kanban_autosync_off: "Auto-Sync: OFF",
+      kanban_autosync_title: "Automatically refresh the Kanban board when new mail arrives",
 
       // Rules Table
       rules_new_title: "New Space ↔ Domain Mapping",

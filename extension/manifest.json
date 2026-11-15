@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "OmaThunder — Omarchy Theme & AI Triage",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Live Omarchy theming (chrome, message body, compose) and 3-stage Gemini/Claude/Ollama AI triage with reviewable proposals.",
   "author": "omathunder",
   "browser_specific_settings": {

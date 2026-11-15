@@ -629,9 +629,24 @@
     return out.join("\n");
   }
 
+  function isOpenKanbanCard(c) {
+    return Boolean(c) && (c.kanbanColumn || "incoming") !== "done";
+  }
+
+  function countOpenKanban(items, accountId = "") {
+    let n = 0;
+    for (const c of items || []) {
+      if (!isOpenKanbanCard(c)) continue;
+      if (accountId && c.accountId !== accountId) continue;
+      n++;
+    }
+    return n;
+  }
+
   const api = {
     textToHtml, htmlToText, renderMarkdownHtml, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
+    isOpenKanbanCard, countOpenKanban,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,
     buildNativeFilterSpecFromSuggestion, buildNativeFilterSpecFromRule,

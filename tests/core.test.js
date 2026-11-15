@@ -522,6 +522,23 @@ testAsync("analyzeStandalone calls Gemini API, Claude API (with attachment warni
   eq(ollamaRes.proposals[0].body.includes("morgen passt gut"), true);
 });
 
+test("isOpenKanbanCard and countOpenKanban exclude Done cards across accounts", () => {
+  const cards = [
+    { messageId: "1", accountId: "avono", kanbanColumn: "incoming" },
+    { messageId: "2", accountId: "avono", kanbanColumn: "action" },
+    { messageId: "3", accountId: "avono", kanbanColumn: "done" },
+    { messageId: "4", accountId: "list", kanbanColumn: "done" },
+    { messageId: "5", accountId: "list" }, // missing kanbanColumn defaults to incoming (open)
+  ];
+  eq(core.isOpenKanbanCard(cards[0]), true);
+  eq(core.isOpenKanbanCard(cards[2]), false);
+  eq(core.isOpenKanbanCard(null), false);
+  eq(core.countOpenKanban(cards), 3);
+  eq(core.countOpenKanban(cards, "avono"), 2);
+  eq(core.countOpenKanban(cards, "list"), 1);
+  eq(core.countOpenKanban([{ messageId: "x", accountId: "list", kanbanColumn: "done" }], "list"), 0);
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

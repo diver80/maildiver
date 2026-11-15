@@ -317,6 +317,25 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			"barSummary": triage.ComputeBarSummary(st),
 		}}
 
+	case "remove_classifications":
+		var p struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		if cfg, _ := config.Load(); !cfg.Features.Triage {
+			return fail(req.ID, ErrTriageDisabled)
+		}
+		st, err := h.store.RemoveClassifications(p.IDs)
+		if err != nil {
+			return fail(req.ID, err.Error())
+		}
+		return Response{ID: req.ID, OK: true, Result: map[string]any{
+			"state":      st,
+			"barSummary": triage.ComputeBarSummary(st),
+		}}
+
 	case "list_themes":
 		return Response{ID: req.ID, OK: true, Result: theme.ListPresets()}
 
@@ -470,7 +489,11 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			}
 			results = append(results, c)
 		}
-		st, err := h.store.SaveClassifications(results)
+		isRead := make(map[string]bool, len(allowed))
+		for _, m := range allowed {
+			isRead[m.ID] = !m.Unread
+		}
+		st, err := h.store.SaveScanBatch(results, isRead)
 		if err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}

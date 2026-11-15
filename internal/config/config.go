@@ -156,6 +156,7 @@ func Default() Config {
 			TriageAccountIDs:   []string{},
 			KanbanAccountIDs:   []string{},
 			AutoMoveOnlyUnread: true,
+			ScanOnNewMail:      true,
 			ScanLimit:          defaultScanLimit,
 			ScanDays:           defaultScanDays,
 			ArchiveDir:         DefaultArchiveDir(),
