@@ -87,9 +87,12 @@ const DEMO_STATE = {
 };
 
 let currentView = "kanban";
+let selectedAccountId = "ALL";
 let selectedSpace = "ALL";
 // Board card chosen for the assistant. null = use the mail currently open in Thunderbird.
 let selectedMessageId = inExtension ? null : "demo-1";
+// In Thunderbird the Kanban gets full width by default; clicking a card or the topbar toggle opens the AI drawer.
+let assistantDrawerOpen = !inExtension;
 let lastReport = null;
 let aiMode = "draft_reply";
 let aiTone = "freundlich";
@@ -231,12 +234,20 @@ function hostOffline() {
   return inExtension && !snapshot.connected;
 }
 
-function offlineHtml() {
+function standaloneMode() {
+  return inExtension && !snapshot.connected;
+}
+
+function optionalHostHtml() {
   return `<div class="notice oma-card">
-    <strong>${escapeHtml(t("host_offline_title"))}</strong>
-    <div>${escapeHtml(t("host_offline_body"))}</div>
+    <strong>${escapeHtml(t("optional_host_title"))}</strong>
+    <div>${escapeHtml(t("optional_host_body"))}</div>
     ${snapshot.error ? `<div class="oma-muted oma-mono" style="font-size:11px;">${escapeHtml(snapshot.error)}</div>` : ""}
-    <button class="oma-btn primary" data-retry>${escapeHtml(t("host_retry"))}</button>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+      <button class="oma-btn primary" data-go-themes>${escapeHtml(t("nav_themes"))}</button>
+      <button class="oma-btn" data-open-settings>${escapeHtml(t("btn_open_settings"))}</button>
+      <button class="oma-btn ghost" data-retry>${escapeHtml(t("host_retry"))}</button>
+    </div>
   </div>`;
 }
 
@@ -305,7 +316,12 @@ function applyPaletteLocally(themeOrPalette) {
 }
 
 function escapeHtml(str) {
-  return String(str || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(str || "").replace(/[&<>\"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function accountNameById(id) {
+  if (!id) return "";
+  return (snapshot.accounts || []).find((a) => a.id === id)?.name || id;
 }
 
 function getAllItems() {
@@ -317,35 +333,94 @@ function getAllItems() {
   return items.filter((c) => triageIds.has(c.accountId) && kanbanIds.has(c.accountId));
 }
 
-function getFilteredItems() {
+function getAccountScopedItems() {
   const items = getAllItems();
+  if (selectedAccountId === "ALL") return items;
+  return items.filter((c) => c.accountId === selectedAccountId);
+}
+
+function getFilteredItems() {
+  const items = getAccountScopedItems();
   if (selectedSpace === "ALL") return items;
   if (selectedSpace === "UNASSIGNED") return items.filter((c) => !c.space);
   return items.filter((c) => c.space === selectedSpace);
 }
 
+function renderKanbanAccountNav() {
+  const nav = document.getElementById("kanban-account-nav");
+  const parentBtn = document.querySelector('.nav-item[data-view="kanban"]');
+  const accounts = kanbanAccounts();
+  if (selectedAccountId !== "ALL" && !accounts.some((a) => a.id === selectedAccountId)) {
+    selectedAccountId = "ALL";
+  }
+  if (parentBtn) {
+    parentBtn.classList.toggle("active", currentView === "kanban" && selectedAccountId === "ALL");
+  }
+  if (!nav) return;
+  if (!feature("triage") || hostOffline() || accounts.length === 0) {
+    nav.style.display = "none";
+    nav.innerHTML = "";
+    return;
+  }
+  const all = getAllItems();
+  nav.style.display = "flex";
+  nav.innerHTML = accounts.map((acc) => {
+    const count = inExtension && snapshot.connected
+      ? all.filter((c) => c.accountId === acc.id).length
+      : all.length;
+    const isActive = currentView === "kanban" && selectedAccountId === acc.id;
+    const label = acc.name || acc.id;
+    return `<button class="nav-subitem ${isActive ? "active" : ""}" data-kanban-acc="${escapeHtml(acc.id)}" title="${escapeHtml(label)}">
+      <span class="nav-sub-label">${escapeHtml(label)}</span>
+      <span class="nav-count">${count}</span>
+    </button>`;
+  }).join("");
+
+  nav.querySelectorAll("[data-kanban-acc]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+      currentView = "kanban";
+      selectedAccountId = btn.dataset.kanbanAcc;
+      selectedSpace = "ALL";
+      if (selectedMessageId) {
+        const cls = snapshot.state?.classifications?.[selectedMessageId];
+        if (cls && cls.accountId && cls.accountId !== selectedAccountId) {
+          selectedMessageId = null;
+        }
+      }
+      renderCounts();
+      renderSpaceFilterBar();
+      renderMain();
+      renderRightPane();
+    });
+  });
+}
+
 function renderCounts() {
   const all = getAllItems();
-  const triageCounts = feature("triage");
+  const scoped = getAccountScopedItems();
+  const triageCounts = feature("triage") && !standaloneMode();
   document.getElementById("cnt-kanban").textContent = triageCounts ? all.length : "–";
   document.getElementById("cnt-rules").textContent = triageCounts ? (snapshot.config?.rules || []).length : "–";
   const cntArchive = document.getElementById("cnt-archive");
   if (cntArchive) cntArchive.textContent = triageCounts ? (archiveStatsData.fileCount ?? 0) : "–";
   document.getElementById("cnt-themes").textContent = (snapshot.themes || []).length;
 
-  const stage0 = all.filter((c) => c.stage === "stage0-rule").length;
-  const pct = all.length ? Math.round((stage0 / all.length) * 100) : 0;
+  const stage0 = scoped.filter((c) => c.stage === "stage0-rule").length;
+  const pct = scoped.length ? Math.round((stage0 / scoped.length) * 100) : 0;
   document.getElementById("savings-badge").textContent = t("stage0_savings", { pct });
 
   const badge = document.getElementById("host-badge");
   if (snapshot.connected) { badge.className = "oma-badge ok"; badge.textContent = t("host_active"); }
   else if (!inExtension) { badge.className = "oma-badge accent"; badge.textContent = t("host_preview"); }
-  else { badge.className = "oma-badge warn"; badge.textContent = t("host_offline"); }
+  else { badge.className = "oma-badge accent"; badge.textContent = t("host_standalone"); }
 
-  const triageOn = feature("triage");
+  const triageOn = feature("triage") && !standaloneMode();
   document.getElementById("readonly-badge").style.display = triageOn && isReadOnly() ? "" : "none";
   document.getElementById("readonly-badge").title = t("badge_readonly_title");
-  document.getElementById("btn-triage").style.display = triageOn && kanbanAccounts().length > 0 ? "" : "none";
+  const triageBtn = document.getElementById("btn-triage");
+  triageBtn.style.display = triageOn && kanbanAccounts().length > 0 ? "" : "none";
+  triageBtn.title = selectedAccountId !== "ALL" ? accountNameById(selectedAccountId) : "";
   document.getElementById("savings-badge").style.display = triageOn && kanbanAccounts().length > 0 ? "" : "none";
 
   const aiCfg = snapshot.config?.ai;
@@ -353,6 +428,7 @@ function renderCounts() {
     document.getElementById("lbl-classifier").textContent = `Stage 1: ${aiCfg.classifier?.model || aiCfg.classifier?.backend}`;
     document.getElementById("lbl-agent").textContent = `Stage 2: ${aiCfg.agent?.backend}`;
   }
+  renderKanbanAccountNav();
 }
 
 function renderSpaceFilterBar() {
@@ -361,14 +437,18 @@ function renderSpaceFilterBar() {
     bar.style.display = "none";
     return;
   }
-  if (!feature("triage") || (inExtension && snapshot.connected && kanbanAccounts().length === 0)) {
+  if (!feature("triage") || standaloneMode() || (inExtension && snapshot.connected && kanbanAccounts().length === 0)) {
     bar.style.display = "none";
     return;
   }
   bar.style.display = "flex";
   const spaces = new Set();
-  for (const r of snapshot.config?.rules || []) if (r.space) spaces.add(r.space);
-  for (const c of getAllItems()) if (c.space) spaces.add(c.space);
+  for (const r of snapshot.config?.rules || []) {
+    if (!r.space) continue;
+    if (selectedAccountId !== "ALL" && r.accountId && r.accountId !== selectedAccountId) continue;
+    spaces.add(r.space);
+  }
+  for (const c of getAccountScopedItems()) if (c.space) spaces.add(c.space);
 
   const pills = [
     { key: "ALL", label: t("filter_all") },
@@ -383,6 +463,7 @@ function renderSpaceFilterBar() {
       selectedSpace = btn.dataset.space;
       renderMain();
       renderSpaceFilterBar();
+      renderRightPane();
     });
   });
 }
@@ -390,11 +471,23 @@ function renderSpaceFilterBar() {
 function renderMain() {
   const container = document.getElementById("main-content");
   const titles = { kanban: t("view_kanban"), rules: t("view_rules"), archive: t("view_archive"), themes: t("view_themes") };
-  document.getElementById("view-title").textContent = titles[currentView] || "OmaThunder";
+  const activeAccLabel = currentView === "kanban" && selectedAccountId !== "ALL" ? accountNameById(selectedAccountId) : "";
+  document.getElementById("view-title").textContent = activeAccLabel
+    ? `${titles.kanban} · ${activeAccLabel}`
+    : (titles[currentView] || "OmaThunder");
 
-  if (hostOffline()) {
-    container.innerHTML = offlineHtml();
-    container.querySelector("[data-retry]").addEventListener("click", () => refreshSnapshot());
+  if (standaloneMode() && currentView !== "themes") {
+    container.innerHTML = optionalHostHtml();
+    bindSettingsButtons(container);
+    container.querySelector("[data-retry]")?.addEventListener("click", () => refreshSnapshot());
+    container.querySelector("[data-go-themes]")?.addEventListener("click", () => {
+      currentView = "themes";
+      document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === "themes"));
+      renderCounts();
+      renderSpaceFilterBar();
+      renderMain();
+      renderRightPane();
+    });
     return;
   }
 
@@ -417,13 +510,18 @@ function renderMain() {
     }
     const items = getFilteredItems();
     const cols = getKanbanColumns();
+    const doneItems = items.filter((c) => (c.kanbanColumn || "incoming") === "done");
     container.innerHTML = `<div class="kanban-board">${cols.map((col, idx) => {
       const colItems = items.filter((c) => (c.kanbanColumn || "incoming") === col.id);
+      const showMarkRead = col.id === "done" && colItems.length > 0 && inExtension;
       return `
         <div class="kanban-col" data-col="${col.id}">
           <div class="kanban-col-hdr">
             <span>${escapeHtml(col.label)}</span>
-            <span class="nav-count">${colItems.length}</span>
+            <div style="display:flex; align-items:center; gap:5px;">
+              ${showMarkRead ? `<button class="mini-btn" id="btn-done-mark-read" title="${escapeHtml(t("kanban_mark_done_read_title"))}">${escapeHtml(t("kanban_mark_done_read"))}</button>` : ""}
+              <span class="nav-count">${colItems.length}</span>
+            </div>
           </div>
           <div class="kanban-cards">
             ${colItems.map((c) => `
@@ -436,7 +534,11 @@ function renderMain() {
                 <div class="k-card-from">${escapeHtml(c.from)}</div>
                 <div class="k-card-sum">${escapeHtml(summaryText(c))}</div>
                 <div class="k-card-actions">
-                  <span class="oma-mono oma-muted" style="font-size:10px;">${escapeHtml(c.deadline || c.amount || c.folder || "")}</span>
+                  <span class="oma-mono oma-muted" style="font-size:10px;">${escapeHtml(
+                    (selectedAccountId === "ALL" && kanbanAccounts().length > 1 && c.accountId
+                      ? `${accountNameById(c.accountId)} · `
+                      : "") + (c.deadline || c.amount || c.folder || "")
+                  )}</span>
                   <div style="display:flex; gap:4px;">
                     ${inExtension ? `<button class="mini-btn" data-open-id="${escapeHtml(c.messageId)}" title="${escapeHtml(t("card_open"))}">↗</button>` : ""}
                     ${idx > 0 ? `<button class="mini-btn" data-move-id="${escapeHtml(c.messageId)}" data-move-col="${cols[idx - 1].id}" title="${escapeHtml(t("card_prev"))}">←</button>` : ""}
@@ -450,10 +552,48 @@ function renderMain() {
       `;
     }).join("")}</div>`;
 
+    document.getElementById("btn-done-mark-read")?.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      if (isReadOnly()) {
+        showMessage(t("err_read_only"), "warn");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = t("kanban_mark_read_working");
+      try {
+        const res = await api.runtime.sendMessage({
+          type: "omathunder:markColumnRead",
+          column: "done",
+          items: doneItems.map((c) => ({
+            messageId: c.messageId,
+            headerMessageId: c.threadId || "",
+            accountId: c.accountId || "",
+            folderId: c.folderId || "",
+          })),
+        });
+        showMessage(t("kanban_mark_read_report", {
+          marked: res?.marked ?? 0,
+          alreadyRead: res?.alreadyRead ?? 0,
+          skipped: res?.skipped ?? 0,
+        }), res?.failed ? "warn" : "ok");
+      } catch (err) {
+        showMessage(errText(err), "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = t("kanban_mark_done_read");
+      }
+    });
+
     container.querySelectorAll(".k-card").forEach((card) => {
       card.addEventListener("click", () => {
-        // Clicking the selected card again switches the assistant back to the open mail.
-        selectedMessageId = selectedMessageId === card.dataset.msgid && inExtension ? null : card.dataset.msgid;
+        if (selectedMessageId === card.dataset.msgid && assistantDrawerOpen) {
+          selectedMessageId = null;
+          assistantDrawerOpen = false;
+        } else {
+          selectedMessageId = card.dataset.msgid;
+          assistantDrawerOpen = true;
+        }
         renderMain();
         renderRightPane();
       });
@@ -1415,8 +1555,47 @@ async function renderDisplayedMailInfo() {
   meta.textContent = info ? `${info.subject} • ${info.from}` : t("ai_no_displayed");
 }
 
+function getBoardProposals({ forSelected = true } = {}) {
+  const all = (snapshot.state?.proposals || []).filter((p) => p.status === "pending");
+  const classifications = snapshot.state?.classifications || {};
+  const kanbanIds = new Set(kanbanAccounts().map((a) => a.id));
+  return all.filter((p) => {
+    if (forSelected && selectedMessageId) {
+      return p.messageId === selectedMessageId;
+    }
+    const cls = p.messageId ? classifications[p.messageId] : null;
+    const accId = p.accountId || cls?.accountId || "";
+    if (inExtension && snapshot.connected) {
+      if (!accId || !kanbanIds.has(accId)) return false;
+      if (selectedAccountId !== "ALL" && accId !== selectedAccountId) return false;
+    }
+    const space = p.space || cls?.space || "";
+    if (selectedSpace === "UNASSIGNED") return !space;
+    if (selectedSpace !== "ALL") return space === selectedSpace;
+    return true;
+  });
+}
+
 function renderRightPane() {
   const assistantOn = !inExtension || (feature("assistant") && !hostOffline());
+  const hasKanbanBoard = currentView === "kanban" && !(inExtension && snapshot.connected && kanbanAccounts().length === 0) && !hostOffline();
+  const showDrawer = hasKanbanBoard && assistantDrawerOpen;
+  document.querySelector(".layout")?.classList.toggle("drawer-open", showDrawer);
+
+  const toggleBtn = document.getElementById("btn-toggle-assistant");
+  const toggleBadge = document.getElementById("assistant-toggle-badge");
+  const boardCount = getBoardProposals({ forSelected: false }).length;
+  if (toggleBtn) {
+    toggleBtn.style.display = hasKanbanBoard && assistantOn ? "inline-flex" : "none";
+    toggleBtn.classList.toggle("primary", showDrawer);
+  }
+  if (toggleBadge) {
+    toggleBadge.style.display = boardCount > 0 ? "" : "none";
+    toggleBadge.textContent = String(boardCount);
+  }
+
+  if (!showDrawer) return;
+
   const offEl = document.getElementById("ai-off");
   offEl.style.display = assistantOn ? "none" : "";
   document.getElementById("ai-mode-tabs").style.display = assistantOn ? "" : "none";
@@ -1425,6 +1604,8 @@ function renderRightPane() {
     offEl.innerHTML = hostOffline() ? "" : noticeHtml(t("feat_off_assistant"));
     bindSettingsButtons(offEl);
     document.getElementById("proposal-count").textContent = "";
+    const dismissAllBtn = document.getElementById("btn-dismiss-all-proposals");
+    if (dismissAllBtn) dismissAllBtn.style.display = "none";
     return;
   }
 
@@ -1450,8 +1631,10 @@ function renderRightPane() {
   };
   document.getElementById("btn-ask").textContent = askBtnLabels[aiMode] || t("ai_btn_draft");
 
-  const pending = (snapshot.state?.proposals || []).filter((p) => p.status === "pending");
+  const pending = getBoardProposals({ forSelected: true });
   document.getElementById("proposal-count").textContent = t("ai_proposals_count", { count: pending.length });
+  const dismissAllBtn = document.getElementById("btn-dismiss-all-proposals");
+  if (dismissAllBtn) dismissAllBtn.style.display = pending.length > 0 ? "" : "none";
 
   const list = document.getElementById("proposals-list");
   if (pending.length === 0) {
@@ -1510,7 +1693,7 @@ function renderRightPane() {
 }
 
 async function selectTheme(name) {
-  if (inExtension && snapshot.connected) {
+  if (inExtension) {
     try {
       const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: name, mode: "preset" });
       if (payload) { snapshot.theme = payload; applyPaletteLocally(payload); }
@@ -1548,7 +1731,7 @@ async function applyLanguage(lang) {
   renderSpaceFilterBar();
   renderMain();
   renderRightPane();
-  if (inExtension && snapshot.connected && (lang === "de" || lang === "en")) {
+  if (inExtension && (lang === "de" || lang === "en")) {
     snapshot.config.language = lang;
     await api.runtime.sendMessage({ type: "omathunder:saveConfig", config: { language: lang } }).catch(() => {});
   }
@@ -1560,7 +1743,13 @@ async function init() {
       document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       currentView = btn.dataset.view;
+      if (currentView === "kanban") {
+        selectedAccountId = "ALL";
+        selectedSpace = "ALL";
+      }
+      renderCounts();
       renderSpaceFilterBar();
+      renderRightPane();
       if (currentView === "rules" && inExtension && snapshot.connected && nativeFiltersData.filters.length === 0) {
         await refreshNativeFilters();
       }
@@ -1570,6 +1759,40 @@ async function init() {
       }
       renderMain();
     });
+  });
+
+  document.getElementById("btn-toggle-assistant")?.addEventListener("click", () => {
+    assistantDrawerOpen = !assistantDrawerOpen;
+    if (!assistantDrawerOpen) selectedMessageId = null;
+    renderMain();
+    renderRightPane();
+  });
+
+  document.getElementById("btn-close-assistant")?.addEventListener("click", () => {
+    assistantDrawerOpen = false;
+    selectedMessageId = null;
+    renderMain();
+    renderRightPane();
+  });
+
+  document.getElementById("btn-dismiss-all-proposals")?.addEventListener("click", async () => {
+    const visible = getBoardProposals({ forSelected: true });
+    if (visible.length === 0) return;
+    const ids = visible.map((p) => p.id);
+    if (inExtension) {
+      try {
+        const res = await api.runtime.sendMessage({ type: "omathunder:dismissProposals", ids });
+        if (res?.state) snapshot.state = res.state;
+      } catch (err) {
+        showMessage(errText(err), "err");
+      }
+    } else {
+      const idSet = new Set(ids);
+      for (const p of snapshot.state?.proposals || []) {
+        if (idSet.has(p.id)) p.status = "dismissed";
+      }
+    }
+    renderRightPane();
   });
 
   document.querySelectorAll(".mode-tab[data-aimode]").forEach((tab) => {
@@ -1642,7 +1865,11 @@ async function init() {
     btn.textContent = t("btn_scanning");
     try {
       if (inExtension && snapshot.connected) {
-        const res = await api.runtime.sendMessage({ type: "omathunder:triageInbox", language: window.OMA_I18N ? window.OMA_I18N.getLang() : "" });
+        const res = await api.runtime.sendMessage({
+          type: "omathunder:triageInbox",
+          language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
+          accountId: currentView === "kanban" && selectedAccountId !== "ALL" ? selectedAccountId : "",
+        });
         lastReport = res?.moveReport || null;
         await refreshSnapshot();
         renderScanReport();
@@ -1674,7 +1901,10 @@ async function init() {
         const issuesHtml = (res.reviewIssues || []).length
           ? `<ul style="margin:6px 0 0; padding-left:18px; color:var(--oma-yellow);">${res.reviewIssues.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`
           : "";
-        ansEl.innerHTML = `<div class="oma-card"><strong>${escapeHtml(res.provider || "Agent")}</strong><p class="oma-pre" style="margin:6px 0 0;">${escapeHtml(res.answer)}</p>${issuesHtml}</div>`;
+        const answerHtml = window.OmaCore?.renderMarkdownHtml
+          ? `<div class="oma-md" style="margin-top:6px;">${window.OmaCore.renderMarkdownHtml(res.answer)}</div>`
+          : `<p class="oma-pre" style="margin:6px 0 0;">${escapeHtml(res.answer)}</p>`;
+        ansEl.innerHTML = `<div class="oma-card"><strong>${escapeHtml(res.provider || "Agent")}</strong>${answerHtml}${issuesHtml}</div>`;
         await refreshSnapshot();
       } catch (err) {
         ansEl.innerHTML = `<div class="oma-card oma-muted">${escapeHtml(errText(err))}</div>`;

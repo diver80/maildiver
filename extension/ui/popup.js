@@ -11,6 +11,58 @@ const QUICK_THEMES = [
   { name: "flexoki-light", label: "Flexoki Light" },
 ];
 
+const t = (k, vars) => (window.OMA_I18N ? window.OMA_I18N.t(k, vars) : k);
+const errText = (err) => (window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message);
+
+let targetLang = "";
+let selectionInfo = { count: 0, subjects: [], froms: [] };
+let pendingAvailable = false;
+let activeTab = "actions";
+let currentResultLabelKey = "popup_tab_summary";
+
+function renderMarkdownInto(el, markdown) {
+  if (window.OmaCore?.renderMarkdownHtml) {
+    el.classList.add("oma-md");
+    el.innerHTML = window.OmaCore.renderMarkdownHtml(markdown);
+  } else {
+    el.classList.add("oma-pre");
+    el.textContent = String(markdown || "");
+  }
+}
+
+function setResultDot(state) {
+  const dot = document.getElementById("tab-result-dot");
+  if (!dot) return;
+  dot.classList.remove("visible", "loading");
+  if (state === "loading") dot.classList.add("visible", "loading");
+  else if (state === "ready") dot.classList.add("visible");
+}
+
+function switchTab(tab, { focus = false, labelKey = null } = {}) {
+  activeTab = tab === "result" ? "result" : "actions";
+  if (labelKey) currentResultLabelKey = labelKey;
+  const lblEl = document.getElementById("tab-result-label");
+  if (lblEl) lblEl.textContent = t(currentResultLabelKey);
+
+  document.querySelectorAll(".popup-tab[data-tab]").forEach((btn) => {
+    const isAct = btn.dataset.tab === activeTab;
+    btn.classList.toggle("active", isAct);
+    btn.setAttribute("aria-selected", isAct ? "true" : "false");
+  });
+  document.querySelectorAll(".tab-panel").forEach((p) => {
+    p.classList.toggle("active", p.id === `panel-${activeTab}`);
+  });
+
+  if (focus && activeTab === "result") {
+    const panel = document.getElementById("panel-result");
+    const box = panel?.querySelector(".summary-box");
+    if (box) box.scrollTop = 0;
+    window.scrollTo?.(0, 0);
+    // Focus result panel (and allow keyboard scrolling without stealing input focus unexpectedly on Actions tab).
+    panel?.focus({ preventScroll: true });
+  }
+}
+
 function applyTheme(themePayload, themeEnabled = true) {
   const el = document.getElementById("oma-dynamic-vars");
   if (!el) return;
@@ -23,8 +75,8 @@ function applyTheme(themePayload, themeEnabled = true) {
 
 function renderQuickThemes(active) {
   const el = document.getElementById("quick-themes");
-  el.innerHTML = QUICK_THEMES.map((t) =>
-    `<button class="pill ${t.name === active ? "active" : ""}" data-t="${t.name}">${t.label}</button>`
+  el.innerHTML = QUICK_THEMES.map((th) =>
+    `<button class="pill ${th.name === active ? "active" : ""}" data-t="${th.name}">${th.label}</button>`
   ).join("");
   el.querySelectorAll("[data-t]").forEach((b) => {
     b.addEventListener("click", async () => {
@@ -33,7 +85,8 @@ function renderQuickThemes(active) {
           const payload = await api.runtime.sendMessage({ type: "omathunder:setTheme", preset: b.dataset.t, mode: "preset" });
           if (payload) applyTheme(payload, true);
         } catch (err) {
-          document.getElementById("popup-out").textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message;
+          showOutNotice(errText(err), true);
+          switchTab("result", { focus: true });
           return;
         }
       }
@@ -42,12 +95,15 @@ function renderQuickThemes(active) {
   });
 }
 
-const t = (k, vars) => (window.OMA_I18N ? window.OMA_I18N.t(k, vars) : k);
-const errText = (err) => (window.OMA_I18N ? window.OMA_I18N.errText(err) : err.message);
-
-let targetLang = "";
-let selectionInfo = { count: 0, subjects: [], froms: [] };
-let pendingAvailable = false;
+function showOutNotice(text, switchToResult = false) {
+  const out = document.getElementById("popup-out");
+  const card = document.createElement("div");
+  card.className = "oma-card oma-muted";
+  card.textContent = text;
+  out.innerHTML = "";
+  out.appendChild(card);
+  if (switchToResult) switchTab("result", { focus: true });
+}
 
 function renderLangPills() {
   document.querySelectorAll("#popup-lang-pills [data-target-lang]").forEach((btn) => {
@@ -138,468 +194,529 @@ function downloadICS(icsContent) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-async function runFilterDiagnosis() {
-  const out = document.getElementById("popup-out");
-  out.innerHTML = `<div class="oma-card oma-muted">${t("popup_analyzing")}</div>`;
-  if (!inExtension) {
-    out.innerHTML = `<div class="oma-card">${t("popup_preview_diagnose")}</div>`;
-    return;
-  }
-  const usePending = pendingAvailable;
-  pendingAvailable = false;
+function appendBackToActionsBtn(container) {
+  const backBtn = document.createElement("button");
+  backBtn.className = "oma-btn ghost";
+  backBtn.style.cssText = "padding:4px 8px; font-size:11px;";
+  backBtn.textContent = t("popup_back_actions");
+  backBtn.addEventListener("click", () => switchTab("actions"));
+  container.prepend(backBtn);
+}
+
+async function withBusyButton(btn, fn) {
+  if (!btn) return fn();
+  const prevText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = t("popup_analyzing");
   try {
-    const res = await api.runtime.sendMessage({
-      type: "omathunder:diagnoseFilters",
-      usePendingSelection: usePending,
-    });
-    const diag = res?.diagnostic || {};
-    const msg = res?.message || {};
-    const accountId = msg.accountId || diag.messageAccountId || "";
-    out.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "oma-card";
-
-    const hdr = document.createElement("div");
-    hdr.style.cssText = "font-weight:700; font-size:12px;";
-    hdr.textContent = t("diag_title");
-    wrap.appendChild(hdr);
-
-    const meta = document.createElement("div");
-    meta.className = "oma-muted";
-    meta.style.cssText = "font-size:11px; margin-top:2px;";
-    meta.textContent = t("diag_checked_meta", {
-      count: diag.checkedFilters ?? 0,
-      domain: diag.senderDomain || "—",
-    });
-    wrap.appendChild(meta);
-
-    if (!res?.supported) {
-      const warn = document.createElement("div");
-      warn.className = "oma-badge warn";
-      warn.style.marginTop = "8px";
-      warn.textContent = t("diag_api_unavailable");
-      wrap.appendChild(warn);
-      out.appendChild(wrap);
-      return;
-    }
-
-    const matched = Array.isArray(diag.matchedFilters) ? diag.matchedFilters : [];
-    const nearMisses = Array.isArray(diag.nearMisses) ? diag.nearMisses : [];
-    const issues = Array.isArray(diag.issues) ? diag.issues : [];
-
-    for (const m of matched) {
-      const box = document.createElement("div");
-      box.className = "sug-box";
-      const top = document.createElement("div");
-      top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
-      const name = document.createElement("strong");
-      name.textContent = m.filterName;
-      const badge = document.createElement("span");
-      badge.className = "oma-badge ok";
-      badge.textContent = t("diag_badge_matched");
-      top.append(name, badge);
-      box.appendChild(top);
-      if (m.actionsSummary) {
-        const act = document.createElement("div");
-        act.className = "oma-muted oma-mono";
-        act.style.cssText = "font-size:10.5px; margin-top:3px;";
-        act.textContent = m.actionsSummary;
-        box.appendChild(act);
-      }
-      box.appendChild(renderConditionChips(m.conditionResults));
-      if (accountId) {
-        const runRow = document.createElement("div");
-        runRow.style.cssText = "display:flex; gap:6px; margin-top:6px;";
-        const runBtn = document.createElement("button");
-        runBtn.className = "oma-btn";
-        runBtn.style.cssText = "padding:4px 8px; font-size:11px;";
-        runBtn.textContent = t("diag_run_inbox");
-        runBtn.addEventListener("click", async () => {
-          runBtn.disabled = true;
-          try {
-            const r = await api.runtime.sendMessage({
-              type: "omathunder:runNativeFilters",
-              accountId,
-              filterNames: [m.filterName],
-            });
-            runBtn.textContent = t("diag_run_done", { count: r?.executed ?? 1 });
-          } catch (err) {
-            runBtn.textContent = errText(err);
-          }
-        });
-        runRow.appendChild(runBtn);
-        box.appendChild(runRow);
-      }
-      wrap.appendChild(box);
-    }
-
-    for (const nm of nearMisses) {
-      const box = document.createElement("div");
-      box.className = "sug-box";
-      const top = document.createElement("div");
-      top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
-      const name = document.createElement("strong");
-      name.textContent = nm.filterName;
-      const badge = document.createElement("span");
-      badge.className = "oma-badge warn";
-      badge.textContent = t(`diag_reason_${nm.reasonCode || "near_miss"}`);
-      top.append(name, badge);
-      box.appendChild(top);
-
-      if (nm.reason) {
-        const reason = document.createElement("div");
-        reason.className = "oma-muted";
-        reason.style.cssText = "font-size:11px; margin-top:3px;";
-        reason.textContent = nm.reason;
-        box.appendChild(reason);
-      }
-      box.appendChild(renderConditionChips(nm.conditionResults));
-
-      if (nm.quickFix && accountId) {
-        const fixRow = document.createElement("div");
-        fixRow.style.cssText = "display:flex; gap:6px; margin-top:6px;";
-        const fixBtn = document.createElement("button");
-        fixBtn.className = "oma-btn primary";
-        fixBtn.style.cssText = "padding:4px 8px; font-size:11px;";
-        fixBtn.textContent = nm.quickFix === "enable" ? t("diag_fix_enable") : t("diag_fix_set_or");
-        fixBtn.addEventListener("click", async () => {
-          fixBtn.disabled = true;
-          try {
-            await api.runtime.sendMessage({
-              type: "omathunder:applyNativeFilter",
-              spec: nm.quickFix === "enable"
-                ? { accountId, mode: "toggle", existingName: nm.filterName, enabled: true }
-                : { accountId, mode: "fix_match_all", existingName: nm.filterName, matchAll: false, enable: true },
-            });
-            await runFilterDiagnosis();
-          } catch (err) {
-            fixBtn.textContent = errText(err);
-          }
-        });
-        fixRow.appendChild(fixBtn);
-        box.appendChild(fixRow);
-      }
-      wrap.appendChild(box);
-    }
-
-    if (matched.length === 0 && nearMisses.length === 0) {
-      const none = document.createElement("div");
-      none.className = "oma-muted";
-      none.style.cssText = "font-size:11.5px; margin-top:8px;";
-      none.textContent = t("diag_no_match");
-      wrap.appendChild(none);
-    }
-
-    if (issues.length > 0) {
-      const issHdr = document.createElement("div");
-      issHdr.style.cssText = "font-weight:600; font-size:11.5px; margin-top:10px;";
-      issHdr.textContent = t("diag_issues_hdr", { count: issues.length });
-      wrap.appendChild(issHdr);
-
-      for (const iss of issues.slice(0, 4)) {
-        const row = document.createElement("div");
-        row.className = "sug-box";
-        const top = document.createElement("div");
-        top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
-        const name = document.createElement("strong");
-        name.textContent = iss.filterName;
-        const badge = document.createElement("span");
-        badge.className = `oma-badge ${iss.severity === "error" ? "err" : "warn"}`;
-        badge.textContent = iss.code;
-        top.append(name, badge);
-        const det = document.createElement("div");
-        det.className = "oma-muted";
-        det.style.cssText = "font-size:11px; margin-top:2px;";
-        det.textContent = iss.detail;
-        row.append(top, det);
-        if (iss.quickFix && accountId) {
-          const fixBtn = document.createElement("button");
-          fixBtn.className = "oma-btn";
-          fixBtn.style.cssText = "padding:3px 7px; font-size:10.5px; margin-top:5px;";
-          fixBtn.textContent = iss.quickFix === "enable" ? t("diag_fix_enable") : t("diag_fix_set_or");
-          fixBtn.addEventListener("click", async () => {
-            fixBtn.disabled = true;
-            try {
-              await api.runtime.sendMessage({
-                type: "omathunder:applyNativeFilter",
-                spec: iss.quickFix === "enable"
-                  ? { accountId, mode: "toggle", existingName: iss.filterName, enabled: true }
-                  : { accountId, mode: "fix_match_all", existingName: iss.filterName, matchAll: false, enable: true },
-              });
-              await runFilterDiagnosis();
-            } catch (err) {
-              fixBtn.textContent = errText(err);
-            }
-          });
-          row.appendChild(fixBtn);
-        }
-        wrap.appendChild(row);
-      }
-    }
-
-    const footer = document.createElement("div");
-    footer.style.cssText = "display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;";
-    const aiBtn = document.createElement("button");
-    aiBtn.className = "oma-btn primary";
-    aiBtn.style.cssText = "flex:1; justify-content:center; font-size:11.5px;";
-    aiBtn.textContent = t("diag_ai_solve");
-    aiBtn.addEventListener("click", () => {
-      const q = document.getElementById("popup-question")?.value.trim() || "";
-      runSelectionAnalysis("suggest_filter", q);
-    });
-    footer.appendChild(aiBtn);
-
-    if (accountId) {
-      const dlgBtn = document.createElement("button");
-      dlgBtn.className = "oma-btn ghost";
-      dlgBtn.style.cssText = "font-size:11px; padding:5px 8px;";
-      dlgBtn.textContent = t("diag_open_tb_filters");
-      dlgBtn.addEventListener("click", () => {
-        api.runtime.sendMessage({ type: "omathunder:openNativeFilters", accountId }).catch(() => {});
-      });
-      footer.appendChild(dlgBtn);
-    }
-    wrap.appendChild(footer);
-    out.appendChild(wrap);
-  } catch (err) {
-    const card = document.createElement("div");
-    card.className = "oma-card oma-muted";
-    card.textContent = errText(err);
-    out.innerHTML = "";
-    out.appendChild(card);
+    return await fn();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prevText;
   }
 }
 
-async function runSelectionAnalysis(mode = "summarize", customQuestion = "") {
-  const out = document.getElementById("popup-out");
-  out.innerHTML = `<div class="oma-card oma-muted">${t("popup_analyzing")}</div>`;
+async function runFilterDiagnosis(triggerBtn = null) {
+  setResultDot("loading");
+  showOutNotice(t("popup_analyzing"), activeTab === "result");
   if (!inExtension) {
-    out.innerHTML = `<div class="oma-card">${t("popup_preview_analyze")}</div>`;
+    showOutNotice(t("popup_preview_diagnose"), false);
+    setResultDot("ready");
+    switchTab("result", { focus: true, labelKey: "popup_tab_result" });
     return;
   }
   const usePending = pendingAvailable;
   pendingAvailable = false;
-  try {
-    const res = await api.runtime.sendMessage({
-      type: "omathunder:analyzeMessage",
-      mode,
-      question: customQuestion,
-      language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
-      targetLanguage: targetLang,
-      usePendingSelection: usePending,
-    });
-    const count = res.selectionCount || selectionInfo.count || 1;
-    out.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "oma-card";
-    if (count > 1) {
+
+  await withBusyButton(triggerBtn, async () => {
+    const out = document.getElementById("popup-out");
+    try {
+      const res = await api.runtime.sendMessage({
+        type: "omathunder:diagnoseFilters",
+        usePendingSelection: usePending,
+      });
+      const diag = res?.diagnostic || {};
+      const msg = res?.message || {};
+      const accountId = msg.accountId || diag.messageAccountId || "";
+      out.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "oma-card";
+
       const hdr = document.createElement("div");
-      hdr.className = "oma-muted";
-      hdr.style.cssText = "font-size:11px; font-weight:600; margin-bottom:6px;";
-      hdr.textContent = t("popup_summary_header_multi", { count });
+      hdr.style.cssText = "font-weight:700; font-size:12px;";
+      hdr.textContent = t("diag_title");
       wrap.appendChild(hdr);
-    }
-    if (res.answer) {
-      const body = document.createElement("div");
-      body.className = "oma-pre summary-box";
-      body.textContent = res.answer;
-      wrap.appendChild(body);
-    }
 
-    if (mode === "extract_events") {
-      const events = Array.isArray(res.events) ? res.events : [];
-      if (events.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "oma-muted";
-        empty.style.cssText = "font-size:11.5px; margin-top:6px;";
-        empty.textContent = t("popup_no_events");
-        wrap.appendChild(empty);
-      } else {
-        for (const ev of events) {
-          const box = document.createElement("div");
-          box.className = "sug-box";
-          const title = document.createElement("div");
-          title.style.fontWeight = "600";
-          title.textContent = ev.title || "Termin";
-          const meta = document.createElement("div");
-          meta.className = "oma-muted";
-          meta.textContent = [ev.start, ev.location].filter(Boolean).join(" · ");
-          box.append(title, meta);
-          wrap.appendChild(box);
-        }
-        if (res.ics) {
-          const dlRow = document.createElement("div");
-          dlRow.style.cssText = "display:flex; justify-content:flex-end; margin-top:8px;";
-          const dlBtn = document.createElement("button");
-          dlBtn.className = "oma-btn primary";
-          dlBtn.style.cssText = "padding:5px 10px; font-size:11.5px;";
-          dlBtn.textContent = t("popup_download_ics");
-          dlBtn.addEventListener("click", () => downloadICS(res.ics));
-          dlRow.appendChild(dlBtn);
-          wrap.appendChild(dlRow);
-        }
-      }
-    }
+      const meta = document.createElement("div");
+      meta.className = "oma-muted";
+      meta.style.cssText = "font-size:11px; margin-top:2px;";
+      meta.textContent = t("diag_checked_meta", {
+        count: diag.checkedFilters ?? 0,
+        domain: diag.senderDomain || "—",
+      });
+      wrap.appendChild(meta);
 
-    if (mode === "suggest_filter") {
-      const diag = res.filterDiagnostic;
-      if (diag && ((diag.nearMisses || []).length > 0 || (diag.issues || []).length > 0)) {
-        const info = document.createElement("div");
-        info.className = "oma-badge warn";
-        info.style.cssText = "margin-top:6px; display:inline-flex;";
-        info.textContent = t("filter_diag_banner", {
-          near: (diag.nearMisses || []).length,
-          issues: (diag.issues || []).length,
-        });
-        wrap.appendChild(info);
+      if (!res?.supported) {
+        const warn = document.createElement("div");
+        warn.className = "oma-badge warn";
+        warn.style.marginTop = "8px";
+        warn.textContent = t("diag_api_unavailable");
+        wrap.appendChild(warn);
+        out.appendChild(wrap);
+        setResultDot("ready");
+        switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+        return;
       }
-      const suggestions = Array.isArray(res.filterSuggestions) ? res.filterSuggestions : [];
-      const accountId = res.accountId || selectionInfo.accountId || "";
-      for (const sug of suggestions) {
+
+      const matched = Array.isArray(diag.matchedFilters) ? diag.matchedFilters : [];
+      const nearMisses = Array.isArray(diag.nearMisses) ? diag.nearMisses : [];
+      const issues = Array.isArray(diag.issues) ? diag.issues : [];
+
+      for (const m of matched) {
         const box = document.createElement("div");
         box.className = "sug-box";
-
+        const top = document.createElement("div");
+        top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
+        const name = document.createElement("strong");
+        name.textContent = m.filterName;
         const badge = document.createElement("span");
-        badge.className = `oma-badge ${sug.action === "fix_and_to_or" ? "warn" : "accent"}`;
-        badge.style.cssText = "margin-bottom:4px; display:inline-flex;";
-        badge.textContent = filterActionBadgeText(sug);
-        box.appendChild(badge);
-
-        const title = document.createElement("div");
-        title.style.fontWeight = "600";
-        title.textContent = sug.name || sug.targetFilterName || t("popup_suggest_filter");
-        box.appendChild(title);
-        if (sug.reason) {
-          const reason = document.createElement("div");
-          reason.className = "oma-muted";
-          reason.style.marginTop = "2px";
-          reason.textContent = sug.reason;
-          box.appendChild(reason);
+        badge.className = "oma-badge ok";
+        badge.textContent = t("diag_badge_matched");
+        top.append(name, badge);
+        box.appendChild(top);
+        if (m.actionsSummary) {
+          const act = document.createElement("div");
+          act.className = "oma-muted oma-mono";
+          act.style.cssText = "font-size:10.5px; margin-top:3px;";
+          act.textContent = m.actionsSummary;
+          box.appendChild(act);
         }
-        const cond = document.createElement("pre");
-        cond.className = "oma-pre oma-mono";
-        cond.style.cssText = "margin:6px 0; font-size:11px; background:var(--oma-bg-dark); padding:6px; border-radius:4px;";
-        cond.textContent = formatFilterText(sug);
-        box.appendChild(cond);
-
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;";
-        let appliedFilterName = sug.targetFilterName || "";
-
-        if (accountId && res.nativeFiltersSupported !== false && window.OmaCore?.buildNativeFilterSpecFromSuggestion) {
-          const applyBtn = document.createElement("button");
-          applyBtn.className = "oma-btn primary";
-          applyBtn.style.cssText = "padding:4px 8px; font-size:11px;";
-          applyBtn.textContent = t("popup_apply_tb_filter");
-
+        box.appendChild(renderConditionChips(m.conditionResults));
+        if (accountId) {
+          const runRow = document.createElement("div");
+          runRow.style.cssText = "display:flex; gap:6px; margin-top:6px;";
           const runBtn = document.createElement("button");
           runBtn.className = "oma-btn";
-          runBtn.style.cssText = "padding:4px 8px; font-size:11px; display:none;";
+          runBtn.style.cssText = "padding:4px 8px; font-size:11px;";
           runBtn.textContent = t("diag_run_inbox");
-
-          applyBtn.addEventListener("click", async () => {
-            applyBtn.disabled = true;
-            try {
-              const spec = window.OmaCore.buildNativeFilterSpecFromSuggestion(sug, accountId);
-              const applied = await api.runtime.sendMessage({
-                type: "omathunder:applyNativeFilter",
-                spec,
-              });
-              appliedFilterName = applied?.filter?.name || appliedFilterName || spec.name;
-              applyBtn.textContent = t("popup_tb_filter_applied", { name: appliedFilterName });
-              runBtn.style.display = "";
-            } catch (err) {
-              applyBtn.disabled = false;
-              applyBtn.textContent = errText(err);
-            }
-          });
-
           runBtn.addEventListener("click", async () => {
             runBtn.disabled = true;
             try {
               const r = await api.runtime.sendMessage({
                 type: "omathunder:runNativeFilters",
                 accountId,
-                filterNames: appliedFilterName ? [appliedFilterName] : undefined,
+                filterNames: [m.filterName],
               });
               runBtn.textContent = t("diag_run_done", { count: r?.executed ?? 1 });
             } catch (err) {
-              runBtn.disabled = false;
               runBtn.textContent = errText(err);
             }
           });
-
-          row.append(applyBtn, runBtn);
+          runRow.appendChild(runBtn);
+          box.appendChild(runRow);
         }
-
-        const copyBtn = document.createElement("button");
-        copyBtn.className = "oma-btn ghost";
-        copyBtn.style.cssText = "padding:4px 8px; font-size:11px;";
-        copyBtn.textContent = t("popup_copy_filter");
-        copyBtn.addEventListener("click", async () => {
-          await navigator.clipboard?.writeText(formatFilterText(sug)).catch(() => {});
-          copyBtn.textContent = t("popup_copied");
-          setTimeout(() => { copyBtn.textContent = t("popup_copy_filter"); }, 1500);
-        });
-        row.appendChild(copyBtn);
-
-        if (sug.suggestedFolder) {
-          const saveBtn = document.createElement("button");
-          saveBtn.className = "oma-btn";
-          saveBtn.style.cssText = "padding:4px 8px; font-size:11px;";
-          saveBtn.textContent = t("popup_save_rule");
-          saveBtn.addEventListener("click", async () => {
-            try {
-              await api.runtime.sendMessage({
-                type: "omathunder:saveFilterRule",
-                rule: {
-                  space: sug.name || sug.targetFilterName || "Filter",
-                  accountId,
-                  folderPath: sug.suggestedFolder,
-                  domains: sug.domains || [],
-                  fromContains: sug.fromContains || [],
-                  subjectContains: sug.subjectContains || [],
-                  nativeFilterNames: appliedFilterName ? [appliedFilterName] : [],
-                  autoMove: false,
-                  includeInScan: true,
-                },
-              });
-              saveBtn.textContent = t("popup_rule_saved");
-              saveBtn.disabled = true;
-            } catch (err) {
-              saveBtn.textContent = errText(err);
-            }
-          });
-          row.appendChild(saveBtn);
-        }
-        box.appendChild(row);
         wrap.appendChild(box);
       }
-    }
 
-    if (res.answer && mode === "summarize") {
-      const actions = document.createElement("div");
-      actions.style.cssText = "display:flex; justify-content:flex-end; margin-top:8px;";
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "oma-btn ghost";
-      copyBtn.style.cssText = "padding:4px 9px; font-size:11px;";
-      copyBtn.textContent = t("cmp_copy");
-      copyBtn.addEventListener("click", async () => {
-        await navigator.clipboard?.writeText(res.answer).catch(() => {});
-        copyBtn.textContent = t("popup_copied");
-        setTimeout(() => { copyBtn.textContent = t("cmp_copy"); }, 1500);
+      for (const nm of nearMisses) {
+        const box = document.createElement("div");
+        box.className = "sug-box";
+        const top = document.createElement("div");
+        top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
+        const name = document.createElement("strong");
+        name.textContent = nm.filterName;
+        const badge = document.createElement("span");
+        badge.className = "oma-badge warn";
+        badge.textContent = t(`diag_reason_${nm.reasonCode || "near_miss"}`);
+        top.append(name, badge);
+        box.appendChild(top);
+
+        if (nm.reason) {
+          const reason = document.createElement("div");
+          reason.className = "oma-muted";
+          reason.style.cssText = "font-size:11px; margin-top:3px;";
+          reason.textContent = nm.reason;
+          box.appendChild(reason);
+        }
+        box.appendChild(renderConditionChips(nm.conditionResults));
+
+        if (nm.quickFix && accountId) {
+          const fixRow = document.createElement("div");
+          fixRow.style.cssText = "display:flex; gap:6px; margin-top:6px;";
+          const fixBtn = document.createElement("button");
+          fixBtn.className = "oma-btn primary";
+          fixBtn.style.cssText = "padding:4px 8px; font-size:11px;";
+          fixBtn.textContent = nm.quickFix === "enable" ? t("diag_fix_enable") : t("diag_fix_set_or");
+          fixBtn.addEventListener("click", async () => {
+            fixBtn.disabled = true;
+            try {
+              await api.runtime.sendMessage({
+                type: "omathunder:applyNativeFilter",
+                spec: nm.quickFix === "enable"
+                  ? { accountId, mode: "toggle", existingName: nm.filterName, enabled: true }
+                  : { accountId, mode: "fix_match_all", existingName: nm.filterName, matchAll: false, enable: true },
+              });
+              await runFilterDiagnosis();
+            } catch (err) {
+              fixBtn.textContent = errText(err);
+            }
+          });
+          fixRow.appendChild(fixBtn);
+          box.appendChild(fixRow);
+        }
+        wrap.appendChild(box);
+      }
+
+      if (matched.length === 0 && nearMisses.length === 0) {
+        const none = document.createElement("div");
+        none.className = "oma-muted";
+        none.style.cssText = "font-size:11.5px; margin-top:8px;";
+        none.textContent = t("diag_no_match");
+        wrap.appendChild(none);
+      }
+
+      if (issues.length > 0) {
+        const issHdr = document.createElement("div");
+        issHdr.style.cssText = "font-weight:600; font-size:11.5px; margin-top:10px;";
+        issHdr.textContent = t("diag_issues_hdr", { count: issues.length });
+        wrap.appendChild(issHdr);
+
+        for (const iss of issues.slice(0, 4)) {
+          const row = document.createElement("div");
+          row.className = "sug-box";
+          const top = document.createElement("div");
+          top.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:6px;";
+          const name = document.createElement("strong");
+          name.textContent = iss.filterName;
+          const badge = document.createElement("span");
+          badge.className = `oma-badge ${iss.severity === "error" ? "err" : "warn"}`;
+          badge.textContent = iss.code;
+          top.append(name, badge);
+          const det = document.createElement("div");
+          det.className = "oma-muted";
+          det.style.cssText = "font-size:11px; margin-top:2px;";
+          det.textContent = iss.detail;
+          row.append(top, det);
+          if (iss.quickFix && accountId) {
+            const fixBtn = document.createElement("button");
+            fixBtn.className = "oma-btn";
+            fixBtn.style.cssText = "padding:3px 7px; font-size:10.5px; margin-top:5px;";
+            fixBtn.textContent = iss.quickFix === "enable" ? t("diag_fix_enable") : t("diag_fix_set_or");
+            fixBtn.addEventListener("click", async () => {
+              fixBtn.disabled = true;
+              try {
+                await api.runtime.sendMessage({
+                  type: "omathunder:applyNativeFilter",
+                  spec: iss.quickFix === "enable"
+                    ? { accountId, mode: "toggle", existingName: iss.filterName, enabled: true }
+                    : { accountId, mode: "fix_match_all", existingName: iss.filterName, matchAll: false, enable: true },
+                });
+                await runFilterDiagnosis();
+              } catch (err) {
+                fixBtn.textContent = errText(err);
+              }
+            });
+            row.appendChild(fixBtn);
+          }
+          wrap.appendChild(row);
+        }
+      }
+
+      const footer = document.createElement("div");
+      footer.style.cssText = "display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;";
+      const aiBtn = document.createElement("button");
+      aiBtn.className = "oma-btn primary";
+      aiBtn.style.cssText = "flex:1; justify-content:center; font-size:11.5px;";
+      aiBtn.textContent = t("diag_ai_solve");
+      aiBtn.addEventListener("click", () => {
+        const q = document.getElementById("popup-question")?.value.trim() || "";
+        runSelectionAnalysis("suggest_filter", q, aiBtn);
       });
-      actions.appendChild(copyBtn);
-      wrap.appendChild(actions);
+      footer.appendChild(aiBtn);
+
+      if (accountId) {
+        const dlgBtn = document.createElement("button");
+        dlgBtn.className = "oma-btn ghost";
+        dlgBtn.style.cssText = "font-size:11px; padding:5px 8px;";
+        dlgBtn.textContent = t("diag_open_tb_filters");
+        dlgBtn.addEventListener("click", () => {
+          api.runtime.sendMessage({ type: "omathunder:openNativeFilters", accountId }).catch(() => {});
+        });
+        footer.appendChild(dlgBtn);
+      }
+      appendBackToActionsBtn(footer);
+      wrap.appendChild(footer);
+      out.appendChild(wrap);
+      setResultDot("ready");
+      switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+    } catch (err) {
+      setResultDot("none");
+      showOutNotice(errText(err), false);
+      switchTab("result", { focus: true, labelKey: "popup_tab_result" });
     }
-    out.appendChild(wrap);
-  } catch (err) {
-    const card = document.createElement("div");
-    card.className = "oma-card oma-muted";
-    card.textContent = errText(err);
+  });
+}
+
+async function runSelectionAnalysis(mode = "summarize", customQuestion = "", triggerBtn = null) {
+  const resultLabelKey = mode === "summarize" ? "popup_tab_summary" : "popup_tab_result";
+  setResultDot("loading");
+  showOutNotice(t("popup_analyzing"), activeTab === "result");
+
+  if (!inExtension) {
+    const out = document.getElementById("popup-out");
     out.innerHTML = "";
-    out.appendChild(card);
+    const wrap = document.createElement("div");
+    wrap.className = "oma-card";
+    const body = document.createElement("div");
+    renderMarkdownInto(
+      body,
+      mode === "summarize"
+        ? `**${t("popup_tab_summary")} (Preview)**\n\n- ${t("popup_preview_analyze")}\n- Unterstützt **Fett**, \`Code\`, Listen und Tabellen.`
+        : t("popup_preview_analyze")
+    );
+    wrap.appendChild(body);
+    out.appendChild(wrap);
+    setResultDot("ready");
+    switchTab("result", { focus: true, labelKey: resultLabelKey });
+    return;
   }
+
+  const usePending = pendingAvailable;
+  pendingAvailable = false;
+
+  await withBusyButton(triggerBtn, async () => {
+    const out = document.getElementById("popup-out");
+    try {
+      const res = await api.runtime.sendMessage({
+        type: "omathunder:analyzeMessage",
+        mode,
+        ephemeral: true,
+        question: customQuestion,
+        language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
+        targetLanguage: targetLang,
+        usePendingSelection: usePending,
+      });
+      const count = res.selectionCount || selectionInfo.count || 1;
+      out.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "oma-card";
+      if (count > 1) {
+        const hdr = document.createElement("div");
+        hdr.className = "oma-muted";
+        hdr.style.cssText = "font-size:11px; font-weight:600; margin-bottom:6px;";
+        hdr.textContent = t("popup_summary_header_multi", { count });
+        wrap.appendChild(hdr);
+      }
+      if (res.answer) {
+        const body = document.createElement("div");
+        body.className = "summary-box";
+        renderMarkdownInto(body, res.answer);
+        wrap.appendChild(body);
+      }
+
+      if (mode === "extract_events") {
+        const events = Array.isArray(res.events) ? res.events : [];
+        if (events.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "oma-muted";
+          empty.style.cssText = "font-size:11.5px; margin-top:6px;";
+          empty.textContent = t("popup_no_events");
+          wrap.appendChild(empty);
+        } else {
+          for (const ev of events) {
+            const box = document.createElement("div");
+            box.className = "sug-box";
+            const title = document.createElement("div");
+            title.style.fontWeight = "600";
+            title.textContent = ev.title || "Termin";
+            const meta = document.createElement("div");
+            meta.className = "oma-muted";
+            meta.textContent = [ev.start, ev.location].filter(Boolean).join(" · ");
+            box.append(title, meta);
+            wrap.appendChild(box);
+          }
+          if (res.ics) {
+            const dlRow = document.createElement("div");
+            dlRow.style.cssText = "display:flex; justify-content:space-between; margin-top:8px; gap:6px;";
+            appendBackToActionsBtn(dlRow);
+            const dlBtn = document.createElement("button");
+            dlBtn.className = "oma-btn primary";
+            dlBtn.style.cssText = "padding:5px 10px; font-size:11.5px;";
+            dlBtn.textContent = t("popup_download_ics");
+            dlBtn.addEventListener("click", () => downloadICS(res.ics));
+            dlRow.appendChild(dlBtn);
+            wrap.appendChild(dlRow);
+          }
+        }
+      }
+
+      if (mode === "suggest_filter") {
+        const diag = res.filterDiagnostic;
+        if (diag && ((diag.nearMisses || []).length > 0 || (diag.issues || []).length > 0)) {
+          const info = document.createElement("div");
+          info.className = "oma-badge warn";
+          info.style.cssText = "margin-top:6px; display:inline-flex;";
+          info.textContent = t("filter_diag_banner", {
+            near: (diag.nearMisses || []).length,
+            issues: (diag.issues || []).length,
+          });
+          wrap.appendChild(info);
+        }
+        const suggestions = Array.isArray(res.filterSuggestions) ? res.filterSuggestions : [];
+        const accountId = res.accountId || selectionInfo.accountId || "";
+        for (const sug of suggestions) {
+          const box = document.createElement("div");
+          box.className = "sug-box";
+
+          const badge = document.createElement("span");
+          badge.className = `oma-badge ${sug.action === "fix_and_to_or" ? "warn" : "accent"}`;
+          badge.style.cssText = "margin-bottom:4px; display:inline-flex;";
+          badge.textContent = filterActionBadgeText(sug);
+          box.appendChild(badge);
+
+          const title = document.createElement("div");
+          title.style.fontWeight = "600";
+          title.textContent = sug.name || sug.targetFilterName || t("popup_suggest_filter");
+          box.appendChild(title);
+          if (sug.reason) {
+            const reason = document.createElement("div");
+            reason.className = "oma-muted";
+            reason.style.marginTop = "2px";
+            reason.textContent = sug.reason;
+            box.appendChild(reason);
+          }
+          const cond = document.createElement("pre");
+          cond.className = "oma-pre oma-mono";
+          cond.style.cssText = "margin:6px 0; font-size:11px; background:var(--oma-bg-dark); padding:6px; border-radius:4px;";
+          cond.textContent = formatFilterText(sug);
+          box.appendChild(cond);
+
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;";
+          let appliedFilterName = sug.targetFilterName || "";
+
+          if (accountId && res.nativeFiltersSupported !== false && window.OmaCore?.buildNativeFilterSpecFromSuggestion) {
+            const applyBtn = document.createElement("button");
+            applyBtn.className = "oma-btn primary";
+            applyBtn.style.cssText = "padding:4px 8px; font-size:11px;";
+            applyBtn.textContent = t("popup_apply_tb_filter");
+
+            const runBtn = document.createElement("button");
+            runBtn.className = "oma-btn";
+            runBtn.style.cssText = "padding:4px 8px; font-size:11px; display:none;";
+            runBtn.textContent = t("diag_run_inbox");
+
+            applyBtn.addEventListener("click", async () => {
+              applyBtn.disabled = true;
+              try {
+                const spec = window.OmaCore.buildNativeFilterSpecFromSuggestion(sug, accountId);
+                const applied = await api.runtime.sendMessage({
+                  type: "omathunder:applyNativeFilter",
+                  spec,
+                });
+                appliedFilterName = applied?.filter?.name || appliedFilterName || spec.name;
+                applyBtn.textContent = t("popup_tb_filter_applied", { name: appliedFilterName });
+                runBtn.style.display = "";
+              } catch (err) {
+                applyBtn.disabled = false;
+                applyBtn.textContent = errText(err);
+              }
+            });
+
+            runBtn.addEventListener("click", async () => {
+              runBtn.disabled = true;
+              try {
+                const r = await api.runtime.sendMessage({
+                  type: "omathunder:runNativeFilters",
+                  accountId,
+                  filterNames: appliedFilterName ? [appliedFilterName] : undefined,
+                });
+                runBtn.textContent = t("diag_run_done", { count: r?.executed ?? 1 });
+              } catch (err) {
+                runBtn.disabled = false;
+                runBtn.textContent = errText(err);
+              }
+            });
+
+            row.append(applyBtn, runBtn);
+          }
+
+          const copyBtn = document.createElement("button");
+          copyBtn.className = "oma-btn ghost";
+          copyBtn.style.cssText = "padding:4px 8px; font-size:11px;";
+          copyBtn.textContent = t("popup_copy_filter");
+          copyBtn.addEventListener("click", async () => {
+            await navigator.clipboard?.writeText(formatFilterText(sug)).catch(() => {});
+            copyBtn.textContent = t("popup_copied");
+            setTimeout(() => { copyBtn.textContent = t("popup_copy_filter"); }, 1500);
+          });
+          row.appendChild(copyBtn);
+
+          if (sug.suggestedFolder) {
+            const saveBtn = document.createElement("button");
+            saveBtn.className = "oma-btn";
+            saveBtn.style.cssText = "padding:4px 8px; font-size:11px;";
+            saveBtn.textContent = t("popup_save_rule");
+            saveBtn.addEventListener("click", async () => {
+              try {
+                await api.runtime.sendMessage({
+                  type: "omathunder:saveFilterRule",
+                  rule: {
+                    space: sug.name || sug.targetFilterName || "Filter",
+                    accountId,
+                    folderPath: sug.suggestedFolder,
+                    domains: sug.domains || [],
+                    fromContains: sug.fromContains || [],
+                    subjectContains: sug.subjectContains || [],
+                    nativeFilterNames: appliedFilterName ? [appliedFilterName] : [],
+                    autoMove: false,
+                    includeInScan: true,
+                  },
+                });
+                saveBtn.textContent = t("popup_rule_saved");
+                saveBtn.disabled = true;
+              } catch (err) {
+                saveBtn.textContent = errText(err);
+              }
+            });
+            row.appendChild(saveBtn);
+          }
+          box.appendChild(row);
+          wrap.appendChild(box);
+        }
+      }
+
+      if (res.answer && mode === "summarize") {
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px solid var(--oma-border);";
+        appendBackToActionsBtn(actions);
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "oma-btn ghost";
+        copyBtn.style.cssText = "padding:4px 9px; font-size:11px;";
+        copyBtn.textContent = t("cmp_copy");
+        copyBtn.addEventListener("click", async () => {
+          await navigator.clipboard?.writeText(res.answer).catch(() => {});
+          copyBtn.textContent = t("popup_copied");
+          setTimeout(() => { copyBtn.textContent = t("cmp_copy"); }, 1500);
+        });
+        actions.appendChild(copyBtn);
+        wrap.appendChild(actions);
+      } else if (mode !== "extract_events" || !res.ics) {
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex; justify-content:flex-start; margin-top:8px;";
+        appendBackToActionsBtn(actions);
+        wrap.appendChild(actions);
+      }
+
+      out.appendChild(wrap);
+      setResultDot("ready");
+      switchTab("result", { focus: true, labelKey: resultLabelKey });
+    } catch (err) {
+      setResultDot("none");
+      showOutNotice(errText(err), false);
+      switchTab("result", { focus: true, labelKey: resultLabelKey });
+    }
+  });
 }
 
 async function init() {
@@ -613,7 +730,17 @@ async function init() {
     document.body.classList.add("is-window");
     document.getElementById("stats-grid").style.display = "none";
     document.getElementById("quick-theme-card").style.display = "none";
+    switchTab("result", {
+      focus: false,
+      labelKey: autoMode === "summarize" ? "popup_tab_summary" : "popup_tab_result",
+    });
   }
+
+  document.querySelectorAll(".popup-tab[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchTab(btn.dataset.tab, { focus: btn.dataset.tab === "result" });
+    });
+  });
 
   if (window.OMA_I18N) {
     window.OMA_I18N.setLang("auto");
@@ -641,8 +768,12 @@ async function init() {
         window.OMA_I18N.applyDom();
       }
       const badge = document.getElementById("popup-status");
-      badge.textContent = snap.connected ? t("popup_host_active") : t("popup_setup_needed");
-      badge.className = `oma-badge ${snap.connected ? "ok" : "warn"}`;
+      badge.textContent = snap.connected
+        ? t("popup_host_active")
+        : snap.standalone
+          ? t("popup_standalone")
+          : t("popup_setup_needed");
+      badge.className = `oma-badge ${snap.connected ? "ok" : snap.standalone ? "accent" : "warn"}`;
       if (snap.barSummary) {
         document.getElementById("st-action").textContent = snap.barSummary.actionCount ?? 0;
         document.getElementById("st-proposals").textContent = snap.barSummary.pendingProposals ?? 0;
@@ -655,17 +786,21 @@ async function init() {
         assistantEnabled = Boolean(features.assistant);
         if (!autoMode) {
           document.getElementById("quick-theme-card").style.display = features.theme ? "" : "none";
-          document.getElementById("stats-grid").style.display = features.triage || features.assistant ? "" : "none";
+          document.getElementById("stats-grid").style.display = snap.connected && (features.triage || features.assistant) ? "" : "none";
         }
         document.getElementById("popup-ai-card").style.display = features.assistant ? "" : "none";
-        document.getElementById("btn-analyze-mail").style.display = features.assistant ? "" : "none";
-        document.getElementById("popup-ai-extras").style.display = features.assistant || snap.nativeFiltersSupported ? "" : "none";
+        document.getElementById("popup-ai-primary").style.display = features.assistant ? "" : "none";
+        document.getElementById("popup-ai-extras").style.display = features.assistant || (snap.connected && snap.nativeFiltersSupported) ? "" : "none";
         document.getElementById("btn-extract-ics").style.display = features.assistant ? "" : "none";
         document.getElementById("btn-suggest-filter").style.display = features.assistant ? "" : "none";
-        document.getElementById("btn-diagnose-filter").style.display = snap.nativeFiltersSupported === false ? "none" : "";
-        document.getElementById("btn-draft-reply").style.display = features.assistant ? "" : "none";
+        document.getElementById("btn-diagnose-filter").style.display = snap.connected && snap.nativeFiltersSupported !== false ? "" : "none";
         document.getElementById("popup-readonly").style.display =
-          features.triage && snap.config?.mailbox?.readOnly !== false ? "" : "none";
+          snap.connected && features.triage && snap.config?.mailbox?.readOnly !== false ? "" : "none";
+        // If AI assistant is off, open the secondary options automatically so themes/diagnosis are directly reachable.
+        if (!features.assistant) {
+          const det = document.getElementById("popup-more-details");
+          if (det) det.open = true;
+        }
       }
       api.runtime.onMessage.addListener((msg) => {
         if (msg?.type === "omathunder:themeChanged" && msg.payload) {
@@ -687,75 +822,98 @@ async function init() {
     if (inExtension && api.runtime.openOptionsPage) api.runtime.openOptionsPage();
     else window.location.href = "options.html";
   });
-  document.getElementById("btn-draft-reply").addEventListener("click", async () => {
-    const out = document.getElementById("popup-out");
-    const note = (text) => {
-      const card = document.createElement("div");
-      card.className = "oma-card oma-muted";
-      card.textContent = text;
-      out.innerHTML = "";
-      out.appendChild(card);
-    };
-    note(t("popup_analyzing"));
-    if (!inExtension) return;
-    try {
-      const res = await api.runtime.sendMessage({
-        type: "omathunder:analyzeMessage",
-        mode: "draft_reply",
-        language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
-        targetLanguage: targetLang,
-      });
-      const prop = (res.proposals || []).find((p) => p.kind === "draft_reply");
-      if (!prop) return note(res.answer || t("popup_no_draft"));
-      out.innerHTML = "";
-      const box = document.createElement("div");
-      box.className = "oma-card";
-      box.style.cssText = "white-space:pre-wrap; max-height:200px; overflow-y:auto; font-size:12px;";
-      box.textContent = prop.body;
-      const row = document.createElement("div");
-      row.style.cssText = "display:flex; gap:6px; margin-top:8px;";
-      for (const [label, replyAll] of [[t("ai_reply"), false], [t("ai_reply_all"), true]]) {
-        const b = document.createElement("button");
-        b.className = replyAll ? "oma-btn" : "oma-btn primary";
-        b.style.cssText = "flex:1; justify-content:center;";
-        b.textContent = label;
-        b.addEventListener("click", async () => {
-          try {
-            await api.runtime.sendMessage({ type: "omathunder:applyProposal", proposal: prop, replyAll });
-            window.close();
-          } catch (err) {
-            note(errText(err));
-          }
-        });
-        row.appendChild(b);
-      }
-      out.append(box, row);
-    } catch (err) {
-      note(errText(err));
+
+  const draftBtn = document.getElementById("btn-draft-reply");
+  draftBtn.addEventListener("click", async () => {
+    setResultDot("loading");
+    showOutNotice(t("popup_analyzing"), activeTab === "result");
+    if (!inExtension) {
+      showOutNotice(t("popup_preview_analyze"), false);
+      setResultDot("ready");
+      switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+      return;
     }
+    await withBusyButton(draftBtn, async () => {
+      const out = document.getElementById("popup-out");
+      try {
+        const res = await api.runtime.sendMessage({
+          type: "omathunder:analyzeMessage",
+          mode: "draft_reply",
+          ephemeral: true,
+          language: window.OMA_I18N ? window.OMA_I18N.getLang() : "",
+          targetLanguage: targetLang,
+        });
+        const prop = (res.proposals || []).find((p) => p.kind === "draft_reply");
+        if (!prop) {
+          showOutNotice(res.answer || t("popup_no_draft"), false);
+          setResultDot("none");
+          switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+          return;
+        }
+        out.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "oma-card";
+        const box = document.createElement("div");
+        box.className = "summary-box oma-pre";
+        box.style.fontSize = "12px";
+        box.textContent = prop.body;
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;";
+        appendBackToActionsBtn(row);
+        for (const [label, replyAll] of [[t("ai_reply"), false], [t("ai_reply_all"), true]]) {
+          const b = document.createElement("button");
+          b.className = replyAll ? "oma-btn" : "oma-btn primary";
+          b.style.cssText = "flex:1; justify-content:center;";
+          b.textContent = label;
+          b.addEventListener("click", async () => {
+            try {
+              await api.runtime.sendMessage({ type: "omathunder:applyProposal", proposal: prop, replyAll });
+              window.close();
+            } catch (err) {
+              showOutNotice(errText(err), false);
+            }
+          });
+          row.appendChild(b);
+        }
+        wrap.append(box, row);
+        out.appendChild(wrap);
+        setResultDot("ready");
+        switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+      } catch (err) {
+        setResultDot("none");
+        showOutNotice(errText(err), false);
+        switchTab("result", { focus: true, labelKey: "popup_tab_result" });
+      }
+    });
   });
 
   const qInput = document.getElementById("popup-question");
-  document.getElementById("btn-ask-mail").addEventListener("click", () => {
-    runSelectionAnalysis("summarize", qInput.value.trim());
+  const askBtn = document.getElementById("btn-ask-mail");
+  const sumBtn = document.getElementById("btn-analyze-mail");
+  const icsBtn = document.getElementById("btn-extract-ics");
+  const sugBtn = document.getElementById("btn-suggest-filter");
+  const diagBtn = document.getElementById("btn-diagnose-filter");
+
+  askBtn.addEventListener("click", () => {
+    runSelectionAnalysis("summarize", qInput.value.trim(), askBtn);
   });
   qInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      runSelectionAnalysis("summarize", qInput.value.trim());
+      runSelectionAnalysis("summarize", qInput.value.trim(), askBtn);
     }
   });
-  document.getElementById("btn-analyze-mail").addEventListener("click", () => {
-    runSelectionAnalysis("summarize", qInput.value.trim());
+  sumBtn.addEventListener("click", () => {
+    runSelectionAnalysis("summarize", qInput.value.trim(), sumBtn);
   });
-  document.getElementById("btn-extract-ics").addEventListener("click", () => {
-    runSelectionAnalysis("extract_events");
+  icsBtn.addEventListener("click", () => {
+    runSelectionAnalysis("extract_events", "", icsBtn);
   });
-  document.getElementById("btn-suggest-filter").addEventListener("click", () => {
-    runSelectionAnalysis("suggest_filter", qInput.value.trim());
+  sugBtn.addEventListener("click", () => {
+    runSelectionAnalysis("suggest_filter", qInput.value.trim(), sugBtn);
   });
-  document.getElementById("btn-diagnose-filter").addEventListener("click", () => {
-    runFilterDiagnosis();
+  diagBtn.addEventListener("click", () => {
+    runFilterDiagnosis(diagBtn);
   });
 
   if (autoMode === "diagnose_filter") {

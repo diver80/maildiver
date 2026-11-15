@@ -18,6 +18,8 @@ type Proposal struct {
 	Kind       string   `json:"kind"` // "draft_reply", "add_tags", "move_folder"
 	MessageID  string   `json:"messageId"`
 	ThreadID   string   `json:"threadId,omitempty"`
+	AccountID  string   `json:"accountId,omitempty"`
+	Space      string   `json:"space,omitempty"`
 	Title      string   `json:"title"`
 	Summary    string   `json:"summary"`
 	Subject    string   `json:"subject,omitempty"`
@@ -499,6 +501,39 @@ func (s *Store) UpdateProposalStatus(id, status string) (State, error) {
 			st.Proposals[i].Status = status
 			break
 		}
+	}
+	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.writeLocked(st); err != nil {
+		return st, err
+	}
+	return st, nil
+}
+
+// DismissProposals marks matching pending proposals (or all pending proposals when ids is empty) as dismissed.
+func (s *Store) DismissProposals(ids []string) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return st, err
+	}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			idSet[id] = struct{}{}
+		}
+	}
+	dismissAll := len(idSet) == 0
+	for i := range st.Proposals {
+		if st.Proposals[i].Status != "pending" {
+			continue
+		}
+		if !dismissAll {
+			if _, ok := idSet[st.Proposals[i].ID]; !ok {
+				continue
+			}
+		}
+		st.Proposals[i].Status = "dismissed"
 	}
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.writeLocked(st); err != nil {

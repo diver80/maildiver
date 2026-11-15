@@ -210,3 +210,40 @@ func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
 		t.Fatalf("expected PopMovedByScan to restore folder while keeping rule attribution, got %+v", got)
 	}
 }
+
+func TestStoreDismissProposals(t *testing.T) {
+	s := NewStoreAt(t.TempDir())
+	for _, p := range []Proposal{
+		{ID: "p1", AccountID: "acc-a", Status: "pending"},
+		{ID: "p2", AccountID: "acc-b", Status: "pending"},
+		{ID: "p3", AccountID: "acc-b", Status: "applied"},
+	} {
+		if _, err := s.AddProposal(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := s.DismissProposals([]string{"p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := ComputeBarSummary(st); sum.PendingProposals != 1 {
+		t.Fatalf("expected 1 pending proposal after dismissing p1, got %d", sum.PendingProposals)
+	}
+	stAll, err := s.DismissProposals(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := ComputeBarSummary(stAll); sum.PendingProposals != 0 {
+		t.Fatalf("expected 0 pending proposals after dismiss all, got %d", sum.PendingProposals)
+	}
+	// Applied status must remain preserved.
+	var p3Status string
+	for _, p := range stAll.Proposals {
+		if p.ID == "p3" {
+			p3Status = p.Status
+		}
+	}
+	if p3Status != "applied" {
+		t.Fatalf("expected applied proposal p3 to stay 'applied', got %q", p3Status)
+	}
+}

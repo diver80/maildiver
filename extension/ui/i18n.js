@@ -34,6 +34,10 @@
       card_next: "Weiter",
       badge_inbox: "INBOX",
       kanban_no_accounts: "Kein Konto für das Kanban-Board aktiviert. Du kannst in den Einstellungen pro Postfach entscheiden, ob nur Spaces/Filter oder auch Kanban aktiv sein soll.",
+      kanban_mark_done_read: "✓ Gelesen",
+      kanban_mark_done_read_title: "Alle Mails in „Erledigt“ in Thunderbird als gelesen markieren",
+      kanban_mark_read_working: "Markiere…",
+      kanban_mark_read_report: "{marked} als gelesen markiert ({alreadyRead} bereits gelesen, {skipped} übersprungen)",
 
       // Rules Table
       rules_new_title: "Neue Space ↔ Domain-Zuordnung",
@@ -87,6 +91,8 @@
       ai_one_click: "1-Klick Review",
       ai_apply_tb: "In Thunderbird öffnen",
       ai_dismiss: "Verwerfen",
+      ai_dismiss_all: "Alle verwerfen",
+      btn_close: "Schließen",
       ai_preview_note: "Im aktiven Thunderbird-Setup wird hier der gesamte Thread zusammengefasst, formuliert oder dein Entwurf gegen offene Fragen geprüft.",
 
       // Popup
@@ -101,10 +107,21 @@
       popup_open_opts: "Einstellungen",
       popup_analyzing: "Analysiere…",
       popup_preview_analyze: "Preview-Modus: in Thunderbird wird hier die geöffnete Mail analysiert.",
+      popup_tab_short: "Spaces",
+      popup_tab_actions: "Aktionen",
+      popup_tab_summary: "Zusammenfassung",
+      popup_tab_result: "Ergebnis",
+      popup_more_options: "Weitere Optionen & Themes",
+      popup_result_empty: "Noch kein Ergebnis. Starte unter „Aktionen“ eine Zusammenfassung oder Rückfrage.",
+      popup_back_actions: "← Aktionen",
 
       // Options
       opts_title: "OmaThunder Einstellungen",
       opts_subtitle: "Omarchy Theme-Sync + 3-Stufen-KI (Gemini / Claude / OpenCode / Ollama)",
+      opts_tab_general: "Status & Module",
+      opts_tab_accounts: "Konten & Triage",
+      opts_tab_theme: "Theme & Sprache",
+      opts_tab_ai: "KI & Backends",
       opts_save: "Speichern",
       opts_saved: "Gespeichert & Theme live aktualisiert.",
       opts_preview_saved: "Preview-Modus: Konfiguration validiert.",
@@ -399,6 +416,27 @@
       archive_preview_empty: "Keine passenden Mails für diese Kriterien gefunden.",
       archive_confirm_delete_perm: "Wirklich alle exportierten Mails ENDGÜLTIG (ohne Papierkorb) aus dem Postfach löschen? Zuvor wird jede Mail SHA256-verifiziert als .eml gespeichert.",
       archive_confirm_delete_trash: "Sollen die exportierten Mails nach verifiziertem .eml-Backup in den Papierkorb des Postfachs verschoben werden?",
+
+      // Standalone mode (without Go host)
+      host_standalone: "Standalone",
+      host_standalone_title: "Standalone-Modus (ohne Go-Host)",
+      host_standalone_body: "KI-Assistent (Gemini API, Claude API, lokales Ollama) und alle 22 Omarchy-Themes funktionieren direkt in Thunderbird. Kanban-Board, Stage-0-Triage, CLI-Backends und .eml-Archiv nutzen optional den Go-Host.",
+      optional_host_title: "Optional: Go-Host für Triage, Kanban & Archiv",
+      optional_host_body: "KI-Assistent und Omarchy Themes laufen bereits direkt im Standalone-Modus. Für Kanban-Board, Stage-0-Triage, CLI-Agenten und .eml-Archiv bitte einmalig den Go-Host installieren: brew install diver80/tap/omathunder && omathunder setup",
+      opts_standalone_keys_title: "Standalone API-Keys (lokal in Thunderbird gespeichert)",
+      opts_standalone_keys_desc: "Werden lokal in Thunderbird (storage.local) gespeichert und direkt für Gemini API / Claude API genutzt, wenn kein Go-Host verbunden ist. Leer lassen, um gespeicherte Keys beizubehalten.",
+      opts_gemini_key: "Gemini API-Key",
+      opts_anthropic_key: "Anthropic API-Key",
+      opts_key_saved_ph: "Gespeichert (leer lassen zum Behalten)",
+      opts_key_ph: "API-Key eingeben…",
+      opts_triage_needs_host: "Erfordert den optionalen Go-Host (omathunder). KI-Assistent & Themes funktionieren ohne Host.",
+      st_standalone_on: "Standalone (ohne Go-Host)",
+      st_standalone_desc: "KI-Assistent & Omarchy Themes sind aktiv. Optionaler Go-Host für Kanban/Triage/Archiv nicht verbunden.",
+      st_cli_needs_host: "CLI erfordert Go-Host",
+      st_ollama_local: "lokale URL (Standalone)",
+      err_standalone_api_key_missing: "Kein API-Key für dieses Backend hinterlegt. Bitte in den Einstellungen unter „KI & Backends“ (Standalone API-Keys) oder in ~/.config/omathunder/.env eintragen.",
+      err_standalone_cli_requires_host: "Dieses CLI-Backend benötigt den optionalen Go-Host. Ohne Go-Host bitte Gemini API, Claude API oder Ollama wählen.",
+      popup_standalone: "Standalone",
     },
     en: {
       // Navigation & Topbar
@@ -431,6 +469,10 @@
       card_next: "Next",
       badge_inbox: "INBOX",
       kanban_no_accounts: "No account enabled for the Kanban board. You can toggle Kanban per account in settings while keeping Spaces & Filters active.",
+      kanban_mark_done_read: "✓ Read",
+      kanban_mark_done_read_title: "Mark all emails in Done as read in Thunderbird",
+      kanban_mark_read_working: "Marking…",
+      kanban_mark_read_report: "Marked {marked} as read ({alreadyRead} already read, {skipped} skipped)",
 
       // Rules Table
       rules_new_title: "New Space ↔ Domain Mapping",
@@ -484,6 +526,8 @@
       ai_one_click: "1-Click Review",
       ai_apply_tb: "Open in Thunderbird",
       ai_dismiss: "Dismiss",
+      ai_dismiss_all: "Dismiss all",
+      btn_close: "Close",
       ai_preview_note: "When connected to Thunderbird, the full thread is summarized, a reply is drafted, or your own draft is checked against open questions.",
 
       // Popup
@@ -498,10 +542,21 @@
       popup_open_opts: "Settings",
       popup_analyzing: "Analyzing…",
       popup_preview_analyze: "Preview mode: in Thunderbird this analyzes the currently displayed email.",
+      popup_tab_short: "Spaces",
+      popup_tab_actions: "Actions",
+      popup_tab_summary: "Summary",
+      popup_tab_result: "Result",
+      popup_more_options: "More options & themes",
+      popup_result_empty: "No result yet. Start a summary or question under “Actions”.",
+      popup_back_actions: "← Actions",
 
       // Options
       opts_title: "OmaThunder Settings",
       opts_subtitle: "Omarchy Theme Sync + 3-Stage AI (Gemini / Claude / OpenCode / Ollama)",
+      opts_tab_general: "Status & Modules",
+      opts_tab_accounts: "Accounts & Triage",
+      opts_tab_theme: "Theme & Language",
+      opts_tab_ai: "AI & Backends",
       opts_save: "Save",
       opts_saved: "Saved & theme updated live.",
       opts_preview_saved: "Preview mode: configuration validated.",
@@ -796,6 +851,27 @@
       archive_preview_empty: "No matching emails found for these criteria.",
       archive_confirm_delete_perm: "Really DELETE all exported emails PERMANENTLY (skipping Trash) from your mailbox? Each email is SHA256-verified as .eml first.",
       archive_confirm_delete_trash: "Move exported emails to mailbox Trash after SHA256-verified .eml backup?",
+
+      // Standalone mode (without Go host)
+      host_standalone: "Standalone",
+      host_standalone_title: "Standalone Mode (without Go host)",
+      host_standalone_body: "AI Assistant (Gemini API, Claude API, local Ollama) and all 22 Omarchy themes work directly in Thunderbird. Kanban Board, Stage-0 triage, CLI backends and .eml Archive optionally use the Go host.",
+      optional_host_title: "Optional: Go host for Triage, Kanban & Archive",
+      optional_host_body: "AI Assistant and Omarchy Themes already run directly in Standalone mode. For Kanban Board, Stage-0 triage, CLI agents and .eml Archive, install the optional Go host once: brew install diver80/tap/omathunder && omathunder setup",
+      opts_standalone_keys_title: "Standalone API keys (stored locally in Thunderbird)",
+      opts_standalone_keys_desc: "Stored locally in Thunderbird (storage.local) and used directly for Gemini API / Claude API when no Go host is connected. Leave blank to keep saved keys.",
+      opts_gemini_key: "Gemini API Key",
+      opts_anthropic_key: "Anthropic API Key",
+      opts_key_saved_ph: "Saved (leave blank to keep)",
+      opts_key_ph: "Enter API key…",
+      opts_triage_needs_host: "Requires the optional Go host (omathunder). AI Assistant & Themes work without the host.",
+      st_standalone_on: "Standalone (without Go host)",
+      st_standalone_desc: "AI Assistant & Omarchy Themes are active. Optional Go host for Kanban/Triage/Archive not connected.",
+      st_cli_needs_host: "CLI requires Go host",
+      st_ollama_local: "local URL (Standalone)",
+      err_standalone_api_key_missing: "No API key configured for this backend. Please add it in Settings -> AI & Backends (Standalone API keys) or in ~/.config/omathunder/.env.",
+      err_standalone_cli_requires_host: "This CLI backend requires the optional Go host. Without the Go host, please choose Gemini API, Claude API, or Ollama.",
+      popup_standalone: "Standalone",
     },
   };
 

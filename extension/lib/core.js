@@ -438,8 +438,199 @@
     return true;
   }
 
+  function escapeMdHtml(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function safeMdUrl(raw) {
+    const u = String(raw || "").trim();
+    if (/^(https?:|mailto:)/i.test(u)) return u;
+    return "";
+  }
+
+  function renderMdInline(raw) {
+    // Protect inline code spans first so *, _, ** inside `code` aren't parsed as emphasis.
+    const codeTokens = [];
+    let str = String(raw ?? "").replace(/`([^`\n]+)`/g, (_, code) => {
+      const idx = codeTokens.length;
+      codeTokens.push(`<code>${escapeMdHtml(code)}</code>`);
+      return `\u0000CODE${idx}\u0000`;
+    });
+
+    // Protect markdown links [label](url) before escaping.
+    const linkTokens = [];
+    str = str.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, url) => {
+      const safe = safeMdUrl(url);
+      const idx = linkTokens.length;
+      if (safe) {
+        linkTokens.push(`<a href="${escapeMdHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeMdHtml(label)}</a>`);
+      } else {
+        linkTokens.push(escapeMdHtml(label));
+      }
+      return `\u0000LINK${idx}\u0000`;
+    });
+
+    str = escapeMdHtml(str);
+
+    str = str
+      .replace(/\*\*\*([^*\n]+)\*\*\*/g, "<strong><em>$1</em></strong>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+      .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
+      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, "$1<em>$2</em>");
+
+    str = str
+      .replace(/\u0000LINK(\d+)\u0000/g, (_, i) => linkTokens[Number(i)] || "")
+      .replace(/\u0000CODE(\d+)\u0000/g, (_, i) => codeTokens[Number(i)] || "");
+
+    return str;
+  }
+
+  function isTableRow(line) {
+    return /^\s*\|.*\|\s*$/.test(line);
+  }
+
+  function isTableSeparator(line) {
+    return /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(line);
+  }
+
+  function parseTableCells(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  }
+
+  function renderMarkdownHtml(markdown) {
+    const src = String(markdown ?? "").replace(/\r\n?/g, "\n").trim();
+    if (!src) return "";
+
+    // Extract fenced code blocks ```lang ... ``` before block parsing.
+    const fenced = [];
+    const prepared = src.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, body) => {
+      const idx = fenced.length;
+      const cls = lang ? ` class="language-${escapeMdHtml(lang)}"` : "";
+      fenced.push(`<pre><code${cls}>${escapeMdHtml(body.replace(/\n$/, ""))}</code></pre>`);
+      return `\n\u0000FENCE${idx}\u0000\n`;
+    });
+
+    const lines = prepared.split("\n");
+    const out = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) {
+        i++;
+        continue;
+      }
+
+      const fenceMatch = line.trim().match(/^\u0000FENCE(\d+)\u0000$/);
+      if (fenceMatch) {
+        out.push(fenced[Number(fenceMatch[1])] || "");
+        i++;
+        continue;
+      }
+
+      const hMatch = line.match(/^\s*(#{1,4})\s+(.+?)\s*#*$/);
+      if (hMatch) {
+        const level = hMatch[1].length;
+        out.push(`<h${level}>${renderMdInline(hMatch[2])}</h${level}>`);
+        i++;
+        continue;
+      }
+
+      if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        out.push("<hr />");
+        i++;
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        const qLines = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          qLines.push(lines[i].replace(/^\s*>\s?/, ""));
+          i++;
+        }
+        out.push(`<blockquote><p>${qLines.map(renderMdInline).join("<br />")}</p></blockquote>`);
+        continue;
+      }
+
+      if (i + 1 < lines.length && isTableRow(line) && isTableSeparator(lines[i + 1])) {
+        const headers = parseTableCells(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && isTableRow(lines[i])) {
+          rows.push(parseTableCells(lines[i]));
+          i++;
+        }
+        const thead = `<thead><tr>${headers.map((h) => `<th>${renderMdInline(h)}</th>`).join("")}</tr></thead>`;
+        const tbody = rows.length
+          ? `<tbody>${rows.map((r) => `<tr>${headers.map((_, idx) => `<td>${renderMdInline(r[idx] || "")}</td>`).join("")}</tr>`).join("")}</tbody>`
+          : "";
+        out.push(`<table>${thead}${tbody}</table>`);
+        continue;
+      }
+
+      const ulMatch = line.match(/^(\s*)[-*+]\s+(.*)$/);
+      const olMatch = line.match(/^(\s*)\d+\.\s+(.*)$/);
+      if (ulMatch || olMatch) {
+        const tag = ulMatch ? "ul" : "ol";
+        const itemRe = ulMatch ? /^(\s*)[-*+]\s+(.*)$/ : /^(\s*)\d+\.\s+(.*)$/;
+        const items = [];
+        while (i < lines.length) {
+          const m = lines[i].match(itemRe);
+          if (m) {
+            items.push({ indent: m[1].length, text: m[2] });
+            i++;
+          } else if (/^\s{2,}\S/.test(lines[i]) && items.length > 0 && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) {
+            items[items.length - 1].text += " " + lines[i].trim();
+            i++;
+          } else {
+            break;
+          }
+        }
+        const minIndent = items.reduce((min, it) => Math.min(min, it.indent), items[0].indent);
+        const lis = [];
+        for (let k = 0; k < items.length; k++) {
+          const it = items[k];
+          if (it.indent > minIndent && lis.length > 0) {
+            const nested = [];
+            while (k < items.length && items[k].indent > minIndent) {
+              nested.push(`<li>${renderMdInline(items[k].text)}</li>`);
+              k++;
+            }
+            k--;
+            lis[lis.length - 1] = lis[lis.length - 1].replace(/<\/li>$/, `<ul>${nested.join("")}</ul></li>`);
+          } else {
+            lis.push(`<li>${renderMdInline(it.text)}</li>`);
+          }
+        }
+        out.push(`<${tag}>${lis.join("")}</${tag}>`);
+        continue;
+      }
+
+      const pLines = [];
+      while (
+        i < lines.length &&
+        lines[i].trim() &&
+        !/^\s*(?:#{1,4}\s+|>\s?|(?:[-*+]\s+)|(?:\d+\.\s+)|(?:-{3,}|\*{3,}|_{3,})\s*$|\u0000FENCE\d+\u0000$)/.test(lines[i]) &&
+        !(i + 1 < lines.length && isTableRow(lines[i]) && isTableSeparator(lines[i + 1]))
+      ) {
+        pLines.push(lines[i]);
+        i++;
+      }
+      out.push(`<p>${pLines.map(renderMdInline).join("<br />")}</p>`);
+    }
+
+    return out.join("\n");
+  }
+
   const api = {
-    textToHtml, htmlToText, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
+    textToHtml, htmlToText, renderMarkdownHtml, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,

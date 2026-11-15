@@ -80,6 +80,26 @@ function backendReady(backend, doctor) {
   }
 }
 
+function standaloneBackendReady(backend, secretsMeta) {
+  switch (backend) {
+    case "gemini-api": return secretsMeta?.hasGeminiKey ? ["ok", "st_key_found"] : ["warn", "st_key_missing"];
+    case "claude-api": return secretsMeta?.hasAnthropicKey ? ["ok", "st_key_found"] : ["warn", "st_key_missing"];
+    case "ollama": return ["ok", "st_ollama_local"];
+    case "claude-cli":
+    case "gemini-cli":
+    case "opencode-cli":
+      return ["warn", "st_cli_needs_host"];
+    default: return ["warn", "st_cli_needs_host"];
+  }
+}
+
+function updateSecretPlaceholders(secretsMeta) {
+  const g = $("standalone-gemini-key");
+  const a = $("standalone-anthropic-key");
+  if (g) g.placeholder = secretsMeta?.hasGeminiKey ? t("opts_key_saved_ph") : t("opts_key_ph");
+  if (a) a.placeholder = secretsMeta?.hasAnthropicKey ? t("opts_key_saved_ph") : t("opts_key_ph");
+}
+
 // Shows whether host, versions and the configured AI backends are ready, so failures are explainable.
 function renderStatus(snap) {
   const box = $("status-rows");
@@ -103,21 +123,32 @@ function renderStatus(snap) {
     el.append(l, r);
     box.appendChild(el);
   };
+  const triageCb = $("feat-triage");
+  const triageNote = $("feat-triage-host-note");
   if (!inExtension) {
+    if (triageCb) triageCb.disabled = false;
+    if (triageNote) triageNote.style.display = "none";
     row(t("st_host"), "accent", t("host_preview"));
     return;
   }
+  const ai = snap?.config?.ai || {};
   if (!snap?.connected) {
-    row(t("st_host"), "err", t("st_host_off"), `${t("host_offline_body")} ${snap?.error || ""}`);
+    if (triageCb) triageCb.disabled = true;
+    if (triageNote) triageNote.style.display = "";
+    row(t("st_host"), "accent", t("st_standalone_on"), t("st_standalone_desc"));
+    const agentBackend = ai.agent?.backend || "gemini-api";
+    const [aKind, aKey] = standaloneBackendReady(agentBackend, snap?.secretsMeta);
+    row(t("st_assistant"), aKind, `${agentBackend}: ${t(aKey)}`);
     return;
   }
+  if (triageCb) triageCb.disabled = false;
+  if (triageNote) triageNote.style.display = "none";
   row(t("st_host"), "ok", t("st_host_on", { version: snap.host?.version || "?" }));
   if (snap.protocolOk === false) {
     row(t("st_versions"), "err", t("st_versions_bad"), t("host_mismatch", { host: snap.host?.version, ext: snap.extensionVersion }));
   } else {
     row(t("st_versions"), "ok", t("st_versions_ok", { ext: snap.extensionVersion }));
   }
-  const ai = snap.config?.ai || {};
   const [aKind, aKey] = backendReady(ai.agent?.backend, snap.doctor);
   row(t("st_assistant"), aKind, `${ai.agent?.backend}: ${t(aKey)}`);
   if (ai.classifyWithAi) {
@@ -130,7 +161,7 @@ function renderStatus(snap) {
 }
 
 function updateDependentFields() {
-  const triageOn = $("feat-triage").checked;
+  const triageOn = $("feat-triage").checked && !$("feat-triage").disabled;
   document.querySelectorAll(".safety input:not(#mb-readonly)").forEach((el) => {
     el.disabled = !triageOn;
   });
@@ -143,7 +174,25 @@ function updateDependentFields() {
   });
 }
 
+function switchOptionsTab(tabName) {
+  const valid = ["general", "accounts", "theme", "ai"].includes(tabName) ? tabName : "general";
+  document.querySelectorAll(".opts-tab[data-tab]").forEach((btn) => {
+    const active = btn.dataset.tab === valid;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".opts-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === `panel-${valid}`);
+  });
+}
+
 async function init() {
+  document.querySelectorAll(".opts-tab[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => switchOptionsTab(btn.dataset.tab));
+  });
+  const qsTab = new URLSearchParams(window.location.search).get("tab") || window.location.hash.replace(/^#/, "");
+  if (qsTab) switchOptionsTab(qsTab);
+
   if (window.OMA_I18N) {
     window.OMA_I18N.setLang("auto");
     window.OMA_I18N.applyDom();
@@ -170,7 +219,6 @@ async function init() {
     window.OMA_I18N.setLang(langPref);
     window.OMA_I18N.applyDom();
   }
-  renderStatus(lastSnap);
   $("mb-scan-new").checked = Boolean(mb.scanOnNewMail);
   $("feat-theme").checked = Boolean(features.theme);
   $("feat-assistant").checked = Boolean(features.assistant);
@@ -181,6 +229,8 @@ async function init() {
   $("mb-scan-days").value = mb.scanDays || 30;
   $("mb-archive-dir").value = mb.archiveDir || "";
   renderAccounts(accounts, mb.triageAccountIds || [], mb.kanbanAccountIds || []);
+  renderStatus(lastSnap);
+  updateSecretPlaceholders(lastSnap?.secretsMeta);
   updateDependentFields();
 
   // Offer every palette the host knows, so saving never replaces a preset chosen in the gallery.
@@ -202,7 +252,7 @@ async function init() {
   $("clf-backend").value = cfg?.ai?.classifier?.backend || "gemini-api";
   $("clf-model").value = cfg?.ai?.classifier?.model || "gemini-4-hydrogen";
   $("clf-endpoint").value = cfg?.ai?.classifier?.endpoint || "";
-  $("agent-backend").value = cfg?.ai?.agent?.backend || "claude-cli";
+  $("agent-backend").value = cfg?.ai?.agent?.backend || (lastSnap?.connected ? "claude-cli" : "gemini-api");
   $("agent-model").value = cfg?.ai?.agent?.model || "";
   $("agent-endpoint").value = cfg?.ai?.agent?.endpoint || "";
   $("ai-classify").checked = Boolean(cfg?.ai?.classifyWithAi);
@@ -227,6 +277,8 @@ async function init() {
         [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value),
         [...document.querySelectorAll("[data-kanban-account]:checked")].map((cb) => cb.value),
       );
+      renderStatus(lastSnap);
+      updateSecretPlaceholders(lastSnap?.secretsMeta);
       updateDependentFields();
     }
   });
@@ -282,22 +334,42 @@ async function init() {
         },
       },
     };
+    const geminiKey = $("standalone-gemini-key").value.trim();
+    const anthropicKey = $("standalone-anthropic-key").value.trim();
+    const secrets = {};
+    if (geminiKey) secrets.geminiApiKey = geminiKey;
+    if (anthropicKey) secrets.anthropicApiKey = anthropicKey;
+
     const st = $("save-status");
+    st.className = "save-status oma-muted";
     if (!inExtension) {
+      st.className = "save-status ok";
       st.textContent = t("opts_preview_saved");
       return;
     }
     try {
-      const res = await api.runtime.sendMessage({ type: "omathunder:saveConfig", config: patch });
+      const res = await api.runtime.sendMessage({
+        type: "omathunder:saveConfig",
+        config: patch,
+        ...(Object.keys(secrets).length ? { secrets } : {}),
+      });
+      if (geminiKey) $("standalone-gemini-key").value = "";
+      if (anthropicKey) $("standalone-anthropic-key").value = "";
       if (res?.config) {
         cfg = res.config;
         initialTheme.mode = res.config.theme?.mode || initialTheme.mode;
         initialTheme.preset = res.config.theme?.preset || initialTheme.preset;
       }
       applyTheme(res?.theme, $("feat-theme").checked);
+      st.className = "save-status ok";
       st.textContent = t("opts_saved");
-      renderStatus(await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch(() => lastSnap));
+      const freshSnap = await api.runtime.sendMessage({ type: "omathunder:getSnapshot" }).catch(() => lastSnap);
+      lastSnap = freshSnap;
+      renderStatus(freshSnap);
+      updateSecretPlaceholders(freshSnap?.secretsMeta);
+      updateDependentFields();
     } catch (err) {
+      st.className = "save-status err";
       st.textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : String(err?.message || err);
     }
   });

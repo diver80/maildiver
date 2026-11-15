@@ -19,6 +19,19 @@ function card(text, muted = false) {
   return el;
 }
 
+function mdCard(text) {
+  const el = document.createElement("div");
+  el.className = "oma-card";
+  if (window.OmaCore?.renderMarkdownHtml) {
+    el.classList.add("oma-md");
+    el.innerHTML = window.OmaCore.renderMarkdownHtml(text);
+  } else {
+    el.classList.add("oma-pre");
+    el.textContent = String(text || "");
+  }
+  return el;
+}
+
 function updateHint() {
   const hints = {
     improve_draft: context.ownText ? "cmp_hint_improve" : "cmp_hint_empty",
@@ -35,7 +48,7 @@ function updateHint() {
 function showResult(res) {
   const out = $("cmp-out");
   out.innerHTML = "";
-  if (res.answer) out.appendChild(card(res.answer));
+  if (res.answer) out.appendChild(mdCard(res.answer));
   if (res.reviewIssues.length) {
     const ul = document.createElement("ul");
     ul.className = "issues";

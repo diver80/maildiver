@@ -9,9 +9,12 @@
   <style>
     .layout {
       display: grid;
-      grid-template-columns: 224px 1fr 348px;
+      grid-template-columns: 224px 1fr;
       height: 100vh;
       overflow: hidden;
+    }
+    .layout.drawer-open {
+      grid-template-columns: 224px 1fr 356px;
     }
     .sidebar {
       background: var(--oma-bg-dark);
@@ -42,6 +45,25 @@
       border-radius: 999px; background: var(--oma-bg-darker); color: var(--oma-fg-muted);
     }
     .nav-item.active .nav-count { color: var(--oma-accent); }
+    .nav-sublist {
+      display: flex; flex-direction: column; gap: 2px;
+      margin: 2px 0 4px 12px; padding-left: 8px;
+      border-left: 1px solid var(--oma-border);
+    }
+    .nav-subitem {
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+      padding: 5px 8px; border-radius: 5px; border: 1px solid transparent;
+      background: transparent; color: var(--oma-fg-muted); cursor: pointer;
+      text-align: left; font-size: 11.5px;
+    }
+    .nav-subitem:hover { background: var(--oma-bg-elevated); color: var(--oma-fg); }
+    .nav-subitem.active {
+      background: var(--oma-selection);
+      border-color: color-mix(in srgb, var(--oma-accent) 45%, transparent);
+      color: var(--oma-fg); font-weight: 600;
+    }
+    .nav-subitem.active .nav-count { color: var(--oma-accent); }
+    .nav-sub-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .main { display: flex; flex-direction: column; overflow: hidden; background: var(--oma-bg); }
     .topbar {
@@ -129,10 +151,13 @@
       display: grid; grid-template-columns: 0.9fr 1fr 1.2fr 1.3fr auto; gap: 8px; align-items: end;
     }
 
-    /* Right AI Drawer */
+    /* Right AI Drawer (only visible in Kanban view when opened) */
     .right-pane {
       background: var(--oma-bg-dark); border-left: 1px solid var(--oma-border);
-      display: flex; flex-direction: column; overflow: hidden;
+      display: none; flex-direction: column; overflow: hidden;
+    }
+    .layout.drawer-open .right-pane {
+      display: flex;
     }
     .pane-header {
       padding: 12px 14px; border-bottom: 1px solid var(--oma-border);
@@ -208,6 +233,7 @@
         <button class="nav-item active" data-view="kanban">
           <span data-i18n="nav_kanban">Kanban-Board</span><span class="nav-count" id="cnt-kanban">0</span>
         </button>
+        <div class="nav-sublist" id="kanban-account-nav" style="display:none;"></div>
         <button class="nav-item" data-view="rules">
           <span data-i18n="nav_rules">Spaces &amp; Filter</span><span class="nav-count" id="cnt-rules">0</span>
         </button>
@@ -242,6 +268,10 @@
             <button class="mini-btn" id="btn-lang-de" style="border:none; border-radius:0; padding:5px 8px;">DE</button>
             <button class="mini-btn" id="btn-lang-en" style="border:none; border-radius:0; padding:5px 8px;">EN</button>
           </div>
+          <button class="oma-btn" id="btn-toggle-assistant" style="display:none; gap:6px; align-items:center;">
+            <span data-i18n="ai_title">KI-Assistent</span>
+            <span class="oma-badge warn" id="assistant-toggle-badge" style="display:none;">0</span>
+          </button>
           <button class="oma-btn" id="btn-options" data-i18n="btn_settings">Einstellungen</button>
           <button class="oma-btn primary" id="btn-triage" data-i18n="btn_scan">Inbox &amp; Ordner scannen</button>
         </div>
@@ -255,7 +285,11 @@
     <aside class="right-pane">
       <div class="pane-header">
         <span data-i18n="ai_title">KI-Assistent</span>
-        <span class="oma-badge warn" id="proposal-count">0 Proposals</span>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span class="oma-badge warn" id="proposal-count">0 Proposals</span>
+          <button class="mini-btn" id="btn-dismiss-all-proposals" style="display:none;" data-i18n="ai_dismiss_all">Alle verwerfen</button>
+          <button class="mini-btn" id="btn-close-assistant" data-i18n-title="btn_close" title="Schließen">✕</button>
+        </div>
       </div>
       <div class="pane-body" id="ai-off" style="display:none;"></div>
       <div class="mode-tabs" id="ai-mode-tabs">

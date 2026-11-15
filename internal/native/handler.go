@@ -505,8 +505,24 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
-		if !analyzeReq.Ephemeral {
-			for _, prop := range resp.Proposals {
+		if !analyzeReq.Ephemeral && len(resp.Proposals) > 0 {
+			curState, _ := h.store.Load()
+			for i := range resp.Proposals {
+				prop := resp.Proposals[i]
+				if prop.AccountID == "" {
+					prop.AccountID = analyzeReq.PrimaryMessage.AccountID
+				}
+				if prop.Space == "" {
+					if cls, ok := curState.Classifications[prop.MessageID]; ok {
+						prop.Space = cls.Space
+						if prop.AccountID == "" {
+							prop.AccountID = cls.AccountID
+						}
+					} else if cls, ok := curState.Classifications[analyzeReq.PrimaryMessage.ID]; ok {
+						prop.Space = cls.Space
+					}
+				}
+				resp.Proposals[i] = prop
 				_, _ = h.store.AddProposal(prop)
 			}
 		}
@@ -521,6 +537,24 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}
 		st, err := h.store.UpdateProposalStatus(p.ID, p.Status)
+		if err != nil {
+			return Response{ID: req.ID, OK: false, Error: err.Error()}
+		}
+		return Response{ID: req.ID, OK: true, Result: map[string]any{
+			"state":      st,
+			"barSummary": triage.ComputeBarSummary(st),
+		}}
+
+	case "dismiss_proposals":
+		var p struct {
+			IDs []string `json:"ids,omitempty"`
+		}
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &p); err != nil {
+				return Response{ID: req.ID, OK: false, Error: err.Error()}
+			}
+		}
+		st, err := h.store.DismissProposals(p.IDs)
 		if err != nil {
 			return Response{ID: req.ID, OK: false, Error: err.Error()}
 		}

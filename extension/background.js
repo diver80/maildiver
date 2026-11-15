@@ -1,4 +1,4 @@
-/* global browser, messenger, OmaCore */
+/* global browser, messenger, OmaCore, OmaStandalone */
 const api = typeof messenger !== "undefined" ? messenger : browser;
 // Pure decision logic (unit-tested in tests/core.test.js); this file only talks to Thunderbird.
 const {
@@ -11,18 +11,78 @@ const {
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
 const HOST_NAME = "dev.omathunder.host";
+const STANDALONE_CFG_KEY = "oma_standalone_config";
+const STANDALONE_SECRETS_KEY = "oma_standalone_secrets";
+const standaloneMemory = { config: null, secrets: { geminiApiKey: "", anthropicApiKey: "" } };
 
 let nativePort = null;
+let hostConnected = false;
 let reqCounter = 0;
 const pendingRequests = new Map();
 
 let currentThemePayload = null;
 let bodyScriptHandle = null;
 let composeScriptHandle = null;
-// Last known feature flags; refreshed from the host config. Theme stays off until the host confirms it.
+// Last known feature flags; refreshed from the host config or standalone storage.
 let features = { theme: false, assistant: false, triage: false };
 // Whether the theme also recolors message bodies and the compose editor (theme.styleBody).
 let styleBody = false;
+
+async function storageGet(key) {
+  if (!api.storage?.local?.get) return null;
+  try {
+    const res = await api.storage.local.get(key);
+    return res?.[key] ?? null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function storageSet(key, val) {
+  if (!api.storage?.local?.set) return;
+  await api.storage.local.set({ [key]: val }).catch(() => {});
+}
+
+async function loadStandaloneConfig() {
+  const stored = await storageGet(STANDALONE_CFG_KEY);
+  const merged = OmaStandalone.mergeStandaloneConfig(stored || standaloneMemory.config, null);
+  standaloneMemory.config = merged;
+  return merged;
+}
+
+async function saveStandaloneConfig(patch) {
+  const cur = await loadStandaloneConfig();
+  const next = OmaStandalone.mergeStandaloneConfig(cur, patch);
+  standaloneMemory.config = next;
+  await storageSet(STANDALONE_CFG_KEY, next);
+  return next;
+}
+
+async function loadStandaloneSecrets() {
+  const stored = await storageGet(STANDALONE_SECRETS_KEY);
+  const merged = {
+    geminiApiKey: String(stored?.geminiApiKey ?? standaloneMemory.secrets.geminiApiKey ?? ""),
+    anthropicApiKey: String(stored?.anthropicApiKey ?? standaloneMemory.secrets.anthropicApiKey ?? ""),
+  };
+  standaloneMemory.secrets = merged;
+  return merged;
+}
+
+async function saveStandaloneSecrets(patch) {
+  if (!patch || typeof patch !== "object") return loadStandaloneSecrets();
+  const cur = await loadStandaloneSecrets();
+  const next = { ...cur };
+  if (typeof patch.geminiApiKey === "string") next.geminiApiKey = patch.geminiApiKey.trim();
+  if (typeof patch.anthropicApiKey === "string") next.anthropicApiKey = patch.anthropicApiKey.trim();
+  standaloneMemory.secrets = next;
+  await storageSet(STANDALONE_SECRETS_KEY, next);
+  return next;
+}
+
+function buildStandaloneTheme(cfg) {
+  const presetName = cfg?.theme?.preset || cfg?.theme?.darkFallback || "tokyo-night";
+  return OmaStandalone.buildThemePayload(OmaStandalone.getPreset(presetName), "standalone-preset");
+}
 
 async function connectNative() {
   if (nativePort) return nativePort;
@@ -48,6 +108,7 @@ async function connectNative() {
   port.onDisconnect.addListener((p) => {
     const errMsg = p?.error?.message || api.runtime.lastError?.message || "Host disconnected";
     nativePort = null;
+    hostConnected = false;
     for (const [, pending] of pendingRequests) {
       clearTimeout(pending.timer);
       pending.reject(new Error(errMsg));
@@ -115,8 +176,8 @@ async function removeTheme() {
   }
 }
 
-// Applies the feature flags of a host config: switches the theme on/off and caches the flags.
-async function syncFeatures(cfg, themePayload = null) {
+// Applies the feature flags of a host or standalone config: switches the theme on/off and caches flags.
+async function syncFeatures(cfg, themePayload = null, { standalone = false } = {}) {
   const next = {
     theme: Boolean(cfg?.features?.theme),
     assistant: Boolean(cfg?.features?.assistant),
@@ -130,7 +191,14 @@ async function syncFeatures(cfg, themePayload = null) {
     if (themeWasOn || currentThemePayload) await removeTheme();
     return;
   }
-  const payload = themePayload || (!themeWasOn || styleBodyChanged ? await callNative("get_theme").catch(() => null) : null);
+  let payload = themePayload;
+  if (!payload) {
+    if (standalone || !hostConnected) {
+      payload = buildStandaloneTheme(cfg);
+    } else if (!themeWasOn || styleBodyChanged) {
+      payload = await callNative("get_theme").catch(() => null);
+    }
+  }
   if (payload) await applyThemePayload(payload);
 }
 
@@ -139,9 +207,31 @@ async function syncFeatures(cfg, themePayload = null) {
 // ---------------------------------------------------------------------------
 
 async function loadConfig() {
-  const cfg = await callNative("get_config");
-  await syncFeatures(cfg);
-  return cfg;
+  try {
+    const cfg = await callNative("get_config");
+    hostConnected = true;
+    await syncFeatures(cfg, null, { standalone: false });
+    return cfg;
+  } catch (err) {
+    if (!OmaStandalone.isNativeHostUnavailableError(err)) throw err;
+    hostConnected = false;
+    const cfg = await loadStandaloneConfig();
+    await syncFeatures(cfg, null, { standalone: true });
+    return cfg;
+  }
+}
+
+async function runAnalyzeThread(cfg, req) {
+  if (hostConnected) {
+    try {
+      return await callNative("analyze_thread", req, 120000);
+    } catch (err) {
+      if (!OmaStandalone.isNativeHostUnavailableError(err)) throw err;
+      hostConnected = false;
+    }
+  }
+  const apiKeys = await loadStandaloneSecrets();
+  return OmaStandalone.analyzeStandalone({ cfg, apiKeys, req });
 }
 
 const mailbox = {
@@ -160,6 +250,10 @@ const mailbox = {
     // Keep the user's own tags; only replace OmaThunder's status tags when asked to.
     const merged = mergeTags(header.tags, tagDefs.map((d) => d.key), replacePrefix);
     await api.messages.update(header.id, { tags: merged });
+  },
+  async markRead(cfg, header, read = true) {
+    requireWritable(cfg, header?.folder?.accountId);
+    await api.messages.update(header.id, { read: Boolean(read) });
   },
   async createFolder(cfg, accountId, parentId, name) {
     requireWritable(cfg, accountId);
@@ -388,11 +482,14 @@ async function listRecentMessages(folder, limit, days) {
 }
 
 // Scans only accounts enabled for triage: their INBOX plus rule folders (with subfolders) marked for the board.
-async function collectScanMessages(cfg) {
+async function collectScanMessages(cfg, accountId = "") {
   const limit = cfg?.mailbox?.scanLimit || 20;
   const days = cfg?.mailbox?.scanDays || 30;
   const folders = await listAllFolders();
-  const scanFolders = selectScanFolders(cfg, folders);
+  let scanFolders = selectScanFolders(cfg, folders);
+  if (accountId) {
+    scanFolders = scanFolders.filter((f) => f.accountId === accountId);
+  }
   const messages = [];
   for (const f of scanFolders) {
     for (const header of await listRecentMessages(f, limit, days)) {
@@ -441,12 +538,12 @@ function uiLanguage(cfg, requested = "") {
   return (api.i18n?.getUILanguage?.() || "en").toLowerCase().startsWith("de") ? "de" : "en";
 }
 
-async function runTriage(requestedLanguage = "") {
+async function runTriage(requestedLanguage = "", accountId = "") {
   const cfg = await loadConfig();
   requireFeature(cfg, "triage");
   if (triageAccountIds(cfg).size === 0) throw new PolicyError("no_triage_accounts");
 
-  const { messages, folders, scannedFolders } = await collectScanMessages(cfg);
+  const { messages, folders, scannedFolders } = await collectScanMessages(cfg, accountId);
   // Classify in small batches: keeps each native message small and each call within its timeout.
   let res = { results: [], plannedMoves: [], skippedAccounts: 0 };
   const batchSize = 5;
@@ -778,7 +875,7 @@ async function composeAssist(msg) {
     throw new PolicyError("draft_empty");
   }
   if (msg.mode === "draft_reply" && !primary) throw new PolicyError("no_related_message");
-  const res = await callNative("analyze_thread", {
+  const res = await runAnalyzeThread(cfg, {
     mode: msg.mode,
     ephemeral: true,
     language: uiLanguage(cfg, msg.language),
@@ -789,7 +886,7 @@ async function composeAssist(msg) {
     draftAttachments: ctx.attachmentNames,
     primaryMessage: primary || { id: "", subject: ctx.subject, from: "", bodyText: "" },
     threadMessages,
-  }, 120000);
+  });
   const draft = (res.proposals || []).find((p) => p.kind === "draft_reply");
   // Some backends answer with the mail text instead of a proposal: then that text is the draft.
   const writing = msg.mode !== "review_draft";
@@ -823,8 +920,15 @@ api.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
     case "omathunder:getSnapshot":
       return (async () => {
+        const secrets = await loadStandaloneSecrets();
+        const secretsMeta = {
+          hasGeminiKey: Boolean(secrets.geminiApiKey),
+          hasAnthropicKey: Boolean(secrets.anthropicApiKey),
+        };
         try {
-          const cfg = await loadConfig();
+          const cfg = await callNative("get_config");
+          hostConnected = true;
+          await syncFeatures(cfg, null, { standalone: false });
           const ping = await callNative("ping");
           const [themePayload, themes, stateData, doctor, folderData] = await Promise.all([
             callNative("get_theme"),
@@ -835,6 +939,7 @@ api.runtime.onMessage.addListener((msg) => {
           ]);
           return {
             connected: true,
+            standalone: false,
             nativeFiltersSupported: Boolean(api.omaFilters?.listFilters),
             host: { version: ping?.version || "?", protocol: ping?.protocol ?? 0, expectedProtocol: PROTOCOL },
             protocolOk: ping?.protocol === PROTOCOL,
@@ -844,17 +949,30 @@ api.runtime.onMessage.addListener((msg) => {
             state: stateData.state,
             barSummary: stateData.barSummary,
             config: cfg,
+            secretsMeta,
             doctor,
             folders: folderData.folders,
             accounts: (folderData.accounts || []).map((a) => ({ id: a.id, name: a.name, type: a.type })),
           };
         } catch (err) {
-          const folderData = await listAccountFolders().catch(() => ({ folders: [], accounts: [] }));
+          hostConnected = false;
+          const [cfg, folderData] = await Promise.all([
+            loadStandaloneConfig(),
+            listAccountFolders().catch(() => ({ folders: [], accounts: [] })),
+          ]);
+          await syncFeatures(cfg, null, { standalone: true });
           return {
             connected: false,
+            standalone: true,
+            nativeFiltersSupported: Boolean(api.omaFilters?.listFilters),
             extensionVersion: api.runtime.getManifest().version,
             error: String(err?.message || err),
             theme: currentThemePayload,
+            themes: OmaStandalone.listPalettes(),
+            config: cfg,
+            secretsMeta,
+            state: { classifications: {}, proposals: [] },
+            barSummary: { actionCount: 0, pendingProposals: 0 },
             folders: folderData.folders,
             accounts: (folderData.accounts || []).map((a) => ({ id: a.id, name: a.name, type: a.type })),
           };
@@ -865,13 +983,27 @@ api.runtime.onMessage.addListener((msg) => {
       return (async () => {
         const cfg = await loadConfig();
         requireFeature(cfg, "theme");
-        const payload = await callNative("set_theme", { mode: msg.mode || "", preset: msg.preset || "" });
+        if (hostConnected) {
+          try {
+            const payload = await callNative("set_theme", { mode: msg.mode || "", preset: msg.preset || "" });
+            await applyThemePayload(payload);
+            return payload;
+          } catch (err) {
+            if (!OmaStandalone.isNativeHostUnavailableError(err)) throw err;
+            hostConnected = false;
+          }
+        }
+        const nextCfg = await saveStandaloneConfig({
+          theme: { mode: msg.mode || "preset", preset: msg.preset || cfg?.theme?.preset || "tokyo-night" },
+        });
+        const payload = buildStandaloneTheme(nextCfg);
         await applyThemePayload(payload);
+        broadcastToUI({ type: "omathunder:themeChanged", payload });
         return payload;
       })();
 
     case "omathunder:triageInbox":
-      return runTriage(msg.language || "");
+      return runTriage(msg.language || "", msg.accountId || "");
 
     case "omathunder:undoScan":
       return (async () => {
@@ -972,6 +1104,49 @@ api.runtime.onMessage.addListener((msg) => {
         const res = await callNative("move_kanban", { messageId: msg.messageId, column: msg.column });
         const effects = await applyKanbanSideEffects(cfg, msg.messageId, msg.column).catch((err) => ({ skipped: errorCode(err) }));
         return { ...res, effects };
+      })();
+
+    case "omathunder:markColumnRead":
+      return (async () => {
+        const cfg = await loadConfig();
+        requireFeature(cfg, "triage");
+        if (cfg?.mailbox?.readOnly !== false) throw new PolicyError("read_only");
+        const column = String(msg.column || "done");
+        let refs = Array.isArray(msg.items) ? msg.items : null;
+        if (!refs) {
+          const snap = await callNative("get_state").catch(() => null);
+          refs = Object.values(snap?.state?.classifications || {})
+            .filter((c) => (c.kanbanColumn || "incoming") === column)
+            .map((c) => ({
+              messageId: c.messageId,
+              headerMessageId: c.threadId,
+              accountId: c.accountId,
+              folderId: c.folderId,
+            }));
+        }
+        let marked = 0;
+        let alreadyRead = 0;
+        let skipped = 0;
+        let failed = 0;
+        for (const ref of refs) {
+          try {
+            const live = await resolveMessage(ref, { strict: true });
+            if (!live) {
+              skipped++;
+              continue;
+            }
+            if (live.read) {
+              alreadyRead++;
+              continue;
+            }
+            await mailbox.markRead(cfg, live, true);
+            marked++;
+          } catch (err) {
+            if (err instanceof PolicyError) skipped++;
+            else failed++;
+          }
+        }
+        return { marked, alreadyRead, skipped, failed };
       })();
 
     case "omathunder:getSelectionInfo":
@@ -1133,7 +1308,7 @@ api.runtime.onMessage.addListener((msg) => {
                 }).catch(() => null);
               }
             }
-            const res = await callNative("analyze_thread", {
+            const res = await runAnalyzeThread(cfg, {
               mode: backendMode,
               ephemeral: true,
               language: uiLanguage(cfg, msg.language),
@@ -1144,12 +1319,12 @@ api.runtime.onMessage.addListener((msg) => {
               threadMessages: inputs,
               nativeFilters,
               filterDiagnostic,
-            }, 120000);
+            });
             return { ...res, selectionCount: inputs.length, accountId, nativeFiltersSupported: Boolean(api.omaFilters?.upsertFilter), filterDiagnostic };
           }
           const primary = await buildMessageInput(headers[0], { includeAttachmentText });
           const threadMessages = await collectThreadMessages(primary);
-          const res = await callNative("analyze_thread", {
+          const res = await runAnalyzeThread(cfg, {
             mode: msg.mode,
             ephemeral: Boolean(msg.ephemeral) || msg.mode === "extract_events",
             language: uiLanguage(cfg, msg.language),
@@ -1158,7 +1333,7 @@ api.runtime.onMessage.addListener((msg) => {
             question: msg.question || "",
             primaryMessage: primary,
             threadMessages,
-          }, 120000);
+          });
           return { ...res, selectionCount: 1, accountId: primary.accountId || "" };
         }
 
@@ -1180,8 +1355,9 @@ api.runtime.onMessage.addListener((msg) => {
         }
         if (!primary) throw new PolicyError("no_message_displayed");
         const threadMessages = await collectThreadMessages(primary);
-        return callNative("analyze_thread", {
+        return runAnalyzeThread(cfg, {
           mode: msg.mode || "draft_reply",
+          ephemeral: Boolean(msg.ephemeral),
           language: uiLanguage(cfg, msg.language),
           targetLanguage: msg.targetLanguage || "",
           tone: msg.tone || "freundlich",
@@ -1189,7 +1365,7 @@ api.runtime.onMessage.addListener((msg) => {
           userDraft: msg.userDraft || "",
           primaryMessage: primary,
           threadMessages,
-        }, 120000);
+        });
       })();
 
     case "omathunder:getDisplayedMessage":
@@ -1212,11 +1388,28 @@ api.runtime.onMessage.addListener((msg) => {
     case "omathunder:dismissProposal":
       return callNative("update_proposal", { id: msg.id, status: "dismissed" });
 
+    case "omathunder:dismissProposals":
+      return callNative("dismiss_proposals", { ids: Array.isArray(msg.ids) ? msg.ids : [] });
+
     case "omathunder:saveConfig":
       return (async () => {
-        const res = await callNative("save_config", msg.config);
-        await syncFeatures(res?.config, res?.theme);
-        return res;
+        if (msg.secrets) {
+          await saveStandaloneSecrets(msg.secrets);
+        }
+        if (hostConnected) {
+          try {
+            const res = await callNative("save_config", msg.config || {});
+            await syncFeatures(res?.config, res?.theme, { standalone: false });
+            return res;
+          } catch (err) {
+            if (!OmaStandalone.isNativeHostUnavailableError(err)) throw err;
+            hostConnected = false;
+          }
+        }
+        const nextCfg = await saveStandaloneConfig(msg.config || {});
+        await syncFeatures(nextCfg, null, { standalone: true });
+        broadcastToUI({ type: "omathunder:themeChanged", payload: currentThemePayload });
+        return { config: nextCfg, theme: currentThemePayload, standalone: true };
       })();
 
     case "omathunder:openMessage":
@@ -1648,12 +1841,10 @@ async function bootstrap() {
   await ensureSpacesTab();
   await registerContextMenus();
   try {
-    const cfg = await callNative("get_config");
-    // Drop a theme a previous session may have left behind if the theme block is now off.
+    const cfg = await loadConfig();
     if (!cfg?.features?.theme) await removeTheme();
-    await syncFeatures(cfg);
   } catch (err) {
-    console.info("OmaThunder host not connected yet:", err?.message || err);
+    console.info("OmaThunder startup config note:", err?.message || err);
   }
 }
 

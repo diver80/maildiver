@@ -2,13 +2,20 @@
  *   node tests/core.test.js
  *   jsc tests/core.test.js        (macOS: /System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc)
  */
-if (typeof require !== "undefined") require("../extension/lib/core.js");
-else load("extension/lib/core.js");
+if (typeof require !== "undefined") {
+  require("../extension/lib/core.js");
+  require("../extension/lib/standalone.js");
+} else {
+  load("extension/lib/core.js");
+  load("extension/lib/standalone.js");
+}
 const core = globalThis.OmaCore;
+const standalone = globalThis.OmaStandalone;
 const out = typeof print === "function" ? print : console.log;
 
 let failed = 0;
 let count = 0;
+const asyncQueue = [];
 function test(name, fn) {
   count++;
   try {
@@ -17,6 +24,17 @@ function test(name, fn) {
     failed++;
     out(`FAIL ${name}: ${err.message}`);
   }
+}
+function testAsync(name, fn) {
+  count++;
+  asyncQueue.push(
+    Promise.resolve()
+      .then(() => fn())
+      .catch((err) => {
+        failed++;
+        out(`FAIL ${name}: ${err.message}`);
+      }),
+  );
 }
 function eq(got, want, msg = "") {
   const a = JSON.stringify(got);
@@ -309,8 +327,205 @@ test("matchArchiveCandidate filters by age, read flag, and starred flag", () => 
   eq(core.matchArchiveCandidate(oldStarred, crit, now), false);
 });
 
-out(`${count - failed}/${count} core tests passed`);
-if (failed > 0) {
-  if (typeof quit === "function") quit(1);
-  else process.exit(1);
-}
+test("renderMarkdownHtml formats headings, lists, bold, code, tables and escapes XSS", () => {
+  const md = [
+    "### Zusammenfassung",
+    "",
+    "**Kernpunkte:**",
+    "- Fehler in `fix_and_to_or` bei *99 %*.",
+    "  - Unterpunkt mit [Atlassian](https://support.atlassian.com)",
+    "- Siehe [bösartig](javascript:alert(1)) & <script>alert(1)</script>",
+    "",
+    "| Punkt | Status |",
+    "| --- | --- |",
+    "| Migration | Abgebrochen |",
+  ].join("\n");
+  const html = core.renderMarkdownHtml(md);
+  if (!html.includes("<h3>Zusammenfassung</h3>")) throw new Error("missing h3: " + html);
+  if (!html.includes("<strong>Kernpunkte:</strong>")) throw new Error("missing strong: " + html);
+  if (!html.includes("<code>fix_and_to_or</code>")) throw new Error("missing code (snake_case intact): " + html);
+  if (!html.includes("<em>99 %</em>")) throw new Error("missing em: " + html);
+  if (!html.includes('href="https://support.atlassian.com"')) throw new Error("missing safe link: " + html);
+  if (html.includes("<script>") || html.includes("javascript:")) throw new Error("XSS leaked: " + html);
+  if (!html.includes("<table>") || !html.includes("<td>Abgebrochen</td>")) throw new Error("missing table: " + html);
+});
+
+test("standalone palettes and buildThemePayload cover all 22 themes", () => {
+  const palettes = standalone.listPalettes();
+  eq(palettes.length, 22);
+  eq(standalone.getPreset("non-existent-theme").name, "tokyo-night");
+  const darkPayload = standalone.buildThemePayload(standalone.getPreset("tokyo-night"), "standalone-preset");
+  eq(darkPayload.source, "standalone-preset");
+  eq(darkPayload.thunderbird.properties.color_scheme, "dark");
+  eq(darkPayload.uiCssVars.includes("--oma-bg: #1a1b26;"), true);
+  eq(darkPayload.bodyCss.includes("--oma-fg:"), true);
+  eq(darkPayload.composeCss.includes("caret-color:"), true);
+
+  const lightPayload = standalone.buildThemePayload(standalone.getPreset("flexoki-light"), "standalone-preset");
+  eq(lightPayload.thunderbird.properties.color_scheme, "light");
+});
+
+test("mergeStandaloneConfig merges nested sections without dropping defaults", () => {
+  const base = standalone.defaultStandaloneConfig();
+  const merged = standalone.mergeStandaloneConfig(base, {
+    language: "en",
+    theme: { preset: "nord" },
+    ai: { agent: { backend: "claude-api", model: "claude-haiku-4-5" } },
+  });
+  eq(merged.language, "en");
+  eq(merged.features.assistant, true);
+  eq(merged.features.triage, false);
+  eq(merged.theme.preset, "nord");
+  eq(merged.theme.mode, "preset");
+  eq(merged.ai.agent.backend, "claude-api");
+  eq(merged.ai.classifier.backend, "gemini-api");
+});
+
+test("extractJSON and buildICS handle fenced JSON and timed/all-day events", () => {
+  eq(standalone.extractJSON('```json\n{"answer":"ok","events":[]}\n```'), { answer: "ok", events: [] });
+  eq(standalone.extractJSON('Result: {"answer":"hi"} end'), { answer: "hi" });
+  const ics = standalone.buildICS([
+    { title: "Architektur-Sync", start: "2026-11-20T14:00:00", location: "Berlin" },
+    { title: "Frist NDA", start: "2026-11-25", allDay: true },
+  ], new Date("2026-11-15T10:00:00Z"));
+  eq(ics.includes("BEGIN:VCALENDAR"), true);
+  eq(ics.includes("SUMMARY:Architektur-Sync"), true);
+  eq(ics.includes("LOCATION:Berlin"), true);
+  eq(ics.includes("DTSTART;VALUE=DATE:20261125"), true);
+  eq(ics.includes("END:VCALENDAR"), true);
+});
+
+test("isNativeHostUnavailableError distinguishes missing host from genuine AI errors", () => {
+  eq(standalone.isNativeHostUnavailableError(new Error("Attempt to postMessage on disconnected port")), true);
+  eq(standalone.isNativeHostUnavailableError(new Error("No such native application dev.omathunder.host")), true);
+  eq(standalone.isNativeHostUnavailableError(new Error("Host exited")), true);
+  eq(standalone.isNativeHostUnavailableError(new Error("gemini api HTTP 429: quota exceeded")), false);
+});
+
+testAsync("analyzeStandalone requires API keys for API backends and rejects CLI backends without host", async () => {
+  let caughtMissing = null;
+  try {
+    await standalone.analyzeStandalone({
+      cfg: { ai: { agent: { backend: "gemini-api", model: "gemini-2.5-flash" } } },
+      apiKeys: { geminiApiKey: "" },
+      req: { mode: "summarize", primaryMessage: { id: "1", subject: "Hi", bodyText: "Hello" } },
+      fetchImpl: async () => { throw new Error("should not fetch"); },
+    });
+  } catch (err) {
+    caughtMissing = err;
+  }
+  eq(caughtMissing?.code, "standalone_api_key_missing");
+  eq(caughtMissing?.message, "standalone_api_key_missing");
+
+  let caughtCli = null;
+  try {
+    await standalone.analyzeStandalone({
+      cfg: { ai: { agent: { backend: "claude-cli" } } },
+      apiKeys: { geminiApiKey: "x" },
+      req: { mode: "summarize", primaryMessage: { id: "1", subject: "Hi", bodyText: "Hello" } },
+      fetchImpl: async () => { throw new Error("should not fetch"); },
+    });
+  } catch (err) {
+    caughtCli = err;
+  }
+  eq(caughtCli?.code, "standalone_cli_requires_host");
+});
+
+testAsync("analyzeStandalone calls Gemini API, Claude API (with attachment warning), and Ollama", async () => {
+  let geminiReq = null;
+  const geminiRes = await standalone.analyzeStandalone({
+    cfg: { ai: { agent: { backend: "gemini-api", model: "gemini-2.5-flash" } } },
+    apiKeys: { geminiApiKey: "test-gem-key" },
+    req: {
+      mode: "extract_events",
+      language: "de",
+      primaryMessage: { id: "m1", subject: "Termin", from: "a@example.com", bodyText: "Treffen am 2026-11-20T14:00:00" },
+    },
+    fetchImpl: async (url, init) => {
+      geminiReq = { url, init };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          candidates: [{
+            content: {
+              parts: [{
+                text: JSON.stringify({
+                  answer: "1 Termin gefunden.",
+                  events: [{ title: "Treffen", start: "2026-11-20T14:00:00", location: "Remote" }],
+                  proposals: [],
+                }),
+              }],
+            },
+          }],
+        }),
+      };
+    },
+  });
+  eq(geminiReq.url.includes("gemini-2.5-flash:generateContent"), true);
+  eq(geminiReq.init.headers["x-goog-api-key"], "test-gem-key");
+  eq(geminiRes.provider, "gemini-api");
+  eq(geminiRes.events.length, 1);
+  eq(geminiRes.ics.includes("SUMMARY:Treffen"), true);
+
+  let claudeHeaders = null;
+  const claudeRes = await standalone.analyzeStandalone({
+    cfg: { ai: { agent: { backend: "claude-api", model: "claude-haiku-4-5" } } },
+    apiKeys: { anthropicApiKey: "test-ant-key" },
+    req: {
+      mode: "review_draft",
+      language: "de",
+      userDraft: "Hallo, siehe Anhang.",
+      draftAttachments: [],
+      primaryMessage: { id: "m2", subject: "Angebot", from: "b@example.com", bodyText: "Bitte senden." },
+    },
+    fetchImpl: async (url, init) => {
+      claudeHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          content: [{
+            text: JSON.stringify({
+              answer: "Entwurf geprüft.",
+              reviewIssues: ["Ton passt."],
+              proposals: [{ kind: "draft_reply", title: "Verbessert", body: "Hallo, anbei das Angebot." }],
+            }),
+          }],
+        }),
+      };
+    },
+  });
+  eq(claudeHeaders["anthropic-dangerous-direct-browser-access"], "true");
+  eq(claudeRes.reviewIssues.length, 2);
+  eq(claudeRes.reviewIssues[0].includes("Anhang"), true);
+
+  const ollamaRes = await standalone.analyzeStandalone({
+    cfg: { ai: { agent: { backend: "ollama", model: "qwen3:4b" } } },
+    apiKeys: {},
+    req: {
+      mode: "draft_reply",
+      language: "de",
+      primaryMessage: { id: "m3", threadId: "t3", accountId: "acc1", subject: "Hi", bodyText: "Passt morgen?" },
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        message: { content: "Hallo,\n\nja, morgen passt gut.\n\nViele Grüße" },
+      }),
+    }),
+  });
+  eq(ollamaRes.provider, "ollama");
+  eq(ollamaRes.proposals.length, 1);
+  eq(ollamaRes.proposals[0].kind, "draft_reply");
+  eq(ollamaRes.proposals[0].body.includes("morgen passt gut"), true);
+});
+
+Promise.all(asyncQueue).then(() => {
+  out(`${count - failed}/${count} core tests passed`);
+  if (failed > 0) {
+    if (typeof quit === "function") quit(1);
+    else process.exit(1);
+  }
+});
