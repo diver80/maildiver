@@ -32,6 +32,14 @@
     .oma-btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .summary-box { max-height: 260px; overflow-y: auto; font-size: 12px; line-height: 1.5; }
     .sug-box { border: 1px solid var(--oma-border); border-radius: 6px; padding: 8px 10px; background: var(--oma-bg-darker); margin-top: 8px; font-size: 11.5px; }
+    .cond-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .cond-chip {
+      display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+      border-radius: 4px; font-size: 10.5px; font-family: var(--oma-mono);
+      border: 1px solid var(--oma-border); background: var(--oma-bg-dark);
+    }
+    .cond-chip.hit { border-color: color-mix(in srgb, var(--oma-green) 55%, var(--oma-border)); color: var(--oma-green); }
+    .cond-chip.miss { border-color: color-mix(in srgb, var(--oma-red) 45%, var(--oma-border)); color: var(--oma-fg-muted); }
   </style>
 </head>
 <body>
@@ -76,15 +84,19 @@
   <div style="display:flex; flex-direction:column; gap:7px;">
     <button class="oma-btn primary" id="btn-open-space" style="justify-content:center;" data-i18n="popup_open_space">OmaThunder-Tab öffnen</button>
     <button class="oma-btn" id="btn-analyze-mail" style="justify-content:center;" data-i18n="popup_summarize_one">Mail / Thread zusammenfassen</button>
-    <div class="btn-row-2" id="popup-ai-extras">
-      <button class="oma-btn" id="btn-extract-ics" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_extract_ics">Termine (.ics)</button>
-      <button class="oma-btn" id="btn-suggest-filter" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_suggest_filter">Filterregel vorschlagen</button>
+    <div id="popup-ai-extras" style="display:flex; flex-direction:column; gap:7px;">
+      <div class="btn-row-2">
+        <button class="oma-btn" id="btn-extract-ics" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_extract_ics">Termine (.ics)</button>
+        <button class="oma-btn" id="btn-suggest-filter" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_suggest_filter">Filterregel vorschlagen</button>
+      </div>
+      <button class="oma-btn" id="btn-diagnose-filter" style="justify-content:center; font-size:11.5px; padding:6px 8px;" data-i18n="popup_diagnose_filter">Filter-Diagnose (Warum?)</button>
     </div>
     <button class="oma-btn" id="btn-draft-reply" style="justify-content:center;" data-i18n="popup_draft_reply">Antwort formulieren</button>
     <button class="oma-btn ghost" id="btn-open-opts" style="justify-content:center;" data-i18n="popup_open_opts">Einstellungen</button>
   </div>
 
   <div id="popup-out" style="margin-top:10px;"></div>
+  <script src="../lib/core.js"></script>
   <script src="i18n.js"></script>
   <script src="popup.js"></script>
 </body>

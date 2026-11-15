@@ -20,26 +20,49 @@ const PREVIEW_ACCOUNTS = [
   { id: "account2", name: "Privat (Gmail)" },
 ];
 
-function renderAccounts(accounts, enabledIds) {
+function renderAccounts(accounts, enabledIds, kanbanIds) {
   const box = $("triage-accounts");
   box.innerHTML = "";
   if (!accounts.length) {
     box.innerHTML = `<span class="oma-muted">${t("opts_no_accounts")}</span>`;
     return;
   }
+  const enabledSet = new Set(enabledIds || []);
+  const kanbanSet = new Set(kanbanIds || []);
   for (const acc of accounts) {
+    const row = document.createElement("div");
+    row.className = "account-row";
+
     const label = document.createElement("label");
     label.className = "check";
-    label.style.marginTop = "2px";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = acc.id;
     cb.dataset.account = "1";
-    cb.checked = enabledIds.includes(acc.id);
+    cb.checked = enabledSet.has(acc.id);
     const span = document.createElement("span");
     span.textContent = acc.name || acc.id;
     label.append(cb, span);
-    box.appendChild(label);
+
+    const kLabel = document.createElement("label");
+    kLabel.className = "account-kanban";
+    const kCb = document.createElement("input");
+    kCb.type = "checkbox";
+    kCb.value = acc.id;
+    kCb.dataset.kanbanAccount = "1";
+    kCb.checked = enabledSet.has(acc.id) && kanbanSet.has(acc.id);
+    kCb.disabled = !cb.checked;
+    const kSpan = document.createElement("span");
+    kSpan.textContent = t("opts_account_kanban");
+    kLabel.append(kCb, kSpan);
+
+    cb.addEventListener("change", () => {
+      if (!cb.checked) kCb.checked = false;
+      updateDependentFields();
+    });
+
+    row.append(label, kLabel);
+    box.appendChild(row);
   }
 }
 
@@ -111,6 +134,13 @@ function updateDependentFields() {
   document.querySelectorAll(".safety input:not(#mb-readonly)").forEach((el) => {
     el.disabled = !triageOn;
   });
+  document.querySelectorAll(".account-row").forEach((row) => {
+    const accCb = row.querySelector("[data-account]");
+    const kanbanCb = row.querySelector("[data-kanban-account]");
+    if (accCb && kanbanCb) {
+      kanbanCb.disabled = !triageOn || !accCb.checked;
+    }
+  });
 }
 
 async function init() {
@@ -130,7 +160,7 @@ async function init() {
     hostThemes = snap?.themes || null;
   }
   const features = cfg?.features || { theme: true, assistant: true, triage: false };
-  const mb = cfg?.mailbox || { readOnly: true, triageAccountIds: [], autoMoveOnlyUnread: true, scanLimit: 20, scanDays: 30 };
+  const mb = cfg?.mailbox || { readOnly: true, triageAccountIds: [], kanbanAccountIds: [], autoMoveOnlyUnread: true, scanLimit: 20, scanDays: 30 };
 
   applyTheme(lastSnap?.theme, features.theme !== false);
 
@@ -149,7 +179,8 @@ async function init() {
   $("mb-only-unread").checked = mb.autoMoveOnlyUnread !== false;
   $("mb-scan-limit").value = mb.scanLimit || 20;
   $("mb-scan-days").value = mb.scanDays || 30;
-  renderAccounts(accounts, mb.triageAccountIds || []);
+  $("mb-archive-dir").value = mb.archiveDir || "";
+  renderAccounts(accounts, mb.triageAccountIds || [], mb.kanbanAccountIds || []);
   updateDependentFields();
 
   // Offer every palette the host knows, so saving never replaces a preset chosen in the gallery.
@@ -191,7 +222,11 @@ async function init() {
     if (window.OMA_I18N) {
       window.OMA_I18N.setLang(e.target.value);
       window.OMA_I18N.applyDom();
-      renderAccounts(accounts, [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value));
+      renderAccounts(
+        accounts,
+        [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value),
+        [...document.querySelectorAll("[data-kanban-account]:checked")].map((cb) => cb.value),
+      );
       updateDependentFields();
     }
   });
@@ -202,6 +237,11 @@ async function init() {
       window.OMA_I18N.setLang(selectedLang);
       window.OMA_I18N.applyDom();
     }
+    const enabledAccountIds = [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value);
+    const enabledSet = new Set(enabledAccountIds);
+    const kanbanIds = [...document.querySelectorAll("[data-kanban-account]:checked")]
+      .map((cb) => cb.value)
+      .filter((id) => enabledSet.has(id));
     // Partial config: the host merges it, so rules saved elsewhere (Kanban tab) are never overwritten.
     const patch = {
       language: selectedLang,
@@ -212,11 +252,13 @@ async function init() {
       },
       mailbox: {
         readOnly: $("mb-readonly").checked,
-        triageAccountIds: [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value),
+        triageAccountIds: enabledAccountIds,
+        kanbanAccountIds: kanbanIds,
         autoMoveOnlyUnread: $("mb-only-unread").checked,
         scanOnNewMail: $("mb-scan-new").checked,
         scanLimit: Number($("mb-scan-limit").value) || 20,
         scanDays: Number($("mb-scan-days").value) || 30,
+        archiveDir: $("mb-archive-dir").value.trim(),
       },
       // Mode/preset only when changed here: a theme picked in the gallery or popup meanwhile stays.
       theme: {

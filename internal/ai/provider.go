@@ -13,17 +13,19 @@ import (
 )
 
 type AnalyzeRequest struct {
-	Mode             string                `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
-	Ephemeral        bool                  `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
-	Language         string                `json:"language,omitempty"`  // "de" or "en"
-	TargetLanguage   string                `json:"targetLanguage,omitempty"`
-	Question         string                `json:"question"`
-	UserDraft        string                `json:"userDraft,omitempty"`
-	DraftAttachments []string              `json:"draftAttachments,omitempty"`
-	Tone             string                `json:"tone,omitempty"` // "kurz", "freundlich", "formal"
-	PrimaryMessage   triage.MessageInput   `json:"primaryMessage"`
-	ThreadMessages   []triage.MessageInput `json:"threadMessages,omitempty"`
-	CalendarHint     string                `json:"calendarHint,omitempty"`
+	Mode             string                        `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
+	Ephemeral        bool                          `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
+	Language         string                        `json:"language,omitempty"`  // "de" or "en"
+	TargetLanguage   string                        `json:"targetLanguage,omitempty"`
+	Question         string                        `json:"question"`
+	UserDraft        string                        `json:"userDraft,omitempty"`
+	DraftAttachments []string                      `json:"draftAttachments,omitempty"`
+	Tone             string                        `json:"tone,omitempty"` // "kurz", "freundlich", "formal"
+	PrimaryMessage   triage.MessageInput           `json:"primaryMessage"`
+	ThreadMessages   []triage.MessageInput         `json:"threadMessages,omitempty"`
+	CalendarHint     string                        `json:"calendarHint,omitempty"`
+	NativeFilters    []triage.NativeFilter         `json:"nativeFilters,omitempty"`
+	FilterDiagnostic *triage.FilterDiagnosticReport `json:"filterDiagnostic,omitempty"`
 }
 
 type ExtractedEvent struct {
@@ -36,14 +38,17 @@ type ExtractedEvent struct {
 }
 
 type FilterRuleSuggestion struct {
-	Name            string   `json:"name"`
-	Reason          string   `json:"reason"`
-	FromContains    []string `json:"fromContains,omitempty"`
-	Domains         []string `json:"domains,omitempty"`
-	SubjectContains []string `json:"subjectContains,omitempty"`
-	MatchAll        bool     `json:"matchAll"`
-	SuggestedFolder string   `json:"suggestedFolder,omitempty"`
-	MarkRead        bool     `json:"markRead,omitempty"`
+	Action           string   `json:"action,omitempty"` // "create", "append_or", "fix_and_to_or", "replace"
+	TargetFilterName string   `json:"targetFilterName,omitempty"`
+	Name             string   `json:"name"`
+	Reason           string   `json:"reason"`
+	FromContains     []string `json:"fromContains,omitempty"`
+	Domains          []string `json:"domains,omitempty"`
+	SubjectContains  []string `json:"subjectContains,omitempty"`
+	MatchAll         bool     `json:"matchAll"`
+	SuggestedFolder  string   `json:"suggestedFolder,omitempty"`
+	MarkRead         bool     `json:"markRead,omitempty"`
+	Delete           bool     `json:"delete,omitempty"`
 }
 
 type AnalyzeResponse struct {
@@ -140,7 +145,7 @@ that the user explicitly reviews and approves with one click.
 When mode is "summarize": summarize the thread concisely (key facts, open questions, deadlines/amounts); if Owner request asks a specific question, answer that question directly and accurately.
 When mode is "summarize_selection": summarize all selected emails in "thread" cleanly as a structured briefing (group by topic/sender; list key points, decisions, action items, deadlines/amounts, and open questions); if Owner request asks a specific question, answer it directly across the selected emails.
 When mode is "extract_events": extract concrete calendar events, appointments, meetings, or hard deadlines from the emails in "thread" into "events" (each with title, start in ISO-8601 "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" if allDay=true, optional end, allDay, location, description), and summarize them concisely in "answer".
-When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) to propose safe filter rules in "filterSuggestions" (each with name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead). Explain the suggested rules concisely in "answer".
+When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing native Thunderbird filter covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, AND instead of OR bug, wrong field), prefer proposing action="append_or" or "fix_and_to_or" or "replace" with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
 When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal.
 When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so it is clearer and fits the requested tone; keep every fact, commitment and the draft's language unless a target language was requested; emit the rewritten text (and an improved/matching "subject" if the existing subject is empty or in the wrong language) as a "draft_reply" proposal.
 When mode is "translate_draft": translate the owner's draft inside <owner_draft> (and translate/adapt the "subject" if present) into the requested target language (or flip German <-> English when auto) in the requested tone, keeping every fact, name, date, and number; emit the translated email as a "draft_reply" proposal with both "subject" and "body".
@@ -168,14 +173,17 @@ Return ONLY valid JSON matching this schema:
   ],
   "filterSuggestions": [
     {
+      "action": "create|append_or|fix_and_to_or|replace",
+      "targetFilterName": "Exact existing filter name when updating an existing filter, else empty",
       "name": "Short descriptive rule name",
-      "reason": "Why this pattern matches noise/notifications without catching important mails",
+      "reason": "Why this pattern matches or fixes the existing filter without catching important mails",
       "domains": ["example.com"],
       "fromContains": ["noreply@example.com"],
       "subjectContains": ["would like to try"],
       "matchAll": true,
       "suggestedFolder": "Notifications/Atlassian",
-      "markRead": false
+      "markRead": false,
+      "delete": false
     }
   ],
   "proposals": [
@@ -212,7 +220,7 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		"from":        msg.From,
 		"date":        msg.Date,
 		"folder":      msg.Folder,
-		"customer":    base.Customer,
+		"space":       base.Space,
 		"unread":      msg.Unread,
 		"attachments": msg.Attachments,
 		"snippet":     snippet,
@@ -259,7 +267,7 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		Date:           msg.Date,
 		Folder:         msg.Folder,
 		FolderID:       msg.FolderID,
-		Customer:       base.Customer,
+		Space:          base.Space,
 		MatchedRuleID:  base.MatchedRuleID,
 		TargetFolder:   base.TargetFolder,
 		TargetFolderID: base.TargetFolderID,
@@ -342,6 +350,16 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		"draftAttachments": req.DraftAttachments,
 		"thread":           msgs,
 		"calendarHint":     req.CalendarHint,
+	}
+	if len(req.NativeFilters) > 0 {
+		limit := len(req.NativeFilters)
+		if limit > 40 {
+			limit = 40
+		}
+		contextObj["nativeFilters"] = req.NativeFilters[:limit]
+	}
+	if req.FilterDiagnostic != nil {
+		contextObj["filterDiagnostic"] = req.FilterDiagnostic
 	}
 	ctxJSON, _ := json.MarshalIndent(contextObj, "", "  ")
 

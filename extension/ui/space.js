@@ -25,49 +25,49 @@ const DEMO_THEMES = [
 
 const DEMO_FOLDERS = [
   { id: "f-inbox", path: "INBOX" },
-  { id: "f-acme-in", path: "Kunden/Acme/Incoming" },
-  { id: "f-acme-done", path: "Kunden/Acme/Erledigt" },
-  { id: "f-beta", path: "Kunden/Beta GmbH" },
+  { id: "f-acme-in", path: "Spaces/Acme/Incoming" },
+  { id: "f-acme-done", path: "Spaces/Acme/Erledigt" },
+  { id: "f-beta", path: "Spaces/Rechnungen" },
   { id: "f-inv", path: "Buchhaltung/Rechnungen" },
 ];
 
 const DEMO_RULES = [
-  { id: "r-acme", customer: "Acme GmbH", folderPath: "Kunden/Acme/Incoming", domains: ["acme.de", "acme-cloud.io"], autoMove: true, includeInScan: true, columnFolders: { done: "Kunden/Acme/Erledigt" } },
-  { id: "r-beta", customer: "Beta Systems", folderPath: "Kunden/Beta GmbH", domains: ["beta-systems.com"], autoMove: true, includeInScan: true },
+  { id: "r-acme", space: "Acme GmbH", folderPath: "Spaces/Acme/Incoming", domains: ["acme.de", "acme-cloud.io"], autoMove: true, includeInScan: true, columnFolders: { done: "Spaces/Acme/Erledigt" } },
+  { id: "r-beta", space: "Rechnungen", folderPath: "Spaces/Rechnungen", domains: ["beta-systems.com"], autoMove: true, includeInScan: true },
 ];
 
 const DEMO_STATE = {
   classifications: {
     "demo-1": {
-      messageId: "demo-1", customer: "Acme GmbH", folder: "Kunden/Acme/Incoming", kanbanColumn: "action",
+      messageId: "demo-1", space: "Acme GmbH", folder: "Spaces/Acme/Incoming", kanbanColumn: "action",
       subject: "Freigabe Q4-Architektur & NDA bis Freitag", from: "Laura Weber <laura@acme.de>",
       date: "2026-11-12T14:20:00Z", bucket: "action", urgency: "high",
       summary: "Wartet auf NDA-Freigabe & Terminvorschlag bis 15.11.", deadline: "2026-11-15",
       stage: "stage1-llm", model: "gemini-4-hydrogen", needsAttention: true,
     },
     "demo-2": {
-      messageId: "demo-2", customer: "Beta Systems", folder: "Kunden/Beta GmbH", kanbanColumn: "incoming",
+      messageId: "demo-2", space: "Rechnungen", folder: "Spaces/Rechnungen", kanbanColumn: "incoming",
       subject: "Neue API-Zugänge für Staging-Test", from: "Jonas Meyer <jonas@beta-systems.com>",
       date: "2026-11-12T17:05:00Z", bucket: "incoming", urgency: "medium",
       summary: "Fragt nach SSH-Key und Testfenster nächste Woche.",
       stage: "stage1-llm", model: "gemini-4-hydrogen", needsAttention: true,
     },
     "demo-3": {
-      messageId: "demo-3", customer: "Acme GmbH", folder: "Kunden/Acme/Incoming", kanbanColumn: "invoice",
+      messageId: "demo-3", space: "Acme GmbH", folder: "Spaces/Acme/Incoming", kanbanColumn: "invoice",
       subject: "Rechnung #2026-1184 — Cloud-Cluster", from: "billing@acme-cloud.io",
       date: "2026-11-12T07:40:00Z", bucket: "invoice", urgency: "medium",
       summary: "Rechnung erkannt (Stage 0, 0 Tokens) — € 480,00.", amount: "€ 480,00",
       stage: "stage0-rule", model: "deterministic", needsAttention: true,
     },
     "demo-4": {
-      messageId: "demo-4", customer: "Beta Systems", folder: "Kunden/Beta GmbH", kanbanColumn: "waiting",
+      messageId: "demo-4", space: "Rechnungen", folder: "Spaces/Rechnungen", kanbanColumn: "waiting",
       subject: "Rückfrage Liefertermin Server-Rack", from: "Max <einkauf@beta-systems.com>",
       date: "2026-11-10T16:12:00Z", bucket: "waiting", urgency: "low",
       summary: "Du hast vor 2 Tagen geantwortet — wartet auf Rückmeldung.",
       stage: "stage0-rule", model: "deterministic", needsAttention: false,
     },
     "demo-5": {
-      messageId: "demo-5", customer: "", folder: "INBOX", kanbanColumn: "done",
+      messageId: "demo-5", space: "", folder: "INBOX", kanbanColumn: "done",
       subject: "Weekly Go & Linux Digest #412", from: "digest@weekly.dev",
       date: "2026-11-12T06:00:00Z", bucket: "newsletter", urgency: "low",
       summary: "Newsletter via Stage-0-Header-Regel gefiltert.",
@@ -87,7 +87,7 @@ const DEMO_STATE = {
 };
 
 let currentView = "kanban";
-let selectedCustomer = "ALL";
+let selectedSpace = "ALL";
 // Board card chosen for the assistant. null = use the mail currently open in Thunderbird.
 let selectedMessageId = inExtension ? null : "demo-1";
 let lastReport = null;
@@ -104,7 +104,7 @@ let snapshot = {
   accounts: [{ id: "demo-account", name: "Firma (IMAP)" }],
   config: {
     features: { theme: true, assistant: true, triage: true },
-    mailbox: { readOnly: true, triageAccountIds: ["demo-account"], autoMoveOnlyUnread: true },
+    mailbox: { readOnly: true, triageAccountIds: ["demo-account"], kanbanAccountIds: ["demo-account"], autoMoveOnlyUnread: true },
     rules: DEMO_RULES,
     ai: { classifier: { backend: "gemini-api", model: "gemini-4-hydrogen" }, agent: { backend: "claude-cli", model: "" } },
   },
@@ -123,6 +123,109 @@ if (inExtension) {
   };
 }
 let editingRuleId = null;
+let showImportPanel = false;
+let archiveStatsData = inExtension
+  ? { archiveDir: "", exists: false, fileCount: 0, totalBytes: 0 }
+  : { archiveDir: "~/OmaThunder-Archiv", exists: true, fileCount: 142, totalBytes: 48200000 };
+let archivePreviewData = null;
+let archiveReportData = null;
+let archiveBusy = false;
+let archiveForm = {
+  accountId: "",
+  scope: "inbox",
+  folderPath: "",
+  includeSubfolders: true,
+  olderThanDays: 365,
+  onlyRead: true,
+  excludeStarred: true,
+  maxMessages: 200,
+  mode: "simulate",
+  skipTrash: false,
+  archiveDir: "",
+};
+let nativeFiltersData = inExtension
+  ? { supported: false, accounts: [], filters: [], issues: [], candidates: [] }
+  : {
+      supported: true,
+      accounts: [{ accountId: "demo-account", accountName: "Firma (IMAP)", count: 2 }],
+      filters: [
+        {
+          accountId: "demo-account",
+          accountName: "Firma (IMAP)",
+          name: "Acme GmbH",
+          enabled: true,
+          matchAll: false,
+          conditions: [{ field: "from", op: "endsWith", value: "@acme.de" }],
+          actions: [{ type: "moveToFolder", targetFolderPath: "Spaces/Acme/Incoming" }],
+        },
+        {
+          accountId: "demo-account",
+          accountName: "Firma (IMAP)",
+          name: "Systemmails (Beispiel-Bug)",
+          enabled: true,
+          matchAll: true,
+          conditions: [
+            { field: "from", op: "contains", value: "notify@service.de", booleanAnd: true },
+            { field: "from", op: "contains", value: "alert@service.de", booleanAnd: true },
+          ],
+          actions: [{ type: "moveToFolder", targetFolderPath: "System" }],
+        },
+      ],
+      issues: [
+        {
+          accountId: "demo-account",
+          filterName: "Systemmails (Beispiel-Bug)",
+          severity: "warn",
+          code: "and_mutually_exclusive",
+          detail: "2 verschiedene Absender mit UND verknüpft — sollte ODER sein.",
+          quickFix: "set_or",
+        },
+      ],
+      candidates: [
+        {
+          accountId: "demo-account",
+          accountName: "Firma (IMAP)",
+          space: "System",
+          folderPath: "System",
+          domains: ["service.de"],
+          nativeFilterNames: ["Systemmails (Beispiel-Bug)"],
+          alreadyImported: false,
+        },
+      ],
+    };
+
+function formatBytes(bytes) {
+  const b = Number(bytes || 0);
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+async function refreshArchiveStats() {
+  if (!inExtension || !snapshot.connected) return archiveStatsData;
+  const res = await api.runtime.sendMessage({
+    type: "omathunder:archiveStats",
+    archiveDir: archiveForm.archiveDir || snapshot.config?.mailbox?.archiveDir || "",
+  }).catch(() => null);
+  if (res) archiveStatsData = res;
+  return archiveStatsData;
+}
+
+async function refreshNativeFilters() {
+  if (!inExtension || !snapshot.connected) return nativeFiltersData;
+  const res = await api.runtime.sendMessage({ type: "omathunder:listNativeFilters" }).catch(() => null);
+  if (res) {
+    nativeFiltersData = {
+      supported: Boolean(res.supported),
+      accounts: res.accounts || [],
+      filters: res.filters || [],
+      issues: res.issues || [],
+      candidates: res.candidates || [],
+    };
+  }
+  return nativeFiltersData;
+}
 
 function hostOffline() {
   return inExtension && !snapshot.connected;
@@ -156,6 +259,12 @@ function isReadOnly() {
 function triageAccounts() {
   const ids = new Set(snapshot.config?.mailbox?.triageAccountIds || []);
   return (snapshot.accounts || []).filter((a) => ids.has(a.id));
+}
+
+function kanbanAccounts() {
+  const triageSet = new Set(snapshot.config?.mailbox?.triageAccountIds || []);
+  const kanbanSet = new Set(snapshot.config?.mailbox?.kanbanAccountIds || []);
+  return (snapshot.accounts || []).filter((a) => triageSet.has(a.id) && kanbanSet.has(a.id));
 }
 
 function errText(err) {
@@ -202,16 +311,17 @@ function escapeHtml(str) {
 function getAllItems() {
   const items = Object.values(snapshot.state?.classifications || {});
   if (!inExtension || !snapshot.connected) return items;
-  // Only show mails of accounts that are currently enabled for triage.
-  const ids = new Set(snapshot.config?.mailbox?.triageAccountIds || []);
-  return items.filter((c) => ids.has(c.accountId));
+  // Only show mails of accounts that are currently enabled for Kanban.
+  const triageIds = new Set(snapshot.config?.mailbox?.triageAccountIds || []);
+  const kanbanIds = new Set(snapshot.config?.mailbox?.kanbanAccountIds || []);
+  return items.filter((c) => triageIds.has(c.accountId) && kanbanIds.has(c.accountId));
 }
 
 function getFilteredItems() {
   const items = getAllItems();
-  if (selectedCustomer === "ALL") return items;
-  if (selectedCustomer === "UNASSIGNED") return items.filter((c) => !c.customer);
-  return items.filter((c) => c.customer === selectedCustomer);
+  if (selectedSpace === "ALL") return items;
+  if (selectedSpace === "UNASSIGNED") return items.filter((c) => !c.space);
+  return items.filter((c) => c.space === selectedSpace);
 }
 
 function renderCounts() {
@@ -219,6 +329,8 @@ function renderCounts() {
   const triageCounts = feature("triage");
   document.getElementById("cnt-kanban").textContent = triageCounts ? all.length : "–";
   document.getElementById("cnt-rules").textContent = triageCounts ? (snapshot.config?.rules || []).length : "–";
+  const cntArchive = document.getElementById("cnt-archive");
+  if (cntArchive) cntArchive.textContent = triageCounts ? (archiveStatsData.fileCount ?? 0) : "–";
   document.getElementById("cnt-themes").textContent = (snapshot.themes || []).length;
 
   const stage0 = all.filter((c) => c.stage === "stage0-rule").length;
@@ -233,8 +345,8 @@ function renderCounts() {
   const triageOn = feature("triage");
   document.getElementById("readonly-badge").style.display = triageOn && isReadOnly() ? "" : "none";
   document.getElementById("readonly-badge").title = t("badge_readonly_title");
-  document.getElementById("btn-triage").style.display = triageOn ? "" : "none";
-  document.getElementById("savings-badge").style.display = triageOn ? "" : "none";
+  document.getElementById("btn-triage").style.display = triageOn && kanbanAccounts().length > 0 ? "" : "none";
+  document.getElementById("savings-badge").style.display = triageOn && kanbanAccounts().length > 0 ? "" : "none";
 
   const aiCfg = snapshot.config?.ai;
   if (aiCfg) {
@@ -243,41 +355,41 @@ function renderCounts() {
   }
 }
 
-function renderCustomerFilterBar() {
-  const bar = document.getElementById("customer-filter-bar");
+function renderSpaceFilterBar() {
+  const bar = document.getElementById("space-filter-bar");
   if (currentView !== "kanban") {
     bar.style.display = "none";
     return;
   }
-  if (!feature("triage")) {
+  if (!feature("triage") || (inExtension && snapshot.connected && kanbanAccounts().length === 0)) {
     bar.style.display = "none";
     return;
   }
   bar.style.display = "flex";
-  const customers = new Set();
-  for (const r of snapshot.config?.rules || []) if (r.customer) customers.add(r.customer);
-  for (const c of getAllItems()) if (c.customer) customers.add(c.customer);
+  const spaces = new Set();
+  for (const r of snapshot.config?.rules || []) if (r.space) spaces.add(r.space);
+  for (const c of getAllItems()) if (c.space) spaces.add(c.space);
 
   const pills = [
     { key: "ALL", label: t("filter_all") },
-    ...[...customers].sort().map((c) => ({ key: c, label: c })),
+    ...[...spaces].sort().map((c) => ({ key: c, label: c })),
     { key: "UNASSIGNED", label: t("filter_unassigned") },
   ];
-  bar.innerHTML = `<span class="oma-muted" style="font-size:11px; margin-right:4px;">${escapeHtml(t("filter_customer"))}</span>` +
-    pills.map((p) => `<button class="filter-pill ${selectedCustomer === p.key ? "active" : ""}" data-cust="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join("");
+  bar.innerHTML = `<span class="oma-muted" style="font-size:11px; margin-right:4px;">${escapeHtml(t("filter_space"))}</span>` +
+    pills.map((p) => `<button class="filter-pill ${selectedSpace === p.key ? "active" : ""}" data-space="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join("");
 
-  bar.querySelectorAll("[data-cust]").forEach((btn) => {
+  bar.querySelectorAll("[data-space]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      selectedCustomer = btn.dataset.cust;
+      selectedSpace = btn.dataset.space;
       renderMain();
-      renderCustomerFilterBar();
+      renderSpaceFilterBar();
     });
   });
 }
 
 function renderMain() {
   const container = document.getElementById("main-content");
-  const titles = { kanban: t("view_kanban"), rules: t("view_rules"), themes: t("view_themes") };
+  const titles = { kanban: t("view_kanban"), rules: t("view_rules"), archive: t("view_archive"), themes: t("view_themes") };
   document.getElementById("view-title").textContent = titles[currentView] || "OmaThunder";
 
   if (hostOffline()) {
@@ -286,7 +398,7 @@ function renderMain() {
     return;
   }
 
-  if ((currentView === "kanban" || currentView === "rules") && !feature("triage")) {
+  if ((currentView === "kanban" || currentView === "rules" || currentView === "archive") && !feature("triage")) {
     container.innerHTML = noticeHtml(t("feat_off_triage"));
     bindSettingsButtons(container);
     return;
@@ -298,6 +410,11 @@ function renderMain() {
   }
 
   if (currentView === "kanban") {
+    if (inExtension && snapshot.connected && kanbanAccounts().length === 0) {
+      container.innerHTML = noticeHtml(t("kanban_no_accounts"));
+      bindSettingsButtons(container);
+      return;
+    }
     const items = getFilteredItems();
     const cols = getKanbanColumns();
     container.innerHTML = `<div class="kanban-board">${cols.map((col, idx) => {
@@ -312,7 +429,7 @@ function renderMain() {
             ${colItems.map((c) => `
               <div class="k-card ${c.messageId === selectedMessageId ? "selected" : ""}" draggable="true" data-msgid="${escapeHtml(c.messageId)}">
                 <div class="k-card-top">
-                  ${c.customer ? `<span class="oma-badge accent">${escapeHtml(c.customer)}</span>` : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`}
+                  ${c.space ? `<span class="oma-badge accent">${escapeHtml(c.space)}</span>` : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`}
                   <span class="oma-badge ${c.urgency === "high" ? "err" : c.urgency === "medium" ? "warn" : "ok"}">${escapeHtml(c.urgency || "low")}</span>
                 </div>
                 <div class="k-card-title">${escapeHtml(c.subject)}</div>
@@ -379,13 +496,83 @@ function renderMain() {
   if (currentView === "rules") {
     const rules = snapshot.config?.rules || [];
     const accounts = triageAccounts();
+    const allAccounts = snapshot.accounts || [];
     const accountIds = new Set(accounts.map((a) => a.id));
     const folderOpts = (snapshot.folders || []).filter((f) => !inExtension || accountIds.has(f.accountId)).map((f) =>
       `<option value="${escapeHtml(f.path)}">${escapeHtml(f.accountName ? `[${f.accountName}] ${f.path}` : f.path)}</option>`
     ).join("");
     const accountOpts = accounts.map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`).join("");
-    const accountName = (id) => (snapshot.accounts || []).find((a) => a.id === id)?.name || id || "—";
+    const accountName = (id) => allAccounts.find((a) => a.id === id)?.name || id || "—";
+    const defaultFilterAccId = accounts[0]?.id || nativeFiltersData.accounts?.[0]?.accountId || allAccounts[0]?.id || "";
+
+    const nativeSupported = Boolean(nativeFiltersData.supported);
+    const nativeFilters = nativeFiltersData.filters || [];
+    const nativeIssues = nativeFiltersData.issues || [];
+    const importCandidates = nativeFiltersData.candidates || [];
+    const activeNativeCount = nativeFilters.filter((f) => f.enabled).length;
+
+    const findLinkedNativeFilters = (rule) => {
+      const names = new Set((rule.nativeFilterNames || []).map((n) => String(n).toLowerCase()));
+      const cleanFolder = String(rule.folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase();
+      return nativeFilters.filter((f) => {
+        if (rule.accountId && f.accountId !== rule.accountId) return false;
+        if (names.has(String(f.name || "").toLowerCase())) return true;
+        if (names.size === 0 && cleanFolder) {
+          return (f.actions || []).some(
+            (a) => a.type === "moveToFolder" && String(a.targetFolderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase() === cleanFolder,
+          );
+        }
+        return false;
+      });
+    };
+
     container.innerHTML = `
+      <div class="oma-card" style="margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:700; font-size:13px;">${escapeHtml(t("native_bridge_title"))}</div>
+            <div class="oma-muted" style="font-size:11.5px; margin-top:2px;">
+              ${escapeHtml(nativeSupported
+                ? t("native_bridge_summary", { active: activeNativeCount, total: nativeFilters.length, issues: nativeIssues.length })
+                : t("native_bridge_unsupported"))}
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            ${nativeIssues.length > 0 ? `<span class="oma-badge warn">${escapeHtml(t("native_issues_badge", { count: nativeIssues.length }))}</span>` : ""}
+            ${nativeSupported ? `<button class="oma-btn primary" id="btn-toggle-import">${escapeHtml(t("native_btn_import"))}</button>` : ""}
+            ${nativeSupported && defaultFilterAccId ? `<button class="oma-btn" id="btn-run-all-native">${escapeHtml(t("native_btn_run_all"))}</button>` : ""}
+            ${nativeSupported ? `<button class="oma-btn ghost" id="btn-open-tb-filters">${escapeHtml(t("native_btn_dialog"))}</button>` : ""}
+          </div>
+        </div>
+        ${showImportPanel ? `
+          <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--oma-border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+              <strong style="font-size:12px;">${escapeHtml(t("native_import_title"))}</strong>
+              <span class="oma-muted" style="font-size:11px;">${escapeHtml(t("native_import_desc"))}</span>
+            </div>
+            ${importCandidates.length === 0 ? `<div class="oma-muted" style="font-size:11.5px;">${escapeHtml(t("native_import_empty"))}</div>` : `
+              <div style="display:flex; flex-direction:column; gap:6px; max-height:260px; overflow-y:auto;">
+                ${importCandidates.map((c, idx) => `
+                  <div style="display:grid; grid-template-columns:auto 180px 1fr auto; gap:8px; align-items:center; padding:6px 8px; border:1px solid var(--oma-border); border-radius:6px; background:var(--oma-bg-darker);">
+                    <input type="checkbox" data-import-idx="${idx}" ${c.alreadyImported ? "" : "checked"} />
+                    <input class="oma-input" data-import-space="${idx}" value="${escapeHtml(c.space)}" style="padding:4px 7px; font-size:11.5px;" />
+                    <div>
+                      <div class="oma-mono" style="font-size:11px;">${escapeHtml(c.folderPath)} <span class="oma-muted">(${escapeHtml(c.accountName || accountName(c.accountId))})</span></div>
+                      <div class="oma-muted oma-mono" style="font-size:10.5px;">${escapeHtml([...(c.domains || []), ...(c.fromContains || [])].join(", ") || (c.nativeFilterNames || []).join(", "))}</div>
+                    </div>
+                    ${c.alreadyImported ? `<span class="oma-badge ok">${escapeHtml(t("native_import_linked"))}</span>` : `<span class="oma-badge accent">${escapeHtml(t("native_import_new"))}</span>`}
+                  </div>
+                `).join("")}
+              </div>
+              <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:10px;">
+                <button class="oma-btn ghost" id="btn-cancel-import">${escapeHtml(t("btn_cancel"))}</button>
+                <button class="oma-btn primary" id="btn-confirm-import">${escapeHtml(t("native_btn_confirm_import"))}</button>
+              </div>
+            `}
+          </div>
+        ` : ""}
+      </div>
+
       <div class="oma-card" style="margin-bottom:14px;">
         <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(t(editingRuleId ? "rules_edit_title" : "rules_new_title"))}</div>
         <div class="oma-muted" style="font-size:11.5px; margin-bottom:10px;">
@@ -398,8 +585,8 @@ function renderMain() {
             <select class="oma-select" id="rule-account" ${accounts.length === 0 ? "disabled" : ""}>${accountOpts}</select>
           </div>
           <div>
-            <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("rules_lbl_customer"))}</label>
-            <input class="oma-input" id="rule-customer" placeholder="${escapeHtml(t("rules_ph_customer"))}" />
+            <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("rules_lbl_space"))}</label>
+            <input class="oma-input" id="rule-space" placeholder="${escapeHtml(t("rules_ph_space"))}" />
           </div>
           <div>
             <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("rules_lbl_folder"))}</label>
@@ -412,11 +599,17 @@ function renderMain() {
           </div>
           <button class="oma-btn primary" id="btn-add-rule" ${accounts.length === 0 ? "disabled" : ""}>${escapeHtml(t(editingRuleId ? "rules_btn_save" : "rules_btn_add"))}</button>
         </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; margin-top:8px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer;">
             <input type="checkbox" id="chk-autocreate-folder" checked />
             <span>${escapeHtml(t("rules_autocreate"))}</span>
           </label>
+          ${nativeSupported ? `
+            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer;">
+              <input type="checkbox" id="chk-sync-native" checked />
+              <span>${escapeHtml(t("rules_sync_native"))}</span>
+            </label>
+          ` : ""}
         </div>
         <details style="margin-top:8px;">
           <summary class="oma-muted" style="font-size:11px; cursor:pointer;">${escapeHtml(t("rules_sub_summary"))}</summary>
@@ -433,29 +626,52 @@ function renderMain() {
         </details>
       </div>
 
-      <div class="oma-card">
+      <div class="oma-card" style="margin-bottom:14px;">
         <table class="rules-table">
           <thead>
             <tr>
-              <th>${escapeHtml(t("rules_th_customer"))}</th>
+              <th>${escapeHtml(t("rules_th_space"))}</th>
               <th>${escapeHtml(t("rules_th_folder"))}</th>
               <th>${escapeHtml(t("rules_th_domains"))}</th>
+              <th>${escapeHtml(t("rules_th_native"))}</th>
               <th>${escapeHtml(t("rules_th_automove"))}</th>
               <th>${escapeHtml(t("rules_th_scan"))}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${rules.length === 0 ? `<tr><td colspan="6" class="oma-muted">${escapeHtml(t("rules_empty"))}</td></tr>` : rules.map((r) => {
+            ${rules.length === 0 ? `<tr><td colspan="7" class="oma-muted">${escapeHtml(t("rules_empty"))}</td></tr>` : rules.map((r) => {
               const subList = Object.entries(r.columnFolders || {}).map(([col, path]) => `${col} → ${path}`).join(" · ");
+              const linked = findLinkedNativeFilters(r);
+              const anyEnabled = linked.some((f) => f.enabled);
+              let nativeCell = `<span class="oma-badge">${escapeHtml(t("rules_native_none"))}</span>`;
+              if (nativeSupported) {
+                if (linked.length > 0 && anyEnabled) {
+                  nativeCell = `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                    <span class="oma-badge ok" title="${escapeHtml(linked.map((f) => f.name).join(", "))}">${escapeHtml(t("rules_native_active", { count: linked.length }))}</span>
+                    <button class="mini-btn" data-run-rule-filter="${escapeHtml(r.id)}" title="${escapeHtml(t("diag_run_inbox"))}">▶</button>
+                  </div>`;
+                } else if (linked.length > 0) {
+                  nativeCell = `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                    <span class="oma-badge warn" title="${escapeHtml(linked.map((f) => f.name).join(", "))}">${escapeHtml(t("rules_native_disabled"))}</span>
+                    <button class="mini-btn" data-enable-rule-filter="${escapeHtml(r.id)}">${escapeHtml(t("native_btn_enable"))}</button>
+                  </div>`;
+                } else {
+                  nativeCell = `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+                    <span class="oma-badge">${escapeHtml(t("rules_native_none"))}</span>
+                    <button class="mini-btn" data-create-rule-filter="${escapeHtml(r.id)}">${escapeHtml(t("rules_native_create"))}</button>
+                  </div>`;
+                }
+              }
               return `
               <tr>
-                <td><strong>${escapeHtml(r.customer)}</strong><div class="oma-muted" style="font-size:10.5px;">${escapeHtml(accountName(r.accountId))}</div></td>
+                <td><strong>${escapeHtml(r.space)}</strong><div class="oma-muted" style="font-size:10.5px;">${escapeHtml(accountName(r.accountId))}</div></td>
                 <td>
                   <div class="oma-mono">${escapeHtml(r.folderPath)}</div>
                   ${subList ? `<div class="oma-muted oma-mono" style="font-size:10.5px; margin-top:2px;">${escapeHtml(subList)}</div>` : `<div class="oma-muted" style="font-size:10.5px; margin-top:2px;">${escapeHtml(t("rules_sub_flex"))}</div>`}
                 </td>
                 <td class="oma-mono">${escapeHtml((r.domains || []).join(", "))}</td>
+                <td>${nativeCell}</td>
                 <td><input type="checkbox" data-toggle-move="${escapeHtml(r.id)}" ${r.autoMove ? "checked" : ""} /></td>
                 <td><input type="checkbox" data-toggle-scan="${escapeHtml(r.id)}" ${r.includeInScan ? "checked" : ""} /></td>
                 <td style="text-align:right; white-space:nowrap;">
@@ -467,17 +683,131 @@ function renderMain() {
           </tbody>
         </table>
       </div>
+
+      ${nativeSupported ? `
+        <div class="oma-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:13px;">${escapeHtml(t("native_list_title"))}</strong>
+            <span class="oma-muted" style="font-size:11px;">${escapeHtml(t("native_list_sub", { count: nativeFilters.length }))}</span>
+          </div>
+          ${nativeIssues.length > 0 ? `
+            <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+              ${nativeIssues.map((iss, idx) => `
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 9px; border:1px solid color-mix(in srgb, var(--oma-yellow) 45%, var(--oma-border)); border-radius:6px; background:var(--oma-bg-darker);">
+                  <div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="oma-badge ${iss.severity === "error" ? "err" : "warn"}">${escapeHtml(iss.code)}</span>
+                      <strong style="font-size:12px;">${escapeHtml(iss.filterName)}</strong>
+                    </div>
+                    <div class="oma-muted" style="font-size:11px; margin-top:2px;">${escapeHtml(iss.detail)}</div>
+                  </div>
+                  ${iss.quickFix ? `<button class="oma-btn" style="padding:4px 8px; font-size:11px; white-space:nowrap;" data-fix-issue-idx="${idx}">${escapeHtml(iss.quickFix === "enable" ? t("diag_fix_enable") : t("diag_fix_set_or"))}</button>` : ""}
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          ${nativeFilters.length === 0 ? `<div class="oma-muted" style="font-size:11.5px;">${escapeHtml(t("native_filters_empty"))}</div>` : `
+            <table class="rules-table">
+              <thead>
+                <tr>
+                  <th>${escapeHtml(t("native_th_on"))}</th>
+                  <th>${escapeHtml(t("native_th_name"))}</th>
+                  <th>${escapeHtml(t("native_th_logic"))}</th>
+                  <th>${escapeHtml(t("native_th_target"))}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${nativeFilters.map((f, idx) => {
+                  const target = (f.actions || []).map((a) => a.targetFolderPath ? `${a.type}: ${a.targetFolderPath}` : a.type).join(", ");
+                  const condPreview = (f.conditions || []).slice(0, 3).map((c) => `${c.field} ${c.op} "${c.value}"`).join(f.matchAll ? " AND " : " OR ");
+                  const extra = (f.conditions || []).length > 3 ? ` (+${f.conditions.length - 3})` : "";
+                  return `
+                  <tr>
+                    <td><input type="checkbox" data-toggle-native-idx="${idx}" ${f.enabled ? "checked" : ""} /></td>
+                    <td>
+                      <strong>${escapeHtml(f.name)}</strong>
+                      <div class="oma-muted" style="font-size:10.5px;">${escapeHtml(f.accountName || accountName(f.accountId))}</div>
+                    </td>
+                    <td>
+                      <span class="oma-badge ${f.matchAll && (f.conditions || []).length > 1 ? "warn" : ""}">${escapeHtml(f.matchAll ? "AND" : "OR")}</span>
+                      <div class="oma-muted oma-mono" style="font-size:10.5px; margin-top:2px;">${escapeHtml(condPreview + extra)}</div>
+                    </td>
+                    <td class="oma-mono" style="font-size:11px;">${escapeHtml(target || "—")}</td>
+                    <td style="text-align:right; white-space:nowrap;">
+                      <button class="mini-btn" data-run-native-idx="${idx}" title="${escapeHtml(t("diag_run_inbox"))}">▶</button>
+                    </td>
+                  </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          `}
+        </div>
+      ` : ""}
     `;
 
     const editing = editingRuleId ? rules.find((r) => r.id === editingRuleId) : null;
     if (editing) {
       if (editing.accountId) document.getElementById("rule-account").value = editing.accountId;
-      document.getElementById("rule-customer").value = editing.customer || "";
+      document.getElementById("rule-space").value = editing.space || "";
       document.getElementById("rule-folder").value = editing.folderPath || "";
       document.getElementById("rule-domains").value = (editing.domains || []).join(", ");
       document.getElementById("rule-col-waiting").value = editing.columnFolders?.waiting || "";
       document.getElementById("rule-col-done").value = editing.columnFolders?.done || "";
     }
+
+    document.getElementById("btn-toggle-import")?.addEventListener("click", async () => {
+      showImportPanel = !showImportPanel;
+      if (showImportPanel) await refreshNativeFilters();
+      renderMain();
+    });
+    document.getElementById("btn-cancel-import")?.addEventListener("click", () => {
+      showImportPanel = false;
+      renderMain();
+    });
+    document.getElementById("btn-confirm-import")?.addEventListener("click", async () => {
+      const selected = [];
+      container.querySelectorAll("[data-import-idx]").forEach((cb) => {
+        if (!cb.checked) return;
+        const idx = Number(cb.dataset.importIdx);
+        const cand = importCandidates[idx];
+        if (!cand) return;
+        const spaceInput = container.querySelector(`[data-import-space="${idx}"]`);
+        selected.push({ ...cand, space: spaceInput?.value.trim() || cand.space });
+      });
+      if (selected.length === 0) return;
+      if (inExtension && snapshot.connected) {
+        try {
+          const res = await api.runtime.sendMessage({ type: "omathunder:importSpaceRules", candidates: selected });
+          if (res?.config) snapshot.config = res.config;
+          showImportPanel = false;
+          await refreshNativeFilters();
+          renderCounts();
+          renderSpaceFilterBar();
+          renderMain();
+          showMessage(t("native_import_done", { count: res?.importedCount ?? selected.length }), "ok");
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      }
+    });
+    document.getElementById("btn-open-tb-filters")?.addEventListener("click", async () => {
+      if (!inExtension) return;
+      const accId = document.getElementById("rule-account")?.value || defaultFilterAccId;
+      await api.runtime.sendMessage({ type: "omathunder:openNativeFilters", accountId: accId }).catch(() => {});
+    });
+    document.getElementById("btn-run-all-native")?.addEventListener("click", async () => {
+      if (!inExtension) return;
+      const accId = document.getElementById("rule-account")?.value || defaultFilterAccId;
+      if (!accId) return;
+      try {
+        const res = await api.runtime.sendMessage({ type: "omathunder:runNativeFilters", accountId: accId });
+        showMessage(t("diag_run_done", { count: res?.executed ?? 0 }), "ok");
+      } catch (err) {
+        showMessage(errText(err), "err");
+      }
+    });
+
     container.querySelectorAll("[data-edit-rule]").forEach((btn) => {
       btn.addEventListener("click", () => {
         editingRuleId = editingRuleId === btn.dataset.editRule ? null : btn.dataset.editRule;
@@ -486,14 +816,15 @@ function renderMain() {
     });
 
     document.getElementById("btn-add-rule").addEventListener("click", async () => {
-      const customer = document.getElementById("rule-customer").value.trim();
+      const space = document.getElementById("rule-space").value.trim();
       const folderPath = document.getElementById("rule-folder").value.trim();
       const domains = document.getElementById("rule-domains").value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
       const waitSub = document.getElementById("rule-col-waiting").value.trim();
       const doneSub = document.getElementById("rule-col-done").value.trim();
       const autoCreate = document.getElementById("chk-autocreate-folder").checked;
+      const syncNative = Boolean(document.getElementById("chk-sync-native")?.checked);
       const accountId = document.getElementById("rule-account").value;
-      if (!accountId || !customer || !folderPath || domains.length === 0) return;
+      if (!accountId || !space || !folderPath || domains.length === 0) return;
 
       const columnFolders = { ...(editing?.columnFolders || {}) };
       if (waitSub) columnFolders.waiting = waitSub;
@@ -502,30 +833,154 @@ function renderMain() {
       else delete columnFolders.done;
 
       const folderObj = (snapshot.folders || []).find((f) => f.accountId === accountId && f.path.toLowerCase() === folderPath.toLowerCase());
+      let targetRule;
       if (editing) {
-        // Keep the rule's identity and switches; replace what the form shows.
         const { columnFolders: _old, ...kept } = editing;
-        const updated = {
-          ...kept, customer, accountId, folderPath, folderId: folderObj?.id || "", domains,
+        targetRule = {
+          ...kept, space, accountId, folderPath, folderId: folderObj?.id || "", domains,
           ...(Object.keys(columnFolders).length ? { columnFolders } : {}),
         };
         editingRuleId = null;
-        await saveRules((snapshot.config?.rules || []).map((r) => (r.id === updated.id ? updated : r)), autoCreate);
-        return;
+        await saveRules((snapshot.config?.rules || []).map((r) => (r.id === targetRule.id ? targetRule : r)), autoCreate);
+      } else {
+        targetRule = {
+          id: `rule-${Date.now()}`,
+          space,
+          accountId,
+          folderPath,
+          folderId: folderObj?.id || "",
+          domains,
+          autoMove: false,
+          includeInScan: true,
+          ...(Object.keys(columnFolders).length ? { columnFolders } : {}),
+        };
+        await saveRules([...(snapshot.config?.rules || []), targetRule], autoCreate);
       }
-      const nextRules = [...(snapshot.config?.rules || []), {
-        id: `rule-${Date.now()}`,
-        customer,
-        accountId,
-        folderPath,
-        folderId: folderObj?.id || "",
-        domains,
-        // Auto-move stays off until the user enables it explicitly in the table.
-        autoMove: false,
-        includeInScan: true,
-        ...(Object.keys(columnFolders).length ? { columnFolders } : {}),
-      }];
-      await saveRules(nextRules, autoCreate);
+
+      if (syncNative && inExtension && snapshot.connected && nativeSupported && window.OmaCore?.buildNativeFilterSpecFromRule) {
+        try {
+          const spec = window.OmaCore.buildNativeFilterSpecFromRule(targetRule);
+          const applied = await api.runtime.sendMessage({
+            type: "omathunder:applyNativeFilter",
+            spec,
+            linkRuleId: targetRule.id,
+          });
+          await refreshSnapshot();
+          showMessage(t("popup_tb_filter_applied", { name: applied?.filter?.name || spec.name }), "ok");
+        } catch (err) {
+          showMessage(errText(err), "warn");
+        }
+      }
+    });
+
+    container.querySelectorAll("[data-create-rule-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const rule = rules.find((r) => r.id === btn.dataset.createRuleFilter);
+        if (!rule || !inExtension || !window.OmaCore?.buildNativeFilterSpecFromRule) return;
+        try {
+          const spec = window.OmaCore.buildNativeFilterSpecFromRule(rule);
+          const applied = await api.runtime.sendMessage({
+            type: "omathunder:applyNativeFilter",
+            spec,
+            linkRuleId: rule.id,
+          });
+          await refreshSnapshot();
+          showMessage(t("popup_tb_filter_applied", { name: applied?.filter?.name || spec.name }), "ok");
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-enable-rule-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const rule = rules.find((r) => r.id === btn.dataset.enableRuleFilter);
+        if (!rule || !inExtension) return;
+        const linked = findLinkedNativeFilters(rule);
+        if (!linked[0]) return;
+        try {
+          await api.runtime.sendMessage({
+            type: "omathunder:applyNativeFilter",
+            spec: { accountId: linked[0].accountId, mode: "toggle", existingName: linked[0].name, enabled: true },
+          });
+          await refreshNativeFilters();
+          renderMain();
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-run-rule-filter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const rule = rules.find((r) => r.id === btn.dataset.runRuleFilter);
+        if (!rule || !inExtension) return;
+        const linked = findLinkedNativeFilters(rule);
+        if (linked.length === 0) return;
+        try {
+          const r = await api.runtime.sendMessage({
+            type: "omathunder:runNativeFilters",
+            accountId: linked[0].accountId,
+            filterNames: linked.map((f) => f.name),
+          });
+          showMessage(t("diag_run_done", { count: r?.executed ?? linked.length }), "ok");
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-fix-issue-idx]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const iss = nativeIssues[Number(btn.dataset.fixIssueIdx)];
+        if (!iss || !inExtension) return;
+        try {
+          await api.runtime.sendMessage({
+            type: "omathunder:applyNativeFilter",
+            spec: iss.quickFix === "enable"
+              ? { accountId: iss.accountId, mode: "toggle", existingName: iss.filterName, enabled: true }
+              : { accountId: iss.accountId, mode: "fix_match_all", existingName: iss.filterName, matchAll: false, enable: true },
+          });
+          await refreshNativeFilters();
+          renderMain();
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-toggle-native-idx]").forEach((cb) => {
+      cb.addEventListener("change", async () => {
+        const f = nativeFilters[Number(cb.dataset.toggleNativeIdx)];
+        if (!f || !inExtension) return;
+        try {
+          await api.runtime.sendMessage({
+            type: "omathunder:applyNativeFilter",
+            spec: { accountId: f.accountId, mode: "toggle", existingName: f.name, enabled: cb.checked },
+          });
+          await refreshNativeFilters();
+          renderMain();
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-run-native-idx]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const f = nativeFilters[Number(btn.dataset.runNativeIdx)];
+        if (!f || !inExtension) return;
+        try {
+          const r = await api.runtime.sendMessage({
+            type: "omathunder:runNativeFilters",
+            accountId: f.accountId,
+            filterNames: [f.name],
+          });
+          showMessage(t("diag_run_done", { count: r?.executed ?? 1 }), "ok");
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      });
     });
 
     container.querySelectorAll("[data-toggle-move]").forEach((cb) => {
@@ -542,6 +997,274 @@ function renderMain() {
     });
     container.querySelectorAll("[data-del-rule]").forEach((btn) => {
       btn.addEventListener("click", () => openDeleteModal(btn.dataset.delRule));
+    });
+    return;
+  }
+
+  if (currentView === "archive") {
+    const accounts = triageAccounts();
+    if (!archiveForm.accountId && accounts[0]?.id) archiveForm.accountId = accounts[0].id;
+    if (!archiveForm.archiveDir && snapshot.config?.mailbox?.archiveDir) {
+      archiveForm.archiveDir = snapshot.config.mailbox.archiveDir;
+    }
+    const accFolders = (snapshot.folders || []).filter((f) => f.accountId === archiveForm.accountId);
+    const folderOpts = accFolders.map((f) => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)}</option>`).join("");
+    const accountOpts = accounts.map((a) => `<option value="${escapeHtml(a.id)}" ${a.id === archiveForm.accountId ? "selected" : ""}>${escapeHtml(a.name || a.id)}</option>`).join("");
+    const readOnlyNow = isReadOnly();
+    const mutatingMode = archiveForm.mode === "export_and_local" || archiveForm.mode === "export_and_delete";
+    const blockedByReadOnly = mutatingMode && readOnlyNow;
+
+    container.innerHTML = `
+      <div class="oma-card" style="margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:700; font-size:13px;">${escapeHtml(t("archive_title"))}</div>
+            <div class="oma-muted" style="font-size:11.5px; margin-top:2px;">${escapeHtml(t("archive_desc"))}</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span class="oma-badge ok">${escapeHtml(t("archive_stats_badge", { files: archiveStatsData.fileCount ?? 0, size: formatBytes(archiveStatsData.totalBytes || 0) }))}</span>
+            <button class="oma-btn ghost" id="btn-refresh-archive-stats">${escapeHtml(t("archive_btn_refresh_stats"))}</button>
+          </div>
+        </div>
+        <div style="margin-top:10px; display:grid; grid-template-columns:1fr auto; gap:8px; align-items:end;">
+          <div>
+            <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("archive_lbl_dir"))}</label>
+            <input class="oma-input oma-mono" id="arch-dir" value="${escapeHtml(archiveForm.archiveDir || archiveStatsData.archiveDir || "")}" placeholder="~/OmaThunder-Archiv" />
+          </div>
+          <button class="oma-btn" id="btn-save-arch-dir">${escapeHtml(t("archive_btn_save_dir"))}</button>
+        </div>
+      </div>
+
+      ${accounts.length === 0 ? `<div class="oma-card"><span class="oma-badge warn">${escapeHtml(t("rules_no_account"))}</span></div>` : `
+        <div class="oma-card" style="margin-bottom:14px;">
+          <div style="font-weight:700; margin-bottom:10px;">${escapeHtml(t("archive_filter_title"))}</div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">
+            <div>
+              <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("rules_lbl_account"))}</label>
+              <select class="oma-select" id="arch-account">${accountOpts}</select>
+            </div>
+            <div>
+              <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("archive_lbl_scope"))}</label>
+              <select class="oma-select" id="arch-scope">
+                <option value="inbox" ${archiveForm.scope === "inbox" ? "selected" : ""}>${escapeHtml(t("archive_scope_inbox"))}</option>
+                <option value="folder" ${archiveForm.scope === "folder" ? "selected" : ""}>${escapeHtml(t("archive_scope_folder"))}</option>
+                <option value="all" ${archiveForm.scope === "all" ? "selected" : ""}>${escapeHtml(t("archive_scope_all"))}</option>
+              </select>
+            </div>
+            <div>
+              <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("archive_lbl_days"))}</label>
+              <input class="oma-input" id="arch-days" type="number" min="0" max="36500" value="${escapeHtml(String(archiveForm.olderThanDays))}" />
+            </div>
+            <div>
+              <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("archive_lbl_max"))}</label>
+              <input class="oma-input" id="arch-max" type="number" min="1" max="1000" value="${escapeHtml(String(archiveForm.maxMessages))}" />
+            </div>
+          </div>
+
+          ${archiveForm.scope === "folder" ? `
+            <div style="display:grid; grid-template-columns:1fr auto; gap:10px; align-items:end; margin-top:10px;">
+              <div>
+                <label class="oma-muted" style="font-size:11px;">${escapeHtml(t("archive_lbl_folder"))}</label>
+                <input class="oma-input" id="arch-folder" list="arch-folder-list" value="${escapeHtml(archiveForm.folderPath)}" placeholder="z. B. Rechnungen/Strom" />
+                <datalist id="arch-folder-list">${folderOpts}</datalist>
+              </div>
+              <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer; padding-bottom:6px;">
+                <input type="checkbox" id="arch-subfolders" ${archiveForm.includeSubfolders ? "checked" : ""} />
+                <span>${escapeHtml(t("archive_lbl_subfolders"))}</span>
+              </label>
+            </div>
+          ` : ""}
+
+          <div style="display:flex; gap:18px; flex-wrap:wrap; margin-top:10px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer;">
+              <input type="checkbox" id="arch-only-read" ${archiveForm.onlyRead ? "checked" : ""} />
+              <span>${escapeHtml(t("archive_lbl_only_read"))}</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer;">
+              <input type="checkbox" id="arch-exclude-starred" ${archiveForm.excludeStarred ? "checked" : ""} />
+              <span>${escapeHtml(t("archive_lbl_exclude_starred"))}</span>
+            </label>
+          </div>
+
+          <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--oma-border);">
+            <div style="font-weight:600; font-size:12px; margin-bottom:6px;">${escapeHtml(t("archive_mode_title"))}</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px;">
+              ${["simulate", "export_only", "export_and_local", "export_and_delete"].map((m) => `
+                <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid ${archiveForm.mode === m ? "var(--oma-accent)" : "var(--oma-border)"}; border-radius:7px; background:var(--oma-bg-darker); cursor:pointer;">
+                  <input type="radio" name="arch-mode" value="${m}" ${archiveForm.mode === m ? "checked" : ""} style="margin-top:3px;" />
+                  <div>
+                    <div style="font-weight:600; font-size:12px;">${escapeHtml(t(`archive_mode_${m}`))}</div>
+                    <div class="oma-muted" style="font-size:11px; margin-top:2px;">${escapeHtml(t(`archive_mode_${m}_desc`))}</div>
+                  </div>
+                </label>
+              `).join("")}
+            </div>
+            ${archiveForm.mode === "export_and_delete" ? `
+              <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; cursor:pointer; margin-top:8px; color:var(--oma-yellow);">
+                <input type="checkbox" id="arch-skip-trash" ${archiveForm.skipTrash ? "checked" : ""} />
+                <span>${escapeHtml(t("archive_lbl_skip_trash"))}</span>
+              </label>
+            ` : ""}
+            ${blockedByReadOnly ? `<div class="oma-badge warn" style="margin-top:8px;">${escapeHtml(t("archive_ro_blocked"))}</div>` : ""}
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px; flex-wrap:wrap;">
+            <button class="oma-btn" id="btn-arch-preview" ${archiveBusy ? "disabled" : ""}>${escapeHtml(t("archive_btn_preview"))}</button>
+            <button class="oma-btn primary" id="btn-arch-run" ${archiveBusy || blockedByReadOnly ? "disabled" : ""}>${escapeHtml(archiveBusy ? t("archive_btn_running") : t(`archive_run_${archiveForm.mode}`))}</button>
+          </div>
+        </div>
+      `}
+
+      ${archiveReportData ? `
+        <div class="oma-card" style="margin-bottom:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <strong>${escapeHtml(t(archiveReportData.dryRun ? "archive_report_sim_title" : "archive_report_done_title"))}</strong>
+            <span class="oma-badge ${archiveReportData.failed?.length ? "warn" : "ok"}">${escapeHtml(t("archive_report_summary", {
+              exported: archiveReportData.exported || 0,
+              dups: archiveReportData.skippedDuplicates || 0,
+              moved: archiveReportData.moved || 0,
+              deleted: archiveReportData.deleted || 0,
+              size: formatBytes(archiveReportData.dryRun ? archiveReportData.bytesEstimated : archiveReportData.bytesExported),
+            }))}</span>
+          </div>
+          ${archiveReportData.failed?.length ? `
+            <div class="oma-badge err" style="margin-top:8px;">${escapeHtml(t("archive_report_failed", { count: archiveReportData.failed.length }))}</div>
+            <ul class="report-list">${archiveReportData.failed.slice(0, 20).map((f) => `<li>${escapeHtml(f.subject || "")}: ${escapeHtml(errText(new Error(f.error)))}</li>`).join("")}</ul>
+          ` : ""}
+          ${archiveReportData.items?.length ? `
+            <table class="rules-table" style="margin-top:8px;">
+              <thead><tr><th>${escapeHtml(t("archive_th_date"))}</th><th>${escapeHtml(t("archive_th_subject"))}</th><th>${escapeHtml(t("archive_th_size"))}</th><th>${escapeHtml(t("archive_th_target"))}</th></tr></thead>
+              <tbody>
+                ${archiveReportData.items.slice(0, 50).map((it) => `
+                  <tr>
+                    <td class="oma-mono" style="white-space:nowrap; font-size:11px;">${escapeHtml(String(it.date || "").slice(0, 10))}</td>
+                    <td>${escapeHtml(it.subject)}<div class="oma-muted" style="font-size:10.5px;">${escapeHtml(it.from)}</div></td>
+                    <td class="oma-mono" style="white-space:nowrap; font-size:11px;">${escapeHtml(formatBytes(it.size || 0))}</td>
+                    <td class="oma-mono" style="font-size:10.5px;">${escapeHtml(it.targetPath)}${it.skippedDuplicate ? ` <span class="oma-badge">${escapeHtml(t("archive_dup_badge"))}</span>` : ""}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          ` : ""}
+        </div>
+      ` : ""}
+
+      ${archivePreviewData ? `
+        <div class="oma-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+            <strong>${escapeHtml(t("archive_preview_title", { count: archivePreviewData.totalCount, matched: archivePreviewData.totalMatched, size: formatBytes(archivePreviewData.totalBytesAll || archivePreviewData.totalBytes || 0) }))}</strong>
+            <div style="display:flex; gap:6px; align-items:center;">
+              ${archivePreviewData.hasLocalAccount ? `<span class="oma-badge ok">${escapeHtml(t("archive_local_ready", { name: archivePreviewData.localAccountName }))}</span>` : `<span class="oma-badge warn">${escapeHtml(t("archive_local_missing"))}</span>`}
+            </div>
+          </div>
+          ${archivePreviewData.truncated ? `<div class="oma-muted" style="font-size:11px; margin-top:4px;">${escapeHtml(t("archive_preview_truncated", { count: archivePreviewData.totalCount, matched: archivePreviewData.totalMatched }))}</div>` : ""}
+          ${archivePreviewData.candidates?.length === 0 ? `<div class="oma-muted" style="font-size:11.5px; margin-top:8px;">${escapeHtml(t("archive_preview_empty"))}</div>` : `
+            <table class="rules-table" style="margin-top:8px;">
+              <thead><tr><th>${escapeHtml(t("archive_th_date"))}</th><th>${escapeHtml(t("archive_th_subject"))}</th><th>${escapeHtml(t("archive_th_folder"))}</th><th>${escapeHtml(t("archive_th_size"))}</th><th>${escapeHtml(t("archive_th_target"))}</th></tr></thead>
+              <tbody>
+                ${(archivePreviewData.candidates || []).slice(0, 60).map((c) => `
+                  <tr>
+                    <td class="oma-mono" style="white-space:nowrap; font-size:11px;">${escapeHtml(String(c.date || "").slice(0, 10))}</td>
+                    <td>${escapeHtml(c.subject)}<div class="oma-muted" style="font-size:10.5px;">${escapeHtml(c.from)}</div></td>
+                    <td class="oma-mono" style="font-size:11px;">${escapeHtml(c.folderPath)}</td>
+                    <td class="oma-mono" style="white-space:nowrap; font-size:11px;">${escapeHtml(formatBytes(c.size || 0))}</td>
+                    <td class="oma-mono" style="font-size:10.5px;">${escapeHtml(c.archiveRelPath)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          `}
+        </div>
+      ` : ""}
+    `;
+
+    const syncArchForm = () => {
+      const accEl = document.getElementById("arch-account");
+      if (accEl) archiveForm.accountId = accEl.value;
+      const scopeEl = document.getElementById("arch-scope");
+      if (scopeEl) archiveForm.scope = scopeEl.value;
+      const folderEl = document.getElementById("arch-folder");
+      if (folderEl) archiveForm.folderPath = folderEl.value.trim();
+      const subEl = document.getElementById("arch-subfolders");
+      if (subEl) archiveForm.includeSubfolders = subEl.checked;
+      const daysEl = document.getElementById("arch-days");
+      if (daysEl) archiveForm.olderThanDays = Math.max(0, Number(daysEl.value || 0));
+      const maxEl = document.getElementById("arch-max");
+      if (maxEl) archiveForm.maxMessages = Math.min(1000, Math.max(1, Number(maxEl.value || 200)));
+      const readEl = document.getElementById("arch-only-read");
+      if (readEl) archiveForm.onlyRead = readEl.checked;
+      const starEl = document.getElementById("arch-exclude-starred");
+      if (starEl) archiveForm.excludeStarred = starEl.checked;
+      const dirEl = document.getElementById("arch-dir");
+      if (dirEl) archiveForm.archiveDir = dirEl.value.trim();
+      const skipTrashEl = document.getElementById("arch-skip-trash");
+      if (skipTrashEl) archiveForm.skipTrash = skipTrashEl.checked;
+    };
+
+    document.getElementById("arch-account")?.addEventListener("change", () => { syncArchForm(); archivePreviewData = null; renderMain(); });
+    document.getElementById("arch-scope")?.addEventListener("change", () => { syncArchForm(); archivePreviewData = null; renderMain(); });
+    container.querySelectorAll('input[name="arch-mode"]').forEach((rb) => {
+      rb.addEventListener("change", () => { syncArchForm(); archiveForm.mode = rb.value; renderMain(); });
+    });
+
+    document.getElementById("btn-refresh-archive-stats")?.addEventListener("click", async () => {
+      syncArchForm();
+      await refreshArchiveStats();
+      renderCounts();
+      renderMain();
+    });
+
+    document.getElementById("btn-save-arch-dir")?.addEventListener("click", async () => {
+      syncArchForm();
+      if (inExtension && snapshot.connected) {
+        try {
+          const res = await api.runtime.sendMessage({ type: "omathunder:saveConfig", config: { mailbox: { archiveDir: archiveForm.archiveDir } } });
+          if (res?.config) snapshot.config = res.config;
+          await refreshArchiveStats();
+          renderCounts();
+          renderMain();
+          showMessage(t("opts_saved"), "ok");
+        } catch (err) {
+          showMessage(errText(err), "err");
+        }
+      }
+    });
+
+    document.getElementById("btn-arch-preview")?.addEventListener("click", async () => {
+      syncArchForm();
+      if (!inExtension || !snapshot.connected) return;
+      archiveBusy = true;
+      renderMain();
+      try {
+        archivePreviewData = await api.runtime.sendMessage({ type: "omathunder:previewCleanup", ...archiveForm });
+        archiveReportData = null;
+      } catch (err) {
+        showMessage(errText(err), "err");
+      } finally {
+        archiveBusy = false;
+        renderMain();
+      }
+    });
+
+    document.getElementById("btn-arch-run")?.addEventListener("click", async () => {
+      syncArchForm();
+      if (!inExtension || !snapshot.connected) return;
+      if (archiveForm.mode === "export_and_delete") {
+        const msgKey = archiveForm.skipTrash ? "archive_confirm_delete_perm" : "archive_confirm_delete_trash";
+        if (!window.confirm(t(msgKey))) return;
+      }
+      archiveBusy = true;
+      renderMain();
+      try {
+        archiveReportData = await api.runtime.sendMessage({ type: "omathunder:runCleanup", ...archiveForm });
+        await refreshArchiveStats();
+        renderCounts();
+      } catch (err) {
+        showMessage(errText(err), "err");
+      } finally {
+        archiveBusy = false;
+        renderMain();
+      }
     });
     return;
   }
@@ -670,7 +1393,7 @@ function openDeleteModal(ruleId) {
   if (!rule) return;
   pendingDeleteRule = rule;
   document.getElementById("delete-modal-text").textContent = t("del_modal_body", {
-    customer: rule.customer,
+    space: rule.space,
     folder: rule.folderPath,
     domains: (rule.domains || []).join(", "),
   });
@@ -709,12 +1432,12 @@ function renderRightPane() {
   document.getElementById("btn-use-displayed").style.display = selected && inExtension ? "" : "none";
   if (!selected) renderDisplayedMailInfo();
   else document.getElementById("selected-title").textContent = selected.subject;
-  const custBadge = document.getElementById("selected-customer");
-  if (selected?.customer) {
-    custBadge.style.display = "inline-flex";
-    custBadge.textContent = selected.customer;
+  const spaceBadge = document.getElementById("selected-space");
+  if (selected?.space) {
+    spaceBadge.style.display = "inline-flex";
+    spaceBadge.textContent = selected.space;
   } else {
-    custBadge.style.display = "none";
+    spaceBadge.style.display = "none";
   }
   if (selected) document.getElementById("selected-meta").textContent = `${selected.from} • ${selected.folder || "INBOX"}`;
 
@@ -822,7 +1545,7 @@ async function applyLanguage(lang) {
   }
   updateLangButtons();
   renderCounts();
-  renderCustomerFilterBar();
+  renderSpaceFilterBar();
   renderMain();
   renderRightPane();
   if (inExtension && snapshot.connected && (lang === "de" || lang === "en")) {
@@ -833,11 +1556,18 @@ async function applyLanguage(lang) {
 
 async function init() {
   document.querySelectorAll(".nav-item[data-view]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       currentView = btn.dataset.view;
-      renderCustomerFilterBar();
+      renderSpaceFilterBar();
+      if (currentView === "rules" && inExtension && snapshot.connected && nativeFiltersData.filters.length === 0) {
+        await refreshNativeFilters();
+      }
+      if (currentView === "archive" && inExtension && snapshot.connected) {
+        await refreshArchiveStats();
+        renderCounts();
+      }
       renderMain();
     });
   });
@@ -895,7 +1625,7 @@ async function init() {
       snapshot.config.rules = (snapshot.config?.rules || []).filter((r) => r.id !== ruleId);
     }
     renderCounts();
-    renderCustomerFilterBar();
+    renderSpaceFilterBar();
     renderMain();
   });
 
@@ -968,8 +1698,8 @@ async function init() {
     lastReport = {
       readOnly: true, scanId: "preview", scannedFolders: 3, scannedMessages: 42, aiEnabled: false, aiCalls: 0, aiSkipped: 0,
       planned: [
-        { subject: "Neue API-Zugänge für Staging-Test", from: "jonas@beta-systems.com", targetFolder: "Kunden/Beta GmbH" },
-        { subject: "Freigabe Q4-Architektur & NDA bis Freitag", from: "laura@acme.de", targetFolder: "Kunden/Acme/Incoming" },
+        { subject: "Neue API-Zugänge für Staging-Test", from: "jonas@beta-systems.com", targetFolder: "Spaces/Beta GmbH" },
+        { subject: "Freigabe Q4-Architektur & NDA bis Freitag", from: "laura@acme.de", targetFolder: "Spaces/Acme/Incoming" },
       ],
       moved: [], failed: [],
     };
@@ -1018,7 +1748,7 @@ async function init() {
     }
     applyPaletteLocally(snapshot.theme);
     renderCounts();
-    renderCustomerFilterBar();
+    renderSpaceFilterBar();
     renderMain();
     renderRightPane();
   }
@@ -1034,10 +1764,16 @@ async function refreshSnapshot() {
       updateLangButtons();
     }
     if (selectedMessageId && !getAllItems().some((c) => c.messageId === selectedMessageId)) selectedMessageId = null;
+    if (res.connected && res.nativeFiltersSupported) {
+      await refreshNativeFilters();
+    }
+    if (res.connected && feature("triage")) {
+      await refreshArchiveStats();
+    }
   }
   applyPaletteLocally(snapshot.theme);
   renderCounts();
-  renderCustomerFilterBar();
+  renderSpaceFilterBar();
   renderMain();
   renderRightPane();
   if (snapshot.connected && snapshot.protocolOk === false) {

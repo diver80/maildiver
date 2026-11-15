@@ -3,12 +3,14 @@ package native
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/diver80/omathunder/internal/archive"
 	"github.com/diver80/omathunder/internal/config"
 	"github.com/diver80/omathunder/internal/triage"
 )
@@ -50,7 +52,7 @@ func TestHandlerRulesKanbanAndRollback(t *testing.T) {
 
 	enable, _ := json.Marshal(map[string]any{
 		"features": map[string]any{"triage": true},
-		"mailbox":  map[string]any{"readOnly": false, "triageAccountIds": []string{"acc1"}},
+		"mailbox":  map[string]any{"readOnly": false, "triageAccountIds": []string{"acc1"}, "kanbanAccountIds": []string{"acc1"}},
 	})
 	if r := h.Handle(context.Background(), Request{ID: "e1", Method: "save_config", Params: enable}); !r.OK {
 		t.Fatalf("enable triage failed: %s", r.Error)
@@ -61,8 +63,8 @@ func TestHandlerRulesKanbanAndRollback(t *testing.T) {
 		"rules": []map[string]any{
 			{
 				"id":            "rule-acme",
-				"customer":      "Acme GmbH",
-				"folderPath":    "Kunden/Acme/Incoming",
+				"space":         "Acme GmbH",
+				"folderPath":    "Spaces/Acme/Incoming",
 				"domains":       []string{"acme.de"},
 				"autoMove":      true,
 				"includeInScan": true,
@@ -95,7 +97,7 @@ func TestHandlerRulesKanbanAndRollback(t *testing.T) {
 
 	recParams, _ := json.Marshal(map[string]any{
 		"moves": []map[string]any{
-			{"messageId": "m10", "accountId": "acc1", "ruleId": "rule-acme", "originalFolder": "INBOX", "targetFolder": "Kunden/Acme/Incoming"},
+			{"messageId": "m10", "accountId": "acc1", "ruleId": "rule-acme", "originalFolder": "INBOX", "targetFolder": "Spaces/Acme/Incoming"},
 		},
 	})
 	if r := h.Handle(context.Background(), Request{ID: "m1", Method: "record_moves", Params: recParams}); !r.OK {
@@ -116,7 +118,7 @@ func TestHandlerRulesKanbanAndRollback(t *testing.T) {
 	// Ensure partial save_config (e.g. from options.html) preserves rules & incomingFolder
 	rulesParams2, _ := json.Marshal(map[string]any{
 		"incomingFolder": "INBOX",
-		"rules":          []map[string]any{{"id": "keep-me", "customer": "Keep GmbH", "folderPath": "Kunden/Keep", "domains": []string{"keep.de"}}},
+		"rules":          []map[string]any{{"id": "keep-me", "space": "Keep GmbH", "folderPath": "Spaces/Keep", "domains": []string{"keep.de"}}},
 	})
 	h.Handle(context.Background(), Request{ID: "r2", Method: "save_rules", Params: rulesParams2})
 
@@ -149,6 +151,7 @@ func TestHandlerEnforcesFeaturesReadOnlyAndAccounts(t *testing.T) {
 	msgs := map[string]any{"messages": []triage.MessageInput{
 		{ID: "1", ThreadID: "<1@acme.de>", AccountID: "work", Folder: "INBOX", InInbox: true, From: "a@acme.de", Subject: "Rechnung", Unread: true},
 		{ID: "2", ThreadID: "<2@acme.de>", AccountID: "private", Folder: "INBOX", InInbox: true, From: "a@acme.de", Subject: "Rechnung", Unread: true},
+		{ID: "3", ThreadID: "<3@acme.de>", AccountID: "personal", Folder: "INBOX", InInbox: true, From: "a@acme.de", Subject: "Rechnung", Unread: true},
 	}}
 
 	// Defaults: triage off, read-only on, assistant on.
@@ -166,11 +169,12 @@ func TestHandlerEnforcesFeaturesReadOnlyAndAccounts(t *testing.T) {
 		t.Fatalf("classify_batch must require an enabled account: %+v", r)
 	}
 
-	if r := call("save_config", map[string]any{"mailbox": map[string]any{"triageAccountIds": []string{"work"}}}); !r.OK {
+	// "work" has Spaces+Kanban; "personal" has Spaces/Rules without Kanban; "private" has neither.
+	if r := call("save_config", map[string]any{"mailbox": map[string]any{"triageAccountIds": []string{"work", "personal"}, "kanbanAccountIds": []string{"work"}}}); !r.OK {
 		t.Fatal(r.Error)
 	}
 	if r := call("save_rules", map[string]any{"rules": []map[string]any{
-		{"id": "acme", "customer": "Acme", "accountId": "work", "folderPath": "Kunden/Acme", "domains": []string{"acme.de"}, "autoMove": true},
+		{"id": "acme", "space": "Acme", "accountId": "work", "folderPath": "Spaces/Acme", "domains": []string{"acme.de"}, "autoMove": true},
 	}}); !r.OK {
 		t.Fatal(r.Error)
 	}
@@ -180,10 +184,10 @@ func TestHandlerEnforcesFeaturesReadOnlyAndAccounts(t *testing.T) {
 	}
 	res := r.Result.(map[string]any)
 	if got := len(res["results"].([]triage.Classification)); got != 1 {
-		t.Fatalf("only the enabled account may be classified, got %d results", got)
+		t.Fatalf("only the kanban-enabled account may be classified, got %d results", got)
 	}
-	if res["skippedAccounts"].(int) != 1 {
-		t.Fatalf("expected 1 skipped mail, got %v", res["skippedAccounts"])
+	if res["skippedAccounts"].(int) != 2 {
+		t.Fatalf("expected 2 skipped mails (non-kanban + disabled), got %v", res["skippedAccounts"])
 	}
 	planned := res["plannedMoves"].([]triage.PlannedMove)
 	if len(planned) != 1 || planned[0].MessageID != "1" || res["readOnly"] != true {
@@ -202,9 +206,12 @@ func TestHandlerEnforcesFeaturesReadOnlyAndAccounts(t *testing.T) {
 		t.Fatalf("refused delete must keep the rule, got %+v", rules)
 	}
 
-	// Writable mode still refuses moves for accounts that are not enabled.
+	// Writable mode allows moves for triageAccountIds ("personal" included) while rejecting disabled accounts ("private").
 	if r := call("save_config", map[string]any{"mailbox": map[string]any{"readOnly": false}}); !r.OK {
 		t.Fatal(r.Error)
+	}
+	if r := call("record_moves", map[string]any{"moves": []map[string]any{{"messageId": "3", "accountId": "personal", "ruleId": "acme"}}}); !r.OK {
+		t.Fatalf("record_moves should allow enabled non-kanban account: %+v", r)
 	}
 	if r := call("record_moves", map[string]any{"moves": []map[string]any{{"messageId": "2", "accountId": "private", "ruleId": "acme"}}}); r.OK || r.Error != ErrAccountNotEnabled {
 		t.Fatalf("record_moves must reject other accounts: %+v", r)
@@ -277,7 +284,7 @@ func TestClassifyRespectsAISwitchAndBudget(t *testing.T) {
 	}
 	if r := call("save_config", map[string]any{
 		"features": map[string]any{"triage": true},
-		"mailbox":  map[string]any{"triageAccountIds": []string{"work"}},
+		"mailbox":  map[string]any{"triageAccountIds": []string{"work"}, "kanbanAccountIds": []string{"work"}},
 		"ai":       map[string]any{"classifyWithAi": true, "maxAiCallsPerScan": 3},
 	}); !r.OK {
 		t.Fatal(r.Error)
@@ -411,7 +418,7 @@ func TestHandlerSetThemeValidationAndSyncReverts(t *testing.T) {
 	}
 
 	if _, err := store.SaveClassifications([]triage.Classification{
-		{MessageID: "100", ThreadID: "<msg@acme.de>", AccountID: "work", Folder: "Kunden/Acme", FolderID: "f-acme"},
+		{MessageID: "100", ThreadID: "<msg@acme.de>", AccountID: "work", Folder: "Spaces/Acme", FolderID: "f-acme"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -433,3 +440,131 @@ func TestHandlerSetThemeValidationAndSyncReverts(t *testing.T) {
 		t.Fatalf("expected reverted classification at ID 101 in INBOX, got %+v", got)
 	}
 }
+
+func TestHandlerFilterDiagnosticsAndSpaceImports(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	h := NewHandler(triage.NewStoreAt(t.TempDir()))
+
+	diagParams, _ := json.Marshal(map[string]any{
+		"message": triage.MessageInput{
+			AccountID: "acc3",
+			Subject:   "Automated restore completed for Confluence in rewe",
+			From:      "noreply@rewe.de",
+		},
+		"filters": []triage.NativeFilter{
+			{
+				AccountID: "acc3",
+				Name:      "Inbox » REWE (Systemmails)",
+				Enabled:   true,
+				MatchAll:  true,
+				Conditions: []triage.NativeCondition{
+					{Field: "subject", Op: "contains", Value: "Automated restore completed for Confluence in rewe", BooleanAnd: true},
+					{Field: "subject", Op: "contains", Value: "Automaterd restore started for Confluence in rewe", BooleanAnd: true},
+				},
+				Actions: []triage.NativeAction{{Type: "moveToFolder", TargetFolderPath: "INBOX/REWE"}},
+			},
+		},
+	})
+	diagResp := h.Handle(context.Background(), Request{ID: "df1", Method: "diagnose_filters", Params: diagParams})
+	if !diagResp.OK {
+		t.Fatalf("diagnose_filters failed: %s", diagResp.Error)
+	}
+	rep, ok := diagResp.Result.(triage.FilterDiagnosticReport)
+	if !ok || len(rep.NearMisses) != 1 || rep.NearMisses[0].QuickFix != "set_or" {
+		t.Fatalf("unexpected diagnose_filters result: %+v", diagResp.Result)
+	}
+
+	impParams, _ := json.Marshal(map[string]any{
+		"accountId": "acc3",
+		"filters": []triage.NativeFilter{
+			{
+				AccountID: "acc3",
+				Name:      "Inbox » Börse",
+				Enabled:   true,
+				Conditions: []triage.NativeCondition{
+					{Field: "from", Op: "endsWith", Value: "@boerse-stuttgart.de"},
+				},
+				Actions: []triage.NativeAction{{Type: "moveToFolder", TargetFolderPath: "INBOX/Boerse"}},
+			},
+		},
+	})
+	impResp := h.Handle(context.Background(), Request{ID: "ci1", Method: "suggest_space_imports", Params: impParams})
+	if !impResp.OK {
+		t.Fatalf("suggest_space_imports failed: %s", impResp.Error)
+	}
+	resMap := impResp.Result.(map[string]any)
+	cands := resMap["candidates"].([]triage.SpaceImportCandidate)
+	if len(cands) != 1 || cands[0].Space != "Boerse" {
+		t.Fatalf("unexpected space import candidates: %+v", cands)
+	}
+}
+
+func TestArchiveExportAndStatsRPC(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("XDG_STATE_HOME", home)
+
+	archiveRoot := filepath.Join(home, "my-archive")
+	cfg := config.Default()
+	cfg.Features.Triage = true
+	cfg.Mailbox.ReadOnly = true
+	cfg.Mailbox.TriageAccountIDs = []string{"personal"}
+	cfg.Mailbox.KanbanAccountIDs = []string{} // non-Kanban enabled account may still use Archive/Cleanup
+	cfg.Mailbox.ArchiveDir = archiveRoot
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := triage.OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(store)
+
+	// Disabled account must be rejected.
+	raw := []byte("From: a@b.de\r\nSubject: Old\r\n\r\nhi\r\n")
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	deniedParams, _ := json.Marshal(archive.ExportRequest{
+		AccountID:    "other",
+		AccountName:  "other@example.com",
+		FolderPath:   "INBOX",
+		DateISO:      "2022-05-01T10:00:00Z",
+		Subject:      "Old",
+		MessageID:    "1",
+		RawEMLBase64: b64,
+	})
+	if resp := h.Handle(context.Background(), Request{ID: "a1", Method: "archive_export", Params: deniedParams}); resp.OK || resp.Error != ErrAccountNotEnabled {
+		t.Fatalf("expected account_not_enabled for unenabled account, got: %+v", resp)
+	}
+
+	// Enabled non-Kanban account succeeds even in ReadOnly mode (export-only never mutates mailbox).
+	okParams, _ := json.Marshal(archive.ExportRequest{
+		AccountID:    "personal",
+		AccountName:  "mail@frankhess.de",
+		FolderPath:   "INBOX",
+		DateISO:      "2022-05-01T10:00:00Z",
+		Subject:      "Old Invoice",
+		MessageID:    "2",
+		RawEMLBase64: b64,
+	})
+	resp := h.Handle(context.Background(), Request{ID: "a2", Method: "archive_export", Params: okParams})
+	if !resp.OK {
+		t.Fatalf("archive_export failed: %s", resp.Error)
+	}
+	res := resp.Result.(archive.ExportResult)
+	if !res.Verified || res.BytesWritten != int64(len(raw)) {
+		t.Fatalf("expected verified write: %+v", res)
+	}
+
+	statsResp := h.Handle(context.Background(), Request{ID: "a3", Method: "archive_stats"})
+	if !statsResp.OK {
+		t.Fatalf("archive_stats failed: %s", statsResp.Error)
+	}
+	stats := statsResp.Result.(archive.ArchiveStats)
+	if !stats.Exists || stats.FileCount != 1 || stats.TotalBytes != int64(len(raw)) {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/diver80/omathunder/internal/ai"
+	"github.com/diver80/omathunder/internal/archive"
 	"github.com/diver80/omathunder/internal/config"
 	"github.com/diver80/omathunder/internal/theme"
 	"github.com/diver80/omathunder/internal/triage"
@@ -390,11 +391,11 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if len(cfg.Mailbox.TriageAccountIDs) == 0 {
 			return fail(req.ID, ErrNoTriageAccounts)
 		}
-		// Defense in depth: never classify (or send to an LLM) mails of accounts not enabled for triage.
+		// Defense in depth: never classify into Kanban (or send to an LLM) mails of accounts not enabled for Kanban.
 		allowed := make([]triage.MessageInput, 0, len(p.Messages))
 		skipped := 0
 		for _, m := range p.Messages {
-			if cfg.Mailbox.AccountEnabled(m.AccountID) {
+			if cfg.Mailbox.KanbanEnabled(m.AccountID) {
 				allowed = append(allowed, m)
 			} else {
 				skipped++
@@ -435,7 +436,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					prev.AccountID = m.AccountID
 					prev.Folder = m.Folder
 					prev.FolderID = m.FolderID
-					prev.Customer = base.Customer
+					prev.Space = base.Space
 					prev.MatchedRuleID = base.MatchedRuleID
 					prev.TargetFolder = base.TargetFolder
 					prev.TargetFolderID = base.TargetFolderID
@@ -527,6 +528,74 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			"state":      st,
 			"barSummary": triage.ComputeBarSummary(st),
 		}}
+
+	case "diagnose_filters":
+		var p struct {
+			Message triage.MessageInput   `json:"message"`
+			Filters []triage.NativeFilter `json:"filters"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return Response{ID: req.ID, OK: false, Error: err.Error()}
+		}
+		return Response{ID: req.ID, OK: true, Result: triage.DiagnoseFilters(p.Message, p.Filters)}
+
+	case "suggest_space_imports":
+		var p struct {
+			AccountID string                `json:"accountId,omitempty"`
+			Filters   []triage.NativeFilter `json:"filters"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return Response{ID: req.ID, OK: false, Error: err.Error()}
+		}
+		cfg, _ := config.Load()
+		return Response{ID: req.ID, OK: true, Result: map[string]any{
+			"candidates": triage.SuggestSpaceRulesFromFilters(p.Filters, cfg.Rules),
+			"issues":     triage.FindFilterIssues(p.Filters, p.AccountID),
+		}}
+
+	case "archive_export":
+		var p archive.ExportRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		cfg, _ := config.Load()
+		if !cfg.Features.Triage {
+			return fail(req.ID, ErrTriageDisabled)
+		}
+		if len(cfg.Mailbox.TriageAccountIDs) == 0 {
+			return fail(req.ID, ErrNoTriageAccounts)
+		}
+		if !cfg.Mailbox.AccountEnabled(p.AccountID) {
+			return fail(req.ID, ErrAccountNotEnabled)
+		}
+		if p.ArchiveDir == "" {
+			p.ArchiveDir = cfg.Mailbox.ArchiveDir
+		}
+		res, err := archive.Export(p)
+		if err != nil {
+			return fail(req.ID, err.Error())
+		}
+		return Response{ID: req.ID, OK: true, Result: res}
+
+	case "archive_stats":
+		var p struct {
+			ArchiveDir string `json:"archiveDir,omitempty"`
+		}
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &p); err != nil {
+				return fail(req.ID, err.Error())
+			}
+		}
+		cfg, _ := config.Load()
+		dir := p.ArchiveDir
+		if dir == "" {
+			dir = cfg.Mailbox.ArchiveDir
+		}
+		stats, err := archive.Stats(dir)
+		if err != nil {
+			return fail(req.ID, err.Error())
+		}
+		return Response{ID: req.ID, OK: true, Result: stats}
 
 	default:
 		return Response{ID: req.ID, OK: false, Error: "unknown method: " + req.Method}

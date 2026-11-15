@@ -104,9 +104,9 @@ test("ambiguous Message-ID matches are refused in strict mode", () => {
   eq(core.pickMessageCandidate({ accountId: "work" }, [], true), null);
 });
 
-test("scan only covers enabled accounts", () => {
+test("scan only covers kanban-enabled accounts", () => {
   const cfg = {
-    mailbox: { triageAccountIds: ["work"] },
+    mailbox: { triageAccountIds: ["work", "priv"], kanbanAccountIds: ["work"] },
     rules: [
       { accountId: "work", folderPath: "Kunden/Acme", includeInScan: true },
       { accountId: "priv", folderPath: "Kunden/Acme", includeInScan: true },
@@ -114,9 +114,10 @@ test("scan only covers enabled accounts", () => {
     ],
   };
   eq(core.selectScanFolders(cfg, folders).map((f) => f.id), ["work:/INBOX", "work:/Kunden/Acme", "work:/Kunden/Acme/Erledigt"]);
-  eq(core.selectScanFolders({ mailbox: { triageAccountIds: [] }, rules: cfg.rules }, folders), []);
-  // A rule without an account never widens the scan beyond enabled accounts.
-  eq(core.selectScanFolders({ mailbox: { triageAccountIds: ["work"] }, rules: [{ folderPath: "Kunden/Acme", includeInScan: true }] }, folders).length, 3);
+  eq(core.selectScanFolders({ mailbox: { triageAccountIds: ["work"], kanbanAccountIds: [] }, rules: cfg.rules }, folders), []);
+  eq(core.selectScanFolders({ mailbox: { triageAccountIds: [], kanbanAccountIds: ["work"] }, rules: cfg.rules }, folders), []);
+  // A rule without an account never widens the scan beyond kanban-enabled accounts.
+  eq(core.selectScanFolders({ mailbox: { triageAccountIds: ["work"], kanbanAccountIds: ["work"] }, rules: [{ folderPath: "Kunden/Acme", includeInScan: true }] }, folders).length, 3);
 });
 
 test("newest mails within the window", () => {
@@ -225,6 +226,87 @@ test("isLightHex and buildThemeVars calculate accent contrast independently of i
   });
   eq(lightWithDarkAccent.includes("--oma-accent-fg: #ffffff;"), true);
   eq(lightWithDarkAccent.includes("color-scheme: light;"), true);
+});
+
+test("native filter spec conversion for suggestions and customer rules", () => {
+  const appendSpec = core.buildNativeFilterSpecFromSuggestion({
+    action: "append_or",
+    targetFilterName: "Atlassian Mails join product",
+    subjectContains: ["would like to try"],
+    markRead: true,
+  }, "acc3");
+  eq(appendSpec.mode, "append_conditions");
+  eq(appendSpec.existingName, "Atlassian Mails join product");
+  eq(appendSpec.matchAll, false);
+  eq(appendSpec.conditions, [{ field: "subject", op: "contains", value: "would like to try" }]);
+
+  const fixSpec = core.buildNativeFilterSpecFromSuggestion({
+    action: "fix_and_to_or",
+    targetFilterName: "Inbox » REWE (Systemmails)",
+  }, "acc3");
+  eq(fixSpec.mode, "fix_match_all");
+  eq(fixSpec.matchAll, false);
+
+  const ruleSpec = core.buildNativeFilterSpecFromRule({
+    space: "Acme GmbH",
+    accountId: "work",
+    folderPath: "Spaces/Acme",
+    domains: ["acme.de", "acme.io"],
+  });
+  eq(ruleSpec.mode, "create");
+  eq(ruleSpec.name, "OmaThunder: Acme GmbH");
+  eq(ruleSpec.matchAll, false);
+  eq(ruleSpec.actions, [{ type: "moveToFolder", targetFolderPath: "Spaces/Acme" }]);
+  eq(ruleSpec.conditions.length, 2);
+});
+
+test("archive path builder maps INBOX to Incoming/YYYY/MM and preserves sorted folders", () => {
+  eq(
+    core.buildArchiveRelativeParts("mail@frankhess.de", "INBOX", "2023-07-14T10:20:00Z"),
+    ["mail@frankhess.de", "Incoming", "2023", "07"],
+  );
+  eq(
+    core.buildArchiveRelativeParts("mail@frankhess.de", "Rechnungen/Strom", "2022-11-05T08:00:00Z"),
+    ["mail@frankhess.de", "Rechnungen", "Strom", "2022", "11"],
+  );
+});
+
+test("archive local-folder move and delete guards enforce read-only, account enablement, and local account type", () => {
+  const accounts = [
+    { id: "imap1", name: "mail@frankhess.de", type: "imap" },
+    { id: "imap2", name: "other@example.com", type: "imap" },
+    { id: "local1", name: "Lokale Ordner", type: "none" },
+  ];
+  const srcHeader = { id: 10, folder: { id: "imap1:/INBOX", accountId: "imap1" } };
+  const localFolder = { id: "local1:/OmaThunder-Archiv", accountId: "local1" };
+  const otherImapFolder = { id: "imap2:/Archiv", accountId: "imap2" };
+
+  const roCfg = { features: { triage: true }, mailbox: { readOnly: true, triageAccountIds: ["imap1"] } };
+  throwsCode(() => core.requireLocalArchiveMove(roCfg, srcHeader, localFolder, accounts), "read_only");
+  throwsCode(() => core.requireArchiveDelete(roCfg, srcHeader), "read_only");
+
+  const rwCfg = { features: { triage: true }, mailbox: { readOnly: false, triageAccountIds: ["imap1"] } };
+  // Cross-account to another IMAP account is strictly blocked.
+  throwsCode(() => core.requireLocalArchiveMove(rwCfg, srcHeader, otherImapFolder, accounts), "local_folder_required");
+  // Moving from unenabled account is blocked.
+  throwsCode(() => core.requireLocalArchiveMove(rwCfg, { id: 11, folder: { accountId: "imap2" } }, localFolder, accounts), "account_not_enabled");
+  // Moving from enabled writable account to Local Folders (type "none") succeeds.
+  core.requireLocalArchiveMove(rwCfg, srcHeader, localFolder, accounts);
+  core.requireArchiveDelete(rwCfg, srcHeader);
+});
+
+test("matchArchiveCandidate filters by age, read flag, and starred flag", () => {
+  const now = Date.UTC(2026, 10, 15, 0, 0, 0);
+  const oldRead = { date: "2024-01-01T00:00:00Z", read: true, flagged: false };
+  const recentRead = { date: "2026-10-01T00:00:00Z", read: true, flagged: false };
+  const oldUnread = { date: "2024-01-01T00:00:00Z", read: false, flagged: false };
+  const oldStarred = { date: "2024-01-01T00:00:00Z", read: true, flagged: true };
+
+  const crit = { olderThanDays: 365, onlyRead: true, excludeStarred: true };
+  eq(core.matchArchiveCandidate(oldRead, crit, now), true);
+  eq(core.matchArchiveCandidate(recentRead, crit, now), false);
+  eq(core.matchArchiveCandidate(oldUnread, crit, now), false);
+  eq(core.matchArchiveCandidate(oldStarred, crit, now), false);
 });
 
 out(`${count - failed}/${count} core tests passed`);

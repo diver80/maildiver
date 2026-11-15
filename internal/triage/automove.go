@@ -13,7 +13,7 @@ type PlannedMove struct {
 	HeaderMessageID string `json:"headerMessageId"`
 	AccountID       string `json:"accountId"`
 	RuleID          string `json:"ruleId"`
-	Customer        string `json:"customer"`
+	Space           string `json:"space"`
 	Subject         string `json:"subject"`
 	From            string `json:"from"`
 	SourceFolder    string `json:"sourceFolder"`
@@ -51,7 +51,7 @@ func planAutoMove(m MessageInput, rules []config.RoutingRule, policy config.Mail
 		return PlannedMove{}, false
 	}
 	// The From header can be forged. If the receiving server recorded a failed DMARC/DKIM check,
-	// never file the mail into a customer folder where it would look trustworthy.
+	// never file the mail into a Space folder where it would look trustworthy.
 	if failedSenderAuth(m.Headers) {
 		return PlannedMove{}, false
 	}
@@ -75,7 +75,7 @@ func planAutoMove(m MessageInput, rules []config.RoutingRule, policy config.Mail
 		HeaderMessageID: m.ThreadID,
 		AccountID:       m.AccountID,
 		RuleID:          rule.ID,
-		Customer:        rule.Customer,
+		Space:           rule.Space,
 		Subject:         m.Subject,
 		From:            m.From,
 		SourceFolder:    m.Folder,

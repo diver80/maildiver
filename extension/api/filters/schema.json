@@ -1,0 +1,62 @@
+[
+  {
+    "namespace": "omaFilters",
+    "functions": [
+      {
+        "name": "listFilters",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "accountId",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      },
+      {
+        "name": "upsertFilter",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "spec",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      },
+      {
+        "name": "runFilters",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "accountId",
+            "type": "string"
+          },
+          {
+            "name": "filterNames",
+            "type": "array",
+            "optional": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      {
+        "name": "openFilterDialog",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "accountId",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      }
+    ]
+  }
+]

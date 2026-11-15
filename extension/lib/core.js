@@ -36,6 +36,11 @@
     return new Set(cfg?.mailbox?.triageAccountIds || []);
   }
 
+  function kanbanAccountIds(cfg) {
+    const enabled = triageAccountIds(cfg);
+    return new Set((cfg?.mailbox?.kanbanAccountIds || []).filter((id) => enabled.has(id)));
+  }
+
   // Throws unless OmaThunder may change mails/folders/tags in this account.
   // A missing or malformed config counts as read-only.
   function requireWritable(cfg, accountId) {
@@ -72,9 +77,9 @@
     return strict ? null : list[0] || null;
   }
 
-  // Folders a triage scan may read: INBOX of enabled accounts plus rule folders (with subfolders).
+  // Folders a Kanban triage scan may read: INBOX of kanban-enabled accounts plus rule folders (with subfolders).
   function selectScanFolders(cfg, folders) {
-    const enabled = triageAccountIds(cfg);
+    const enabled = kanbanAccountIds(cfg);
     const scan = new Map();
     for (const f of folders) {
       if (enabled.has(f.accountId) && isInboxFolder(f)) scan.set(f.id, f);
@@ -282,11 +287,165 @@
 }`;
   }
 
+  function suggestionConditions(sug) {
+    const conds = [];
+    for (const d of sug?.domains || []) {
+      const clean = String(d || "").trim().replace(/^@+/, "").toLowerCase();
+      if (clean) conds.push({ field: "from", op: "endsWith", value: `@${clean}` });
+    }
+    for (const f of sug?.fromContains || []) {
+      const clean = String(f || "").trim();
+      if (clean) conds.push({ field: "from", op: "contains", value: clean });
+    }
+    for (const s of sug?.subjectContains || []) {
+      const clean = String(s || "").trim();
+      if (clean) conds.push({ field: "subject", op: "contains", value: clean });
+    }
+    return conds;
+  }
+
+  function buildNativeFilterSpecFromSuggestion(sug, accountId) {
+    const action = String(sug?.action || "create");
+    const targetName = String(sug?.targetFilterName || "").trim();
+    if (action === "fix_and_to_or" && targetName) {
+      return {
+        accountId: accountId || "",
+        mode: "fix_match_all",
+        existingName: targetName,
+        matchAll: false,
+        enable: true,
+      };
+    }
+    const conditions = suggestionConditions(sug);
+    if (action === "append_or" && targetName) {
+      return {
+        accountId: accountId || "",
+        mode: "append_conditions",
+        existingName: targetName,
+        matchAll: false,
+        conditions,
+        enable: true,
+      };
+    }
+    const actions = [];
+    if (sug?.delete) {
+      actions.push({ type: "delete" });
+    } else if (sug?.suggestedFolder) {
+      actions.push({ type: "moveToFolder", targetFolderPath: cleanPath(sug.suggestedFolder) });
+    }
+    if (sug?.markRead) {
+      actions.push({ type: "markRead" });
+    }
+    return {
+      accountId: accountId || "",
+      mode: action === "replace" && targetName ? "replace" : "create",
+      existingName: targetName,
+      name: String(sug?.name || targetName || "OmaThunder Filter").trim(),
+      enabled: true,
+      matchAll: Boolean(sug?.matchAll),
+      conditions,
+      actions,
+      createFolder: true,
+    };
+  }
+
+  function buildNativeFilterSpecFromRule(rule) {
+    const conditions = suggestionConditions(rule);
+    const existingName = Array.isArray(rule?.nativeFilterNames) && rule.nativeFilterNames[0]
+      ? rule.nativeFilterNames[0]
+      : `OmaThunder: ${rule?.space || "Space"}`;
+    const folder = cleanPath(rule?.folderPath);
+    const actions = folder ? [{ type: "moveToFolder", targetFolderPath: folder }] : [];
+    const hasDomains = (rule?.domains || []).length > 0;
+    const hasSubject = (rule?.subjectContains || []).length > 0;
+    const hasFrom = (rule?.fromContains || []).length > 0;
+    // Domain-only rules must be OR so any of the space's domains triggers the move.
+    const matchAll = hasSubject && (hasDomains || hasFrom);
+    return {
+      accountId: rule?.accountId || "",
+      mode: Array.isArray(rule?.nativeFilterNames) && rule.nativeFilterNames[0] ? "replace" : "create",
+      existingName,
+      name: existingName,
+      enabled: true,
+      matchAll,
+      conditions,
+      actions,
+      createFolder: true,
+    };
+  }
+
+  function isLocalAccount(acc) {
+    return String(acc?.type || "").toLowerCase() === "none";
+  }
+
+  function findLocalAccount(accounts) {
+    return (accounts || []).find(isLocalAccount) || null;
+  }
+
+  function sanitizeArchivePart(raw, fallback = "mail") {
+    const s = String(raw || "")
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+      .replace(/^[.\s]+|[.\s]+$/g, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/_{2,}/g, "_");
+    if (!s || s === "." || s === "..") return fallback;
+    return s.slice(0, 64);
+  }
+
+  function buildArchiveRelativeParts(accountName, folderPath, dateValue) {
+    const accSeg = sanitizeArchivePart(accountName, "account");
+    const rawParts = String(folderPath || "").replace(/\\/g, "/").split("/").filter((p) => p && p !== "." && p !== "..");
+    const folderSegs = [];
+    for (const p of rawParts) {
+      const seg = sanitizeArchivePart(p, "");
+      if (!seg) continue;
+      if (folderSegs.length === 0 && seg.toLowerCase() === "inbox") folderSegs.push("Incoming");
+      else folderSegs.push(seg);
+    }
+    if (folderSegs.length === 0) folderSegs.push("Incoming");
+    const dt = dateValue ? new Date(dateValue) : new Date();
+    const valid = !Number.isNaN(dt.getTime()) ? dt : new Date();
+    const yyyy = String(valid.getUTCFullYear());
+    const mm = String(valid.getUTCMonth() + 1).padStart(2, "0");
+    return [accSeg, ...folderSegs, yyyy, mm];
+  }
+
+  // Cross-account move guard for Archive: only allows moving from an enabled, writable account
+  // into a Thunderbird Local Folders account (type === "none"), never into another IMAP account.
+  function requireLocalArchiveMove(cfg, header, targetFolder, accounts) {
+    const accountId = header?.folder?.accountId;
+    requireWritable(cfg, accountId);
+    if (!targetFolder || !targetFolder.id) throw new PolicyError("target_folder_missing");
+    const targetAcc = (accounts || []).find((a) => a.id === targetFolder.accountId);
+    if (!isLocalAccount(targetAcc)) throw new PolicyError("local_folder_required");
+  }
+
+  function requireArchiveDelete(cfg, header) {
+    requireWritable(cfg, header?.folder?.accountId);
+  }
+
+  function matchArchiveCandidate(header, criteria = {}, nowMs = Date.now()) {
+    if (!header) return false;
+    const days = Number(criteria.olderThanDays || 0);
+    if (days > 0) {
+      const msgTime = header.date ? new Date(header.date).getTime() : NaN;
+      if (Number.isNaN(msgTime)) return false;
+      const cutoff = nowMs - days * 86400000;
+      if (msgTime > cutoff) return false;
+    }
+    if (criteria.onlyRead && !header.read) return false;
+    if (criteria.excludeStarred && header.flagged) return false;
+    return true;
+  }
+
   const api = {
     textToHtml, htmlToText, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
-    PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds,
+    PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,
+    buildNativeFilterSpecFromSuggestion, buildNativeFilterSpecFromRule,
+    isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
+    requireArchiveDelete, matchArchiveCandidate,
   };
   root.OmaCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

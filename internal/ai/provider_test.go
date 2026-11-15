@@ -46,7 +46,7 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 	}
 
 	rules := []config.RoutingRule{{
-		ID: "r-partner", Customer: "Partner AG", FolderPath: "Kunden/Partner", Domains: []string{"partner.de"},
+		ID: "r-partner", Space: "Partner AG", FolderPath: "Spaces/Partner", Domains: []string{"partner.de"},
 	}}
 
 	c, err := Classify(context.Background(), cfg, triage.MessageInput{
@@ -59,7 +59,7 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify failed: %v", err)
 	}
-	if c.Bucket != triage.BucketAction || c.KanbanColumn != "action" || c.Customer != "Partner AG" || c.Deadline != "2026-11-15" {
+	if c.Bucket != triage.BucketAction || c.KanbanColumn != "action" || c.Space != "Partner AG" || c.Deadline != "2026-11-15" {
 		t.Fatalf("unexpected classification: %+v", c)
 	}
 }
@@ -405,3 +405,51 @@ func TestAnalyzeSuggestFilter(t *testing.T) {
 		t.Fatalf("unexpected filter suggestions: %+v", resp.FilterSuggestions)
 	}
 }
+
+func TestAnalyzeSuggestFilterWithNativeDiagnostic(t *testing.T) {
+	var seenPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenPrompt = string(body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]string{
+				{
+					"type": "text",
+					"text": `{"answer":"Der Filter 'Atlassian Mails join product' hat das neue Betreffmuster noch nicht.","filterSuggestions":[{"action":"append_or","targetFilterName":"Atlassian Mails join product","name":"Atlassian Mails join product","reason":"Ergänzt das neue Betreffmuster als ODER-Bedingung.","subjectContains":["would like to try"],"matchAll":false,"suggestedFolder":"Trash","markRead":true}]}`,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:     "suggest_filter",
+		Language: "de",
+		PrimaryMessage: triage.MessageInput{
+			ID:        "1",
+			AccountID: "acc3",
+			From:      "noreply@am.atlassian.com",
+			Subject:   "User would like to try Jira",
+		},
+		NativeFilters: []triage.NativeFilter{
+			{AccountID: "acc3", Name: "Atlassian Mails join product", Enabled: true},
+		},
+		FilterDiagnostic: &triage.FilterDiagnosticReport{
+			CheckedFilters: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("suggest_filter with native diagnostic failed: %v", err)
+	}
+	if !strings.Contains(seenPrompt, "Atlassian Mails join product") || !strings.Contains(seenPrompt, "filterDiagnostic") {
+		t.Fatalf("expected native filter and diagnostic context in prompt, got: %s", seenPrompt)
+	}
+	if len(resp.FilterSuggestions) != 1 || resp.FilterSuggestions[0].Action != "append_or" || resp.FilterSuggestions[0].TargetFilterName != "Atlassian Mails join product" {
+		t.Fatalf("unexpected filter suggestion: %+v", resp.FilterSuggestions)
+	}
+}
+

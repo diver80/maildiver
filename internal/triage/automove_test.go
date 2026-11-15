@@ -8,9 +8,9 @@ import (
 
 func TestPlanAutoMovesSafetyRules(t *testing.T) {
 	rules := []config.RoutingRule{
-		{ID: "acme", Customer: "Acme", AccountID: "work", FolderPath: "Kunden/Acme", FolderID: "f-acme", Domains: []string{"acme.de"}, AutoMove: true},
-		{ID: "beta", Customer: "Beta", AccountID: "work", FolderPath: "Kunden/Beta", Domains: []string{"beta.com"}, AutoMove: false},
-		{ID: "free", Customer: "Free", FolderPath: "Kunden/Free", Domains: []string{"free.org"}, AutoMove: true},
+		{ID: "acme", Space: "Acme", AccountID: "work", FolderPath: "Kunden/Acme", FolderID: "f-acme", Domains: []string{"acme.de"}, AutoMove: true},
+		{ID: "beta", Space: "Beta", AccountID: "work", FolderPath: "Kunden/Beta", Domains: []string{"beta.com"}, AutoMove: false},
+		{ID: "free", Space: "Free", FolderPath: "Kunden/Free", Domains: []string{"free.org"}, AutoMove: true},
 	}
 	policy := config.MailboxPolicy{TriageAccountIDs: []string{"work"}, AutoMoveOnlyUnread: true}
 	inbox := func(mut func(*MessageInput)) MessageInput {
@@ -122,7 +122,7 @@ func TestStoreDoesNotMergeDifferentMailsWithSameNumericID(t *testing.T) {
 func TestPlanAutoMovesSubjectAndFromContains(t *testing.T) {
 	rules := []config.RoutingRule{{
 		ID:              "atlassian-trials",
-		Customer:        "Atlassian Testanfragen",
+		Space:        "Atlassian Testanfragen",
 		AccountID:       "work",
 		FolderPath:      "Notifications/Atlassian-Tests",
 		Domains:         []string{"atlassian.com"},
@@ -168,8 +168,8 @@ func TestPlanAutoMovesSubjectAndFromContains(t *testing.T) {
 
 func TestPlanAutoMovesMultiAccountSameDomain(t *testing.T) {
 	rules := []config.RoutingRule{
-		{ID: "r-priv", Customer: "Acme Priv", AccountID: "priv", FolderPath: "Privat/Acme", FolderID: "f-priv", Domains: []string{"acme.de"}, AutoMove: true},
-		{ID: "r-work", Customer: "Acme Work", AccountID: "work", FolderPath: "Kunden/Acme", FolderID: "f-work", Domains: []string{"acme.de"}, AutoMove: true},
+		{ID: "r-priv", Space: "Acme Priv", AccountID: "priv", FolderPath: "Privat/Acme", FolderID: "f-priv", Domains: []string{"acme.de"}, AutoMove: true},
+		{ID: "r-work", Space: "Acme Work", AccountID: "work", FolderPath: "Kunden/Acme", FolderID: "f-work", Domains: []string{"acme.de"}, AutoMove: true},
 	}
 	policy := config.MailboxPolicy{TriageAccountIDs: []string{"priv", "work"}}
 	msg := MessageInput{

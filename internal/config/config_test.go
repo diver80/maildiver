@@ -34,7 +34,7 @@ func TestDefaultsAreSafe(t *testing.T) {
 func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	legacy := `{"language":"de","incomingFolder":"INBOX","rules":[{"id":"r1","customer":"Acme","folderPath":"Kunden/Acme","domains":["acme.de"],"autoMove":true,"includeInScan":true}]}`
+	legacy := `{"language":"de","incomingFolder":"INBOX","rules":[{"id":"r1","space":"Acme","folderPath":"Spaces/Acme","domains":["acme.de"],"autoMove":true,"includeInScan":true}]}`
 	if err := os.MkdirAll(filepath.Join(dir, AppID), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -45,18 +45,19 @@ func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Features.Triage || !cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 0 {
+	if cfg.Features.Triage || !cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 0 || len(cfg.Mailbox.KanbanAccountIDs) != 0 {
 		t.Fatalf("legacy config must load with triage off and read-only on: %+v %+v", cfg.Features, cfg.Mailbox)
 	}
-	if len(cfg.Rules) != 1 || cfg.Rules[0].ID != "r1" {
-		t.Fatalf("legacy rules lost: %+v", cfg.Rules)
+	if len(cfg.Rules) != 1 || cfg.Rules[0].ID != "r1" || cfg.Rules[0].Space != "Acme" {
+		t.Fatalf("rules lost: %+v", cfg.Rules)
 	}
 }
 
 func TestApplyPatchKeepsAbsentFields(t *testing.T) {
 	base := Default()
-	base.Rules = []RoutingRule{{ID: "keep", Customer: "Keep", FolderPath: "Kunden/Keep", Domains: []string{"keep.de"}}}
+	base.Rules = []RoutingRule{{ID: "keep", Space: "Keep", FolderPath: "Spaces/Keep", Domains: []string{"keep.de"}}}
 	base.Mailbox.TriageAccountIDs = []string{"account1"}
+	base.Mailbox.KanbanAccountIDs = []string{"account1"}
 
 	next, err := ApplyPatch(base, []byte(`{"language":"en","features":{"triage":true}}`))
 	if err != nil {
@@ -71,17 +72,18 @@ func TestApplyPatchKeepsAbsentFields(t *testing.T) {
 	if len(next.Rules) != 1 || next.Rules[0].ID != "keep" {
 		t.Fatalf("rules absent from patch must be kept: %+v", next.Rules)
 	}
-	if len(next.Mailbox.TriageAccountIDs) != 1 || !next.Mailbox.ReadOnly {
+	if len(next.Mailbox.TriageAccountIDs) != 1 || len(next.Mailbox.KanbanAccountIDs) != 1 || !next.Mailbox.ReadOnly {
 		t.Fatalf("mailbox absent from patch must be kept: %+v", next.Mailbox)
 	}
 }
 
 func TestApplyPatchReplacesRulesWithoutStaleFields(t *testing.T) {
 	base := Default()
-	base.Rules = []RoutingRule{{ID: "old", FolderPath: "Kunden/Old", AutoMove: true, ColumnFolders: map[string]string{"done": "Kunden/Old/Done"}}}
+	base.Rules = []RoutingRule{{ID: "old", FolderPath: "Spaces/Old", AutoMove: true, ColumnFolders: map[string]string{"done": "Spaces/Old/Done"}}}
 	base.Mailbox.TriageAccountIDs = []string{"a1", "a2"}
+	base.Mailbox.KanbanAccountIDs = []string{"a1", "a2"}
 
-	next, err := ApplyPatch(base, []byte(`{"rules":[{"id":"new","folderPath":"Kunden/New","domains":["new.de"]}],"mailbox":{"triageAccountIds":["a2"]}}`))
+	next, err := ApplyPatch(base, []byte(`{"rules":[{"id":"new","folderPath":"Spaces/New","domains":["new.de"]}],"mailbox":{"triageAccountIds":["a2"],"kanbanAccountIds":["a2"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,15 +96,21 @@ func TestApplyPatchReplacesRulesWithoutStaleFields(t *testing.T) {
 	if len(next.Mailbox.TriageAccountIDs) != 1 || next.Mailbox.TriageAccountIDs[0] != "a2" {
 		t.Fatalf("account list not replaced: %+v", next.Mailbox.TriageAccountIDs)
 	}
+	if len(next.Mailbox.KanbanAccountIDs) != 1 || next.Mailbox.KanbanAccountIDs[0] != "a2" {
+		t.Fatalf("kanban account list not replaced: %+v", next.Mailbox.KanbanAccountIDs)
+	}
 	if !next.Mailbox.ReadOnly {
 		t.Fatal("readOnly absent from mailbox patch must be kept")
 	}
 }
 
 func TestMailboxPolicy(t *testing.T) {
-	p := MailboxPolicy{ReadOnly: false, TriageAccountIDs: []string{"a1"}}
-	if !p.CanWrite("a1") || p.CanWrite("a2") || p.CanWrite("") {
+	p := MailboxPolicy{ReadOnly: false, TriageAccountIDs: []string{"a1", "a2"}, KanbanAccountIDs: []string{"a1"}}
+	if !p.CanWrite("a1") || !p.CanWrite("a2") || p.CanWrite("a3") || p.CanWrite("") {
 		t.Fatal("CanWrite must only allow enabled accounts")
+	}
+	if !p.KanbanEnabled("a1") || p.KanbanEnabled("a2") || p.KanbanEnabled("a3") {
+		t.Fatal("KanbanEnabled must require both AccountEnabled and KanbanAccountIDs membership")
 	}
 	p.ReadOnly = true
 	if p.CanWrite("a1") {

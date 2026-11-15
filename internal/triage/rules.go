@@ -49,7 +49,7 @@ type Classification struct {
 	Date           string   `json:"date"`
 	Folder         string   `json:"folder,omitempty"`
 	FolderID       string   `json:"folderId,omitempty"`
-	Customer       string   `json:"customer,omitempty"`
+	Space          string   `json:"space,omitempty"`
 	MatchedRuleID  string   `json:"matchedRuleId,omitempty"`
 	TargetFolder   string   `json:"targetFolder,omitempty"`
 	TargetFolderID string   `json:"targetFolderId,omitempty"`
@@ -165,13 +165,13 @@ func MatchDomainRuleForAccount(from, accountID string, rules []config.RoutingRul
 	return MatchMessageRuleForAccount(MessageInput{From: from, AccountID: accountID}, rules)
 }
 
-// MatchRoutingRule finds the customer for a mail: first by sender/subject rule, then by the folder it lives in.
+// MatchRoutingRule finds the Space for a mail: first by sender/subject rule, then by the folder it lives in.
 // It labels mails for the board only; auto-moves use PlanAutoMoves, which is stricter.
 func MatchRoutingRule(from, currentFolder string, rules []config.RoutingRule) (config.RoutingRule, bool) {
 	return MatchRoutingRuleForAccount(from, currentFolder, "", rules)
 }
 
-// MatchRoutingRuleForAccount finds the customer for a mail scoped to accountID.
+// MatchRoutingRuleForAccount finds the Space for a mail scoped to accountID.
 func MatchRoutingRuleForAccount(from, currentFolder, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
 	return MatchRoutingRuleForMessage(MessageInput{From: from, Folder: currentFolder, AccountID: accountID}, rules)
 }
@@ -233,7 +233,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 	}
 
 	if rule, ok := MatchRoutingRuleForMessage(msg, rules); ok {
-		base.Customer = rule.Customer
+		base.Space = rule.Space
 		base.MatchedRuleID = rule.ID
 		base.TargetFolder = rule.FolderPath
 		base.TargetFolderID = rule.FolderID

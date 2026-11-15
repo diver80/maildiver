@@ -8,12 +8,12 @@ import (
 	"github.com/diver80/omathunder/internal/config"
 )
 
-func TestStage0RulesAndCustomerDomains(t *testing.T) {
+func TestStage0RulesAndSpaceDomains(t *testing.T) {
 	rules := []config.RoutingRule{
 		{
 			ID:         "r-acme",
-			Customer:   "Acme GmbH",
-			FolderPath: "Kunden/Acme/Incoming",
+			Space:      "Acme GmbH",
+			FolderPath: "Spaces/Acme/Incoming",
 			Domains:    []string{"acme.de", "acme-cloud.io"},
 			AutoMove:   true,
 		},
@@ -37,8 +37,8 @@ func TestStage0RulesAndCustomerDomains(t *testing.T) {
 		Attachments: []string{"Rechnung_2026_42.pdf"},
 		Unread:      true,
 	}, true, rules)
-	if !matched || inv.Bucket != BucketInvoice || inv.Customer != "Acme GmbH" || inv.TargetFolder != "Kunden/Acme/Incoming" {
-		t.Fatalf("expected invoice + customer rule match, got matched=%v %+v", matched, inv)
+	if !matched || inv.Bucket != BucketInvoice || inv.Space != "Acme GmbH" || inv.TargetFolder != "Spaces/Acme/Incoming" {
+		t.Fatalf("expected invoice + space rule match, got matched=%v %+v", matched, inv)
 	}
 
 	base, matched := EvaluateStage0(MessageInput{
@@ -48,8 +48,8 @@ func TestStage0RulesAndCustomerDomains(t *testing.T) {
 		BodyText: "Hi, passt morgen 10 Uhr?",
 		Unread:   true,
 	}, true, rules)
-	if matched || base.Customer != "Acme GmbH" || base.MatchedRuleID != "r-acme" {
-		t.Fatalf("expected personal customer email to carry customer metadata to Stage 1, got matched=%v %+v", matched, base)
+	if matched || base.Space != "Acme GmbH" || base.MatchedRuleID != "r-acme" {
+		t.Fatalf("expected personal space email to carry space metadata to Stage 1, got matched=%v %+v", matched, base)
 	}
 }
 
@@ -92,12 +92,12 @@ func TestStoreKanbanMoveAndRuleRollback(t *testing.T) {
 	}
 
 	_, err = stStore.RecordMoves([]MovedMessage{
-		{MessageID: "a99", OldMessageID: "a1", HeaderMessageID: "<hdr-a1@acme.de>", RuleID: "r-acme", OriginalFolder: "INBOX", TargetFolder: "Kunden/Acme"},
+		{MessageID: "a99", OldMessageID: "a1", HeaderMessageID: "<hdr-a1@acme.de>", RuleID: "r-acme", OriginalFolder: "INBOX", TargetFolder: "Spaces/Acme"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, err := stStore.Load(); err != nil || st.Classifications["a99"].Folder != "Kunden/Acme" || st.Classifications["a1"].MessageID != "" {
+	if st, err := stStore.Load(); err != nil || st.Classifications["a99"].Folder != "Spaces/Acme" || st.Classifications["a1"].MessageID != "" {
 		t.Fatalf("expected IMAP move ID migration a1 -> a99, got %+v", st.Classifications)
 	}
 
@@ -187,14 +187,14 @@ func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
 		t.Fatalf("expected deterministic tie-break by MessageID ('Vertrag A'), got %q", sum.TopHeadline)
 	}
 
-	// Verify PopMovedByScan restores Folder & FolderID and keeps MatchedRuleID/Customer.
+	// Verify PopMovedByScan restores Folder & FolderID and keeps MatchedRuleID/Space.
 	if _, err := s.SaveClassifications([]Classification{
-		{MessageID: "50", ThreadID: "<50@x>", AccountID: "work", Customer: "Acme", MatchedRuleID: "r1", Folder: "INBOX", FolderID: "f-in"},
+		{MessageID: "50", ThreadID: "<50@x>", AccountID: "work", Space: "Acme", MatchedRuleID: "r1", Folder: "INBOX", FolderID: "f-in"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RecordMoves([]MovedMessage{
-		{MessageID: "51", OldMessageID: "50", HeaderMessageID: "<50@x>", AccountID: "work", RuleID: "r1", ScanID: "scan-1", OriginalFolder: "INBOX", OriginalFolderID: "f-in", TargetFolder: "Kunden/Acme", TargetFolderID: "f-acme"},
+		{MessageID: "51", OldMessageID: "50", HeaderMessageID: "<50@x>", AccountID: "work", RuleID: "r1", ScanID: "scan-1", OriginalFolder: "INBOX", OriginalFolderID: "f-in", TargetFolder: "Spaces/Acme", TargetFolderID: "f-acme"},
 	}); err != nil {
 		t.Fatal(err)
 	}

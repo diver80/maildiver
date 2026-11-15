@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OmaThunder — Kanban, Kunden-Regeln &amp; KI</title>
+  <title>OmaThunder — Kanban, Spaces &amp; KI</title>
   <link rel="stylesheet" href="common.css" />
   <style id="oma-dynamic-vars"></style>
   <style>
@@ -209,7 +209,10 @@
           <span data-i18n="nav_kanban">Kanban-Board</span><span class="nav-count" id="cnt-kanban">0</span>
         </button>
         <button class="nav-item" data-view="rules">
-          <span data-i18n="nav_rules">Ordner &amp; Domains</span><span class="nav-count" id="cnt-rules">0</span>
+          <span data-i18n="nav_rules">Spaces &amp; Filter</span><span class="nav-count" id="cnt-rules">0</span>
+        </button>
+        <button class="nav-item" data-view="archive">
+          <span data-i18n="nav_archive">Archiv &amp; Cleanup</span><span class="nav-count" id="cnt-archive">0</span>
         </button>
         <button class="nav-item" data-view="themes">
           <span data-i18n="nav_themes">Omarchy Themes</span><span class="nav-count" id="cnt-themes">22</span>
@@ -244,7 +247,7 @@
         </div>
       </header>
 
-      <div class="filter-bar" id="customer-filter-bar"></div>
+      <div class="filter-bar" id="space-filter-bar"></div>
       <div id="scan-report" style="display:none; padding:10px 16px 0;"></div>
       <div class="content" id="main-content"></div>
     </main>
@@ -264,7 +267,7 @@
         <div class="oma-card">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:6px;">
             <strong id="selected-title" style="font-size:12.5px;">Mail auswählen</strong>
-            <span class="oma-badge accent" id="selected-customer" style="display:none;"></span>
+            <span class="oma-badge accent" id="selected-space" style="display:none;"></span>
             <button class="mini-btn" id="btn-use-displayed" style="display:none;" data-i18n="ai_use_displayed">Geöffnete Mail verwenden</button>
           </div>
           <div id="selected-meta" class="oma-muted" style="font-size:11px; margin-bottom:8px;"></div>

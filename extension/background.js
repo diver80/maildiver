@@ -5,6 +5,8 @@ const {
   PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, requireWritable,
   requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
   normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn, htmlToText,
+  isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
+  requireArchiveDelete, matchArchiveCandidate,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
@@ -805,6 +807,17 @@ function broadcastToUI(message) {
   api.runtime.sendMessage(message).catch(() => {});
 }
 
+async function listNativeFiltersSafe(accountId = "") {
+  if (!api.omaFilters?.listFilters) {
+    return { supported: false, accounts: [], filters: [] };
+  }
+  try {
+    return await api.omaFilters.listFilters(accountId || undefined);
+  } catch (err) {
+    return { supported: false, accounts: [], filters: [], error: String(err?.message || err) };
+  }
+}
+
 api.runtime.onMessage.addListener((msg) => {
   if (!msg || !msg.type) return false;
   switch (msg.type) {
@@ -822,6 +835,7 @@ api.runtime.onMessage.addListener((msg) => {
           ]);
           return {
             connected: true,
+            nativeFiltersSupported: Boolean(api.omaFilters?.listFilters),
             host: { version: ping?.version || "?", protocol: ping?.protocol ?? 0, expectedProtocol: PROTOCOL },
             protocolOk: ping?.protocol === PROTOCOL,
             extensionVersion: api.runtime.getManifest().version,
@@ -925,12 +939,13 @@ api.runtime.onMessage.addListener((msg) => {
         const existing = Array.isArray(cfg?.rules) ? cfg.rules : [];
         const nextRule = {
           id: rule.id || `rule-${Date.now()}`,
-          customer: rule.customer || rule.name || "Filter",
+          space: rule.space || rule.name || "Filter",
           accountId: rule.accountId || "",
           folderPath: String(rule.folderPath).replace(/^\/+|\/+$/g, ""),
           domains: Array.isArray(rule.domains) ? rule.domains : [],
           fromContains: Array.isArray(rule.fromContains) ? rule.fromContains : [],
           subjectContains: Array.isArray(rule.subjectContains) ? rule.subjectContains : [],
+          nativeFilterNames: Array.isArray(rule.nativeFilterNames) ? rule.nativeFilterNames : [],
           autoMove: rule.autoMove !== false,
           includeInScan: Boolean(rule.includeInScan),
         };
@@ -971,6 +986,121 @@ api.runtime.onMessage.addListener((msg) => {
         };
       })();
 
+    case "omathunder:listNativeFilters":
+      return (async () => {
+        const data = await listNativeFiltersSafe(msg.accountId || "");
+        let issues = [];
+        let candidates = [];
+        if (data.supported && Array.isArray(data.filters)) {
+          const hostRes = await callNative("suggest_space_imports", {
+            accountId: msg.accountId || "",
+            filters: data.filters,
+          }).catch(() => null);
+          issues = hostRes?.issues || [];
+          candidates = hostRes?.candidates || [];
+        }
+        return { ...data, issues, candidates };
+      })();
+
+    case "omathunder:diagnoseFilters":
+      return (async () => {
+        const usePending = Boolean(msg.usePendingSelection) && pendingSelectionContext && (Date.now() - pendingSelectionContext.createdAt < 60000);
+        const headers = usePending ? pendingSelectionContext.headers : await getSelectedMessageHeaders();
+        if (usePending) pendingSelectionContext = null;
+        if (!headers || headers.length === 0) throw new PolicyError("no_message_displayed");
+        const input = await buildMessageInput(headers[0], { includeAttachmentText: false });
+        const nativeData = await listNativeFiltersSafe(input.accountId || "");
+        const diagnostic = await callNative("diagnose_filters", {
+          message: input,
+          filters: nativeData.filters || [],
+        });
+        return {
+          supported: nativeData.supported,
+          message: { id: input.id, accountId: input.accountId, subject: input.subject, from: input.from, folder: input.folder },
+          diagnostic,
+          filters: nativeData.filters || [],
+        };
+      })();
+
+    case "omathunder:applyNativeFilter":
+      return (async () => {
+        if (!api.omaFilters?.upsertFilter) throw new Error("Native Filter API not available");
+        const spec = msg.spec;
+        if (!spec || !spec.accountId) throw new Error("Account ID missing for native filter");
+        const res = await api.omaFilters.upsertFilter(spec);
+        let runResult = null;
+        if (msg.runNow && res?.filter?.name) {
+          runResult = await api.omaFilters.runFilters(spec.accountId, [res.filter.name]).catch((err) => ({
+            error: String(err?.message || err),
+          }));
+        }
+        if (msg.linkRuleId && res?.filter?.name) {
+          const cfg = await loadConfig().catch(() => null);
+          if (cfg && Array.isArray(cfg.rules)) {
+            const nextRules = cfg.rules.map((r) => {
+              if (r.id !== msg.linkRuleId) return r;
+              const names = Array.isArray(r.nativeFilterNames) ? [...r.nativeFilterNames] : [];
+              if (!names.includes(res.filter.name)) names.push(res.filter.name);
+              return { ...r, nativeFilterNames: names };
+            });
+            await callNative("save_rules", { rules: nextRules }).catch(() => {});
+          }
+        }
+        return { ...res, runResult };
+      })();
+
+    case "omathunder:runNativeFilters":
+      return (async () => {
+        if (!api.omaFilters?.runFilters) throw new Error("Native Filter API not available");
+        return api.omaFilters.runFilters(msg.accountId, Array.isArray(msg.filterNames) ? msg.filterNames : undefined);
+      })();
+
+    case "omathunder:openNativeFilters":
+      return (async () => {
+        if (!api.omaFilters?.openFilterDialog) return { opened: false };
+        return api.omaFilters.openFilterDialog(msg.accountId || undefined);
+      })();
+
+    case "omathunder:importSpaceRules":
+      return (async () => {
+        const cfg = await loadConfig();
+        const { folders } = await listAccountFolders().catch(() => ({ folders: [] }));
+        const existing = Array.isArray(cfg?.rules) ? [...cfg.rules] : [];
+        let importedCount = 0;
+        for (const cand of msg.candidates || []) {
+          if (!cand || !cand.folderPath || !cand.accountId) continue;
+          const cleanFolder = String(cand.folderPath).replace(/^\/+|\/+$/g, "");
+          const folderObj = findFolderInAccount(folders, cand.accountId, "", cleanFolder);
+          const idx = existing.findIndex(
+            (r) =>
+              r.accountId === cand.accountId &&
+              String(r.folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase() === cleanFolder.toLowerCase(),
+          );
+          if (idx >= 0) {
+            const prev = existing[idx];
+            const names = [...new Set([...(prev.nativeFilterNames || []), ...(cand.nativeFilterNames || [])])];
+            existing[idx] = { ...prev, nativeFilterNames: names, folderId: prev.folderId || folderObj?.id || "" };
+          } else {
+            existing.push({
+              id: `rule-${Date.now()}-${importedCount}`,
+              space: cand.space || cleanFolder,
+              accountId: cand.accountId,
+              folderPath: cleanFolder,
+              folderId: folderObj?.id || "",
+              domains: Array.isArray(cand.domains) ? cand.domains : [],
+              fromContains: Array.isArray(cand.fromContains) ? cand.fromContains : [],
+              subjectContains: Array.isArray(cand.subjectContains) ? cand.subjectContains : [],
+              nativeFilterNames: Array.isArray(cand.nativeFilterNames) ? cand.nativeFilterNames : [],
+              autoMove: false, // Thunderbird's native filter already moves incoming mail
+              includeInScan: true,
+            });
+            importedCount++;
+          }
+        }
+        const saved = await callNative("save_rules", { rules: existing });
+        return { config: saved, importedCount };
+      })();
+
     case "omathunder:analyzeMessage":
       return (async () => {
         const cfg = await loadConfig();
@@ -990,6 +1120,19 @@ api.runtime.onMessage.addListener((msg) => {
             }
             inputs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
             const backendMode = msg.mode === "summarize" ? "summarize_selection" : msg.mode;
+            const accountId = inputs[0]?.accountId || "";
+            let nativeFilters = [];
+            let filterDiagnostic = null;
+            if (msg.mode === "suggest_filter") {
+              const nativeData = await listNativeFiltersSafe(accountId);
+              if (nativeData.supported && Array.isArray(nativeData.filters) && nativeData.filters.length > 0) {
+                nativeFilters = nativeData.filters;
+                filterDiagnostic = await callNative("diagnose_filters", {
+                  message: inputs[0],
+                  filters: nativeFilters,
+                }).catch(() => null);
+              }
+            }
             const res = await callNative("analyze_thread", {
               mode: backendMode,
               ephemeral: true,
@@ -999,8 +1142,10 @@ api.runtime.onMessage.addListener((msg) => {
               question: msg.question || "",
               primaryMessage: inputs[0],
               threadMessages: inputs,
+              nativeFilters,
+              filterDiagnostic,
             }, 120000);
-            return { ...res, selectionCount: inputs.length, accountId: inputs[0]?.accountId || "" };
+            return { ...res, selectionCount: inputs.length, accountId, nativeFiltersSupported: Boolean(api.omaFilters?.upsertFilter), filterDiagnostic };
           }
           const primary = await buildMessageInput(headers[0], { includeAttachmentText });
           const threadMessages = await collectThreadMessages(primary);
@@ -1095,9 +1240,332 @@ api.runtime.onMessage.addListener((msg) => {
         await api.tabs.create({ url });
         return { ok: true };
       })();
+
+    case "omathunder:archiveStats":
+      return callNative("archive_stats", { archiveDir: msg.archiveDir || "" });
+
+    case "omathunder:previewCleanup":
+      return previewCleanup(msg);
+
+    case "omathunder:runCleanup":
+      return runCleanup(msg);
   }
   return false;
 });
+
+function bytesToBase64(bytes) {
+  const chunks = [];
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + step)));
+  }
+  return btoa(chunks.join(""));
+}
+
+async function readRawEmlBase64(messageId) {
+  let raw;
+  try {
+    raw = await api.messages.getRaw(messageId, { decrypt: false });
+  } catch (_) {
+    raw = await api.messages.getRaw(messageId);
+  }
+  let bytes;
+  if (typeof raw === "string") {
+    let allLatin1 = true;
+    for (let i = 0; i < raw.length; i++) {
+      if (raw.charCodeAt(i) > 255) {
+        allLatin1 = false;
+        break;
+      }
+    }
+    if (allLatin1) {
+      bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 0xff;
+    } else {
+      bytes = new TextEncoder().encode(raw);
+    }
+  } else if (raw && typeof raw.arrayBuffer === "function") {
+    bytes = new Uint8Array(await raw.arrayBuffer());
+  } else if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+    bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+  } else {
+    throw new Error("messages.getRaw returned unsupported payload");
+  }
+  if (bytes.length === 0) throw new Error("empty raw eml");
+  if (bytes.length > 45 * 1024 * 1024) throw new PolicyError("mail_too_large");
+  return { base64: bytesToBase64(bytes), byteLength: bytes.length };
+}
+
+async function ensureLocalArchiveFolder(cfg, localAccountId, pathSegments, folderState) {
+  if (cfg?.mailbox?.readOnly !== false) throw new PolicyError("read_only");
+  const localAcc = (folderState.accounts || []).find((a) => a.id === localAccountId);
+  if (!isLocalAccount(localAcc)) throw new PolicyError("local_folder_required");
+
+  let parentId = folderState.roots.get(localAccountId);
+  if (!parentId) throw new PolicyError("target_folder_missing");
+
+  let builtPath = "";
+  let currentFolder = null;
+  for (const seg of pathSegments.filter(Boolean)) {
+    builtPath = builtPath ? `${builtPath}/${seg}` : seg;
+    let found = findFolderInAccount(folderState.folders, localAccountId, "", builtPath);
+    if (!found) {
+      if (!api.folders?.create) throw new PolicyError("target_folder_missing");
+      const created = await api.folders.create(parentId, seg);
+      found = {
+        id: created.id,
+        accountId: created.accountId || localAccountId,
+        name: created.name || seg,
+        path: (created.path || builtPath).replace(/^\/+/, ""),
+        type: created.type || "",
+      };
+      folderState.folders.push(found);
+    }
+    parentId = found.id;
+    currentFolder = found;
+  }
+  if (!currentFolder) throw new PolicyError("target_folder_missing");
+  return currentFolder;
+}
+
+const EXCLUDED_CLEANUP_FOLDER_TYPES = new Set(["trash", "junk", "drafts", "outbox", "templates"]);
+
+async function collectCleanupCandidates(cfg, params = {}) {
+  requireFeature(cfg, "triage");
+  const enabled = triageAccountIds(cfg);
+  if (enabled.size === 0) throw new PolicyError("no_triage_accounts");
+
+  const accountId = String(params.accountId || "");
+  if (!accountId || !enabled.has(accountId)) throw new PolicyError("account_not_enabled");
+
+  const folderState = await listAccountFolders();
+  const acc = folderState.accounts.find((a) => a.id === accountId);
+  const accountName = acc?.name || accountId;
+  const scope = params.scope || "inbox"; // "inbox" | "folder" | "all"
+  const olderThanDays = Math.max(0, Number(params.olderThanDays ?? 365));
+  const onlyRead = params.onlyRead !== false;
+  const excludeStarred = params.excludeStarred !== false;
+  const maxMessages = Math.min(1000, Math.max(1, Number(params.maxMessages || 200)));
+
+  let targetFolders = [];
+  const accFolders = folderState.folders.filter((f) => f.accountId === accountId);
+  if (scope === "inbox") {
+    targetFolders = accFolders.filter(isInboxFolder);
+  } else if (scope === "folder") {
+    const cleanTarget = String(params.folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase();
+    const includeSub = params.includeSubfolders !== false;
+    targetFolders = accFolders.filter((f) => {
+      if (params.folderId && f.id === params.folderId) return true;
+      const p = String(f.path || "").replace(/^\/+|\/+$/g, "").toLowerCase();
+      if (!cleanTarget) return false;
+      return p === cleanTarget || (includeSub && p.startsWith(`${cleanTarget}/`));
+    });
+  } else {
+    targetFolders = accFolders.filter((f) => !EXCLUDED_CLEANUP_FOLDER_TYPES.has(String(f.type || "").toLowerCase()));
+  }
+
+  const nowMs = Date.now();
+  const toDate = olderThanDays > 0 ? new Date(nowMs - olderThanDays * 86400000) : null;
+  const matched = [];
+  const criteria = { olderThanDays, onlyRead, excludeStarred };
+
+  for (const folder of targetFolders) {
+    let page = toDate && api.messages?.query
+      ? await api.messages.query({ folderId: folder.id, toDate }).catch(() => null)
+      : null;
+    if (!page) page = await api.messages.list(folder.id).catch(() => null);
+
+    let pages = 0;
+    while (page) {
+      for (const h of page.messages || []) {
+        if (matchArchiveCandidate(h, criteria, nowMs)) {
+          matched.push({ header: h, folder });
+        }
+      }
+      if (!page.id || ++pages >= 50) break;
+      page = await api.messages.continueList(page.id).catch(() => null);
+    }
+  }
+
+  matched.sort((a, b) => new Date(a.header.date || 0) - new Date(b.header.date || 0));
+  const totalMatched = matched.length;
+  const totalBytesAll = matched.reduce((sum, x) => sum + Number(x.header.size || 0), 0);
+  const sliced = matched.slice(0, maxMessages);
+
+  const candidates = sliced.map(({ header: h, folder }) => {
+    const dateIso = h.date ? new Date(h.date).toISOString() : "";
+    const folderPath = (folder.path || h.folder?.path || "INBOX").replace(/^\/+/, "");
+    return {
+      messageId: String(h.id),
+      headerMessageId: h.headerMessageId || "",
+      accountId,
+      accountName,
+      folderId: folder.id,
+      folderPath,
+      subject: h.subject || "(Ohne Betreff)",
+      from: h.author || "",
+      date: dateIso,
+      size: Number(h.size || 0),
+      read: Boolean(h.read),
+      flagged: Boolean(h.flagged),
+      archiveRelPath: buildArchiveRelativeParts(accountName, folderPath, dateIso).join("/"),
+    };
+  });
+
+  return {
+    candidates,
+    totalMatched,
+    totalBytesAll,
+    scannedFolders: targetFolders.length,
+    truncated: totalMatched > candidates.length,
+    folderState,
+  };
+}
+
+async function previewCleanup(params = {}) {
+  const cfg = await loadConfig();
+  const data = await collectCleanupCandidates(cfg, params);
+  const localAcc = findLocalAccount(data.folderState.accounts);
+  const totalBytes = data.candidates.reduce((sum, c) => sum + (c.size || 0), 0);
+  return {
+    candidates: data.candidates,
+    totalCount: data.candidates.length,
+    totalMatched: data.totalMatched,
+    totalBytes,
+    totalBytesAll: data.totalBytesAll,
+    truncated: data.truncated,
+    scannedFolders: data.scannedFolders,
+    hasLocalAccount: Boolean(localAcc),
+    localAccountName: localAcc?.name || "",
+    readOnly: cfg.mailbox?.readOnly !== false,
+    archiveDir: params.archiveDir || cfg.mailbox?.archiveDir || "",
+  };
+}
+
+async function runCleanup(params = {}) {
+  const mode = params.mode || "simulate"; // "simulate" | "export_only" | "export_and_local" | "export_and_delete"
+  const cfg = await loadConfig();
+  const data = await collectCleanupCandidates(cfg, params);
+  const localAcc = findLocalAccount(data.folderState.accounts);
+
+  if ((mode === "export_and_local" || mode === "export_and_delete") && cfg.mailbox?.readOnly !== false) {
+    throw new PolicyError("read_only");
+  }
+  if (mode === "export_and_local" && !localAcc) {
+    throw new PolicyError("local_folder_required");
+  }
+
+  const archiveDir = String(params.archiveDir || cfg.mailbox?.archiveDir || "").trim();
+  const report = {
+    mode,
+    dryRun: mode === "simulate",
+    scannedFolders: data.scannedFolders,
+    totalCandidates: data.candidates.length,
+    exported: 0,
+    skippedDuplicates: 0,
+    moved: 0,
+    deleted: 0,
+    bytesExported: 0,
+    bytesEstimated: data.candidates.reduce((s, c) => s + (c.size || 0), 0),
+    failed: [],
+    items: [],
+  };
+
+  if (mode === "simulate") {
+    for (const c of data.candidates) {
+      try {
+        const exp = await callNative("archive_export", {
+          archiveDir,
+          accountId: c.accountId,
+          accountName: c.accountName,
+          folderPath: c.folderPath,
+          date: c.date,
+          subject: c.subject,
+          messageId: c.messageId,
+          headerMessageId: c.headerMessageId,
+          dryRun: true,
+        });
+        if (exp?.skippedDuplicate) report.skippedDuplicates++;
+        else report.exported++;
+        if (report.items.length < 100) {
+          report.items.push({
+            subject: c.subject,
+            from: c.from,
+            date: c.date,
+            size: c.size,
+            targetPath: exp?.targetPath || c.archiveRelPath,
+            skippedDuplicate: Boolean(exp?.skippedDuplicate),
+          });
+        }
+      } catch (err) {
+        report.failed.push({ subject: c.subject, error: errorCode(err) });
+      }
+    }
+    return report;
+  }
+
+  for (const c of data.candidates) {
+    try {
+      const live = await resolveMessage({
+        messageId: c.messageId,
+        headerMessageId: c.headerMessageId,
+        accountId: c.accountId,
+        folderId: c.folderId,
+      }, { strict: true });
+      if (!live) throw new PolicyError("message_not_found");
+      if (live.folder?.id !== c.folderId) throw new PolicyError("message_moved_meanwhile");
+
+      const { base64, byteLength } = await readRawEmlBase64(live.id);
+      const exp = await callNative("archive_export", {
+        archiveDir,
+        accountId: c.accountId,
+        accountName: c.accountName,
+        folderPath: c.folderPath,
+        date: c.date,
+        subject: c.subject,
+        messageId: String(live.id),
+        headerMessageId: c.headerMessageId,
+        rawEmlBase64: base64,
+        dryRun: false,
+      }, 120000);
+
+      if (!exp?.verified) throw new Error("archive_verification_failed");
+      if (exp.skippedDuplicate) report.skippedDuplicates++;
+      else report.exported++;
+      report.bytesExported += Number(exp.bytesWritten || byteLength || 0);
+
+      if (mode === "export_and_local" || mode === "export_and_delete") {
+        // Re-check live policy before any mailbox mutation.
+        const liveCfg = await loadConfig();
+        if (mode === "export_and_local") {
+          const parts = ["OmaThunder-Archiv", ...buildArchiveRelativeParts(c.accountName, c.folderPath, c.date)];
+          const targetLocal = await ensureLocalArchiveFolder(liveCfg, localAcc.id, parts, data.folderState);
+          requireLocalArchiveMove(liveCfg, live, targetLocal, data.folderState.accounts);
+          await api.messages.move([live.id], targetLocal.id);
+          report.moved++;
+        } else if (mode === "export_and_delete") {
+          requireArchiveDelete(liveCfg, live);
+          await api.messages.delete([live.id], Boolean(params.skipTrash));
+          report.deleted++;
+        }
+      }
+
+      if (report.items.length < 100) {
+        report.items.push({
+          subject: c.subject,
+          from: c.from,
+          date: c.date,
+          size: c.size || byteLength,
+          targetPath: exp.targetPath,
+          skippedDuplicate: Boolean(exp.skippedDuplicate),
+        });
+      }
+    } catch (err) {
+      report.failed.push({ subject: c.subject, from: c.from, error: errorCode(err) });
+    }
+  }
+  return report;
+}
 
 let pendingSelectionContext = null;
 
@@ -1120,6 +1588,11 @@ async function registerContextMenus() {
       title: "OmaThunder: Filterregel vorschlagen",
       contexts: ["message_list"],
     });
+    api.menus.create({
+      id: "oma-diagnose-filter",
+      title: "OmaThunder: Filter-Diagnose (Warum?)",
+      contexts: ["message_list"],
+    });
   } catch (err) {
     console.warn("OmaThunder context menu setup note:", err);
   }
@@ -1130,6 +1603,7 @@ api.menus?.onClicked?.addListener(async (info, tab) => {
     "oma-summarize-de": { auto: "summarize", target: "de" },
     "oma-summarize-en": { auto: "summarize", target: "en" },
     "oma-suggest-filter": { auto: "suggest_filter", target: "" },
+    "oma-diagnose-filter": { auto: "diagnose_filter", target: "" },
   };
   const act = actions[info.menuItemId];
   if (!act) return;

@@ -45,34 +45,37 @@ type AIConfig struct {
 	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
 }
 
-// RoutingRule maps sender domains (and optional sender/subject filters) to a label and Thunderbird folder.
+// RoutingRule maps sender domains (and optional sender/subject filters) to a Space label and Thunderbird folder.
 type RoutingRule struct {
-	ID              string            `json:"id"`
-	Customer        string            `json:"customer"`
-	AccountID       string            `json:"accountId,omitempty"` // Thunderbird account ID for multi-account disambiguation & auto-create
-	FolderPath      string            `json:"folderPath"`          // e.g. "Kunden/Acme" or "Kunden/Acme/Incoming"
-	FolderID        string            `json:"folderId,omitempty"`  // Thunderbird folder ID if bound from UI
-	Domains         []string          `json:"domains"`             // e.g. ["acme.de", "acme-corp.com"]
-	FromContains    []string          `json:"fromContains,omitempty"`
-	SubjectContains []string          `json:"subjectContains,omitempty"`
-	AutoMove        bool              `json:"autoMove"`                // Stage-0 deterministic move from INBOX -> FolderPath
-	IncludeInScan   bool              `json:"includeInScan"`           // Scan this folder + subfolders for the Kanban board
-	ColumnFolders   map[string]string `json:"columnFolders,omitempty"` // Optional: action/waiting/done -> subfolderPath
+	ID                string            `json:"id"`
+	Space             string            `json:"space"`
+	AccountID         string            `json:"accountId,omitempty"` // Thunderbird account ID for multi-account disambiguation & auto-create
+	FolderPath        string            `json:"folderPath"`          // e.g. "Spaces/Acme" or "Rechnungen"
+	FolderID          string            `json:"folderId,omitempty"`  // Thunderbird folder ID if bound from UI
+	Domains           []string          `json:"domains"`             // e.g. ["acme.de", "acme-corp.com"]
+	FromContains      []string          `json:"fromContains,omitempty"`
+	SubjectContains   []string          `json:"subjectContains,omitempty"`
+	NativeFilterNames []string          `json:"nativeFilterNames,omitempty"` // Linked native Thunderbird filter names
+	AutoMove          bool              `json:"autoMove"`                    // Stage-0 deterministic move from INBOX -> FolderPath
+	IncludeInScan     bool              `json:"includeInScan"`               // Scan this folder + subfolders for the Kanban board
+	ColumnFolders     map[string]string `json:"columnFolders,omitempty"`     // Optional: action/waiting/done -> subfolderPath
 }
 
 // FeatureFlags switches the three independent OmaThunder building blocks on or off.
 type FeatureFlags struct {
 	Theme     bool `json:"theme"`     // Omarchy theme sync (chrome, message body, compose)
 	Assistant bool `json:"assistant"` // AI writing assistant (summarize, draft reply, review draft)
-	Triage    bool `json:"triage"`    // Scan, classification, Kanban, customer routing & auto-move
+	Triage    bool `json:"triage"`    // Scan, classification, Kanban, Space routing & auto-move
 }
 
 // MailboxPolicy limits what OmaThunder may read and change in Thunderbird.
 type MailboxPolicy struct {
 	// ReadOnly blocks every change to mails, folders and tags. Scans only report planned moves.
 	ReadOnly bool `json:"readOnly"`
-	// TriageAccountIDs lists the Thunderbird accounts that triage may scan and change. Empty = none.
+	// TriageAccountIDs lists the Thunderbird accounts enabled for Spaces, rules, cleanup and triage. Empty = none.
 	TriageAccountIDs []string `json:"triageAccountIds"`
+	// KanbanAccountIDs lists the subset of enabled accounts scanned and displayed on the Kanban board.
+	KanbanAccountIDs []string `json:"kanbanAccountIds"`
 	// AutoMoveOnlyUnread restricts deterministic auto-moves to unread inbox mails.
 	AutoMoveOnlyUnread bool `json:"autoMoveOnlyUnread"`
 	// ScanOnNewMail runs a triage scan automatically when new mail arrives (same limits as a manual scan).
@@ -81,14 +84,38 @@ type MailboxPolicy struct {
 	ScanLimit int `json:"scanLimit"`
 	// ScanDays limits scans to mails received within the last N days.
 	ScanDays int `json:"scanDays"`
+	// ArchiveDir is the local filesystem root for verified .eml backups.
+	ArchiveDir string `json:"archiveDir,omitempty"`
 }
 
-// AccountEnabled reports whether triage may scan and change mails of the given account.
+// DefaultArchiveDir returns the default local folder for verified .eml backups.
+func DefaultArchiveDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "OmaThunder-Archiv"
+	}
+	return filepath.Join(home, "OmaThunder-Archiv")
+}
+
+// AccountEnabled reports whether triage/spaces/cleanup may access the given account.
 func (p MailboxPolicy) AccountEnabled(accountID string) bool {
 	if accountID == "" {
 		return false
 	}
 	for _, id := range p.TriageAccountIDs {
+		if id == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+// KanbanEnabled reports whether the given account is enabled for the Kanban board and scans.
+func (p MailboxPolicy) KanbanEnabled(accountID string) bool {
+	if !p.AccountEnabled(accountID) {
+		return false
+	}
+	for _, id := range p.KanbanAccountIDs {
 		if id == accountID {
 			return true
 		}
@@ -127,9 +154,11 @@ func Default() Config {
 		Mailbox: MailboxPolicy{
 			ReadOnly:           true,
 			TriageAccountIDs:   []string{},
+			KanbanAccountIDs:   []string{},
 			AutoMoveOnlyUnread: true,
 			ScanLimit:          defaultScanLimit,
 			ScanDays:           defaultScanDays,
+			ArchiveDir:         DefaultArchiveDir(),
 		},
 		Theme: ThemeConfig{
 			Mode:          "auto",
@@ -240,6 +269,9 @@ func Normalize(cfg Config) Config {
 	if cfg.Mailbox.TriageAccountIDs == nil {
 		cfg.Mailbox.TriageAccountIDs = []string{}
 	}
+	if cfg.Mailbox.KanbanAccountIDs == nil {
+		cfg.Mailbox.KanbanAccountIDs = []string{}
+	}
 	if cfg.Mailbox.ScanLimit <= 0 {
 		cfg.Mailbox.ScanLimit = defaultScanLimit
 	}
@@ -251,6 +283,9 @@ func Normalize(cfg Config) Config {
 	}
 	if cfg.Mailbox.ScanDays > maxScanDays {
 		cfg.Mailbox.ScanDays = maxScanDays
+	}
+	if cfg.Mailbox.ArchiveDir == "" {
+		cfg.Mailbox.ArchiveDir = DefaultArchiveDir()
 	}
 	return cfg
 }
@@ -272,6 +307,9 @@ func ApplyPatch(base Config, patch []byte) (Config, error) {
 		if err := json.Unmarshal(raw, &mb); err == nil {
 			if _, ok := mb["triageAccountIds"]; ok {
 				base.Mailbox.TriageAccountIDs = nil
+			}
+			if _, ok := mb["kanbanAccountIds"]; ok {
+				base.Mailbox.KanbanAccountIDs = nil
 			}
 		}
 	}
