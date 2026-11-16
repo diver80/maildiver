@@ -643,10 +643,61 @@
     return n;
   }
 
+  function toggleCardSelection(selectedSet, cardId) {
+    const next = new Set(selectedSet || []);
+    if (!cardId) return next;
+    if (next.has(cardId)) next.delete(cardId);
+    else next.add(cardId);
+    return next;
+  }
+
+  function selectCardRange(selectedSet, orderedIds, anchorId, targetId, { additive = true } = {}) {
+    const next = additive ? new Set(selectedSet || []) : new Set();
+    const list = Array.isArray(orderedIds) ? orderedIds : [];
+    const targetIdx = list.indexOf(targetId);
+    const anchorIdx = anchorId ? list.indexOf(anchorId) : -1;
+    if (targetIdx === -1) return next;
+    if (anchorIdx === -1) {
+      next.add(targetId);
+      return next;
+    }
+    const start = Math.min(anchorIdx, targetIdx);
+    const end = Math.max(anchorIdx, targetIdx);
+    for (let i = start; i <= end; i++) {
+      if (list[i]) next.add(list[i]);
+    }
+    return next;
+  }
+
+  function toggleColumnSelection(selectedSet, colIds) {
+    const next = new Set(selectedSet || []);
+    const ids = (colIds || []).filter(Boolean);
+    if (ids.length === 0) return next;
+    const allSelected = ids.every((id) => next.has(id));
+    if (allSelected) {
+      for (const id of ids) next.delete(id);
+    } else {
+      for (const id of ids) next.add(id);
+    }
+    return next;
+  }
+
+  function resolveDraggedCardIds(draggedId, selectedSet, visibleIds) {
+    if (!draggedId) return [];
+    const sel = selectedSet instanceof Set ? selectedSet : new Set(selectedSet || []);
+    if (sel.has(draggedId) && sel.size > 0) {
+      const visible = new Set(visibleIds || []);
+      const picked = [...sel].filter((id) => visible.size === 0 || visible.has(id));
+      if (picked.length > 0) return picked;
+    }
+    return [draggedId];
+  }
+
   const api = {
     textToHtml, htmlToText, renderMarkdownHtml, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
     isOpenKanbanCard, countOpenKanban,
+    toggleCardSelection, selectCardRange, toggleColumnSelection, resolveDraggedCardIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
     newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,
     buildNativeFilterSpecFromSuggestion, buildNativeFilterSpecFromRule,

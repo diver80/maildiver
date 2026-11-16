@@ -742,10 +742,10 @@ async function getActiveComposeDraft() {
 
 // Kanban moves always update OmaThunder's own state. Tags and column folders in Thunderbird
 // are only touched when writes are allowed for the mail's account.
-async function applyKanbanSideEffects(cfg, messageId, column) {
+async function applyKanbanSideEffects(cfg, messageId, column, { state = null, folders = null } = {}) {
   if (cfg?.mailbox?.readOnly !== false) return { skipped: "read_only" };
-  const snap = await callNative("get_state").catch(() => null);
-  const cls = snap?.state?.classifications?.[String(messageId)];
+  const snapState = state || (await callNative("get_state").catch(() => null))?.state;
+  const cls = snapState?.classifications?.[String(messageId)];
   if (!cls) return { skipped: "message_not_found" };
   const msg = await resolveMessage({
     messageId,
@@ -760,12 +760,33 @@ async function applyKanbanSideEffects(cfg, messageId, column) {
   const rule = cls.matchedRuleId ? (cfg.rules || []).find((r) => r.id === cls.matchedRuleId) : null;
   const mappedFolder = rule?.columnFolders?.[column];
   if (mappedFolder) {
-    const { folders } = await listAccountFolders();
-    const target = findFolderInAccount(folders, msg.folder?.accountId, "", mappedFolder);
+    const folderList = folders || (await listAccountFolders()).folders;
+    const target = findFolderInAccount(folderList, msg.folder?.accountId, "", mappedFolder);
     if (!target) return { applied: true, skipped: "target_folder_missing" };
     if (target.id !== msg.folder?.id) await mailbox.move(cfg, msg, target);
   }
   return { applied: true };
+}
+
+async function applyKanbanSideEffectsBatch(cfg, state, messageIds, column) {
+  if (cfg?.mailbox?.readOnly !== false) return { skipped: "read_only", applied: 0, failed: 0 };
+  const ids = (messageIds || []).filter(Boolean);
+  if (ids.length === 0) return { applied: 0, failed: 0 };
+  const { folders } = await listAccountFolders().catch(() => ({ folders: null }));
+  let applied = 0;
+  let failed = 0;
+  let firstSkipped = "";
+  for (const id of ids) {
+    try {
+      const r = await applyKanbanSideEffects(cfg, id, column, { state, folders });
+      if (r?.applied) applied++;
+      else if (r?.skipped && !firstSkipped) firstSkipped = r.skipped;
+    } catch (err) {
+      failed++;
+      if (!firstSkipped) firstSkipped = errorCode(err);
+    }
+  }
+  return { applied, failed, ...(firstSkipped ? { skipped: firstSkipped } : {}) };
 }
 
 // Writes text into an open compose window. Only the user's own part of the draft is replaced;
@@ -1135,26 +1156,43 @@ api.runtime.onMessage.addListener((msg) => {
         const cfg = await loadConfig();
         requireFeature(cfg, "triage");
         const res = await callNative("move_kanban", { messageId: msg.messageId, column: msg.column });
-        const effects = await applyKanbanSideEffects(cfg, msg.messageId, msg.column).catch((err) => ({ skipped: errorCode(err) }));
+        const effects = await applyKanbanSideEffects(cfg, msg.messageId, msg.column, { state: res?.state }).catch((err) => ({ skipped: errorCode(err) }));
         return { ...res, effects };
       })();
 
+    case "omathunder:moveKanbanBatch":
+      return (async () => {
+        const cfg = await loadConfig();
+        requireFeature(cfg, "triage");
+        const ids = Array.isArray(msg.messageIds) ? msg.messageIds.map(String).filter(Boolean) : [];
+        const res = await callNative("move_kanban_batch", { messageIds: ids, column: msg.column });
+        const effects = await applyKanbanSideEffectsBatch(cfg, res?.state, ids, msg.column).catch((err) => ({ skipped: errorCode(err) }));
+        if (res?.state) {
+          broadcastToUI({ type: "omathunder:stateChanged", state: res.state, barSummary: res.barSummary || null });
+        }
+        return { ...res, effects };
+      })();
+
+    case "omathunder:markCardsRead":
     case "omathunder:markColumnRead":
       return (async () => {
         const cfg = await loadConfig();
         requireFeature(cfg, "triage");
         if (cfg?.mailbox?.readOnly !== false) throw new PolicyError("read_only");
-        const column = String(msg.column || "done");
+        const isColumnCall = msg.type === "omathunder:markColumnRead";
+        const column = isColumnCall ? String(msg.column || "done") : String(msg.column || "");
+        const snap = await callNative("get_state").catch(() => null);
+        const clsMap = snap?.state?.classifications || {};
         let refs = Array.isArray(msg.items) ? msg.items : null;
         if (!refs) {
-          const snap = await callNative("get_state").catch(() => null);
-          refs = Object.values(snap?.state?.classifications || {})
-            .filter((c) => (c.kanbanColumn || "incoming") === column)
+          refs = Object.values(clsMap)
+            .filter((c) => !column || (c.kanbanColumn || "incoming") === column)
             .map((c) => ({
               messageId: c.messageId,
               headerMessageId: c.threadId,
               accountId: c.accountId,
               folderId: c.folderId,
+              kanbanColumn: c.kanbanColumn || "incoming",
             }));
         }
         let marked = 0;
@@ -1169,14 +1207,17 @@ api.runtime.onMessage.addListener((msg) => {
               skipped++;
               continue;
             }
+            const refId = ref?.messageId ? String(ref.messageId) : "";
+            const effectiveCol = ref?.kanbanColumn || clsMap[refId]?.kanbanColumn || column || "incoming";
+            const shouldClean = effectiveCol === "done" || (isColumnCall && column === "done");
             if (live.read) {
               alreadyRead++;
-              if (ref?.messageId) cleanedIds.push(String(ref.messageId));
+              if (refId && shouldClean) cleanedIds.push(refId);
               continue;
             }
             await mailbox.markRead(cfg, live, true);
             marked++;
-            if (ref?.messageId) cleanedIds.push(String(ref.messageId));
+            if (refId && shouldClean) cleanedIds.push(refId);
           } catch (err) {
             if (err instanceof PolicyError) skipped++;
             else failed++;
@@ -1184,7 +1225,7 @@ api.runtime.onMessage.addListener((msg) => {
         }
         let nextState = null;
         let removed = 0;
-        if (column === "done" && cleanedIds.length > 0) {
+        if (cleanedIds.length > 0) {
           nextState = await callNative("remove_classifications", { ids: cleanedIds }).catch(() => null);
           if (nextState?.state) {
             removed = cleanedIds.length;

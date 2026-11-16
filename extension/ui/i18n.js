@@ -42,6 +42,16 @@
       kanban_autosync_on: "Auto-Sync: AN",
       kanban_autosync_off: "Auto-Sync: AUS",
       kanban_autosync_title: "Board automatisch aktualisieren, sobald neue E-Mails ankommen",
+      kanban_sel_count: "{count} ausgewählt",
+      kanban_sel_card_title: "Karte auswählen (Shift für Bereich, Cmd/Ctrl für Mehrfachauswahl)",
+      kanban_sel_col_title: "Alle Karten in dieser Spalte auswählen / abwählen",
+      kanban_sel_move_lbl: "Verschieben:",
+      kanban_sel_mark_read: "✓ Gelesen",
+      kanban_sel_mark_read_title: "Ausgewählte Mails in Thunderbird als gelesen markieren (in „Erledigt“ auch vom Board räumen)",
+      kanban_sel_done_read: "✓ Erledigt & Gelesen",
+      kanban_sel_done_read_title: "Ausgewählte Karten nach „Erledigt“ verschieben, als gelesen markieren und vom Board räumen",
+      kanban_sel_clear: "Auswahl aufheben",
+      kanban_drag_multi: "{count} Karten",
 
       // Rules Table
       rules_new_title: "Neue Space ↔ Domain-Zuordnung",
@@ -481,6 +491,16 @@
       kanban_autosync_on: "Auto-Sync: ON",
       kanban_autosync_off: "Auto-Sync: OFF",
       kanban_autosync_title: "Automatically refresh the Kanban board when new mail arrives",
+      kanban_sel_count: "{count} selected",
+      kanban_sel_card_title: "Select card (Shift for range, Cmd/Ctrl for multi-select)",
+      kanban_sel_col_title: "Select / deselect all cards in this column",
+      kanban_sel_move_lbl: "Move to:",
+      kanban_sel_mark_read: "✓ Mark Read",
+      kanban_sel_mark_read_title: "Mark selected mails as read in Thunderbird (and clear Done cards from board)",
+      kanban_sel_done_read: "✓ Done & Read",
+      kanban_sel_done_read_title: "Move selected cards to Done, mark as read in Thunderbird, and clear from board",
+      kanban_sel_clear: "Clear",
+      kanban_drag_multi: "{count} cards",
 
       // Rules Table
       rules_new_title: "New Space ↔ Domain Mapping",

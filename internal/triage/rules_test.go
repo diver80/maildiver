@@ -308,3 +308,31 @@ func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
 	}
 }
 
+func TestStoreMoveKanbanBatch(t *testing.T) {
+	s := NewStoreAt(t.TempDir())
+	_, err := s.SaveClassifications([]Classification{
+		{MessageID: "m1", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
+		{MessageID: "m2", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
+		{MessageID: "m3", Bucket: BucketIncoming, KanbanColumn: "incoming", NeedsAttention: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.MoveKanbanBatch([]string{"m1", "m2", "missing", ""}, "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"m1", "m2"} {
+		c := st.Classifications[id]
+		if c.KanbanColumn != "done" || !c.PinnedColumn || c.Bucket != BucketDone || c.NeedsAttention {
+			t.Fatalf("expected %s moved & pinned to done, got %+v", id, c)
+		}
+	}
+	if got := st.Classifications["m3"].KanbanColumn; got != "incoming" {
+		t.Fatalf("expected m3 untouched in incoming, got %q", got)
+	}
+	if _, err := s.MoveKanbanBatch([]string{"m1"}, "invalid"); err == nil {
+		t.Fatalf("expected invalid column to fail")
+	}
+}
+

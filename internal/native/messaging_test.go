@@ -627,4 +627,42 @@ func TestRemoveClassificationsAndReadDoneFiltering(t *testing.T) {
 	}
 }
 
+func TestMoveKanbanBatchRPC(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := triage.NewStoreAt(t.TempDir())
+	h := NewHandler(store)
+	call := func(method string, params any) Response {
+		raw, _ := json.Marshal(params)
+		return h.Handle(context.Background(), Request{ID: method, Method: method, Params: raw})
+	}
+	if r := call("move_kanban_batch", map[string]any{"messageIds": []string{"a", "b"}, "column": "done"}); r.OK || r.Error != ErrTriageDisabled {
+		t.Fatalf("expected triage disabled error, got %+v", r)
+	}
+	if r := call("save_config", map[string]any{
+		"features": map[string]any{"triage": true},
+	}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	if _, err := store.SaveClassifications([]triage.Classification{
+		{MessageID: "a", Bucket: triage.BucketAction, KanbanColumn: "action", NeedsAttention: true},
+		{MessageID: "b", Bucket: triage.BucketAction, KanbanColumn: "action", NeedsAttention: true},
+		{MessageID: "c", Bucket: triage.BucketWaiting, KanbanColumn: "waiting"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := call("move_kanban_batch", map[string]any{"messageIds": []string{"a", "b"}, "column": "done"})
+	if !r.OK {
+		t.Fatalf("move_kanban_batch failed: %s", r.Error)
+	}
+	resMap := r.Result.(map[string]any)
+	st := resMap["state"].(triage.State)
+	if st.Classifications["a"].KanbanColumn != "done" || st.Classifications["b"].KanbanColumn != "done" {
+		t.Fatalf("expected a and b in done, got %+v", st.Classifications)
+	}
+	if st.Classifications["c"].KanbanColumn != "waiting" {
+		t.Fatalf("expected c untouched, got %+v", st.Classifications["c"])
+	}
+}
+
 

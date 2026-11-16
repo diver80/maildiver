@@ -91,6 +91,10 @@ let selectedAccountId = "ALL";
 let selectedSpace = "ALL";
 // Board card chosen for the assistant. null = use the mail currently open in Thunderbird.
 let selectedMessageId = inExtension ? null : "demo-1";
+// Cards selected via checkbox, Cmd/Ctrl+Click, or Shift+Click for batch drag/actions.
+let selectedCardIds = new Set();
+let lastSelectedAnchorId = null;
+let draggingCardIds = [];
 // In Thunderbird the Kanban gets full width by default; clicking a card or the topbar toggle opens the AI drawer.
 let assistantDrawerOpen = !inExtension;
 let lastReport = null;
@@ -386,6 +390,8 @@ function renderKanbanAccountNav() {
       currentView = "kanban";
       selectedAccountId = btn.dataset.kanbanAcc;
       selectedSpace = "ALL";
+      selectedCardIds = new Set();
+      lastSelectedAnchorId = null;
       if (selectedMessageId) {
         const cls = snapshot.state?.classifications?.[selectedMessageId];
         if (cls && cls.accountId && cls.accountId !== selectedAccountId) {
@@ -499,6 +505,160 @@ function renderSpaceFilterBar() {
   });
 }
 
+function clearCardSelection() {
+  selectedCardIds = new Set();
+  lastSelectedAnchorId = null;
+}
+
+function pruneSelectedCards() {
+  if (selectedCardIds.size === 0) return;
+  const visible = new Set(getFilteredItems().map((c) => c.messageId));
+  const next = new Set();
+  for (const id of selectedCardIds) {
+    if (visible.has(id)) next.add(id);
+  }
+  selectedCardIds = next;
+  if (lastSelectedAnchorId && !visible.has(lastSelectedAnchorId)) {
+    lastSelectedAnchorId = null;
+  }
+}
+
+async function markItemsAsRead(items, { column = "", button = null, buttonId = "", defaultLabel = "" } = {}) {
+  if (isReadOnly()) {
+    showMessage(t("err_read_only"), "warn");
+    return false;
+  }
+  if (!items || items.length === 0) return false;
+  if (button) {
+    button.disabled = true;
+    button.textContent = t("kanban_mark_read_working");
+  }
+  try {
+    const res = await api.runtime.sendMessage({
+      type: column ? "omathunder:markColumnRead" : "omathunder:markCardsRead",
+      column,
+      items: items.map((c) => ({
+        messageId: c.messageId,
+        headerMessageId: c.threadId || "",
+        accountId: c.accountId || "",
+        folderId: c.folderId || "",
+        kanbanColumn: c.kanbanColumn || "incoming",
+      })),
+    });
+    if (res?.state) {
+      snapshot.state = res.state;
+      if (res?.barSummary) snapshot.barSummary = res.barSummary;
+    } else {
+      await refreshSnapshot();
+    }
+    if (selectedMessageId && !snapshot.state?.classifications?.[selectedMessageId]) {
+      selectedMessageId = null;
+    }
+    pruneSelectedCards();
+    renderCounts();
+    renderSpaceFilterBar();
+    renderMain();
+    renderRightPane();
+    showMessage(t("kanban_mark_read_report", {
+      marked: res?.marked ?? 0,
+      alreadyRead: res?.alreadyRead ?? 0,
+      removed: res?.removed ?? 0,
+      skipped: res?.skipped ?? 0,
+    }), res?.failed ? "warn" : "ok");
+    return true;
+  } catch (err) {
+    showMessage(errText(err), "err");
+    return false;
+  } finally {
+    const liveBtn = buttonId ? document.getElementById(buttonId) : button;
+    if (liveBtn && defaultLabel) {
+      liveBtn.disabled = false;
+      liveBtn.textContent = defaultLabel;
+    }
+  }
+}
+
+function renderSelectionBar() {
+  const bar = document.getElementById("kanban-selection-bar");
+  if (!bar) return;
+  const kanbanReady = currentView === "kanban" && !standaloneMode() && feature("triage")
+    && !(inExtension && snapshot.connected && kanbanAccounts().length === 0);
+  if (!kanbanReady) {
+    bar.style.display = "none";
+    bar.innerHTML = "";
+    return;
+  }
+  pruneSelectedCards();
+  const visibleItems = getFilteredItems();
+  const selectedItems = visibleItems.filter((c) => selectedCardIds.has(c.messageId));
+  if (selectedItems.length === 0) {
+    bar.style.display = "none";
+    bar.innerHTML = "";
+    return;
+  }
+  const cols = getKanbanColumns();
+  const hasNotDone = selectedItems.some((c) => (c.kanbanColumn || "incoming") !== "done");
+  bar.style.display = "flex";
+  bar.innerHTML = `
+    <span class="oma-badge accent">${escapeHtml(t("kanban_sel_count", { count: selectedItems.length }))}</span>
+    <span class="oma-muted" style="font-size:11px;">${escapeHtml(t("kanban_sel_move_lbl"))}</span>
+    <div style="display:flex; gap:4px; flex-wrap:wrap; align-items:center;">
+      ${cols.map((col) => `<button class="mini-btn" data-sel-move-col="${col.id}">${escapeHtml(col.label)}</button>`).join("")}
+    </div>
+    ${inExtension ? `
+      <div style="display:flex; gap:6px; align-items:center; margin-left:4px;">
+        ${hasNotDone ? `<button class="oma-btn primary" id="btn-sel-done-read" style="padding:4px 10px; font-size:11.5px;" title="${escapeHtml(t("kanban_sel_done_read_title"))}">${escapeHtml(t("kanban_sel_done_read"))}</button>` : ""}
+        <button class="oma-btn" id="btn-sel-mark-read" style="padding:4px 10px; font-size:11.5px;" title="${escapeHtml(t("kanban_sel_mark_read_title"))}">${escapeHtml(t("kanban_sel_mark_read"))}</button>
+      </div>
+    ` : ""}
+    <button class="oma-btn ghost" id="btn-sel-clear" style="margin-left:auto; padding:4px 8px; font-size:11px;">${escapeHtml(t("kanban_sel_clear"))}</button>
+  `;
+
+  bar.querySelectorAll("[data-sel-move-col]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await moveKanbanCards(selectedItems.map((c) => c.messageId), btn.dataset.selMoveCol);
+    });
+  });
+
+  document.getElementById("btn-sel-mark-read")?.addEventListener("click", async (e) => {
+    await markItemsAsRead(selectedItems, {
+      button: e.currentTarget,
+      buttonId: "btn-sel-mark-read",
+      defaultLabel: t("kanban_sel_mark_read"),
+    });
+  });
+
+  document.getElementById("btn-sel-done-read")?.addEventListener("click", async (e) => {
+    if (isReadOnly()) {
+      showMessage(t("err_read_only"), "warn");
+      return;
+    }
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = t("kanban_mark_read_working");
+    try {
+      const ids = selectedItems.map((c) => c.messageId);
+      await moveKanbanCards(ids, "done", { silentRender: true });
+      const updatedItems = ids
+        .map((id) => snapshot.state?.classifications?.[id] || selectedItems.find((c) => c.messageId === id))
+        .filter(Boolean)
+        .map((c) => ({ ...c, kanbanColumn: "done" }));
+      await markItemsAsRead(updatedItems, { column: "done" });
+    } finally {
+      const liveBtn = document.getElementById("btn-sel-done-read");
+      if (liveBtn) {
+        liveBtn.disabled = false;
+        liveBtn.textContent = t("kanban_sel_done_read");
+      }
+    }
+  });
+
+  document.getElementById("btn-sel-clear")?.addEventListener("click", () => {
+    clearCardSelection();
+    renderMain();
+  });
+}
+
 function renderMain() {
   const container = document.getElementById("main-content");
   const titles = { kanban: t("view_kanban"), rules: t("view_rules"), archive: t("view_archive"), themes: t("view_themes") };
@@ -508,6 +668,7 @@ function renderMain() {
     : (titles[currentView] || "OmaThunder");
 
   if (standaloneMode() && currentView !== "themes") {
+    renderSelectionBar();
     container.innerHTML = optionalHostHtml();
     bindSettingsButtons(container);
     container.querySelector("[data-retry]")?.addEventListener("click", () => refreshSnapshot());
@@ -523,11 +684,13 @@ function renderMain() {
   }
 
   if ((currentView === "kanban" || currentView === "rules" || currentView === "archive") && !feature("triage")) {
+    renderSelectionBar();
     container.innerHTML = noticeHtml(t("feat_off_triage"));
     bindSettingsButtons(container);
     return;
   }
   if (currentView === "themes" && !feature("theme")) {
+    renderSelectionBar();
     container.innerHTML = noticeHtml(t("feat_off_theme"));
     bindSettingsButtons(container);
     return;
@@ -535,30 +698,49 @@ function renderMain() {
 
   if (currentView === "kanban") {
     if (inExtension && snapshot.connected && kanbanAccounts().length === 0) {
+      renderSelectionBar();
       container.innerHTML = noticeHtml(t("kanban_no_accounts"));
       bindSettingsButtons(container);
       return;
     }
     const items = getFilteredItems();
     const cols = getKanbanColumns();
+    pruneSelectedCards();
+    renderSelectionBar();
     const doneItems = items.filter((c) => (c.kanbanColumn || "incoming") === "done");
-    container.innerHTML = `<div class="kanban-board">${cols.map((col, idx) => {
-      const colItems = items.filter((c) => (c.kanbanColumn || "incoming") === col.id);
+    const colItemsByCol = new Map();
+    for (const col of cols) {
+      colItemsByCol.set(col.id, items.filter((c) => (c.kanbanColumn || "incoming") === col.id));
+    }
+    const visibleIds = items.map((c) => c.messageId);
+    const hasSelection = selectedCardIds.size > 0;
+
+    container.innerHTML = `<div class="kanban-board ${hasSelection ? "has-selection" : ""}">${cols.map((col, idx) => {
+      const colItems = colItemsByCol.get(col.id) || [];
+      const allColSelected = colItems.length > 0 && colItems.every((c) => selectedCardIds.has(c.messageId));
       const showMarkRead = col.id === "done" && colItems.length > 0 && inExtension;
       return `
         <div class="kanban-col" data-col="${col.id}">
           <div class="kanban-col-hdr">
-            <span>${escapeHtml(col.label)}</span>
+            <label class="kanban-col-title-wrap" title="${escapeHtml(colItems.length > 0 ? t("kanban_sel_col_title") : col.label)}">
+              ${colItems.length > 0 ? `<input type="checkbox" class="k-col-check" data-col-select="${col.id}" ${allColSelected ? "checked" : ""} />` : ""}
+              <span>${escapeHtml(col.label)}</span>
+            </label>
             <div style="display:flex; align-items:center; gap:5px;">
               ${showMarkRead ? `<button class="mini-btn" id="btn-done-mark-read" title="${escapeHtml(t("kanban_mark_done_read_title"))}">${escapeHtml(t("kanban_mark_done_read"))}</button>` : ""}
               <span class="nav-count">${colItems.length}</span>
             </div>
           </div>
           <div class="kanban-cards">
-            ${colItems.map((c) => `
-              <div class="k-card ${c.messageId === selectedMessageId ? "selected" : ""}" draggable="true" data-msgid="${escapeHtml(c.messageId)}">
+            ${colItems.map((c) => {
+              const isMultiSelected = selectedCardIds.has(c.messageId);
+              return `
+              <div class="k-card ${c.messageId === selectedMessageId ? "selected" : ""} ${isMultiSelected ? "multi-selected" : ""}" draggable="true" data-msgid="${escapeHtml(c.messageId)}" data-col-id="${col.id}">
                 <div class="k-card-top">
-                  ${c.space ? `<span class="oma-badge accent">${escapeHtml(c.space)}</span>` : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`}
+                  <div class="k-card-top-left">
+                    <input type="checkbox" class="k-card-check" data-check-id="${escapeHtml(c.messageId)}" data-col-id="${col.id}" ${isMultiSelected ? "checked" : ""} title="${escapeHtml(t("kanban_sel_card_title"))}" />
+                    ${c.space ? `<span class="oma-badge accent">${escapeHtml(c.space)}</span>` : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`}
+                  </div>
                   <span class="oma-badge ${c.urgency === "high" ? "err" : c.urgency === "medium" ? "warn" : "ok"}">${escapeHtml(c.urgency || "low")}</span>
                 </div>
                 <div class="k-card-title">${escapeHtml(c.subject)}</div>
@@ -577,76 +759,108 @@ function renderMain() {
                   </div>
                 </div>
               </div>
-            `).join("")}
+            `;
+            }).join("")}
           </div>
         </div>
       `;
     }).join("")}</div>`;
 
+    container.querySelectorAll("[data-col-select]").forEach((cb) => {
+      const colId = cb.dataset.colSelect;
+      const colIds = (colItemsByCol.get(colId) || []).map((c) => c.messageId);
+      const selectedInCol = colIds.filter((id) => selectedCardIds.has(id)).length;
+      cb.indeterminate = selectedInCol > 0 && selectedInCol < colIds.length;
+      cb.addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectedCardIds = window.OmaCore?.toggleColumnSelection
+          ? window.OmaCore.toggleColumnSelection(selectedCardIds, colIds)
+          : new Set();
+        lastSelectedAnchorId = null;
+        renderMain();
+      });
+    });
+
     document.getElementById("btn-done-mark-read")?.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const btn = e.currentTarget;
-      if (isReadOnly()) {
-        showMessage(t("err_read_only"), "warn");
-        return;
-      }
-      btn.disabled = true;
-      btn.textContent = t("kanban_mark_read_working");
-      try {
-        const res = await api.runtime.sendMessage({
-          type: "omathunder:markColumnRead",
-          column: "done",
-          items: doneItems.map((c) => ({
-            messageId: c.messageId,
-            headerMessageId: c.threadId || "",
-            accountId: c.accountId || "",
-            folderId: c.folderId || "",
-          })),
-        });
-        if (res?.state) {
-          snapshot.state = res.state;
-          if (res?.barSummary) snapshot.barSummary = res.barSummary;
-        } else {
-          await refreshSnapshot();
+      await markItemsAsRead(doneItems, {
+        column: "done",
+        button: e.currentTarget,
+        buttonId: "btn-done-mark-read",
+        defaultLabel: t("kanban_mark_done_read"),
+      });
+    });
+
+    container.querySelectorAll(".k-card-check").forEach((cb) => {
+      cb.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const msgId = cb.dataset.checkId;
+        const colOrdered = (colItemsByCol.get(cb.dataset.colId) || []).map((c) => c.messageId);
+        if (e.shiftKey && window.OmaCore?.selectCardRange) {
+          selectedCardIds = window.OmaCore.selectCardRange(selectedCardIds, colOrdered, lastSelectedAnchorId || selectedMessageId, msgId);
+        } else if (window.OmaCore?.toggleCardSelection) {
+          selectedCardIds = window.OmaCore.toggleCardSelection(selectedCardIds, msgId);
         }
-        if (selectedMessageId && !snapshot.state?.classifications?.[selectedMessageId]) {
-          selectedMessageId = null;
-        }
-        renderCounts();
-        renderSpaceFilterBar();
+        lastSelectedAnchorId = msgId;
         renderMain();
-        renderRightPane();
-        showMessage(t("kanban_mark_read_report", {
-          marked: res?.marked ?? 0,
-          alreadyRead: res?.alreadyRead ?? 0,
-          removed: res?.removed ?? 0,
-          skipped: res?.skipped ?? 0,
-        }), res?.failed ? "warn" : "ok");
-      } catch (err) {
-        showMessage(errText(err), "err");
-      } finally {
-        const liveBtn = document.getElementById("btn-done-mark-read");
-        if (liveBtn) {
-          liveBtn.disabled = false;
-          liveBtn.textContent = t("kanban_mark_done_read");
-        }
-      }
+      });
     });
 
     container.querySelectorAll(".k-card").forEach((card) => {
-      card.addEventListener("click", () => {
-        if (selectedMessageId === card.dataset.msgid && assistantDrawerOpen) {
+      card.addEventListener("click", (e) => {
+        const msgId = card.dataset.msgid;
+        const colOrdered = (colItemsByCol.get(card.dataset.colId) || []).map((c) => c.messageId);
+        if (e.shiftKey && window.OmaCore?.selectCardRange) {
+          selectedCardIds = window.OmaCore.selectCardRange(selectedCardIds, colOrdered, lastSelectedAnchorId || selectedMessageId, msgId);
+          lastSelectedAnchorId = msgId;
+          renderMain();
+          return;
+        }
+        if ((e.metaKey || e.ctrlKey) && window.OmaCore?.toggleCardSelection) {
+          selectedCardIds = window.OmaCore.toggleCardSelection(selectedCardIds, msgId);
+          lastSelectedAnchorId = msgId;
+          renderMain();
+          return;
+        }
+        lastSelectedAnchorId = msgId;
+        if (selectedMessageId === msgId && assistantDrawerOpen) {
           selectedMessageId = null;
           assistantDrawerOpen = false;
         } else {
-          selectedMessageId = card.dataset.msgid;
+          selectedMessageId = msgId;
           assistantDrawerOpen = true;
         }
         renderMain();
         renderRightPane();
       });
       card.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("text/plain", card.dataset.msgid);
+        const msgId = card.dataset.msgid;
+        const dragIds = window.OmaCore?.resolveDraggedCardIds
+          ? window.OmaCore.resolveDraggedCardIds(msgId, selectedCardIds, visibleIds)
+          : [msgId];
+        draggingCardIds = dragIds;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("application/x-omathunder-cards", JSON.stringify(dragIds));
+          e.dataTransfer.setData("text/plain", msgId);
+          if (dragIds.length > 1 && e.dataTransfer.setDragImage) {
+            const ghost = document.createElement("div");
+            ghost.className = "drag-ghost-pill";
+            ghost.textContent = t("kanban_drag_multi", { count: dragIds.length });
+            document.body.appendChild(ghost);
+            e.dataTransfer.setDragImage(ghost, 14, 14);
+            setTimeout(() => ghost.remove(), 0);
+          }
+        }
+        const dragSet = new Set(dragIds);
+        container.querySelectorAll(".k-card").forEach((el) => {
+          if (dragSet.has(el.dataset.msgid)) el.classList.add("dragging");
+        });
+      });
+      card.addEventListener("dragend", () => {
+        draggingCardIds = [];
+        container.querySelectorAll(".k-card.dragging").forEach((el) => el.classList.remove("dragging"));
+        container.querySelectorAll(".kanban-col.drag-over").forEach((el) => el.classList.remove("drag-over"));
       });
     });
 
@@ -656,8 +870,23 @@ function renderMain() {
       colEl.addEventListener("drop", async (e) => {
         e.preventDefault();
         colEl.classList.remove("drag-over");
-        const msgId = e.dataTransfer.getData("text/plain");
-        if (msgId) await moveKanbanCard(msgId, colEl.dataset.col);
+        let dragIds = [];
+        const rawJson = e.dataTransfer?.getData("application/x-omathunder-cards");
+        if (rawJson) {
+          try {
+            const parsed = JSON.parse(rawJson);
+            if (Array.isArray(parsed)) dragIds = parsed.map(String).filter(Boolean);
+          } catch (_) {}
+        }
+        if (dragIds.length === 0 && draggingCardIds.length > 0) {
+          dragIds = [...draggingCardIds];
+        }
+        if (dragIds.length === 0) {
+          const single = e.dataTransfer?.getData("text/plain");
+          if (single) dragIds = [single];
+        }
+        draggingCardIds = [];
+        if (dragIds.length > 0) await moveKanbanCards(dragIds, colEl.dataset.col);
       });
     });
 
@@ -680,6 +909,8 @@ function renderMain() {
     });
     return;
   }
+
+  renderSelectionBar();
 
   if (currentView === "rules") {
     const rules = snapshot.config?.rules || [];
@@ -1536,21 +1767,41 @@ function renderScanReport() {
   });
 }
 
-async function moveKanbanCard(messageId, column) {
+async function moveKanbanCards(messageIds, column, { silentRender = false } = {}) {
+  const uniqueIds = [...new Set((messageIds || []).map(String).filter(Boolean))];
+  const idsToMove = uniqueIds.filter((id) => {
+    const cls = snapshot.state?.classifications?.[id];
+    return cls && (cls.kanbanColumn || "incoming") !== column;
+  });
+  if (idsToMove.length === 0) return;
+
   if (inExtension && snapshot.connected) {
     try {
-      const res = await api.runtime.sendMessage({ type: "omathunder:moveKanban", messageId, column });
+      const msg = idsToMove.length === 1
+        ? { type: "omathunder:moveKanban", messageId: idsToMove[0], column }
+        : { type: "omathunder:moveKanbanBatch", messageIds: idsToMove, column };
+      const res = await api.runtime.sendMessage(msg);
       if (res?.state) snapshot.state = res.state;
       const skipped = res?.effects?.skipped;
       if (skipped && skipped !== "read_only") showMessage(errText(new Error(skipped)), "warn");
     } catch (err) {
       showMessage(errText(err), "err");
     }
-  } else if (snapshot.state?.classifications?.[messageId]) {
-    snapshot.state.classifications[messageId].kanbanColumn = column;
+  } else {
+    for (const id of idsToMove) {
+      if (snapshot.state?.classifications?.[id]) {
+        snapshot.state.classifications[id].kanbanColumn = column;
+      }
+    }
   }
-  renderCounts();
-  renderMain();
+  if (!silentRender) {
+    renderCounts();
+    renderMain();
+  }
+}
+
+async function moveKanbanCard(messageId, column) {
+  return moveKanbanCards([messageId], column);
 }
 
 async function saveRules(nextRules, autoCreateFolders = false) {
@@ -1791,6 +2042,7 @@ async function init() {
       document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       currentView = btn.dataset.view;
+      clearCardSelection();
       if (currentView === "kanban") {
         selectedAccountId = "ALL";
         selectedSpace = "ALL";
@@ -1807,6 +2059,13 @@ async function init() {
       }
       renderMain();
     });
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && currentView === "kanban" && selectedCardIds.size > 0) {
+      clearCardSelection();
+      renderMain();
+    }
   });
 
   document.getElementById("btn-toggle-assistant")?.addEventListener("click", () => {

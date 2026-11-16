@@ -539,6 +539,26 @@ test("isOpenKanbanCard and countOpenKanban exclude Done cards across accounts", 
   eq(core.countOpenKanban([{ messageId: "x", accountId: "list", kanbanColumn: "done" }], "list"), 0);
 });
 
+test("kanban multiselect helpers handle toggle, shift-range, column select-all, and drag resolution", () => {
+  let sel = new Set();
+  sel = core.toggleCardSelection(sel, "c2");
+  eq([...sel], ["c2"]);
+  sel = core.selectCardRange(sel, ["c1", "c2", "c3", "c4", "c5"], "c2", "c4");
+  eq([...sel].sort(), ["c2", "c3", "c4"]);
+
+  // Dragging one of the selected cards drags all selected visible cards; dragging an unselected card drags only it.
+  eq(core.resolveDraggedCardIds("c3", sel, ["c1", "c2", "c3", "c4", "c5"]).sort(), ["c2", "c3", "c4"]);
+  eq(core.resolveDraggedCardIds("c1", sel, ["c1", "c2", "c3", "c4", "c5"]), ["c1"]);
+  // Hidden cards in selection (from another space/account filter) are ignored when dragging visible cards.
+  eq(core.resolveDraggedCardIds("c3", new Set(["c2", "c3", "hidden-1"]), ["c1", "c2", "c3"]).sort(), ["c2", "c3"]);
+
+  // Column toggle selects all remaining cards in column, and clicking again deselects the whole column.
+  sel = core.toggleColumnSelection(sel, ["c1", "c2", "c3", "c4", "c5"]);
+  eq([...sel].sort(), ["c1", "c2", "c3", "c4", "c5"]);
+  sel = core.toggleColumnSelection(sel, ["c1", "c2", "c3", "c4", "c5"]);
+  eq([...sel], []);
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

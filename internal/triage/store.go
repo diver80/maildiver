@@ -271,7 +271,33 @@ func validKanbanColumn(col string) bool {
 	}
 }
 
+func applyKanbanColumn(c *Classification, column string) {
+	c.KanbanColumn = column
+	c.PinnedColumn = true
+	switch column {
+	case "action":
+		c.Bucket = BucketAction
+		c.NeedsAttention = true
+	case "waiting":
+		c.Bucket = BucketWaiting
+		c.NeedsAttention = false
+	case "invoice":
+		c.Bucket = BucketInvoice
+		c.NeedsAttention = true
+	case "done":
+		c.Bucket = BucketDone
+		c.NeedsAttention = false
+	case "incoming":
+		c.Bucket = BucketIncoming
+		c.NeedsAttention = true
+	}
+}
+
 func (s *Store) MoveKanban(messageID, column string) (State, error) {
+	return s.MoveKanbanBatch([]string{messageID}, column)
+}
+
+func (s *Store) MoveKanbanBatch(messageIDs []string, column string) (State, error) {
 	if !validKanbanColumn(column) {
 		return State{}, fmt.Errorf("invalid kanban column: %s", column)
 	}
@@ -281,27 +307,19 @@ func (s *Store) MoveKanban(messageID, column string) (State, error) {
 	if err != nil {
 		return st, err
 	}
-	if c, ok := st.Classifications[messageID]; ok {
-		c.KanbanColumn = column
-		c.PinnedColumn = true
-		switch column {
-		case "action":
-			c.Bucket = BucketAction
-			c.NeedsAttention = true
-		case "waiting":
-			c.Bucket = BucketWaiting
-			c.NeedsAttention = false
-		case "invoice":
-			c.Bucket = BucketInvoice
-			c.NeedsAttention = true
-		case "done":
-			c.Bucket = BucketDone
-			c.NeedsAttention = false
-		case "incoming":
-			c.Bucket = BucketIncoming
-			c.NeedsAttention = true
+	changed := false
+	for _, messageID := range messageIDs {
+		if messageID == "" {
+			continue
 		}
-		st.Classifications[messageID] = c
+		if c, ok := st.Classifications[messageID]; ok {
+			applyKanbanColumn(&c, column)
+			st.Classifications[messageID] = c
+			changed = true
+		}
+	}
+	if !changed {
+		return st, nil
 	}
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.writeLocked(st); err != nil {
