@@ -76,6 +76,9 @@ type MailboxPolicy struct {
 	TriageAccountIDs []string `json:"triageAccountIds"`
 	// KanbanAccountIDs lists the subset of enabled accounts scanned and displayed on the Kanban board.
 	KanbanAccountIDs []string `json:"kanbanAccountIds"`
+	// KanbanFolders maps accountID -> enabled level-1 folder paths (each scanned recursively except INBOX itself).
+	// When an account is absent from this map, only its INBOX is scanned (legacy default).
+	KanbanFolders map[string][]string `json:"kanbanFolders,omitempty"`
 	// AutoMoveOnlyUnread restricts deterministic auto-moves to unread inbox mails.
 	AutoMoveOnlyUnread bool `json:"autoMoveOnlyUnread"`
 	// ScanOnNewMail runs a triage scan automatically when new mail arrives (same limits as a manual scan).
@@ -121,6 +124,15 @@ func (p MailboxPolicy) KanbanEnabled(accountID string) bool {
 		}
 	}
 	return false
+}
+
+// HasKanbanFolders reports whether per-account folder selection is configured for accountID.
+func (p MailboxPolicy) HasKanbanFolders(accountID string) bool {
+	if p.KanbanFolders == nil {
+		return false
+	}
+	_, ok := p.KanbanFolders[accountID]
+	return ok
 }
 
 // CanWrite reports whether OmaThunder may change mails, folders or tags in the given account.
@@ -311,6 +323,9 @@ func ApplyPatch(base Config, patch []byte) (Config, error) {
 			}
 			if _, ok := mb["kanbanAccountIds"]; ok {
 				base.Mailbox.KanbanAccountIDs = nil
+			}
+			if _, ok := mb["kanbanFolders"]; ok {
+				base.Mailbox.KanbanFolders = nil
 			}
 		}
 	}

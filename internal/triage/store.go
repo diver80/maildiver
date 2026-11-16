@@ -216,10 +216,10 @@ func (s *Store) RemoveClassifications(ids []string) (State, error) {
 }
 
 // maxClassifications bounds the board so the state stays far below Thunderbird's 1 MB message limit.
-const maxClassifications = 400
+const maxClassifications = 800
 
 // pruneClassifications keeps the newest mails (by date) and drops the oldest ones beyond the limit.
-// Cards the user placed manually are kept as long as possible.
+// Open cards and cards the user placed manually are kept ahead of older done cards.
 func pruneClassifications(st *State, limit int) {
 	if len(st.Classifications) <= limit {
 		return
@@ -230,6 +230,11 @@ func pruneClassifications(st *State, limit int) {
 	}
 	sort.Slice(ids, func(i, j int) bool {
 		a, b := st.Classifications[ids[i]], st.Classifications[ids[j]]
+		aOpen := a.KanbanColumn != "done"
+		bOpen := b.KanbanColumn != "done"
+		if aOpen != bOpen {
+			return aOpen
+		}
 		if a.PinnedColumn != b.PinnedColumn {
 			return a.PinnedColumn
 		}

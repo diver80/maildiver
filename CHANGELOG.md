@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.9 (2026-11-16)
+
+### Features & Improvements
+- **Ebene-1-Unterordner im Kanban (Einstellungen + Sidebar + Scan)**:
+  - Unter *Konten & Triage* lassen sich pro Konto `Inbox` sowie alle direkten Ebene-1-Unterordner (inkl. *Alle* / *Nur Inbox*) gezielt für das Kanban-Board aktivieren (`mailbox.kanbanFolders`).
+  - Aktivierte Ebene-1-Ordner erscheinen verschachtelt mit Open-Count unter dem Konto in der Sidebar: Klick auf das Konto zeigt alle aktivierten Ordner gemeinsam, Klick auf einen Ordner filtert gezielt auf diesen Ordner (inkl. Unterordner).
+- **Alle ungelesenen Mails laden & rekursiver Ebene-2-Scan**:
+  - Ungelesene Mails in aktivierten Ordnern werden ab sofort vollständig ohne `scanLimit`/`scanDays`-Deckelung geladen (`selectScanMessages`); die Grenzen gelten nur noch für gelesene Mails.
+  - Ebene-2+-Unterordner werden rekursiv gescannt und Ordner wie `todo`/`action`, `waiting`/`wartet` sowie `done`/`erledigt` automatisch in die passende Kanban-Spalte einsortiert (`FolderKanbanColumn`), während neutrale Unterordner (z. B. `Reise`) regulär klassifiziert werden. Das Board-Limit wurde auf 800 Karten erweitert.
+- **Volle Spalten-Dropzone & Direkt-Multiselect per `Shift+Click`**:
+  - Alle 5 Kanban-Spalten füllen die gesamte Board-Höhe und reagieren ohne Flackern über die volle Höhe als Drag-and-Drop-Zielzone.
+  - `Shift+Click` (Bereich) und `Cmd/Ctrl+Click` (einzeln) funktionieren direkt auf den Karten ohne Textselektion und ohne die Checkbox treffen zu müssen (die zudem auf `15px` vergrößert wurde).
+
 ## 0.2.8 (2026-11-16)
 
 ### Features

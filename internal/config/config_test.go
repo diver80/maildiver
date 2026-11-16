@@ -117,3 +117,33 @@ func TestMailboxPolicy(t *testing.T) {
 		t.Fatal("read-only must block writes")
 	}
 }
+
+func TestKanbanFoldersPatchAndPolicy(t *testing.T) {
+	base := Default()
+	base.Mailbox.KanbanFolders = map[string][]string{
+		"a1": {"INBOX", "INBOX/atlassian", "INBOX/avono"},
+		"a2": {"INBOX"},
+	}
+	if !base.Mailbox.HasKanbanFolders("a1") || base.Mailbox.HasKanbanFolders("missing") {
+		t.Fatalf("unexpected HasKanbanFolders result: %+v", base.Mailbox.KanbanFolders)
+	}
+
+	// Patching an unrelated mailbox field preserves KanbanFolders.
+	kept, err := ApplyPatch(base, []byte(`{"mailbox":{"scanOnNewMail":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.Mailbox.KanbanFolders["a1"]) != 3 || len(kept.Mailbox.KanbanFolders["a2"]) != 1 {
+		t.Fatalf("kanbanFolders should be preserved when absent from patch: %+v", kept.Mailbox.KanbanFolders)
+	}
+
+	// Patching kanbanFolders replaces the map cleanly instead of keeping deleted entries.
+	replaced, err := ApplyPatch(base, []byte(`{"mailbox":{"kanbanFolders":{"a1":["INBOX/avono"]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replaced.Mailbox.KanbanFolders) != 1 || len(replaced.Mailbox.KanbanFolders["a1"]) != 1 || replaced.Mailbox.KanbanFolders["a1"][0] != "INBOX/avono" {
+		t.Fatalf("kanbanFolders not cleanly replaced: %+v", replaced.Mailbox.KanbanFolders)
+	}
+}
+

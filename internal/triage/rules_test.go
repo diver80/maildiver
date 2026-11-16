@@ -336,3 +336,69 @@ func TestStoreMoveKanbanBatch(t *testing.T) {
 	}
 }
 
+func TestFolderKanbanColumnMapping(t *testing.T) {
+	cases := []struct {
+		folder string
+		col    string
+		ok     bool
+	}{
+		{"INBOX/avono/todo", "action", true},
+		{"INBOX/avono/To-Do", "action", true},
+		{"INBOX/Helvetia/waiting", "waiting", true},
+		{"INBOX/Helvetia/Wartet", "waiting", true},
+		{"INBOX/REWE/done", "done", true},
+		{"INBOX/REWE/Erledigt", "done", true},
+		{"INBOX/avono/Reise", "", false},
+		{"INBOX/avono/Teams 26", "", false},
+		{"INBOX/atlassian", "", false},
+		{"INBOX", "", false},
+	}
+	for _, tc := range cases {
+		col, ok := FolderKanbanColumn(tc.folder)
+		if ok != tc.ok || col != tc.col {
+			t.Fatalf("FolderKanbanColumn(%q) = (%q, %v), want (%q, %v)", tc.folder, col, ok, tc.col, tc.ok)
+		}
+	}
+
+	cTodo, matched := EvaluateStage0(MessageInput{
+		ID:      "todo-1",
+		Folder:  "INBOX/avono/todo",
+		Subject: "Bitte kurz pruefen",
+		From:    "max@avono.de",
+		Unread:  true,
+	}, true, nil)
+	if matched || cTodo.KanbanColumn != "action" || cTodo.Bucket != BucketAction || !cTodo.NeedsAttention {
+		t.Fatalf("expected todo subfolder mail to pre-set action column on base, got matched=%v %+v", matched, cTodo)
+	}
+
+	cWait, matched := EvaluateStage0(MessageInput{
+		ID:      "wait-1",
+		Folder:  "INBOX/Helvetia/waiting",
+		Subject: "Angebot versendet",
+		From:    "ich@avono.de",
+		Unread:  false,
+	}, true, nil)
+	if matched || cWait.KanbanColumn != "waiting" || cWait.Bucket != BucketWaiting || cWait.NeedsAttention {
+		t.Fatalf("expected waiting subfolder mail to pre-set waiting column on base, got matched=%v %+v", matched, cWait)
+	}
+
+	// Neutral subfolders like "Reise" must leave KanbanColumn empty for Stage 1/fallback.
+	cOther, matchedOther := EvaluateStage0(MessageInput{
+		ID:      "reise-1",
+		Folder:  "INBOX/avono/Reise",
+		Subject: "Hotelbuchung Rueckfrage",
+		From:    "kollege@avono.de",
+		Unread:  true,
+	}, true, nil)
+	if matchedOther || cOther.KanbanColumn != "" {
+		t.Fatalf("expected neutral subfolder to continue to Stage 1 without column override, got matched=%v %+v", matchedOther, cOther)
+	}
+
+	// Already classified invoice gets ApplyFolderKanbanColumn applied when placed into todo.
+	inv := Classification{MessageID: "i1", Bucket: BucketInvoice, KanbanColumn: "invoice"}
+	if !ApplyFolderKanbanColumn(&inv, "INBOX/avono/todo") || inv.KanbanColumn != "action" {
+		t.Fatalf("expected ApplyFolderKanbanColumn to map todo to action, got %+v", inv)
+	}
+}
+
+

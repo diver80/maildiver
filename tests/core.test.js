@@ -559,6 +559,62 @@ test("kanban multiselect helpers handle toggle, shift-range, column select-all, 
   eq([...sel], []);
 });
 
+test("kanbanFolders selects INBOX non-recursively and level-1 folders recursively", () => {
+  const treeFolders = [
+    { id: "av:/INBOX", accountId: "av", name: "Posteingang", path: "INBOX", type: "inbox" },
+    { id: "av:/INBOX/atlassian", accountId: "av", name: "atlassian", path: "INBOX/atlassian" },
+    { id: "av:/INBOX/avono", accountId: "av", name: "avono", path: "INBOX/avono" },
+    { id: "av:/INBOX/avono/todo", accountId: "av", name: "todo", path: "INBOX/avono/todo" },
+    { id: "av:/INBOX/avono/Reise", accountId: "av", name: "Reise", path: "INBOX/avono/Reise" },
+    { id: "av:/INBOX/Helvetia", accountId: "av", name: "Helvetia", path: "INBOX/Helvetia" },
+    { id: "av:/Sent", accountId: "av", name: "Gesendet", path: "Sent", type: "sent" },
+  ];
+
+  eq(core.listInboxLevel1Folders(treeFolders, "av").map((f) => f.name), ["atlassian", "avono", "Helvetia"]);
+  eq(core.level1FolderName("INBOX/avono/todo"), "avono");
+  eq(core.level1FolderName("INBOX"), "");
+  eq(core.relativeFolderLabel("INBOX/avono/todo"), "avono/todo");
+  eq(core.relativeFolderLabel("INBOX"), "INBOX");
+
+  const cfg = {
+    mailbox: {
+      triageAccountIds: ["av"],
+      kanbanAccountIds: ["av"],
+      kanbanFolders: { av: ["INBOX", "INBOX/avono"] },
+    },
+    rules: [],
+  };
+  eq(
+    core.selectScanFolders(cfg, treeFolders).map((f) => f.id),
+    ["av:/INBOX", "av:/INBOX/avono", "av:/INBOX/avono/todo", "av:/INBOX/avono/Reise"],
+  );
+
+  // Only INBOX selected -> never pulls INBOX/atlassian or INBOX/avono automatically.
+  const inboxOnlyCfg = {
+    mailbox: {
+      triageAccountIds: ["av"],
+      kanbanAccountIds: ["av"],
+      kanbanFolders: { av: ["INBOX"] },
+    },
+    rules: [],
+  };
+  eq(core.selectScanFolders(inboxOnlyCfg, treeFolders).map((f) => f.id), ["av:/INBOX"]);
+});
+
+test("selectScanMessages keeps ALL unread mails regardless of limit/since and caps read mails", () => {
+  const since = new Date("2026-10-15T00:00:00Z");
+  const msgs = [
+    { id: 1, date: "2024-01-10T10:00:00Z", read: false }, // old unread -> MUST be kept
+    { id: 2, date: "2026-11-10T10:00:00Z", read: false }, // recent unread -> kept
+    { id: 3, date: "2026-11-09T10:00:00Z", read: false }, // recent unread -> kept
+    { id: 2, date: "2026-11-10T10:00:00Z", read: false }, // duplicate ID -> deduped
+    { id: 4, date: "2026-11-12T10:00:00Z", read: true },  // newest read -> kept
+    { id: 5, date: "2026-11-01T10:00:00Z", read: true },  // 2nd read -> dropped with limit=1
+    { id: 6, date: "2025-05-01T10:00:00Z", read: true },  // old read -> dropped by since
+  ];
+  eq(core.selectScanMessages(msgs, since, 1).map((m) => m.id), [2, 3, 1, 4]);
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

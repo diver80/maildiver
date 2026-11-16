@@ -77,12 +77,89 @@
     return strict ? null : list[0] || null;
   }
 
-  // Folders a Kanban triage scan may read: INBOX of kanban-enabled accounts plus rule folders (with subfolders).
+  function folderMatchesSubtree(folderPath, rootPath) {
+    const p = cleanPath(folderPath).toLowerCase();
+    const r = cleanPath(rootPath).toLowerCase();
+    return Boolean(r) && (p === r || p.startsWith(`${r}/`));
+  }
+
+  function findAccountInbox(folders, accountId) {
+    if (!accountId) return null;
+    return (folders || []).find((f) => f.accountId === accountId && isInboxFolder(f)) || null;
+  }
+
+  // Returns direct level-1 subfolders under the account's INBOX (e.g. INBOX/atlassian, INBOX/avono).
+  function listInboxLevel1Folders(folders, accountId) {
+    const inbox = findAccountInbox(folders, accountId);
+    if (!inbox) return [];
+    const inboxClean = cleanPath(inbox.path);
+    const inboxLower = inboxClean.toLowerCase();
+    if (!inboxLower) return [];
+    const prefix = `${inboxLower}/`;
+    const inboxSegCount = inboxClean.split("/").filter(Boolean).length;
+    return (folders || [])
+      .filter((f) => {
+        if (f.accountId !== accountId || isInboxFolder(f)) return false;
+        const p = cleanPath(f.path);
+        const lower = p.toLowerCase();
+        if (!lower.startsWith(prefix)) return false;
+        const segs = p.split("/").filter(Boolean);
+        return segs.length === inboxSegCount + 1;
+      })
+      .sort((a, b) => String(a.name || a.path).localeCompare(String(b.name || b.path), undefined, { sensitivity: "base" }));
+  }
+
+  // Returns the level-1 folder display name when a mail lives inside INBOX/<level1>/...
+  function level1FolderName(folderPath) {
+    const clean = cleanPath(folderPath);
+    if (!clean) return "";
+    const parts = clean.split("/").filter(Boolean);
+    if (parts.length >= 2 && parts[0].toLowerCase() === "inbox") return parts[1];
+    return "";
+  }
+
+  function relativeFolderLabel(folderPath) {
+    const clean = cleanPath(folderPath);
+    if (!clean) return "";
+    const parts = clean.split("/").filter(Boolean);
+    if (parts.length >= 2 && parts[0].toLowerCase() === "inbox") return parts.slice(1).join("/");
+    return clean;
+  }
+
+  // Folders a Kanban triage scan may read:
+  // - Per-account kanbanFolders (INBOX matches only itself; level-1 folders match recursively),
+  //   or INBOX only when kanbanFolders has no entry for that account yet.
+  // - Plus rule folders with includeInScan (with subfolders), strictly within kanban-enabled accounts.
   function selectScanFolders(cfg, folders) {
     const enabled = kanbanAccountIds(cfg);
     const scan = new Map();
-    for (const f of folders) {
-      if (enabled.has(f.accountId) && isInboxFolder(f)) scan.set(f.id, f);
+    const kanbanFoldersMap = cfg?.mailbox?.kanbanFolders;
+    const hasConfiguredMap = kanbanFoldersMap && typeof kanbanFoldersMap === "object";
+
+    for (const accId of enabled) {
+      const configured = hasConfiguredMap && Object.prototype.hasOwnProperty.call(kanbanFoldersMap, accId)
+        ? kanbanFoldersMap[accId]
+        : null;
+      const accFolders = (folders || []).filter((f) => f.accountId === accId);
+      if (Array.isArray(configured)) {
+        const inbox = findAccountInbox(accFolders, accId);
+        const inboxLower = inbox ? cleanPath(inbox.path).toLowerCase() : "inbox";
+        for (const rawTarget of configured) {
+          const target = cleanPath(rawTarget).toLowerCase();
+          if (!target) continue;
+          if (target === "inbox" || target === inboxLower) {
+            if (inbox) scan.set(inbox.id, inbox);
+            continue;
+          }
+          for (const f of accFolders) {
+            if (folderMatchesSubtree(f.path, target)) scan.set(f.id, f);
+          }
+        }
+      } else {
+        for (const f of accFolders) {
+          if (isInboxFolder(f)) scan.set(f.id, f);
+        }
+      }
     }
     for (const rule of cfg?.rules || []) {
       if (!rule.includeInScan) continue;
@@ -91,8 +168,7 @@
       for (const f of folders) {
         if (!enabled.has(f.accountId)) continue;
         if (rule.accountId && f.accountId !== rule.accountId) continue;
-        const path = cleanPath(f.path).toLowerCase();
-        if (path === base || path.startsWith(`${base}/`)) scan.set(f.id, f);
+        if (folderMatchesSubtree(f.path, base)) scan.set(f.id, f);
       }
     }
     return [...scan.values()];
@@ -104,6 +180,26 @@
       .filter((m) => !m.date || new Date(m.date) >= since)
       .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
       .slice(0, limit);
+  }
+
+  // Selects ALL unread mails (newest-first, ignoring limit/since) plus up to `limit` newest read mails within `since`.
+  function selectScanMessages(messages, since, limit) {
+    const byDateDesc = (a, b) => new Date(b.date || 0) - new Date(a.date || 0);
+    const seen = new Set();
+    const deduped = [];
+    for (const m of messages || []) {
+      if (!m) continue;
+      const key = m.id !== undefined && m.id !== null ? String(m.id) : "";
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      deduped.push(m);
+    }
+    const unread = deduped.filter((m) => !m.read).sort(byDateDesc);
+    const read = deduped
+      .filter((m) => Boolean(m.read) && (!m.date || new Date(m.date) >= since))
+      .sort(byDateDesc)
+      .slice(0, Math.max(0, Number(limit) || 0));
+    return [...unread, ...read];
   }
 
   // Adds tags without dropping the user's own. replacePrefix removes OmaThunder's old status tags.
@@ -696,10 +792,11 @@
   const api = {
     textToHtml, htmlToText, renderMarkdownHtml, splitDraft, draftOwnText, replaceDraftOwn, isLightHex, buildThemeVars,
     PolicyError, cleanPath, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
+    folderMatchesSubtree, findAccountInbox, listInboxLevel1Folders, level1FolderName, relativeFolderLabel,
     isOpenKanbanCard, countOpenKanban,
     toggleCardSelection, selectCardRange, toggleColumnSelection, resolveDraggedCardIds,
     requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders,
-    newestSince, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,
+    newestSince, selectScanMessages, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread,
     buildNativeFilterSpecFromSuggestion, buildNativeFilterSpecFromRule,
     isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
     requireArchiveDelete, matchArchiveCandidate,

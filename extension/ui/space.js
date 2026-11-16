@@ -88,6 +88,7 @@ const DEMO_STATE = {
 
 let currentView = "kanban";
 let selectedAccountId = "ALL";
+let selectedFolder = "ALL";
 let selectedSpace = "ALL";
 // Board card chosen for the assistant. null = use the mail currently open in Thunderbird.
 let selectedMessageId = inExtension ? null : "demo-1";
@@ -337,10 +338,93 @@ function getAllItems() {
   return items.filter((c) => triageIds.has(c.accountId) && kanbanIds.has(c.accountId));
 }
 
+function cleanFolderPath(p) {
+  return window.OmaCore?.cleanPath ? window.OmaCore.cleanPath(p) : String(p || "").replace(/^\/+|\/+$/g, "");
+}
+
+function accountInboxFolder(accountId) {
+  return window.OmaCore?.findAccountInbox
+    ? window.OmaCore.findAccountInbox(snapshot.folders || [], accountId)
+    : null;
+}
+
+function isInboxFolderPath(accountId, folderPath) {
+  const clean = cleanFolderPath(folderPath);
+  if (!clean) return false;
+  if (clean.toLowerCase() === "inbox") return true;
+  const inbox = accountInboxFolder(accountId);
+  return Boolean(inbox && cleanFolderPath(inbox.path).toLowerCase() === clean.toLowerCase());
+}
+
+function matchesSelectedFolder(c, accountId, folderTarget) {
+  if (!c) return false;
+  if (!folderTarget || folderTarget === "ALL") return true;
+  const folderPath = cleanFolderPath(c.folder);
+  const targetClean = cleanFolderPath(folderTarget);
+  if (isInboxFolderPath(accountId, targetClean)) {
+    return window.OmaCore?.isInboxFolder
+      ? window.OmaCore.isInboxFolder({ path: folderPath })
+      : folderPath.toLowerCase() === "inbox";
+  }
+  return window.OmaCore?.folderMatchesSubtree
+    ? window.OmaCore.folderMatchesSubtree(folderPath, targetClean)
+    : folderPath.toLowerCase() === targetClean.toLowerCase() || folderPath.toLowerCase().startsWith(`${targetClean.toLowerCase()}/`);
+}
+
+function folderDisplayLabel(accountId, folderPath) {
+  const clean = cleanFolderPath(folderPath);
+  if (!clean) return "";
+  if (isInboxFolderPath(accountId, clean)) {
+    const inbox = accountInboxFolder(accountId);
+    return inbox?.name || "Inbox";
+  }
+  const l1 = window.OmaCore?.level1FolderName ? window.OmaCore.level1FolderName(clean) : "";
+  if (l1) return l1;
+  const match = (snapshot.folders || []).find((f) => f.accountId === accountId && cleanFolderPath(f.path).toLowerCase() === clean.toLowerCase());
+  return match?.name || clean;
+}
+
+function folderEntriesForAccount(accountId, openItems) {
+  const inbox = accountInboxFolder(accountId);
+  const inboxClean = cleanFolderPath(inbox?.path || "INBOX");
+  const configured = snapshot.config?.mailbox?.kanbanFolders?.[accountId];
+  const entriesByKey = new Map();
+  const addEntry = (rawPath) => {
+    const clean = cleanFolderPath(rawPath);
+    if (!clean) return;
+    const isInbox = isInboxFolderPath(accountId, clean);
+    const key = isInbox ? inboxClean.toLowerCase() : clean.toLowerCase();
+    if (!entriesByKey.has(key)) {
+      entriesByKey.set(key, {
+        path: isInbox ? inboxClean : clean,
+        label: folderDisplayLabel(accountId, isInbox ? inboxClean : clean),
+        isInbox,
+      });
+    }
+  };
+
+  if (Array.isArray(configured)) {
+    for (const p of configured) addEntry(p);
+  } else {
+    addEntry(inboxClean);
+  }
+  for (const c of openItems || []) {
+    if (c.accountId !== accountId) continue;
+    const l1 = window.OmaCore?.level1FolderName ? window.OmaCore.level1FolderName(c.folder) : "";
+    if (l1) addEntry(`${inboxClean}/${l1}`);
+  }
+  return [...entriesByKey.values()].sort((a, b) => {
+    if (a.isInbox !== b.isInbox) return a.isInbox ? -1 : 1;
+    return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+  });
+}
+
 function getAccountScopedItems() {
   const items = getAllItems();
   if (selectedAccountId === "ALL") return items;
-  return items.filter((c) => c.accountId === selectedAccountId);
+  const byAccount = items.filter((c) => c.accountId === selectedAccountId);
+  if (selectedFolder === "ALL") return byAccount;
+  return byAccount.filter((c) => matchesSelectedFolder(c, selectedAccountId, selectedFolder));
 }
 
 function getFilteredItems() {
@@ -360,6 +444,10 @@ function renderKanbanAccountNav() {
   const accounts = kanbanAccounts();
   if (selectedAccountId !== "ALL" && !accounts.some((a) => a.id === selectedAccountId)) {
     selectedAccountId = "ALL";
+    selectedFolder = "ALL";
+  }
+  if (selectedAccountId === "ALL") {
+    selectedFolder = "ALL";
   }
   if (parentBtn) {
     parentBtn.classList.toggle("active", currentView === "kanban" && selectedAccountId === "ALL");
@@ -371,17 +459,37 @@ function renderKanbanAccountNav() {
     return;
   }
   const openAll = getAllItems().filter(isOpenKanbanCard);
+  if (selectedAccountId !== "ALL" && selectedFolder !== "ALL") {
+    const activeEntries = folderEntriesForAccount(selectedAccountId, openAll);
+    const hasMatch = activeEntries.some((e) => e.path.toLowerCase() === cleanFolderPath(selectedFolder).toLowerCase());
+    if (!hasMatch) selectedFolder = "ALL";
+  }
   nav.style.display = "flex";
   nav.innerHTML = accounts.map((acc) => {
-    const count = inExtension && snapshot.connected
-      ? openAll.filter((c) => c.accountId === acc.id).length
-      : openAll.length;
-    const isActive = currentView === "kanban" && selectedAccountId === acc.id;
+    const accOpen = inExtension && snapshot.connected
+      ? openAll.filter((c) => c.accountId === acc.id)
+      : openAll;
+    const isAccActive = currentView === "kanban" && selectedAccountId === acc.id && selectedFolder === "ALL";
     const label = acc.name || acc.id;
-    return `<button class="nav-subitem ${isActive ? "active" : ""}" data-kanban-acc="${escapeHtml(acc.id)}" title="${escapeHtml(label)}">
+    const entries = folderEntriesForAccount(acc.id, accOpen);
+    const showFolders = entries.some((e) => !e.isInbox);
+    const foldersHtml = showFolders
+      ? `<div class="nav-sublist nested">${entries.map((entry) => {
+          const folderCount = accOpen.filter((c) => matchesSelectedFolder(c, acc.id, entry.path)).length;
+          const isFolderActive = currentView === "kanban"
+            && selectedAccountId === acc.id
+            && selectedFolder !== "ALL"
+            && cleanFolderPath(selectedFolder).toLowerCase() === entry.path.toLowerCase();
+          return `<button class="nav-subitem folder ${isFolderActive ? "active" : ""}" data-kanban-acc="${escapeHtml(acc.id)}" data-kanban-folder="${escapeHtml(entry.path)}" title="${escapeHtml(entry.path)}">
+            <span class="nav-sub-label">${escapeHtml(entry.label)}</span>
+            <span class="nav-count">${folderCount}</span>
+          </button>`;
+        }).join("")}</div>`
+      : "";
+    return `<button class="nav-subitem ${isAccActive ? "active" : ""}" data-kanban-acc="${escapeHtml(acc.id)}" title="${escapeHtml(label)}">
       <span class="nav-sub-label">${escapeHtml(label)}</span>
-      <span class="nav-count">${count}</span>
-    </button>`;
+      <span class="nav-count">${accOpen.length}</span>
+    </button>${foldersHtml}`;
   }).join("");
 
   nav.querySelectorAll("[data-kanban-acc]").forEach((btn) => {
@@ -389,12 +497,13 @@ function renderKanbanAccountNav() {
       document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
       currentView = "kanban";
       selectedAccountId = btn.dataset.kanbanAcc;
+      selectedFolder = btn.dataset.kanbanFolder || "ALL";
       selectedSpace = "ALL";
       selectedCardIds = new Set();
       lastSelectedAnchorId = null;
       if (selectedMessageId) {
         const cls = snapshot.state?.classifications?.[selectedMessageId];
-        if (cls && cls.accountId && cls.accountId !== selectedAccountId) {
+        if (cls && ((cls.accountId && cls.accountId !== selectedAccountId) || (selectedFolder !== "ALL" && !matchesSelectedFolder(cls, selectedAccountId, selectedFolder)))) {
           selectedMessageId = null;
         }
       }
@@ -663,8 +772,9 @@ function renderMain() {
   const container = document.getElementById("main-content");
   const titles = { kanban: t("view_kanban"), rules: t("view_rules"), archive: t("view_archive"), themes: t("view_themes") };
   const activeAccLabel = currentView === "kanban" && selectedAccountId !== "ALL" ? accountNameById(selectedAccountId) : "";
+  const activeFolderLabel = activeAccLabel && selectedFolder !== "ALL" ? folderDisplayLabel(selectedAccountId, selectedFolder) : "";
   document.getElementById("view-title").textContent = activeAccLabel
-    ? `${titles.kanban} · ${activeAccLabel}`
+    ? (activeFolderLabel ? `${titles.kanban} · ${activeAccLabel} · ${activeFolderLabel}` : `${titles.kanban} · ${activeAccLabel}`)
     : (titles[currentView] || "OmaThunder");
 
   if (standaloneMode() && currentView !== "themes") {
@@ -712,7 +822,7 @@ function renderMain() {
     for (const col of cols) {
       colItemsByCol.set(col.id, items.filter((c) => (c.kanbanColumn || "incoming") === col.id));
     }
-    const visibleIds = items.map((c) => c.messageId);
+    const visibleIds = cols.flatMap((col) => (colItemsByCol.get(col.id) || []).map((c) => c.messageId));
     const hasSelection = selectedCardIds.size > 0;
 
     container.innerHTML = `<div class="kanban-board ${hasSelection ? "has-selection" : ""}">${cols.map((col, idx) => {
@@ -734,12 +844,19 @@ function renderMain() {
           <div class="kanban-cards">
             ${colItems.map((c) => {
               const isMultiSelected = selectedCardIds.has(c.messageId);
+              const l1Folder = !c.space && window.OmaCore?.level1FolderName ? window.OmaCore.level1FolderName(c.folder) : "";
+              const relFolder = window.OmaCore?.relativeFolderLabel ? window.OmaCore.relativeFolderLabel(c.folder) : (c.folder || "");
+              const spaceBadge = c.space
+                ? `<span class="oma-badge accent">${escapeHtml(c.space)}</span>`
+                : l1Folder
+                  ? `<span class="oma-badge accent">${escapeHtml(l1Folder)}</span>`
+                  : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`;
               return `
               <div class="k-card ${c.messageId === selectedMessageId ? "selected" : ""} ${isMultiSelected ? "multi-selected" : ""}" draggable="true" data-msgid="${escapeHtml(c.messageId)}" data-col-id="${col.id}">
                 <div class="k-card-top">
                   <div class="k-card-top-left">
                     <input type="checkbox" class="k-card-check" data-check-id="${escapeHtml(c.messageId)}" data-col-id="${col.id}" ${isMultiSelected ? "checked" : ""} title="${escapeHtml(t("kanban_sel_card_title"))}" />
-                    ${c.space ? `<span class="oma-badge accent">${escapeHtml(c.space)}</span>` : `<span class="oma-badge">${escapeHtml(t("badge_inbox"))}</span>`}
+                    ${spaceBadge}
                   </div>
                   <span class="oma-badge ${c.urgency === "high" ? "err" : c.urgency === "medium" ? "warn" : "ok"}">${escapeHtml(c.urgency || "low")}</span>
                 </div>
@@ -750,7 +867,7 @@ function renderMain() {
                   <span class="oma-mono oma-muted" style="font-size:10px;">${escapeHtml(
                     (selectedAccountId === "ALL" && kanbanAccounts().length > 1 && c.accountId
                       ? `${accountNameById(c.accountId)} · `
-                      : "") + (c.deadline || c.amount || c.folder || "")
+                      : "") + (c.deadline || c.amount || relFolder || "")
                   )}</span>
                   <div style="display:flex; gap:4px;">
                     ${inExtension ? `<button class="mini-btn" data-open-id="${escapeHtml(c.messageId)}" title="${escapeHtml(t("card_open"))}">↗</button>` : ""}
@@ -765,6 +882,14 @@ function renderMain() {
         </div>
       `;
     }).join("")}</div>`;
+
+    const selectRangeForCard = (colOrdered, msgId) => {
+      window.getSelection?.()?.removeAllRanges?.();
+      if (!window.OmaCore?.selectCardRange) return;
+      const anchor = lastSelectedAnchorId || selectedMessageId;
+      const rangeList = anchor && colOrdered.includes(anchor) ? colOrdered : visibleIds;
+      selectedCardIds = window.OmaCore.selectCardRange(selectedCardIds, rangeList, anchor, msgId);
+    };
 
     container.querySelectorAll("[data-col-select]").forEach((cb) => {
       const colId = cb.dataset.colSelect;
@@ -796,8 +921,8 @@ function renderMain() {
         e.stopPropagation();
         const msgId = cb.dataset.checkId;
         const colOrdered = (colItemsByCol.get(cb.dataset.colId) || []).map((c) => c.messageId);
-        if (e.shiftKey && window.OmaCore?.selectCardRange) {
-          selectedCardIds = window.OmaCore.selectCardRange(selectedCardIds, colOrdered, lastSelectedAnchorId || selectedMessageId, msgId);
+        if (e.shiftKey) {
+          selectRangeForCard(colOrdered, msgId);
         } else if (window.OmaCore?.toggleCardSelection) {
           selectedCardIds = window.OmaCore.toggleCardSelection(selectedCardIds, msgId);
         }
@@ -807,16 +932,22 @@ function renderMain() {
     });
 
     container.querySelectorAll(".k-card").forEach((card) => {
+      card.addEventListener("mousedown", (e) => {
+        if (e.shiftKey && !e.target.closest("input, button")) {
+          e.preventDefault();
+        }
+      });
       card.addEventListener("click", (e) => {
         const msgId = card.dataset.msgid;
         const colOrdered = (colItemsByCol.get(card.dataset.colId) || []).map((c) => c.messageId);
-        if (e.shiftKey && window.OmaCore?.selectCardRange) {
-          selectedCardIds = window.OmaCore.selectCardRange(selectedCardIds, colOrdered, lastSelectedAnchorId || selectedMessageId, msgId);
+        if (e.shiftKey) {
+          selectRangeForCard(colOrdered, msgId);
           lastSelectedAnchorId = msgId;
           renderMain();
           return;
         }
         if ((e.metaKey || e.ctrlKey) && window.OmaCore?.toggleCardSelection) {
+          window.getSelection?.()?.removeAllRanges?.();
           selectedCardIds = window.OmaCore.toggleCardSelection(selectedCardIds, msgId);
           lastSelectedAnchorId = msgId;
           renderMain();
@@ -865,8 +996,21 @@ function renderMain() {
     });
 
     container.querySelectorAll(".kanban-col").forEach((colEl) => {
-      colEl.addEventListener("dragover", (e) => { e.preventDefault(); colEl.classList.add("drag-over"); });
-      colEl.addEventListener("dragleave", () => colEl.classList.remove("drag-over"));
+      colEl.addEventListener("dragenter", (e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        colEl.classList.add("drag-over");
+      });
+      colEl.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        colEl.classList.add("drag-over");
+      });
+      colEl.addEventListener("dragleave", (e) => {
+        if (!e.relatedTarget || !colEl.contains(e.relatedTarget)) {
+          colEl.classList.remove("drag-over");
+        }
+      });
       colEl.addEventListener("drop", async (e) => {
         e.preventDefault();
         colEl.classList.remove("drag-over");
@@ -1867,6 +2011,7 @@ function getBoardProposals({ forSelected = true } = {}) {
     if (inExtension && snapshot.connected) {
       if (!accId || !kanbanIds.has(accId)) return false;
       if (selectedAccountId !== "ALL" && accId !== selectedAccountId) return false;
+      if (selectedAccountId !== "ALL" && selectedFolder !== "ALL" && cls && !matchesSelectedFolder(cls, selectedAccountId, selectedFolder)) return false;
     }
     const space = p.space || cls?.space || "";
     if (selectedSpace === "UNASSIGNED") return !space;
@@ -2045,6 +2190,7 @@ async function init() {
       clearCardSelection();
       if (currentView === "kanban") {
         selectedAccountId = "ALL";
+        selectedFolder = "ALL";
         selectedSpace = "ALL";
       }
       renderCounts();

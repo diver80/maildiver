@@ -217,6 +217,58 @@ func BucketToKanban(b Bucket, unread bool) string {
 	}
 }
 
+// FolderKanbanColumn maps subfolder names like todo / waiting / done to a Kanban column.
+// Other subfolders (e.g. "Reise", "Teams 26", "verification") return ("", false) so normal classification applies.
+func FolderKanbanColumn(folderPath string) (string, bool) {
+	clean := strings.Trim(strings.TrimSpace(folderPath), "/")
+	if clean == "" {
+		return "", false
+	}
+	parts := strings.Split(clean, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		seg := strings.ToLower(strings.TrimSpace(parts[i]))
+		if i == 0 && seg == "inbox" {
+			continue
+		}
+		switch seg {
+		case "todo", "to-do", "to do", "action":
+			return "action", true
+		case "waiting", "wartet":
+			return "waiting", true
+		case "done", "erledigt":
+			return "done", true
+		}
+	}
+	return "", false
+}
+
+// ApplyFolderKanbanColumn overrides KanbanColumn when the mail sits in a todo/waiting/done folder.
+func ApplyFolderKanbanColumn(c *Classification, folderPath string) bool {
+	col, ok := FolderKanbanColumn(folderPath)
+	if !ok {
+		return false
+	}
+	c.KanbanColumn = col
+	switch col {
+	case "action":
+		c.NeedsAttention = true
+		if c.Bucket == "" || c.Bucket == BucketDone || c.Bucket == BucketWaiting || c.Bucket == BucketFYI || c.Bucket == BucketIncoming {
+			c.Bucket = BucketAction
+		}
+	case "waiting":
+		c.NeedsAttention = false
+		if c.Bucket == "" || c.Bucket == BucketDone || c.Bucket == BucketAction || c.Bucket == BucketFYI || c.Bucket == BucketIncoming {
+			c.Bucket = BucketWaiting
+		}
+	case "done":
+		c.NeedsAttention = false
+		if c.Bucket == "" || c.Bucket == BucketAction || c.Bucket == BucketWaiting || c.Bucket == BucketIncoming {
+			c.Bucket = BucketDone
+		}
+	}
+	return true
+}
+
 // EvaluateStage0 applies zero-token deterministic rules before invoking any LLM.
 func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.RoutingRule) (Classification, bool) {
 	base := Classification{
@@ -253,6 +305,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.SummaryKey = "sum_newsletter"
 		base.Tags = []string{"oma-newsletter"}
 		base.NeedsAttention = false
+		ApplyFolderKanbanColumn(&base, msg.Folder)
 		return base, true
 	}
 
@@ -268,6 +321,7 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.SummaryKey = "sum_automated"
 		base.Tags = []string{"oma-fyi"}
 		base.NeedsAttention = false
+		ApplyFolderKanbanColumn(&base, msg.Folder)
 		return base, true
 	}
 
@@ -281,9 +335,11 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		base.ActionHint = "Prüfen & ablegen"
 		base.Tags = []string{"oma-invoice"}
 		base.NeedsAttention = msg.Unread
+		ApplyFolderKanbanColumn(&base, msg.Folder)
 		return base, true
 	}
 
+	ApplyFolderKanbanColumn(&base, msg.Folder)
 	return base, false
 }
 

@@ -3,10 +3,10 @@ const api = typeof messenger !== "undefined" ? messenger : browser;
 // Pure decision logic (unit-tested in tests/core.test.js); this file only talks to Thunderbird.
 const {
   PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
-  requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince, mergeTags,
-  normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText, replaceDraftOwn, htmlToText,
-  isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
-  requireArchiveDelete, matchArchiveCandidate,
+  requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince,
+  selectScanMessages, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText,
+  replaceDraftOwn, htmlToText, isLocalAccount, findLocalAccount, buildArchiveRelativeParts,
+  requireLocalArchiveMove, requireArchiveDelete, matchArchiveCandidate,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
@@ -466,22 +466,37 @@ async function resolveMessage(ref, { strict = true } = {}) {
   return pickMessageCandidate(ref, res?.messages || [], strict);
 }
 
-// Returns the newest `limit` mails of a folder received within the last `days` days.
-async function listRecentMessages(folder, limit, days) {
-  const since = new Date(Date.now() - days * 86400000);
-  let page = await api.messages.query({ folderId: folder.id, fromDate: since }).catch(() => null);
-  if (!page) page = await api.messages.list(folder.id).catch(() => null);
-  const all = [];
+async function collectPagedMessages(firstPagePromise, maxPages = 20) {
+  let page = await firstPagePromise.catch(() => null);
+  const out = [];
   let pages = 0;
   while (page) {
-    all.push(...(page.messages || []));
-    if (!page.id || ++pages >= 20) break;
+    out.push(...(page.messages || []));
+    if (!page.id || ++pages >= maxPages || !api.messages?.continueList) break;
     page = await api.messages.continueList(page.id).catch(() => null);
   }
-  return newestSince(all, since, limit);
+  return out;
 }
 
-// Scans only accounts enabled for triage: their INBOX plus rule folders (with subfolders) marked for the board.
+// Returns ALL unread mails of a folder plus the newest `limit` read mails received within the last `days` days.
+async function listRecentMessages(folder, limit, days) {
+  const since = new Date(Date.now() - days * 86400000);
+  if (api.messages?.query) {
+    const [unreadMsgs, recentMsgs] = await Promise.all([
+      collectPagedMessages(api.messages.query({ folderId: folder.id, unread: true }), 50),
+      collectPagedMessages(api.messages.query({ folderId: folder.id, fromDate: since }), 20),
+    ]);
+    if (unreadMsgs.length > 0 || recentMsgs.length > 0) {
+      return selectScanMessages([...unreadMsgs, ...recentMsgs], since, limit);
+    }
+  }
+  const listed = api.messages?.list
+    ? await collectPagedMessages(api.messages.list(folder.id), 20)
+    : [];
+  return selectScanMessages(listed, since, limit);
+}
+
+// Scans only accounts enabled for triage: their enabled kanban folders plus rule folders (with subfolders).
 async function collectScanMessages(cfg, accountId = "") {
   const limit = cfg?.mailbox?.scanLimit || 20;
   const days = cfg?.mailbox?.scanDays || 30;
@@ -492,8 +507,10 @@ async function collectScanMessages(cfg, accountId = "") {
   }
   const messages = [];
   for (const f of scanFolders) {
-    for (const header of await listRecentMessages(f, limit, days)) {
-      messages.push(await buildMessageInput(header));
+    const headers = await listRecentMessages(f, limit, days);
+    for (let i = 0; i < headers.length; i += 6) {
+      const batch = await Promise.all(headers.slice(i, i + 6).map((h) => buildMessageInput(h)));
+      messages.push(...batch);
     }
   }
   return { messages, folders, scannedFolders: scanFolders.length };

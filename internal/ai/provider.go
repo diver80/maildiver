@@ -258,7 +258,7 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		needs = *parsed.NeedsAttention
 	}
 
-	return triage.Classification{
+	cls := triage.Classification{
 		MessageID:      msg.ID,
 		ThreadID:       msg.ThreadID,
 		AccountID:      msg.AccountID,
@@ -282,7 +282,9 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		Stage:          "stage1-llm",
 		Model:          completer.Name() + ":" + completer.ModelName(),
 		NeedsAttention: needs,
-	}, nil
+	}
+	triage.ApplyFolderKanbanColumn(&cls, msg.Folder)
+	return cls, nil
 }
 
 // ClassifyLocal classifies without any model call (0 tokens): Stage 0 rules, then the keyword estimate.
@@ -747,5 +749,6 @@ func heuristicFallbackClassification(base triage.Classification, msg triage.Mess
 	base.Stage = "stage0-fallback"
 	base.Model = "heuristic"
 	base.NeedsAttention = needs
+	triage.ApplyFolderKanbanColumn(&base, msg.Folder)
 	return base
 }

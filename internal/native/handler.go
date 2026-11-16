@@ -459,6 +459,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		sort.SliceStable(allowed, func(i, j int) bool { return allowed[i].Unread && !allowed[j].Unread })
 		for _, m := range allowed {
 			base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, cfg.Rules)
+			folderCol, hasFolderCol := triage.FolderKanbanColumn(m.Folder)
 			if !p.Force {
 				if matched {
 					results = append(results, base)
@@ -471,6 +472,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					prev, ok = byThread[m.ThreadID]
 				}
 				if ok && prev.Stage == "stage1-llm" && prev.Subject == m.Subject {
+					folderChanged := prev.Folder != m.Folder
 					prev.MessageID = m.ID
 					prev.AccountID = m.AccountID
 					prev.Folder = m.Folder
@@ -479,11 +481,20 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 					prev.MatchedRuleID = base.MatchedRuleID
 					prev.TargetFolder = base.TargetFolder
 					prev.TargetFolderID = base.TargetFolderID
+					if hasFolderCol && (!prev.PinnedColumn || folderChanged) {
+						triage.ApplyFolderKanbanColumn(&prev, m.Folder)
+						prev.PinnedColumn = false
+					}
 					results = append(results, prev)
 					continue
 				}
 			}
 			if matched {
+				results = append(results, base)
+				continue
+			}
+			// Already-read mails in a "done" subfolder are cleared by SaveScanBatch anyway; don't spend AI tokens.
+			if hasFolderCol && folderCol == "done" && !m.Unread {
 				results = append(results, base)
 				continue
 			}

@@ -20,7 +20,25 @@ const PREVIEW_ACCOUNTS = [
   { id: "account2", name: "Privat (Gmail)" },
 ];
 
-function renderAccounts(accounts, enabledIds, kanbanIds) {
+const PREVIEW_FOLDERS = [
+  { id: "a1-inbox", accountId: "account1", name: "Inbox", path: "INBOX", type: "inbox" },
+  { id: "a1-atl", accountId: "account1", name: "atlassian", path: "INBOX/atlassian" },
+  { id: "a1-avo", accountId: "account1", name: "avono", path: "INBOX/avono" },
+  { id: "a1-hel", accountId: "account1", name: "Helvetia", path: "INBOX/Helvetia" },
+  { id: "a2-inbox", accountId: "account2", name: "Inbox", path: "INBOX", type: "inbox" },
+];
+
+function collectKanbanFoldersFromDom(fallbackMap = {}) {
+  const next = { ...(fallbackMap || {}) };
+  document.querySelectorAll("[data-kanban-folders-acc]").forEach((box) => {
+    const accId = box.dataset.kanbanFoldersAcc;
+    if (!accId) return;
+    next[accId] = [...box.querySelectorAll("[data-kanban-folder]:checked")].map((cb) => cb.value);
+  });
+  return next;
+}
+
+function renderAccounts(accounts, enabledIds, kanbanIds, folders = [], kanbanFolders = {}) {
   const box = $("triage-accounts");
   box.innerHTML = "";
   if (!accounts.length) {
@@ -29,7 +47,12 @@ function renderAccounts(accounts, enabledIds, kanbanIds) {
   }
   const enabledSet = new Set(enabledIds || []);
   const kanbanSet = new Set(kanbanIds || []);
+  const core = window.OmaCore;
+
   for (const acc of accounts) {
+    const group = document.createElement("div");
+    group.className = "account-group";
+
     const row = document.createElement("div");
     row.className = "account-row";
 
@@ -60,9 +83,83 @@ function renderAccounts(accounts, enabledIds, kanbanIds) {
       if (!cb.checked) kCb.checked = false;
       updateDependentFields();
     });
+    kCb.addEventListener("change", updateDependentFields);
 
     row.append(label, kLabel);
-    box.appendChild(row);
+    group.appendChild(row);
+
+    const inboxFolder = core?.findAccountInbox ? core.findAccountInbox(folders, acc.id) : null;
+    const level1 = core?.listInboxLevel1Folders ? core.listInboxLevel1Folders(folders, acc.id) : [];
+    if (inboxFolder && level1.length > 0) {
+      const configured = Object.prototype.hasOwnProperty.call(kanbanFolders || {}, acc.id)
+        ? kanbanFolders[acc.id]
+        : null;
+      const selectedPaths = new Set(
+        (Array.isArray(configured) ? configured : [inboxFolder.path]).map((p) => String(p || "").replace(/^\/+|\/+$/g, "").toLowerCase()),
+      );
+
+      const folderWrap = document.createElement("div");
+      folderWrap.className = "account-folders";
+      folderWrap.dataset.kanbanFoldersAcc = acc.id;
+
+      const hdr = document.createElement("div");
+      hdr.className = "account-folders-hdr";
+      const hdrTitle = document.createElement("span");
+      hdrTitle.textContent = t("opts_kanban_folders");
+      const quickBtns = document.createElement("span");
+      quickBtns.style.display = "inline-flex";
+      quickBtns.style.gap = "8px";
+      const btnAll = document.createElement("button");
+      btnAll.type = "button";
+      btnAll.className = "oma-btn ghost";
+      btnAll.style.padding = "1px 6px";
+      btnAll.style.fontSize = "10.5px";
+      btnAll.textContent = t("opts_kanban_folders_all");
+      btnAll.addEventListener("click", () => {
+        folderWrap.querySelectorAll("[data-kanban-folder]").forEach((fCb) => {
+          if (!fCb.disabled) fCb.checked = true;
+        });
+      });
+      const btnInboxOnly = document.createElement("button");
+      btnInboxOnly.type = "button";
+      btnInboxOnly.className = "oma-btn ghost";
+      btnInboxOnly.style.padding = "1px 6px";
+      btnInboxOnly.style.fontSize = "10.5px";
+      btnInboxOnly.textContent = t("opts_kanban_folders_inbox");
+      btnInboxOnly.addEventListener("click", () => {
+        folderWrap.querySelectorAll("[data-kanban-folder]").forEach((fCb, idx) => {
+          if (!fCb.disabled) fCb.checked = idx === 0;
+        });
+      });
+      quickBtns.append(btnAll, btnInboxOnly);
+      hdr.append(hdrTitle, quickBtns);
+
+      const chips = document.createElement("div");
+      chips.className = "folder-chips";
+      const folderEntries = [
+        { path: inboxFolder.path, label: inboxFolder.name || "Inbox" },
+        ...level1.map((f) => ({ path: f.path, label: f.name || f.path })),
+      ];
+      for (const entry of folderEntries) {
+        const clean = String(entry.path || "").replace(/^\/+|\/+$/g, "");
+        const chip = document.createElement("label");
+        chip.className = "folder-chip";
+        const fCb = document.createElement("input");
+        fCb.type = "checkbox";
+        fCb.value = clean;
+        fCb.dataset.kanbanFolder = acc.id;
+        fCb.checked = selectedPaths.has(clean.toLowerCase());
+        const fSpan = document.createElement("span");
+        fSpan.textContent = entry.label;
+        chip.append(fCb, fSpan);
+        chips.appendChild(chip);
+      }
+
+      folderWrap.append(hdr, chips);
+      group.appendChild(folderWrap);
+    }
+
+    box.appendChild(group);
   }
 }
 
@@ -165,12 +262,19 @@ function updateDependentFields() {
   document.querySelectorAll(".safety input:not(#mb-readonly)").forEach((el) => {
     el.disabled = !triageOn;
   });
-  document.querySelectorAll(".account-row").forEach((row) => {
-    const accCb = row.querySelector("[data-account]");
-    const kanbanCb = row.querySelector("[data-kanban-account]");
+  document.querySelectorAll(".account-group").forEach((group) => {
+    const accCb = group.querySelector("[data-account]");
+    const kanbanCb = group.querySelector("[data-kanban-account]");
     if (accCb && kanbanCb) {
       kanbanCb.disabled = !triageOn || !accCb.checked;
     }
+    const foldersDisabled = !triageOn || !accCb?.checked || !kanbanCb?.checked;
+    group.querySelectorAll("[data-kanban-folder]").forEach((fCb) => {
+      fCb.disabled = foldersDisabled;
+    });
+    group.querySelectorAll(".account-folders button").forEach((btn) => {
+      btn.disabled = foldersDisabled;
+    });
   });
 }
 
@@ -199,6 +303,7 @@ async function init() {
   }
   let cfg = null;
   let accounts = PREVIEW_ACCOUNTS;
+  let folders = PREVIEW_FOLDERS;
   let hostThemes = null;
   let lastSnap = null;
   if (inExtension) {
@@ -206,10 +311,11 @@ async function init() {
     cfg = snap?.config;
     lastSnap = snap;
     accounts = snap?.accounts || [];
+    folders = snap?.folders || [];
     hostThemes = snap?.themes || null;
   }
   const features = cfg?.features || { theme: true, assistant: true, triage: false };
-  const mb = cfg?.mailbox || { readOnly: true, triageAccountIds: [], kanbanAccountIds: [], autoMoveOnlyUnread: true, scanLimit: 20, scanDays: 30 };
+  const mb = cfg?.mailbox || { readOnly: true, triageAccountIds: [], kanbanAccountIds: [], kanbanFolders: {}, autoMoveOnlyUnread: true, scanLimit: 20, scanDays: 30 };
 
   applyTheme(lastSnap?.theme, features.theme !== false);
 
@@ -228,7 +334,7 @@ async function init() {
   $("mb-scan-limit").value = mb.scanLimit || 20;
   $("mb-scan-days").value = mb.scanDays || 30;
   $("mb-archive-dir").value = mb.archiveDir || "";
-  renderAccounts(accounts, mb.triageAccountIds || [], mb.kanbanAccountIds || []);
+  renderAccounts(accounts, mb.triageAccountIds || [], mb.kanbanAccountIds || [], folders, mb.kanbanFolders || {});
   renderStatus(lastSnap);
   updateSecretPlaceholders(lastSnap?.secretsMeta);
   updateDependentFields();
@@ -270,12 +376,15 @@ async function init() {
   $("feat-triage").addEventListener("change", updateDependentFields);
   $("ui-lang").addEventListener("change", (e) => {
     if (window.OMA_I18N) {
+      const curKanbanFolders = collectKanbanFoldersFromDom(cfg?.mailbox?.kanbanFolders || {});
       window.OMA_I18N.setLang(e.target.value);
       window.OMA_I18N.applyDom();
       renderAccounts(
         accounts,
         [...document.querySelectorAll("[data-account]:checked")].map((cb) => cb.value),
         [...document.querySelectorAll("[data-kanban-account]:checked")].map((cb) => cb.value),
+        folders,
+        curKanbanFolders,
       );
       renderStatus(lastSnap);
       updateSecretPlaceholders(lastSnap?.secretsMeta);
@@ -294,6 +403,7 @@ async function init() {
     const kanbanIds = [...document.querySelectorAll("[data-kanban-account]:checked")]
       .map((cb) => cb.value)
       .filter((id) => enabledSet.has(id));
+    const kanbanFolders = collectKanbanFoldersFromDom(cfg?.mailbox?.kanbanFolders || {});
     // Partial config: the host merges it, so rules saved elsewhere (Kanban tab) are never overwritten.
     const patch = {
       language: selectedLang,
@@ -306,6 +416,7 @@ async function init() {
         readOnly: $("mb-readonly").checked,
         triageAccountIds: enabledAccountIds,
         kanbanAccountIds: kanbanIds,
+        kanbanFolders,
         autoMoveOnlyUnread: $("mb-only-unread").checked,
         scanOnNewMail: $("mb-scan-new").checked,
         scanLimit: Number($("mb-scan-limit").value) || 20,
