@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-18)
+
+### Umbau: App statt Kanban-Board
+Die OmaThunder-App ist jetzt die Oberfläche; das Thunderbird-Add-on ist nur noch Bridge und Omarchy-Theme, der Hilfsprozess erledigt die automatische Arbeit.
+- **Entfernt:** Kanban-Board (Space-Tab), Spaces-Regeln mit Auto-Verschieben, KI-Popup an der Mail und im Schreibfenster, Standalone-KI ohne Hilfsprogramm, Kontextmenüs. Verschieben nach Regeln übernehmen Thunderbird-Filter (*Quick-Regel* in der App). Ein Board in der App ist für nach 1.0 vorgemerkt.
+- **Einstellungen aufgeteilt:** In der App (☰ → *Einstellungen*, `⌘,`) liegen KI-Anbieter, Modelle, API-Schlüssel, Triage-Scan- und Archiv-Optionen. Im Add-on bleiben die Rechte (Nur lesen, freigegebene Konten, Bridge, Senden, Module) sowie Theme und Sprache – so kann sich die App ihre Rechte nicht selbst geben.
+- **API-Schlüssel** trägst du in der App ein; sie liegen weiter in der `env`-Datei (`0600`) und gelten sofort, ohne Thunderbird-Neustart. In Thunderbird gespeicherte Standalone-Schlüssel werden nicht übernommen.
+- **Konfiguration:** `rules`, `mailbox.kanbanAccountIds`, `mailbox.kanbanFolders` und `mailbox.autoMoveOnlyUnread` entfallen; ältere Dateien laden weiter und verlieren diese Schlüssel beim nächsten Speichern. Triage-Scans umfassen die Posteingänge der freigegebenen Konten.
+- **Protokoll 4:** Add-on und Hilfsprogramm müssen dieselbe Version haben – nach dem Update die neue `.xpi` installieren.
 
 ### Neu
 - **Native App `omathunder ui` / `OmaThunder.app`** (eigenes Programm `cmd/omathunder-ui`): Mail-Cockpit, Kalender, Kontakte, Quick-Regeln und KI-Copilot, verbunden über die lokale Bridge. Der Native-Messaging-Host enthält keinen GUI-Code mehr.

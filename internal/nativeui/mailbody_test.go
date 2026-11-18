@@ -18,8 +18,8 @@ const confluenceHTML = `<!DOCTYPE html><html><head><title>x</title><style>.a{col
   <h1 style="font-size:24px">Your weekly content recommendations</h1>
   <p>Stay connected to people and their work.<br>Your recommendations, ready to explore.</p>
   <table><tr><td><img src="https://cdn.example.net/page.png" width="16" height="16" alt="Page icon"></td>
-  <td><a href="https://carrierengg.atlassian.net/wiki/spaces/GS/pages/2326593582/Gryphon+SDK?atl_f=FLLWEML&amp;tid=3ccc0633">Gryphon SDK Release Data Center (2.0.0)</a></td></tr></table>
-  <p>Owned by <b>Mohammad, Shariq</b> · <a href="https://carrierengg.atlassian.net/wiki/people/5fad7f6c">https://carrierengg.atlassian.net/wiki/people/5fad7f6c</a></p>
+  <td><a href="https://example.atlassian.net/wiki/spaces/GS/pages/2326593582/Acme+SDK?atl_f=FLLWEML&amp;tid=3ccc0633">Acme SDK Release Data Center (2.0.0)</a></td></tr></table>
+  <p>Owned by <b>Doe, Jane</b> · <a href="https://example.atlassian.net/wiki/people/5fad7f6c">https://example.atlassian.net/wiki/people/5fad7f6c</a></p>
   <p><a href="https://example.net/go"><img src="https://cdn.example.net/btn.png" alt="Open Confluence"></a></p>
   <p><a href="javascript:alert(1)">Click me</a> and more</p>
   <div><a href="https://example.net/x"><div>Card title</div><div>Card text</div></a></div>
@@ -46,8 +46,8 @@ func TestHTMLMailMarkdown(t *testing.T) {
 	for _, want := range []string{
 		"### Your weekly content recommendations",
 		"Stay connected to people and their work\\.<br>Your recommendations, ready to explore\\.",
-		"[Gryphon SDK Release Data Center (2\\.0\\.0)](https://carrierengg.atlassian.net/wiki/spaces/GS/pages/2326593582/Gryphon+SDK?atl_f=FLLWEML&tid=3ccc0633)",
-		"Owned by <b>Mohammad, Shariq</b> · [carrierengg\\.atlassian\\.net/…](https://carrierengg.atlassian.net/wiki/people/5fad7f6c)",
+		"[Acme SDK Release Data Center (2\\.0\\.0)](https://example.atlassian.net/wiki/spaces/GS/pages/2326593582/Acme+SDK?atl_f=FLLWEML&tid=3ccc0633)",
+		"Owned by <b>Doe, Jane</b> · [example\\.atlassian\\.net/…](https://example.atlassian.net/wiki/people/5fad7f6c)",
 		"[Open Confluence](https://example.net/go)",
 		"Click me and more",
 		"[Card title Card text](https://example.net/x)",
@@ -104,8 +104,8 @@ func TestOrderedListMarkers(t *testing.T) {
 }
 
 func TestPlainMailMarkdown(t *testing.T) {
-	src := "Hallo Frank,\r\n\r\ndie Kalkulation:\n- Lizenzen: 14.200 EUR\n  eingerückt\n\nGryphon SDK Release Data Center (2.0.0)\n[https://carrierengg.atlassian.net/wiki/spaces/GS/pages/1?atl_f=x]\n\n" +
-		"Mohammad, Shariq\n[https://secure.gravatar.com/avatar/d08?d=x]https://carrierengg.atlassian.net/wiki/people/5fad?x=1\n" +
+	src := "Hallo Frank,\r\n\r\ndie Kalkulation:\n- Lizenzen: 14.200 EUR\n  eingerückt\n\nAcme SDK Release Data Center (2.0.0)\n[https://example.atlassian.net/wiki/spaces/GS/pages/1?atl_f=x]\n\n" +
+		"Doe, Jane\n[https://secure.gravatar.com/avatar/d08?d=x]https://example.atlassian.net/wiki/people/5fad?x=1\n" +
 		"Siehe https://example.com/a/b. Oder <https://example.org> und (https://example.net/x_(y)).\n\n" +
 		"> Zitat eins\n> > tiefer\n\n-- \nAlice"
 	md := plainMailMarkdown(src)
@@ -113,8 +113,8 @@ func TestPlainMailMarkdown(t *testing.T) {
 	for _, want := range []string{
 		"Hallo Frank,",
 		"die Kalkulation:<br>\\- Lizenzen: 14\\.200 EUR<br>  eingerückt",
-		"[Gryphon SDK Release Data Center (2\\.0\\.0)](https://carrierengg.atlassian.net/wiki/spaces/GS/pages/1?atl_f=x)",
-		"Mohammad, Shariq<br>[secure\\.gravatar\\.com/…](https://secure.gravatar.com/avatar/d08?d=x) · [carrierengg\\.atlassian\\.net/…](https://carrierengg.atlassian.net/wiki/people/5fad?x=1)",
+		"[Acme SDK Release Data Center (2\\.0\\.0)](https://example.atlassian.net/wiki/spaces/GS/pages/1?atl_f=x)",
+		"Doe, Jane<br>[secure\\.gravatar\\.com/…](https://secure.gravatar.com/avatar/d08?d=x) · [example\\.atlassian\\.net/…](https://example.atlassian.net/wiki/people/5fad?x=1)",
 		"Siehe [example\\.com/…](https://example.com/a/b)\\. Oder [example\\.org](https://example.org) und ([example\\.net/…](https://example.net/x_%28y%29))\\.",
 		"> Zitat eins",
 		"> > tiefer",
@@ -199,13 +199,13 @@ func TestMailBodyRendersHeadless(t *testing.T) {
 	tt := ui.NewTester(app.RenderMain, 1380, 1400)
 	tt.Frame()
 	texts := strings.Join(tt.Texts(), "\n")
-	for _, want := range []string{"Gryphon SDK Release Data Center (2.0.0)", "Your weekly content recommendations", "2 Bilder nicht geladen", "Formatiert"} {
+	for _, want := range []string{"Acme SDK Release Data Center (2.0.0)", "Your weekly content recommendations", "2 Bilder nicht geladen", "Formatiert"} {
 		if !strings.Contains(texts, want) {
 			t.Errorf("rendered body lacks %q; texts:\n%s", want, texts)
 		}
 	}
 	// "<b>tag</b>" is in the mail's text on purpose; the converter's own tags must not show.
-	for _, bad := range []string{"https://carrierengg", "<b>Mohammad", "<i>item", "<br>", "\\*", "Stay connected to people &"} {
+	for _, bad := range []string{"https://example", "<b>Doe", "<i>item", "<br>", "\\*", "Stay connected to people &"} {
 		if strings.Contains(texts, bad) {
 			t.Errorf("rendered body shows %q", bad)
 		}

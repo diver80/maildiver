@@ -2,21 +2,21 @@
 
 # OmaThunder
 
-**Omarchy themes, an AI writing assistant and mail triage for Thunderbird – on Omarchy Linux and macOS.**
+**A keyboard-driven mail app with an AI copilot on top of Thunderbird, plus Omarchy themes for Thunderbird itself – on Omarchy Linux and macOS.**
 
-OmaThunder consists of a Thunderbird add-on and a small helper program (Go) that runs locally next to Thunderbird. Its three building blocks can be switched on individually:
+![The OmaThunder app](docs/screenshots/app-main.png)
 
-| Building block | What it does | Default |
-|---|---|---|
-| **Theme sync** | Colors Thunderbird in one of 22 Omarchy themes. On Omarchy it follows the active theme live. | on |
-| **AI writing assistant** | Summarizes mails, drafts replies, reviews and improves your drafts – right in the compose window. | on |
-| **Triage** | Scans the inbox and customer folders, sorts mails onto a Kanban board and moves mails from customer domains into their folders. | off |
+OmaThunder has three parts:
 
-Nothing is sent or deleted automatically. Changes to mails, folders or tags are blocked by default (read-only).
+| Part | What it does |
+|---|---|
+| **OmaThunder app** (`omathunder ui`, on macOS `OmaThunder.app`) | Mail list and reading pane, compose, calendar, contacts, quick rules, an AI copilot, triage and archive – all through Thunderbird, so the app never needs your passwords, IMAP, SMTP, OAuth2 or CalDAV. |
+| **Helper program** (`omathunder`) | Started by Thunderbird. Serves the app through a local, token-protected bridge and runs the automatic work (triage scans, archive & cleanup) – also while the app is closed. |
+| **Thunderbird add-on** | The bridge into Thunderbird's data – every call checked against one policy table – and the Omarchy theme for Thunderbird's own windows. Its settings decide what OmaThunder may do at all. |
 
-Optionally there is also a **native desktop app** (`omathunder ui`, on macOS `OmaThunder.app`) with mail cockpit, calendar, quick rules and an AI copilot. It talks to Thunderbird through a local, token-protected bridge that is **off by default** – see [Native app & local bridge](#native-app--local-bridge-optional).
+Nothing is sent or deleted automatically, and changes to mails, folders or filters are blocked by default (read-only).
 
-> **Status:** early version (0.2). The Go host and the core logic are covered by unit tests; running inside Thunderbird has seen little real-world use so far. Windows builds are produced but untested.
+> **Status:** early version (0.3). The helper, the app and the add-on's core logic are covered by unit tests; running inside Thunderbird has seen little real-world use so far. Windows builds are produced but untested.
 
 ---
 
@@ -31,20 +31,20 @@ brew install diver80/tap/omathunder
 omathunder setup        # registers the helper program with Thunderbird (once)
 ```
 
-Then in Thunderbird: **Add-ons and Themes → gear icon → Install Add-on From File** and pick:
+Homebrew builds the helper and the app from source. Then:
 
-```
-$(brew --prefix)/opt/omathunder/share/omathunder/omathunder-extension.xpi
-```
+1. In Thunderbird: **Add-ons and Themes → gear icon → Install Add-on From File** and pick `$(brew --prefix)/opt/omathunder/share/omathunder/omathunder-extension.xpi` (`omathunder setup` prints the exact path).
+2. Restart Thunderbird, open the add-on's settings (toolbar button *OmaThunder*), switch on **Local bridge for the OmaThunder app** and enable the accounts OmaThunder may change.
+3. Start the app: `omathunder ui`. On macOS you can also put it into *Applications*: `ln -sf "$(brew --prefix)/opt/omathunder/OmaThunder.app" ~/Applications/`.
 
-`omathunder setup` prints the exact path. After `brew upgrade omathunder`, install the `.xpi` again so add-on and helper program match – the settings page warns when they don't.
+After `brew upgrade omathunder`, install the `.xpi` again so add-on and helper match – the add-on's settings page warns when they don't.
 
 ### From source
 
 ```bash
 git clone https://github.com/diver80/omathunder.git && cd omathunder
-./build.sh        # tests, binaries and dist/omathunder-extension.xpi
-./install.sh      # binary to ~/.local/bin, registration with Thunderbird
+./build.sh        # tests, binaries, dist/omathunder-extension.xpi, OmaThunder.app (macOS)
+./install.sh      # helper to ~/.local/bin, app to ~/Applications, registration with Thunderbird
 ```
 
 Then install `dist/omathunder-extension.xpi` in Thunderbird as described above.
@@ -53,58 +53,56 @@ Then install `dist/omathunder-extension.xpi` in Thunderbird as described above.
 
 ---
 
-## Getting started
+## The app
 
-1. **Open the settings** (add-on options, or the button in the OmaThunder tab). Everything under **Status** should be green: host connected, versions match, AI backend found.
-2. **Use theme and writing assistant.** Leave triage off.
-3. **Switch triage on, keep read-only on.** Enable only the account that holds your customer folders and leave AI classification off. Run a scan and check the **dry run**: it lists which mails would be moved.
-4. Check your rules (column **Account**) and enable auto-move per rule where you want it.
-5. Only then **switch read-only off**. Every scan can be undone afterwards via "Undo this scan's moves".
+* **Mail:** folder tree per account, two-line list, reading pane, archive and *move to…*, star, read/unread, trash, compose and reply.
+* **Keyboard:** `j`/`k` next/previous mail, `x` check, `e` archive, `d` trash, `v` move to…, `s` star, `u` read/unread, `r` reply, `esc` back, `/` search, `c` compose, `h` help, `⌘,` settings. The footer always lists the keys that apply right now. Single keys never fire while you type in a field; `d` on several checked mails needs a second press.
+* **Reading pane:** HTML mails are shown formatted (headings, lists, quotes, links by their title) without loading anything from the internet – no tracking pixels, no remote images; a *Formatted / Text* switch shows the text version.
 
----
+![Reading pane with a formatted HTML mail](docs/screenshots/app-reading-pane.png)
 
-## Writing assistant
+* **Encrypted and signed mails:** the mail you open is decrypted by Thunderbird and marked as encrypted; AI actions you start on it send its decrypted text to your AI provider, and the pane says so. If Thunderbird cannot decrypt it, the pane tells you why and offers *Open in Thunderbird*. Signatures are shown but **not verified** – *Check in Thunderbird* opens the mail there. Automatic processing never gets the content of encrypted mails.
+* **Compose:** *Signature: Default / Sign / None* (default = the identity's setting in Thunderbird); replies to encrypted mails are always sent encrypted. Sending directly needs *App may send mails directly* in the add-on's settings; otherwise *Save draft* or *Open in Thunderbird*.
+* **Quick rules** create a real Thunderbird filter from the selected mails (appended after your own filters) and can apply it right away. Rules that would be too broad (e.g. a whole free-mail domain) need a second confirmation. Editing, sorting and deleting filters happens in Thunderbird (*Tools → Message Filters*).
 
-![Writing assistant in the compose window](docs/screenshots/compose-assistant.png)
+![Quick rule from selected mails](docs/screenshots/app-quick-rule.png)
 
-* **In the compose window** ("OmaThunder AI" button): improve your draft, review it against the original mail, draft a reply, or write a mail from notes. The result shows up in the popup first; only "insert" writes it into the draft. Only your own text is replaced – quote and signature stay untouched.
-* **On the open mail** ("OmaThunder AI" button): summarize or draft a reply, also as "Reply all".
-* **In the OmaThunder tab:** the same functions for the open mail or a board card, including a review of your draft.
+* **Calendar & contacts** from Thunderbird (Lightning/CalDAV, address books): today's events, new events, events and contacts extracted from a mail.
+* **AI on the open mail:** *Summarize*, *Draft*, *Event*, *Contacts* – each a single call, only on click.
+* **Copilot** answers questions about your mails and calendar and prepares a daily briefing. Drafts, calendar entries and "mark as read" are shown as proposals and only run after you click *Execute*.
 
-The conversation is used as context, linked through the `References` / `In-Reply-To` headers – not just by a matching subject. Every request is a single AI call, triggered by your click.
+![Calendar in a light theme](docs/screenshots/app-calendar-light.png)
 
-![Reviewing a reply draft](docs/screenshots/space-review.png)
+### Triage
 
-## Triage: Kanban and customer rules
+☰ → *Run triage scan* sorts the inboxes of the enabled accounts into action needed, waiting, invoice/event, FYI and newsletter; the app shows them in the *Action / Waiting* view and as tags. With *Scan automatically when new mail arrives* the helper scans by itself.
 
-![Kanban board with a dry run in read-only mode](docs/screenshots/space-kanban.png)
+* **Stage 0 (local, 0 tokens):** newsletters, bot mails, out-of-office replies and invoices are recognized by headers and subject. Security and transaction mails (password resets, codes, orders) are never marked as unimportant.
+* **Stage 1 (optional, AI):** off by default – a scan then costs nothing and gives a local estimate. When on, at most 50 AI calls per scan (unread first); mails classified before are not sent again. Encrypted mails reach the AI with sender and subject only.
 
-* **Board** with five columns (Incoming, Action needed, Waiting, Invoice/Event, Done), filter by customer, drag & drop. Cards open the mail in Thunderbird.
-* **Customer rules** map sender domains to a customer folder. Optionally OmaThunder moves new inbox mails there and maps board columns to subfolders (e.g. "Done").
-* **Stage 0 (local, 0 tokens):** newsletters, bot mails, out-of-office replies and invoices are recognized by headers and subject. Security and transaction mails (password resets, codes, orders) are never automatically marked as unimportant.
-* **Stage 1 (optional, AI):** whatever stage 0 cannot place is classified by a fast model – Gemini API, Claude API, Ollama (local) or a CLI.
+### Archive & cleanup
 
-![Customer folders and domain rules](docs/screenshots/space-rules.png)
+☰ → *Archive & cleanup…* backs up old mails of an account (by age, read, starred; inbox or all folders) as `.eml` files and, if you want, cleans up afterwards: move them into *Local Folders* or delete them at the provider. Every file is read back and compared by SHA-256 before a mail is moved or deleted; *Simulate* writes nothing, deleting needs a second click, and both cleanup modes need read-only off. Encrypted mails are archived as they are, still encrypted.
 
-### Token usage
+![Archive & cleanup](docs/screenshots/app-archive.png)
 
-* Scans only run on click (optionally also on new mail) and only cover the newest **20 mails per folder** from the last **30 days**.
-* **AI classification is off by default** – a scan then costs nothing and the classification is a local estimate.
-* When it is on, a hard limit of **50 AI calls per scan** applies, unread mails first. Mails that were already classified are not sent again.
-* The scan report shows how many calls were made and how many mails were only estimated.
+## Settings
 
-All values can be changed in the settings.
+**In the app (☰ → Settings, `⌘,`):** AI provider, model and endpoint for the assistant and for triage, AI calls per scan, scanning on new mail, the archive folder, and **API keys**. Keys are stored in a file only you can read (macOS `~/Library/Application Support/omathunder/env`, Linux `~/.config/omathunder/env`) and apply at once. The Claude CLI needs no key; it uses its own login.
 
-## Theme sync
+![App settings](docs/screenshots/app-settings.png)
 
-![Theme gallery](docs/screenshots/space-themes.png)
+**In the Thunderbird add-on (toolbar button *OmaThunder*):** what OmaThunder may do at all – kept there so the app cannot widen its own permissions:
 
-* Colors toolbars, tabs, folder pane and popups through Thunderbird's theme API – no restart needed.
-* Optionally also message bodies and the editor (off by default, because HTML mails with fixed text colors can otherwise become hard to read).
-* **Omarchy:** follows `~/.local/state/omarchy/current/theme/colors.toml` live.
-* **macOS:** pick one of the 22 bundled Omarchy themes (gallery, popup, settings or `omathunder theme set nord`) or follow the system's light/dark mode.
+* **Read-only** (default on), **accounts enabled for OmaThunder** (only these can be changed, scanned and archived),
+* the **local bridge** for the app and whether the app may **send mails directly**,
+* whether the AI assistant and triage scans are allowed,
+* the **Omarchy theme** for Thunderbird and the language.
 
-![Mail Kanban in the Flexoki Light theme](docs/screenshots/space-kanban-light.png)
+## Theme
+
+* Colors Thunderbird's toolbars, tabs and folder pane through its theme API – no restart needed; optionally also message bodies and the editor (off by default, HTML mails with fixed text colors can become hard to read).
+* **Omarchy:** follows `~/.local/state/omarchy/current/theme/colors.toml` live. **macOS:** one of 22 bundled Omarchy themes, or the system's light/dark mode. The app uses the same colors.
 
 ---
 
@@ -112,42 +110,20 @@ All values can be changed in the settings.
 
 | Protection | Effect |
 |---|---|
-| **Read-only** (default) | No changes to mails, folders or tags. Scans only report planned moves as a dry run. Reply drafts still open – nothing is ever sent automatically. |
-| **Triage per account** | Only enabled accounts are scanned, sent to the AI and changed. Moving mails between accounts is blocked. |
-| **Narrow auto-move** | Only from the inbox, only on a sender-domain match, optionally only unread mails, never out of customer folders. Mails for which the mail server recorded a failed DKIM/DMARC check are never moved (forged sender). Each mail is checked again in the mailbox right before it is moved. |
-| **Unambiguous mail lookup** | Stored mails are found again by their Message-ID. If the match is ambiguous, nothing happens. |
-| **Undo** | Moves of a scan or of a deleted rule can be undone – but only for mails still in the folder OmaThunder put them in. |
-| **No automatic deleting or sending** | The add-on holds `messagesDelete` and `compose.send`, but uses them only on explicit request: deleting only in *Archive & Cleanup* after a verified export (or as "move to trash" from the app), sending only through the bridge's send endpoint, which additionally needs `bridge.allowSend` (off by default) and read-only off. AI output never sends or deletes anything. |
-| **Local bridge (optional)** | Off by default. When enabled it listens on `127.0.0.1` only and requires a random 256-bit token from a `0600` file. Bridge clients can read all accounts unless `bridge.accountIds` limits them; every write needs read-only off and an account enabled for triage. Filters created through the bridge can never delete mail. |
-| **AI copilot (app)** | Mail content is passed to the model as untrusted data. The copilot only *proposes* drafts, calendar entries and status changes – nothing happens until you click "Execute". |
-| **AI backends** | The Claude CLI runs without tools and without MCP servers and receives the mail text via stdin. Gemini CLI and OpenCode CLI cannot be started without tools and stay blocked until you explicitly allow them. |
+| **Read-only** (default) | No changes to mails, folders, tags or filters. Drafts still open in Thunderbird – nothing is ever sent automatically. |
+| **Accounts** | Only enabled accounts are changed, scanned and archived. Moving mails between accounts is blocked. |
+| **Unambiguous mail lookup** | Mails are found by their Message-ID; actions carry the expected Message-ID. If the match is ambiguous or changed, nothing happens. |
+| **Encryption** | Encrypted mails are decrypted only for the mail you open and actions you start on it; scans, archive runs and the copilot's own lookups never get their content. Replies to encrypted mails stay encrypted. |
+| **No automatic deleting or sending** | Deleting only in *Archive & cleanup* after a verified backup (or as "move to trash" in the app); sending only from the compose dialog and only with `bridge.allowSend` (off by default). AI output never sends or deletes anything. |
+| **Local bridge** | Off by default. Listens on `127.0.0.1` only and requires a random 256-bit token from a `0600` file. The helper's own scans and archive runs use separate methods that bridge clients cannot call. Filters created through the bridge can never delete mail. |
+| **AI** | Mail content is passed to the model as untrusted data. The copilot only *proposes* changes. API endpoints come only from your settings, and a key is only sent to its provider. The Claude CLI runs without tools; Gemini CLI and OpenCode CLI stay blocked until you allow them. With Ollama everything stays on your machine. |
 
-Mail content only goes to the AI backend you chose in the settings. With Ollama everything stays on your machine. API endpoints come only from your settings, never from a bridge request, and an API key is only sent to the endpoint configured for that provider.
-
-## Settings
-
-![Settings with status, features and safety](docs/screenshots/options.png)
-
-### Setting up AI access
-
-Thunderbird starts the helper program without your shell environment, so API keys are read from a separate file:
-
-* macOS: `~/Library/Application Support/omathunder/env`
-* Linux: `~/.config/omathunder/env`
-
-```bash
-export GEMINI_API_KEY=...        # backend "Gemini API"
-export ANTHROPIC_API_KEY=...     # backend "Anthropic Claude API"
-```
-
-Restart Thunderbird afterwards. The Claude CLI needs no entry; it uses its own login. The **Status** section of the settings shows whether keys and programs were found.
-
----
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), bridge endpoints: [docs/BRIDGE.md](docs/BRIDGE.md).
 
 ## Command line
 
 ```bash
-omathunder ui               # start the native app (omathunder-ui / OmaThunder.app)
+omathunder ui               # start the app
 omathunder bridge enable    # switch the local bridge on (… disable / status / path)
 omathunder setup            # register with Thunderbird
 omathunder doctor           # status: Omarchy, CLIs, API keys, registration
@@ -158,18 +134,6 @@ omathunder classify --subject "..." --from "..." --body "..."   # test classific
 omathunder uninstall        # remove registration, settings and state
 ```
 
-## Native app & local bridge (optional)
-
-The native app (`omathunder ui`; on macOS `~/Applications/OmaThunder.app`) is a separate program from the small helper that Thunderbird starts. It shows mails, calendar and contacts, creates **quick rules** from selected mails and has an AI copilot.
-
-It needs the **local bridge**, which is off by default. Switch it on in the app ("Enable bridge"), in the add-on settings or with `omathunder bridge enable`; the helper opens the port within about two seconds while Thunderbird runs. Details, endpoints and the safety model: [docs/BRIDGE.md](docs/BRIDGE.md).
-
-* **Quick rules** create a real Thunderbird filter (appended after your own filters) and can apply it to the selected mails right away. Rules that would be too broad (e.g. a whole free-mail domain) are flagged and need a second confirmation. **Editing, sorting, enabling/disabling and deleting filters happens in Thunderbird** (*Tools → Message Filters*).
-* **Copilot** answers questions about your mails and calendar. Drafts, calendar entries and "mark as read" are shown as proposals and only run after you click *Execute*.
-* **Reading pane:** HTML mails are shown formatted (headings, lists, quotes, links by their title) without loading anything from the internet — no tracking pixels, no remote images; a "Formatted / Text" switch shows the text version.
-* **Encrypted and signed mails:** the mail you open is decrypted by Thunderbird and marked as encrypted; AI actions you start on it send its decrypted text to your AI provider. Automatic processing (triage, the copilot's own lookups) never gets the content of encrypted mails. Signatures are shown but not verified – "Check in Thunderbird" opens the mail there. The compose dialog lets you sign or not sign; replies to encrypted mails stay encrypted.
-* **Keyboard:** `j`/`k` next/previous mail, `x` check, `e` archive, `d` trash, `v` move to…, `s` star, `u` read/unread, `r` reply, `esc` back, `/` search, `c` compose, `h` help. The footer always lists the keys that apply right now. Single keys never fire while you type in a field; `d` on several checked mails needs a second press.
-
 ## Uninstall
 
 ```bash
@@ -177,20 +141,18 @@ omathunder uninstall && brew uninstall omathunder   # Homebrew
 ./uninstall.sh                                      # installed from source
 ```
 
-Then remove the add-on in Thunderbird's add-on manager. `uninstall` also deletes your rules and settings. Mails and the Thunderbird profile stay untouched.
+Then remove the add-on in Thunderbird's add-on manager. `uninstall` also deletes OmaThunder's settings and state. Mails and the Thunderbird profile stay untouched.
 
 ## Development
 
 ```bash
-go test ./...               # host, bridge, AI layer, native app
+go test ./...               # helper, bridge, jobs, AI layer, app
 node tests/core.test.js     # add-on core logic (macOS without Node: jsc tests/core.test.js)
 ./build.sh                  # both test runs, binaries for macOS/Linux/Windows, .xpi, OmaThunder.app, SHA256SUMS
 ./release.sh                # tag, GitHub release and values for the Homebrew formula
 ```
 
-Two programs are built from `cmd/`: `omathunder` (Native Messaging host + CLI, no GUI dependencies) and `omathunder-ui` (the native app, bundled on macOS as `OmaThunder.app` via [mygo](https://github.com/egoist/mygo)). Building needs Go 1.27.3 or newer, because mygo requires it. The Homebrew formula should build both (`go build ./cmd/omathunder ./cmd/omathunder-ui`) so that `omathunder ui` finds the app next to the helper.
-
-Architecture and safety model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Two programs are built from `cmd/`: `omathunder` (Native Messaging host + CLI, no GUI dependencies) and `omathunder-ui` (the app, bundled on macOS as `OmaThunder.app` via [mygo](https://github.com/egoist/mygo)). Building needs Go 1.27.3 or newer. Screenshots: `OMATHUNDER_RENDER=docs/screenshots-new go test ./internal/nativeui -run TestRenderScreens`.
 
 ## License
 

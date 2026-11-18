@@ -364,7 +364,7 @@ func fileExists(p string) bool {
 }
 
 func printUsage() {
-	fmt.Print(`omathunder — Live Omarchy Theme & 3-Stufen-KI-Companion für Thunderbird
+	fmt.Print(`omathunder — Thunderbird-Bridge, Omarchy-Theme und OmaThunder-App
 
 Verwendung:
   omathunder ui [--minimized] [--no-tray]  Native OmaThunder-App starten (omathunder-ui / OmaThunder.app)

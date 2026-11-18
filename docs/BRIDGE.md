@@ -8,13 +8,15 @@ omathunder-ui / scripts
    ▼
 omathunder host (Go)                          ← started by Thunderbird
    ├── /v1/ai/*        provider registry (any-llm-go + CLI backends)
-   ├── /v1/triage/*    local triage store
+   ├── /v1/triage/*    scans + local triage store   ┐ internal/jobs: run in the host,
+   ├── /v1/archive/*   archive & cleanup runs       ┘ also while the app is closed
    └── reverse RPC + EventHub  (tb_rpc / tb_rpc_result / tb_event over stdio)
           │
           ▼
-Thunderbird WebExtension (background.js)
+Thunderbird add-on (background.js) – bridge only, plus the Thunderbird theme
    ├── policy table (lib/core.js) – checked before every call
-   ├── accounts, folders, messages, compose, contacts
+   ├── bridge methods: accounts, folders, messages, compose, contacts, calendar, filters
+   ├── host.* methods for the host's own jobs (mailbox policy, never reachable from the bridge)
    └── omaFilters / omaCalendar experiment APIs
 ```
 
@@ -107,7 +109,6 @@ Compose calls accept an `idempotencyKey`. Repeating a call with the same key wit
 | `GET` | `/v1/messages/{id}/thread` | Messages linked via `References` / `In-Reply-To` (`?limit=20`, max 50, `?decrypt=1` as above). Encrypted mails carry `"encrypted": true`. |
 | `POST` | `/v1/messages/{id}/open` | Shows the mail in a Thunderbird tab, e.g. to check its signature or decrypt it there. Allowed in read-only mode. |
 | `POST` | `/v1/messages/{id}/actions` | `{ "expectedMessageId": "...", "read": true, "flagged": false, "addTags": [], "removeTags": [], "moveToFolderId": "...", "moveToPath": "...", "trash": false, "archive": false }`. Send `expectedMessageId` whenever you stored the numeric ID earlier: a mismatch returns `409 message_changed` instead of touching another mail. At most one of `trash`, `archive` and `moveToFolderId`/`moveToPath` per request (else `400 invalid_argument`). Moves stay inside the mail's account (`403 cross_account_move`); `archive` uses Thunderbird's own archive settings of the identity (folder, yearly/monthly layout) and returns an empty `newId`. |
-| `GET` | `/v1/triage/state` | Kanban classifications, bar summary and proposals from the local store. |
 
 ### Compose
 
@@ -158,7 +159,7 @@ Both run inside the `omathunder` host process, not in the add-on, and keep runni
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/triage/state` | Stored classifications and bar summary. |
+| `GET` | `/v1/triage/state` | Stored classifications (bucket, urgency, summary, action hint, deadline, status column) and the bar summary. |
 | `POST` | `/v1/triage/scan` | Starts a scan of the triage inboxes (`{ "accountId": "" }` = all) and answers `202 { scanId }` at once. Needs `features.triage`. One scan at a time (`409 busy`). With `mailbox.scanOnNewMail` the host also scans by itself when new mail arrives. |
 | `GET` | `/v1/triage/scan` | `{ running, last }` – the last finished scan's report. |
 | `GET` | `/v1/archive/stats` | Files and bytes in the archive folder (`mailbox.archiveDir`). |

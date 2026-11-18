@@ -454,6 +454,9 @@ func TestRenderScreens(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Paths in the screenshots (key file, archive folder) must not show the real user.
+	t.Setenv("HOME", "/Users/you")
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	tmp := t.TempDir()
 	store := triage.NewStoreAt(tmp)
@@ -502,7 +505,7 @@ func TestRenderScreens(t *testing.T) {
 	app.messages = []bridgeclient.MessageHeader{
 		{
 			ID: "m1", AccountID: "acc1", Folder: "INBOX",
-			From: "Alice Weber <alice@acme.de>", To: []string{"frank@avono.de"}, Subject: "Q4 Rollout & Budget-Freigabe bis Freitag",
+			From: "Alice Weber <alice@acme.de>", To: []string{"frank@example.com"}, Subject: "Q4 Rollout & Budget-Freigabe bis Freitag",
 			Date: today + "T09:15:00+01:00", Unread: true, Flagged: true,
 		},
 		{
@@ -517,7 +520,7 @@ func TestRenderScreens(t *testing.T) {
 		},
 		{
 			ID: "m4", AccountID: "acc1", Folder: "INBOX",
-			From: "Sarah M\u00fcller <sarah@avono.de>", Subject: "Review Notes: OmaThunder Native UI",
+			From: "Sarah M\u00fcller <sarah@example.com>", Subject: "Review Notes: OmaThunder Native UI",
 			Date: now.AddDate(0, 0, -1).Format("2006-01-02") + "T16:45:00+01:00", Unread: false,
 		},
 	}
@@ -678,13 +681,13 @@ func TestRenderScreens(t *testing.T) {
 	prevDetail, prevMode, prevResult, prevDraft := app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft
 	app.inspectorMode, app.inspectorResult, app.inspectorDraft = "", "", ""
 	app.selectedMsg = &bridgeclient.MessageDetail{
-		MessageHeader: bridgeclient.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Frank <frank@example.com>"}, Subject: "Gryphon SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
-		BodyText:      "Stay connected\n\nGryphon SDK Release (2.0.0)\n[https://example.atlassian.net/wiki/spaces/GS/pages/1]",
+		MessageHeader: bridgeclient.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Frank <frank@example.com>"}, Subject: "Acme SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
+		BodyText:      "Stay connected\n\nAcme SDK Release (2.0.0)\n[https://example.atlassian.net/wiki/spaces/GS/pages/1]",
 		BodyHtml: `<div style="display:none">Stay connected to people and their work &zwnj;&nbsp;&zwnj;</div>
 <table><tr><td><img src="https://cdn.example.net/logo.png" width="120" alt="Confluence"></td></tr><tr><td>
 <h1>Stay connected to people and their work</h1><p>Your weekly content recommendations, ready to explore.</p>
-<table><tr><td><img src="https://cdn.example.net/page.png" width="16" alt="Page"></td><td><a href="https://example.atlassian.net/wiki/spaces/GS/pages/2326593582?atl_f=x">Gryphon SDK Release Data Center (2.0.0) 2026/10/26</a></td></tr>
-<tr><td>Owned by</td><td><b>Mohammad Shariq</b> · 3 contributors · updated 2 days ago</td></tr></table>
+<table><tr><td><img src="https://cdn.example.net/page.png" width="16" alt="Page"></td><td><a href="https://example.atlassian.net/wiki/spaces/GS/pages/2326593582?atl_f=x">Acme SDK Release Data Center (2.0.0) 2026/10/26</a></td></tr>
+<tr><td>Owned by</td><td><b>Jane Doe</b> · 3 contributors · updated 2 days ago</td></tr></table>
 <table><tr><td><a href="https://example.atlassian.net/wiki/spaces/GS/pages/2326593583">Mobile SDK roadmap Q1</a></td></tr>
 <tr><td>Owned by</td><td><b>Lena Vogt</b> · 5 comments</td></tr></table>
 <p>Questions? Read the <a href="https://support.atlassian.com/confluence-cloud/">https://support.atlassian.com/confluence-cloud/</a> or reply to this email.</p>
