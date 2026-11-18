@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "OmaThunder — Omarchy Theme & AI Triage",
+  "name": "OmaThunder — Bridge & Omarchy Theme",
   "version": "0.2.9",
-  "description": "Live Omarchy theming (chrome, message body, compose) and 3-stage Gemini/Claude/Ollama AI triage with reviewable proposals.",
+  "description": "Connects Thunderbird to the OmaThunder app (local bridge for mail, calendar, contacts and filters) and themes Thunderbird with Omarchy colors.",
   "author": "omathunder",
   "browser_specific_settings": {
     "gecko": {
@@ -30,26 +30,16 @@
     "compose",
     "compose.save",
     "compose.send",
-    "menus",
-    "storage",
     "tabs"
   ],
   "background": {
-    "scripts": ["lib/core.js", "lib/standalone.js", "background.js"]
+    "scripts": [
+      "lib/core.js",
+      "background.js"
+    ]
   },
   "browser_action": {
     "default_title": "OmaThunder",
-    "default_popup": "ui/popup.html",
-    "default_icon": "icons/icon.svg"
-  },
-  "message_display_action": {
-    "default_title": "OmaThunder AI",
-    "default_popup": "ui/popup.html",
-    "default_icon": "icons/icon.svg"
-  },
-  "compose_action": {
-    "default_title": "OmaThunder AI",
-    "default_popup": "ui/compose.html",
     "default_icon": "icons/icon.svg"
   },
   "options_ui": {
@@ -60,16 +50,28 @@
     "omaFilters": {
       "schema": "api/filters/schema.json",
       "parent": {
-        "scopes": ["addon_parent"],
-        "paths": [["omaFilters"]],
+        "scopes": [
+          "addon_parent"
+        ],
+        "paths": [
+          [
+            "omaFilters"
+          ]
+        ],
         "script": "api/filters/implementation.js"
       }
     },
     "omaCalendar": {
       "schema": "api/calendar/schema.json",
       "parent": {
-        "scopes": ["addon_parent"],
-        "paths": [["omaCalendar"]],
+        "scopes": [
+          "addon_parent"
+        ],
+        "paths": [
+          [
+            "omaCalendar"
+          ]
+        ],
         "script": "api/calendar/implementation.js"
       }
     }
