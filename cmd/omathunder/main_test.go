@@ -18,6 +18,15 @@ func TestFindUIApp(t *testing.T) {
 	}
 
 	// macOS: the .app bundle is started through `open`.
+	// Homebrew: the bundle sits in the package next to bin/ and wins over a sibling binary.
+	brewExe := "/opt/homebrew/Cellar/omathunder/0.3.0/bin/omathunder"
+	brewApp := "/opt/homebrew/Cellar/omathunder/0.3.0/OmaThunder.app"
+	got, viaOpen = findUIApp(brewExe, "darwin", func(p string) bool {
+		return p == brewApp || p == "/opt/homebrew/Cellar/omathunder/0.3.0/bin/omathunder-ui"
+	}, notOnPath)
+	if got != brewApp || !viaOpen {
+		t.Fatalf("homebrew bundle: got %q viaOpen=%v", got, viaOpen)
+	}
 	got, viaOpen = findUIApp(exe, "darwin", func(p string) bool { return p == "/Applications/OmaThunder.app" }, notOnPath)
 	if got != "/Applications/OmaThunder.app" || !viaOpen {
 		t.Fatalf("app bundle: got %q viaOpen=%v", got, viaOpen)

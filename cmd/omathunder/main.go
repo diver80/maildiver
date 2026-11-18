@@ -298,7 +298,7 @@ func handleUICLI(args []string) {
 	}
 	target, viaOpen := findUIApp(exe, runtime.GOOS, fileExists, exec.LookPath)
 	if target == "" {
-		fatal(fmt.Errorf("OmaThunder-App nicht gefunden (omathunder-ui bzw. OmaThunder.app). Installiere sie mit ./install.sh oder baue sie mit ./build.sh"))
+		fatal(fmt.Errorf("OmaThunder-App nicht gefunden (omathunder-ui bzw. OmaThunder.app). Installiere sie mit „brew install diver80/tap/omathunder“ oder ./install.sh"))
 	}
 	var cmd *exec.Cmd
 	if viaOpen {
@@ -321,7 +321,8 @@ func handleUICLI(args []string) {
 	}
 }
 
-// findUIApp locates the native app: a sibling omathunder-ui binary, then (macOS) OmaThunder.app
+// findUIApp locates the native app: (macOS) OmaThunder.app in the package next to bin/, a sibling
+// omathunder-ui binary, then (macOS) OmaThunder.app
 // in ~/Applications or /Applications (started via `open`), then omathunder-ui on PATH.
 func findUIApp(exe, goos string, exists func(string) bool, lookPath func(string) (string, error)) (path string, viaOpen bool) {
 	name := "omathunder-ui"
@@ -329,6 +330,12 @@ func findUIApp(exe, goos string, exists func(string) bool, lookPath func(string)
 		name += ".exe"
 	}
 	if exe != "" {
+		if goos == "darwin" {
+			// Homebrew installs the bundle into the package next to bin/ (Cellar/omathunder/<v>/OmaThunder.app).
+			if app := filepath.Join(filepath.Dir(filepath.Dir(exe)), "OmaThunder.app"); exists(app) {
+				return app, true
+			}
+		}
 		if sib := filepath.Join(filepath.Dir(exe), name); exists(sib) {
 			return sib, false
 		}
