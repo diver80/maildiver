@@ -36,13 +36,30 @@ type countingRPC struct {
 	filterErr     error
 	createOnError bool // with filterErr: the filter is created although an error is returned
 	filters       []string
+	last          map[string]map[string]any // params of the latest call per method
+	getJSON       string                    // messages.get answer, when set
+}
+
+// lastParams returns the params of the latest call of method (nil: not called).
+func (r *countingRPC) lastParams(method string) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last[method]
 }
 
 func (*countingRPC) Connected() bool { return true }
 func (r *countingRPC) Call(_ context.Context, method string, params any) (json.RawMessage, error) {
 	today := time.Now().Format("2006-01-02")
+	rawParams, _ := json.Marshal(params)
+	var lastP map[string]any
+	_ = json.Unmarshal(rawParams, &lastP)
 	r.mu.Lock()
 	msgs := r.msgsJSON
+	getJSON := r.getJSON
+	if r.last == nil {
+		r.last = map[string]map[string]any{}
+	}
+	r.last[method] = lastP
 	r.mu.Unlock()
 	switch method {
 	case "accounts.list":
@@ -55,6 +72,9 @@ func (r *countingRPC) Call(_ context.Context, method string, params any) (json.R
 		}
 		return json.RawMessage(`{"messages":` + msgs + `,"total":1}`), nil
 	case "messages.get":
+		if getJSON != "" {
+			return json.RawMessage(getJSON), nil
+		}
 		return json.RawMessage(`{"id":"m1","messageId":"m1@acme.de","accountId":"acc1","folder":"INBOX","subject":"Angebot Q4","from":"Alice <alice@acme.de>","bodyText":"Hallo"}`), nil
 	case "filters.list":
 		r.mu.Lock()

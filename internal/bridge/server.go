@@ -232,6 +232,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /v1/messages/{id}", s.auth(s.handleMessageGet))
 	mux.HandleFunc("GET /v1/messages/{id}/thread", s.auth(s.handleMessageThread))
 	mux.HandleFunc("POST /v1/messages/{id}/actions", s.auth(s.handleMessageActions))
+	mux.HandleFunc("POST /v1/messages/{id}/open", s.auth(s.handleMessageOpen))
 
 	mux.HandleFunc("POST /v1/compose/draft", s.auth(s.handleComposeDraft))
 	mux.HandleFunc("POST /v1/compose/send", s.auth(s.handleComposeSend))
@@ -352,7 +353,10 @@ var mutatingMethods = map[string]bool{
 // rpcTimeout returns the deadline for one reverse-RPC call into Thunderbird.
 func rpcTimeout(method string) time.Duration {
 	switch method {
-	case "compose.send", "filters.run":
+	case "compose.send":
+		// Signing can make Thunderbird ask for a key password or a smartcard PIN first.
+		return 180 * time.Second
+	case "filters.run":
 		return 90 * time.Second
 	case "messages.list", "messages.thread", "calendar.events":
 		return 45 * time.Second
@@ -534,13 +538,32 @@ func messageRefParams(r *http.Request, params map[string]any) {
 	}
 }
 
+// queryBool reads a true/false query parameter ("1", "true", "yes").
+func queryBool(r *http.Request, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// handleMessageGet returns a mail. Encrypted mails are decrypted only with ?decrypt=1; without it
+// they come back with security.encrypted and no content.
 func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 	params := map[string]any{
-		"id":     r.PathValue("id"),
-		"format": strings.TrimSpace(r.URL.Query().Get("format")),
+		"id":      r.PathValue("id"),
+		"format":  strings.TrimSpace(r.URL.Query().Get("format")),
+		"decrypt": queryBool(r, "decrypt"),
 	}
 	messageRefParams(r, params)
 	s.callTB(w, r, "messages.get", params)
+}
+
+// handleMessageOpen shows a mail in Thunderbird (e.g. to check its signature there).
+func (s *Server) handleMessageOpen(w http.ResponseWriter, r *http.Request) {
+	params := map[string]any{"id": r.PathValue("id")}
+	messageRefParams(r, params)
+	s.callTB(w, r, "messages.open", params)
 }
 
 func (s *Server) handleMessageThread(w http.ResponseWriter, r *http.Request) {
@@ -551,8 +574,9 @@ func (s *Server) handleMessageThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	params := map[string]any{
-		"id":    r.PathValue("id"),
-		"limit": limit,
+		"id":      r.PathValue("id"),
+		"limit":   limit,
+		"decrypt": queryBool(r, "decrypt"),
 	}
 	messageRefParams(r, params)
 	s.callTB(w, r, "messages.thread", params)

@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"context"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -85,6 +86,11 @@ type mdWriter struct {
 	lastRule  bool
 	ruleAt    int // where the last rule's block starts in out
 	blocked   int
+
+	// Where the last link ended: a link right after it (whitespace aside) gets " · " between
+	// them, so that "Manage Notifications Give feedback" stays two links.
+	linkBuf *strings.Builder
+	linkEnd int
 }
 
 type mdList struct {
@@ -188,7 +194,7 @@ func (m *mdWriter) text(s string) {
 		m.textRun(s)
 		return
 	}
-	last, prevEnd := 0, -1
+	last := 0
 	for _, loc := range urlRe.FindAllStringSubmatchIndex(s, -1) {
 		open, raw, closing := s[loc[2]:loc[3]], s[loc[4]:loc[5]], s[loc[6]:loc[7]]
 		trimmed := trimURLTail(raw)
@@ -203,10 +209,8 @@ func (m *mdWriter) text(s string) {
 		if strings.HasPrefix(strings.ToLower(href), "www.") {
 			href = "https://" + href
 		}
-		// Two links in a row ("[url]url") get a space between them.
-		lead := (m.space && m.lineText) || start == prevEnd
-		m.writeLink(escapeMarkdown(shortURL(href)), href, lead)
-		last, prevEnd = end, end
+		m.writeLink(escapeMarkdown(shortURL(href)), href, m.space && m.lineText)
+		last = end
 	}
 	m.textRun(s[last:])
 }
@@ -229,17 +233,23 @@ func trimURLTail(u string) string {
 	return u
 }
 
-// writeLink writes a Markdown link, after a space when lead (not at the start of a line).
+// writeLink writes a Markdown link, after a space when lead (not at the start of a line), or after
+// " · " when only whitespace separates it from the link before.
 func (m *mdWriter) writeLink(label, href string, lead bool) {
 	if label == "" {
 		return
 	}
-	if lead && m.lineText && !strings.HasSuffix(m.cur().String(), "<br>") {
-		m.cur().WriteByte(' ')
+	b := m.cur()
+	switch {
+	case m.linkBuf == b && b.Len() == m.linkEnd && m.lineText:
+		b.WriteString(" · ")
+	case lead && m.lineText && !strings.HasSuffix(b.String(), "<br>"):
+		b.WriteByte(' ')
 	}
 	m.space = false
-	m.cur().WriteString("[" + label + "](" + markdownDest(href) + ")")
+	b.WriteString("[" + label + "](" + markdownDest(href) + ")")
 	m.lineText = true
+	m.linkBuf, m.linkEnd = b, b.Len()
 }
 
 // markdownDest encodes what would end or break a link destination.
@@ -558,6 +568,9 @@ func (m *mdWriter) node(n *xhtml.Node) {
 	case atom.Code, atom.Kbd, atom.Samp, atom.Tt:
 		m.wrap(n, "<code>", "</code>")
 		return
+	case atom.S, atom.Strike, atom.Del:
+		m.wrap(n, "<s>", "</s>")
+		return
 	}
 	if blockTags[n.DataAtom] {
 		m.block(n)
@@ -574,7 +587,9 @@ func (m *mdWriter) node(n *xhtml.Node) {
 
 var boldStyleRe = regexp.MustCompile(`(^|;)font-weight:(bold|bolder|[6-9]00)`)
 
-// styleTags returns the inline tags a span's style asks for (bold, italic).
+var strikeStyleRe = regexp.MustCompile(`(^|;)text-decoration(-line)?:[^;]*line-through`)
+
+// styleTags returns the inline tags a span's style asks for (bold, italic, struck through).
 func styleTags(st string) (string, string) {
 	open, closing := "", ""
 	if boldStyleRe.MatchString(st) {
@@ -582,6 +597,9 @@ func styleTags(st string) (string, string) {
 	}
 	if strings.Contains(st, "font-style:italic") {
 		open, closing = open+"<i>", "</i>"+closing
+	}
+	if strikeStyleRe.MatchString(st) {
+		open, closing = open+"<s>", "</s>"+closing
 	}
 	return open, closing
 }
@@ -636,6 +654,8 @@ func (m *mdWriter) image(n *xhtml.Node) {
 			return
 		}
 	}
+	// An image between words (an arrow in "old → new", an icon) keeps them apart.
+	m.space = true
 	if pixelImage(n) {
 		return
 	}
@@ -905,6 +925,7 @@ func (a *App) renderMailBody(c *ui.Context, msg *bridgeclient.MessageDetail) {
 	if plain {
 		md = body.Plain
 	}
+	a.renderSecurityNote(c, msg)
 	if body.FromHTML || body.BlockedImages > 0 {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 			if body.BlockedImages > 0 && !plain {
@@ -925,8 +946,59 @@ func (a *App) renderMailBody(c *ui.Context, msg *bridgeclient.MessageDetail) {
 		})
 	}
 	if strings.TrimSpace(md) == "" {
+		if !msg.Security.Readable() {
+			ui.Text(c, a.tr("(Inhalt verschlüsselt)", "(Content encrypted)")).FontSize(13).TextColor(t.TextMuted)
+			return
+		}
 		ui.Text(c, a.tr("(Kein Textinhalt)", "(No text content)")).FontSize(13).TextColor(t.TextMuted)
 		return
 	}
 	markdown.View(c, md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
+}
+
+// renderSecurityNote says that a mail is encrypted or signed. Encrypted and readable: AI actions
+// send the decrypted text. Not decrypted: the reason, and Thunderbird to open it in. Signed: the
+// signature is not checked here (Thunderbird's API cannot), Thunderbird shows whether it is valid.
+func (a *App) renderSecurityNote(c *ui.Context, msg *bridgeclient.MessageDetail) {
+	sec := msg.Security
+	if !sec.Encrypted && !sec.Signed {
+		return
+	}
+	t := c.Theme()
+	var lines []string
+	if sec.Encrypted {
+		if sec.Readable() {
+			lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
+				"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
+		} else {
+			lines = append(lines, a.tr("Verschlüsselt. Thunderbird konnte die Mail nicht entschlüsseln (kein Schlüssel, oder die Passwort-Abfrage wurde abgebrochen).",
+				"Encrypted. Thunderbird could not decrypt this email (no key, or the password prompt was cancelled)."))
+		}
+	}
+	if sec.Signed {
+		lines = append(lines, a.tr("Signiert. Ob die Signatur gültig ist, prüft OmaThunder nicht – das zeigt Thunderbird.",
+			"Signed. OmaThunder does not check whether the signature is valid – Thunderbird shows that."))
+	}
+	ui.Row(c.Key("sec-note")).FillWidth().AlignItems(ui.Center).Gap(8).Padding(6, 10).Radius(8).Border(1, t.Border).Children(func() {
+		switch {
+		case sec.Encrypted && !sec.Readable():
+			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Warning)
+		case sec.Encrypted:
+			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Success)
+		default:
+			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.TextMuted)
+		}
+		ui.Column(c).Grow(1).Gap(2).Children(func() {
+			for _, line := range lines {
+				ui.Text(c, line).FontSize(11.5).TextColor(t.TextMuted)
+			}
+		})
+		label := a.tr("In Thunderbird öffnen", "Open in Thunderbird")
+		if sec.Signed && sec.Readable() {
+			label = a.tr("In Thunderbird prüfen", "Check in Thunderbird")
+		}
+		if ui.Button(c.Key("sec-open"), label).Clicked() {
+			a.OpenInThunderbird(context.Background(), msg.ID)
+		}
+	})
 }

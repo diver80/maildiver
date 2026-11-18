@@ -12,6 +12,7 @@ const {
   selectScanMessages, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText,
   replaceDraftOwn, htmlToText, isLocalAccount, findLocalAccount, buildArchiveRelativeParts,
   requireLocalArchiveMove, requireArchiveDelete, matchArchiveCandidate,
+  describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
@@ -411,6 +412,12 @@ async function ensureFolderPath(cfg, accountId, folderPath) {
   return currentFolder;
 }
 
+// Reads a mail's MIME tree. Without decrypt an encrypted mail stays encrypted: Thunderbird asks for
+// no key password or PIN, and nothing decrypted reaches automatic processing.
+async function getFullMessage(id, decrypt = false) {
+  return api.messages.getFull(id, { decrypt: Boolean(decrypt) }).catch(() => null);
+}
+
 function findPartText(part, mimePrefix) {
   if (!part) return "";
   if (part.contentType && part.contentType.toLowerCase().startsWith(mimePrefix) && part.body) {
@@ -460,17 +467,23 @@ async function readReadableAttachments(messageId, attachments) {
   return chunks.join("\n\n");
 }
 
-async function buildMessageInput(header, { includeAttachmentText = false } = {}) {
-  const full = await api.messages.getFull(header.id).catch(() => null);
-  const attachments = await api.messages.listAttachments(header.id).catch(() => []);
+// Mail input for AI and triage. Encrypted mails are only decrypted when the caller asks for it
+// (decrypt: an explicit user action on that mail); otherwise their text and attachments stay out.
+async function buildMessageInput(header, { includeAttachmentText = false, decrypt = false } = {}) {
+  const full = await getFullMessage(header.id, decrypt);
+  const plain = extractPlainText(full);
+  const security = describeMessageSecurity(full, { decrypt, bodyText: plain });
+  const readable = securityReadable(security);
+  // listAttachments always decrypts, so an encrypted mail read without decrypt lists none.
+  const attachments = readable ? await api.messages.listAttachments(header.id).catch(() => []) : [];
   const headers = {};
   if (full?.headers) {
     for (const [k, vals] of Object.entries(full.headers)) {
       if (Array.isArray(vals) && vals.length > 0) headers[k] = String(vals[0]);
     }
   }
-  let bodyText = extractPlainText(full).slice(0, 6000);
-  if (includeAttachmentText) {
+  let bodyText = readable ? plain.slice(0, 6000) : "";
+  if (includeAttachmentText && readable) {
     const attText = await readReadableAttachments(header.id, attachments);
     if (attText) {
       bodyText = `${bodyText}\n\n${attText}`.slice(0, 9000);
@@ -491,6 +504,7 @@ async function buildMessageInput(header, { includeAttachmentText = false } = {})
     bodyText,
     unread: !header.read,
     attachments: attachments.map((a) => a.name).filter(Boolean),
+    ...(security.encrypted ? { encrypted: true } : {}),
   };
 }
 
@@ -766,7 +780,7 @@ async function getActiveDisplayedMessage() {
 // Collects the conversation of a mail. Membership is decided by the References / In-Reply-To
 // headers; the subject search only supplies candidates, so unrelated mails with the same
 // subject ("Rechnung", "Angebot") never end up in the AI prompt.
-async function collectThreadMessages(primary, max = 8) {
+async function collectThreadMessages(primary, max = 8, { decrypt = false } = {}) {
   if (!primary || !api.messages?.query) return primary ? [primary] : [];
   // Candidate budget follows the requested size (bridge: up to 50 mails), so a large limit really
   // returns more mails; every candidate costs one getFull().
@@ -793,7 +807,7 @@ async function collectThreadMessages(primary, max = 8) {
   }
 
   const candidates = [];
-  for (const h of [...headers.values()].slice(0, Math.min(100, Math.max(24, want * 2)))) candidates.push(await buildMessageInput(h));
+  for (const h of [...headers.values()].slice(0, Math.min(100, Math.max(24, want * 2)))) candidates.push(await buildMessageInput(h, { decrypt }));
   return selectThread(primary, candidates, want);
 }
 
@@ -2293,8 +2307,14 @@ async function dispatchThunderbirdRPC(method, params) {
 
     case "messages.get": {
       const header = await resolveBridgeMessage(cfg, params);
-      const full = await api.messages.getFull(header.id).catch(() => null);
-      const attachments = await api.messages.listAttachments(header.id).catch(() => []);
+      // Decrypted only on request: the app's reading pane and explicit AI actions ask for it,
+      // scripts and automatic paths get encrypted mails without their content.
+      const decrypt = params.decrypt === true;
+      const full = await getFullMessage(header.id, decrypt);
+      const plain = extractPlainText(full);
+      const security = describeMessageSecurity(full, { decrypt, bodyText: plain });
+      const readable = securityReadable(security);
+      const attachments = readable ? await api.messages.listAttachments(header.id).catch(() => []) : [];
       const headers = {};
       if (full?.headers) {
         for (const [k, vals] of Object.entries(full.headers)) {
@@ -2305,7 +2325,8 @@ async function dispatchThunderbirdRPC(method, params) {
       const out = {
         ...summarizeMessageHeader(header),
         headers,
-        bodyText: extractPlainText(full),
+        bodyText: readable ? plain : "",
+        security,
         attachments: (attachments || []).map((a) => ({
           name: a.name || "",
           contentType: a.contentType || "",
@@ -2313,16 +2334,25 @@ async function dispatchThunderbirdRPC(method, params) {
           partName: a.partName || "",
         })),
       };
-      if (format === "html" || format === "both") out.bodyHtml = findPartText(full, "text/html");
+      if (readable && (format === "html" || format === "both")) out.bodyHtml = findPartText(full, "text/html");
       return out;
     }
 
     case "messages.thread": {
       const header = await resolveBridgeMessage(cfg, params);
       const limit = Math.max(1, Math.min(Number(params.limit) || 20, 50));
-      const primary = await buildMessageInput(header, { includeAttachmentText: true });
-      const msgs = await collectThreadMessages(primary, limit);
+      const decrypt = params.decrypt === true;
+      const primary = await buildMessageInput(header, { includeAttachmentText: true, decrypt });
+      const msgs = await collectThreadMessages(primary, limit, { decrypt });
       return { messages: filterBridgeReadable(cfg, msgs).map(bridgeMessageInput) };
+    }
+
+    case "messages.open": {
+      // Shows the mail in Thunderbird, e.g. to check its signature or decrypt it there.
+      const header = await resolveBridgeMessage(cfg, params);
+      if (!api.messageDisplay?.open) return { opened: false };
+      await api.messageDisplay.open({ messageId: header.id, location: "tab", active: true });
+      return { opened: true };
     }
 
     case "messages.actions":
@@ -2556,23 +2586,58 @@ async function rpcCompose(cfg, method, params) {
     else details.plainTextBody = String(params.body);
   }
 
+  const sign = String(params.sign || "");
+  if (sign && sign !== "on" && sign !== "off") throw new PolicyError("invalid_argument", 'sign must be "on", "off" or empty');
+  // A reply quotes the original: a reply to an encrypted mail stays encrypted.
+  let requireEncryption = false;
+  if (replyHeader) {
+    const original = await getFullMessage(replyHeader.id, false);
+    requireEncryption = describeMessageSecurity(original, { decrypt: false, bodyText: extractPlainText(original) }).encrypted;
+  }
+
   if (isSend && !api.compose?.sendMessage) throw new PolicyError("feature_disabled:compose", "compose.sendMessage unavailable");
   const tab = replyHeader
     ? await api.compose.beginReply(replyHeader.id, replyType, details)
     : await api.compose.beginNew(details);
   const base = { ok: true, identityId: used.identityId, accountId: used.accountId };
 
-  if (isSend) {
-    const sent = await api.compose.sendMessage(tab.id, { mode: "sendNow" });
-    return { ...base, sent };
+  let security;
+  try {
+    security = await applyComposeSecurity(tab.id, { sign, requireEncryption });
+  } catch (err) {
+    await api.tabs?.remove?.(tab.id).catch(() => {});
+    throw err;
   }
-  if (openWindow) return { ...base, tabId: tab.id, windowOpened: true };
+
+  if (isSend) {
+    // On failure (e.g. a recipient key is missing) the window stays open, so nothing is lost.
+    const sent = await api.compose.sendMessage(tab.id, { mode: "sendNow" });
+    return { ...base, sent, security };
+  }
+  if (openWindow) return { ...base, tabId: tab.id, windowOpened: true, security };
+  // Whether Thunderbird stores this draft encrypted cannot be checked from here, so a reply to an
+  // encrypted mail is never saved silently: its window stays open instead.
+  if (requireEncryption) return { ...base, tabId: tab.id, windowOpened: true, reason: "encrypted_reply", security };
   let saved = null;
   if (api.compose?.saveMessage) {
     saved = await api.compose.saveMessage(tab.id, { mode: "draft" });
     await api.tabs?.remove?.(tab.id).catch(() => {});
   }
-  return { ...base, tabId: tab.id, saved };
+  return { ...base, tabId: tab.id, saved, security };
+}
+
+// Applies the requested signing and the encryption a reply needs to a compose tab and checks that
+// Thunderbird took it. Returns { technology, signed, encrypted } (technology "" = identity without key).
+async function applyComposeSecurity(tabId, { sign = "", requireEncryption = false } = {}) {
+  const details = await api.compose.getComposeDetails(tabId).catch(() => null);
+  const tech = details?.selectedEncryptionTechnology;
+  const plan = planComposeSecurity(tech, { sign, requireEncryption });
+  if (plan.patch) {
+    await api.compose.setComposeDetails(tabId, { selectedEncryptionTechnology: plan.patch });
+    const after = await api.compose.getComposeDetails(tabId).catch(() => null);
+    verifyComposeSecurity(after?.selectedEncryptionTechnology, plan.result);
+  }
+  return plan.result;
 }
 
 function normalizeContactNode(node, fallbackBookId = "") {

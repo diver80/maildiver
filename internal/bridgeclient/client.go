@@ -352,7 +352,23 @@ type MessageDetail struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	BodyText    string            `json:"bodyText"`
 	BodyHtml    string            `json:"bodyHtml,omitempty"`
+	Security    MessageSecurity   `json:"security"`
 	Attachments []Attachment      `json:"attachments,omitempty"`
+}
+
+// MessageSecurity says whether a mail is encrypted and signed. Thunderbird's API never verifies
+// signatures: Signed only means the mail carries one.
+type MessageSecurity struct {
+	Encrypted bool `json:"encrypted"`
+	// Decryption: "none" (not encrypted), "success", "fail" (no key, cancelled) or "skipped"
+	// (read without decrypting).
+	Decryption string `json:"decryption,omitempty"`
+	Signed     bool   `json:"signed"`
+}
+
+// Readable reports that the content is there: not encrypted, or decrypted.
+func (s MessageSecurity) Readable() bool {
+	return !s.Encrypted || s.Decryption == "success"
 }
 
 type MessagesFilter struct {
@@ -427,16 +443,41 @@ func (c *Client) Messages(ctx context.Context, f MessagesFilter) (MessagesPage, 
 	return res, err
 }
 
+// Message returns a mail without decrypting it: an encrypted mail comes back with
+// Security.Encrypted and no content. Use MessageWithOptions{Decrypt: true} only for an explicit
+// user action on that mail (reading it, an AI action the user started on it).
 func (c *Client) Message(ctx context.Context, id, format string) (MessageDetail, error) {
+	return c.MessageWithOptions(ctx, id, MessageOptions{Format: format})
+}
+
+type MessageOptions struct {
+	Format  string // "text" (default), "html" or "both"
+	Decrypt bool
+}
+
+func (c *Client) MessageWithOptions(ctx context.Context, id string, opts MessageOptions) (MessageDetail, error) {
+	q := url.Values{}
+	if opts.Format != "" {
+		q.Set("format", opts.Format)
+	}
+	if opts.Decrypt {
+		q.Set("decrypt", "1")
+	}
 	path := "/v1/messages/" + url.PathEscape(id)
-	if format != "" {
-		path += "?format=" + url.QueryEscape(format)
+	if len(q) > 0 {
+		path += "?" + q.Encode()
 	}
 	var res MessageDetail
 	err := c.DoJSON(ctx, http.MethodGet, path, nil, &res)
 	return res, err
 }
 
+// OpenMessage shows a mail in Thunderbird.
+func (c *Client) OpenMessage(ctx context.Context, id string) error {
+	return c.DoJSON(ctx, http.MethodPost, "/v1/messages/"+url.PathEscape(id)+"/open", map[string]any{}, nil)
+}
+
+// MessageThread returns a mail's conversation; encrypted mails in it stay without content.
 func (c *Client) MessageThread(ctx context.Context, id string, limit int) ([]triage.MessageInput, error) {
 	path := "/v1/messages/" + url.PathEscape(id) + "/thread"
 	if limit > 0 {
@@ -490,6 +531,10 @@ type ComposeRequest struct {
 	ReplyToMessageID string   `json:"replyToMessageId,omitempty"`
 	ReplyType        string   `json:"replyType,omitempty"`
 	OpenWindow       bool     `json:"openWindow,omitempty"`
+	// Sign: "on", "off" or "" (the identity's default in Thunderbird). A reply to an encrypted
+	// mail is always encrypted; a silent draft of it opens its window instead (Reason
+	// "encrypted_reply" in the result).
+	Sign string `json:"sign,omitempty"`
 	// IdempotencyKey deduplicates retries (contract §5). ComposeDraft/ComposeSend fill in a
 	// random key when empty; callers that may retry should set a stable one.
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
@@ -502,6 +547,33 @@ func (c *Client) ComposeDraft(ctx context.Context, req ComposeRequest) (json.Raw
 	var res json.RawMessage
 	err := c.DoJSON(ctx, http.MethodPost, "/v1/compose/draft", req, &res)
 	return res, err
+}
+
+// ComposeSendTimeout covers a key password or smartcard PIN Thunderbird may ask for when signing;
+// the bridge itself waits 180 s for Thunderbird.
+const ComposeSendTimeout = 185 * time.Second
+
+// ComposeResult is the part of a compose.draft / compose.send result the app shows.
+type ComposeResult struct {
+	WindowOpened bool `json:"windowOpened"`
+	// Reason "encrypted_reply": a reply to an encrypted mail was opened in Thunderbird instead of
+	// being saved silently, so that it stays encrypted.
+	Reason   string           `json:"reason,omitempty"`
+	Security *ComposeSecurity `json:"security,omitempty"`
+}
+
+// ComposeSecurity is what Thunderbird applied: Technology "OpenPGP" or "S/MIME", "" without a key.
+type ComposeSecurity struct {
+	Technology string `json:"technology"`
+	Signed     bool   `json:"signed"`
+	Encrypted  bool   `json:"encrypted"`
+}
+
+// ParseComposeResult reads a compose result; unknown or empty input gives the zero value.
+func ParseComposeResult(raw json.RawMessage) ComposeResult {
+	var res ComposeResult
+	_ = json.Unmarshal(raw, &res)
+	return res
 }
 
 func (c *Client) ComposeSend(ctx context.Context, req ComposeRequest) (json.RawMessage, error) {

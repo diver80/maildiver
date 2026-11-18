@@ -901,6 +901,7 @@
     "filters.upsert": { kind: "filter", accountParam: true, write: true },
     "filters.run": { kind: "filter", accountParam: true, write: true },
     "filters.openDialog": { kind: "ui", accountParam: true },
+    "messages.open": { kind: "ui", message: true },
   });
 
   const BRIDGE_FILTER_MODES = new Set(["create", "replace", "toggle", "fix_match_all", "append_conditions"]);
@@ -965,6 +966,94 @@
         break;
     }
     return policy;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encryption and signatures. Thunderbird (125+) decrypts in messages.getFull() unless told not to
+  // and reports the result on the root part (decryptionStatus). Signatures are never verified by the
+  // WebExtension API; describeMessageSecurity only says that a mail carries one.
+  // ---------------------------------------------------------------------------
+
+  const DECRYPTION_STATES = new Set(["none", "success", "fail", "skipped"]);
+
+  function mimePartTypes(part, out = [], depth = 0) {
+    if (!part || typeof part !== "object" || depth > 32) return out;
+    if (part.contentType) out.push(String(part.contentType).toLowerCase());
+    for (const child of Array.isArray(part.parts) ? part.parts : []) mimePartTypes(child, out, depth + 1);
+    return out;
+  }
+
+  function firstHeader(full, name) {
+    const v = full?.headers?.[name];
+    return String(Array.isArray(v) ? v[0] || "" : v || "").toLowerCase();
+  }
+
+  // { encrypted, decryption: "none" | "success" | "fail" | "skipped", signed } of a getFull() result.
+  // bodyText is the text found in it: inline PGP ("-----BEGIN PGP MESSAGE-----") shows up only there.
+  function describeMessageSecurity(full, { decrypt = false, bodyText = "" } = {}) {
+    const types = mimePartTypes(full);
+    const outer = firstHeader(full, "content-type") || types[0] || "";
+    const text = String(bodyText || "");
+    const isSmime = (t) => /^application\/(x-)?pkcs7-mime/.test(t);
+    const smimeSigned = isSmime(outer) && /smime-type\s*=\s*"?signed-data/.test(outer);
+    const inlineEncrypted = text.includes("-----BEGIN PGP MESSAGE-----");
+    const status = DECRYPTION_STATES.has(full?.decryptionStatus) ? full.decryptionStatus : "";
+
+    let encrypted;
+    if (status) {
+      encrypted = status !== "none" || inlineEncrypted;
+    } else {
+      encrypted = inlineEncrypted || outer.startsWith("multipart/encrypted") || (isSmime(outer) && !smimeSigned) ||
+        types.some((t) => t.startsWith("multipart/encrypted") || t.startsWith("application/pgp-encrypted"));
+    }
+    let decryption = "none";
+    if (encrypted) {
+      if (inlineEncrypted) decryption = decrypt ? "fail" : "skipped";
+      else if (status && status !== "none") decryption = status;
+      else if (!decrypt) decryption = "skipped";
+      else decryption = text.trim() ? "success" : "fail";
+    }
+    const signed = smimeSigned || outer.startsWith("multipart/signed") || text.includes("-----BEGIN PGP SIGNED MESSAGE-----") ||
+      types.some((t) => t.startsWith("multipart/signed") || /^application\/(pgp-signature|(x-)?pkcs7-signature)/.test(t));
+    return { encrypted, decryption, signed };
+  }
+
+  // Whether the content of a described mail may be handed on (decrypted or never encrypted).
+  function securityReadable(sec) {
+    return !sec?.encrypted || sec.decryption === "success";
+  }
+
+  // Plans the signing/encryption of a compose tab from its selectedEncryptionTechnology (Thunderbird
+  // 128+; undefined when the identity has no OpenPGP or S/MIME key). sign: "on", "off" or "" (keep the
+  // identity's default). requireEncryption keeps a reply to an encrypted mail encrypted, because it
+  // quotes the decrypted original. Returns the patch to apply (null: nothing to change) and the result.
+  function planComposeSecurity(tech, { sign = "", requireEncryption = false } = {}) {
+    const want = String(sign || "");
+    if (want && want !== "on" && want !== "off") throw new PolicyError("invalid_argument", 'sign must be "on", "off" or empty');
+    const name = tech && typeof tech === "object" ? String(tech.name || "") : "";
+    if (!name) {
+      if (requireEncryption) {
+        throw new PolicyError("encryption_unavailable", "a reply to an encrypted mail is only sent encrypted, and this identity has no OpenPGP or S/MIME key");
+      }
+      if (want === "on") throw new PolicyError("signing_unavailable", "this identity has no OpenPGP or S/MIME key");
+      return { patch: null, result: { technology: "", signed: false, encrypted: false } };
+    }
+    const next = { ...tech, name, signMessage: Boolean(tech.signMessage), encryptBody: Boolean(tech.encryptBody) };
+    if (want === "on") next.signMessage = true;
+    if (want === "off") next.signMessage = false;
+    if (requireEncryption) next.encryptBody = true;
+    const changed = next.signMessage !== Boolean(tech.signMessage) || next.encryptBody !== Boolean(tech.encryptBody);
+    return { patch: changed ? next : null, result: { technology: name, signed: next.signMessage, encrypted: next.encryptBody } };
+  }
+
+  // After setComposeDetails: throws when Thunderbird did not take the planned state, so that a mail
+  // never goes out unsigned or unencrypted against the request.
+  function verifyComposeSecurity(tech, planned) {
+    if (!planned || !planned.technology) return;
+    const got = tech && typeof tech === "object" ? tech : {};
+    if (Boolean(got.signMessage) !== planned.signed || Boolean(got.encryptBody) !== planned.encrypted) {
+      throw new PolicyError("compose_security_unsupported", "Thunderbird did not apply the requested signing/encryption");
+    }
   }
 
   // Keeps only items whose account the bridge may read.
@@ -1355,6 +1444,7 @@
     buildNativeFilterSpecFromSuggestion, buildNativeFilterSpecFromRule,
     isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
     requireArchiveDelete, matchArchiveCandidate,
+    describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity,
   };
   root.OmaCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

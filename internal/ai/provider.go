@@ -258,7 +258,7 @@ func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput,
 func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput, base triage.Classification) (triage.Classification, error) {
 	snippet := msg.Snippet
 	if snippet == "" {
-		snippet = triage.PrepareSnippet(msg.BodyText, cfg.MaxSnippetChars)
+		snippet = triage.PrepareSnippet(msg.BodyForAI(), cfg.MaxSnippetChars)
 	}
 
 	payload := map[string]any{
@@ -385,14 +385,14 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	for _, m := range req.ThreadMessages {
 		msgs = append(msgs, threadMsg{
 			From: m.From, Date: m.Date, Subject: m.Subject,
-			Body: prepareBody(m.BodyText, snippetLimit),
+			Body: prepareBody(m.BodyForAI(), snippetLimit),
 		})
 	}
 	if len(msgs) == 0 && req.PrimaryMessage.ID != "" {
 		msgs = append(msgs, threadMsg{
 			From: req.PrimaryMessage.From, Date: req.PrimaryMessage.Date,
 			Subject: req.PrimaryMessage.Subject,
-			Body:    prepareBody(req.PrimaryMessage.BodyText, 4500),
+			Body:    prepareBody(req.PrimaryMessage.BodyForAI(), 4500),
 		})
 	}
 

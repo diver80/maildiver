@@ -72,6 +72,30 @@ func TestHTMLMailMarkdown(t *testing.T) {
 	}
 }
 
+// Jira change mails: "~~Unassigned~~ [arrow image] Frank Hess"; footers: links in a row.
+func TestInlineDetails(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`<p>Assignee: <del>Unassigned</del><img src="https://x.example/arrow.png" width="16" height="16">Frank Hess</p>`,
+			"Assignee: <s>Unassigned</s> Frank Hess"},
+		{`<p><span style="text-decoration: line-through">alt</span><img src="https://x.example/a.gif" width="1" height="1">neu</p>`,
+			"<s>alt</s> neu"},
+		{`<p><s>a</s> and <strike>b</strike></p>`, "<s>a</s> and <s>b</s>"},
+		{`<p><a href="https://a.example/n">Manage Notifications</a> <a href="https://a.example/f">Give feedback</a>&nbsp;<a href="https://a.example/p">Privacy Policy</a></p>`,
+			"[Manage Notifications](https://a.example/n) · [Give feedback](https://a.example/f) · [Privacy Policy](https://a.example/p)"},
+		{`<p><a href="https://a.example/x">One</a><a href="https://a.example/y">Two</a></p>`,
+			"[One](https://a.example/x) · [Two](https://a.example/y)"},
+		{`<p><a href="https://a.example/x">One</a> or <a href="https://a.example/y">Two</a></p>`,
+			"[One](https://a.example/x) or [Two](https://a.example/y)"},
+		{`<p><a href="https://a.example/x">One</a><br><a href="https://a.example/y">Two</a></p>`,
+			"[One](https://a.example/x)<br>[Two](https://a.example/y)"},
+	} {
+		md, _ := htmlMailMarkdown(tc.in)
+		if md != tc.want {
+			t.Errorf("%s\n got %q\nwant %q", tc.in, md, tc.want)
+		}
+	}
+}
+
 func TestOrderedListMarkers(t *testing.T) {
 	md, _ := htmlMailMarkdown(`<ol><li>One</li><li>Two</li></ol><ul><li>a</li></ul>`)
 	if !strings.Contains(md, "1. One\n2. Two") {
@@ -90,7 +114,7 @@ func TestPlainMailMarkdown(t *testing.T) {
 		"Hallo Frank,",
 		"die Kalkulation:<br>\\- Lizenzen: 14\\.200 EUR<br>  eingerückt",
 		"[Gryphon SDK Release Data Center (2\\.0\\.0)](https://carrierengg.atlassian.net/wiki/spaces/GS/pages/1?atl_f=x)",
-		"Mohammad, Shariq<br>[secure\\.gravatar\\.com/…](https://secure.gravatar.com/avatar/d08?d=x) [carrierengg\\.atlassian\\.net/…](https://carrierengg.atlassian.net/wiki/people/5fad?x=1)",
+		"Mohammad, Shariq<br>[secure\\.gravatar\\.com/…](https://secure.gravatar.com/avatar/d08?d=x) · [carrierengg\\.atlassian\\.net/…](https://carrierengg.atlassian.net/wiki/people/5fad?x=1)",
 		"Siehe [example\\.com/…](https://example.com/a/b)\\. Oder [example\\.org](https://example.org) und ([example\\.net/…](https://example.net/x_%28y%29))\\.",
 		"> Zitat eins",
 		"> > tiefer",

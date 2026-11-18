@@ -103,8 +103,9 @@ Compose calls accept an `idempotencyKey`. Repeating a call with the same key wit
 | `GET` | `/v1/accounts` | Mail accounts and identities (readable accounts only). |
 | `GET` | `/v1/folders` | Folders (`?accountId=...`). |
 | `GET` | `/v1/messages` | Search/list headers (`?accountId=&folderId=&q=&unread=true\|false&days=30&limit=50&cursor=0`). `q` supports `from:`, `to:`, `subject:`. Each header has `id` (session-scoped numeric ID) and `messageId` (RFC Message-ID). |
-| `GET` | `/v1/messages/{id}` | Full message, headers, attachments (`?format=text\|html\|both`). `{id}` is a numeric ID or a Message-ID; optional `expectedMessageId`, `folderId`, `accountId` disambiguate. |
-| `GET` | `/v1/messages/{id}/thread` | Messages linked via `References` / `In-Reply-To` (`?limit=20`, max 50). |
+| `GET` | `/v1/messages/{id}` | Full message, headers, attachments (`?format=text\|html\|both`). `{id}` is a numeric ID or a Message-ID; optional `expectedMessageId`, `folderId`, `accountId` disambiguate. Encrypted mails are only decrypted with `?decrypt=1` (see *Encrypted and signed mails*). |
+| `GET` | `/v1/messages/{id}/thread` | Messages linked via `References` / `In-Reply-To` (`?limit=20`, max 50, `?decrypt=1` as above). Encrypted mails carry `"encrypted": true`. |
+| `POST` | `/v1/messages/{id}/open` | Shows the mail in a Thunderbird tab, e.g. to check its signature or decrypt it there. Allowed in read-only mode. |
 | `POST` | `/v1/messages/{id}/actions` | `{ "expectedMessageId": "...", "read": true, "flagged": false, "addTags": [], "removeTags": [], "moveToFolderId": "...", "moveToPath": "...", "trash": false, "archive": false }`. Send `expectedMessageId` whenever you stored the numeric ID earlier: a mismatch returns `409 message_changed` instead of touching another mail. At most one of `trash`, `archive` and `moveToFolderId`/`moveToPath` per request (else `400 invalid_argument`). Moves stay inside the mail's account (`403 cross_account_move`); `archive` uses Thunderbird's own archive settings of the identity (folder, yearly/monthly layout) and returns an empty `newId`. |
 | `GET` | `/v1/triage/state` | Kanban classifications, bar summary and proposals from the local store. |
 
@@ -112,8 +113,18 @@ Compose calls accept an `idempotencyKey`. Repeating a call with the same key wit
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/v1/compose/draft` | Reply or new draft (`to`, `cc`, `bcc`, `subject`, `body`, `isHtml`, `replyToMessageId`, `replyType`, `identityId`, `openWindow`, `idempotencyKey`). `openWindow: true` only opens a compose window for you to review; saving silently needs write permission. |
-| `POST` | `/v1/compose/send` | Send through Thunderbird (needs read-only off and `bridge.allowSend`). Same fields plus `idempotencyKey`. |
+| `POST` | `/v1/compose/draft` | Reply or new draft (`to`, `cc`, `bcc`, `subject`, `body`, `isHtml`, `replyToMessageId`, `replyType`, `identityId`, `openWindow`, `sign`, `idempotencyKey`). `openWindow: true` only opens a compose window for you to review; saving silently needs write permission. |
+| `POST` | `/v1/compose/send` | Send through Thunderbird (needs read-only off and `bridge.allowSend`). Same fields plus `idempotencyKey`. Waits up to 180 s, because signing can make Thunderbird ask for a key password or smartcard PIN. |
+
+`sign` is `"on"`, `"off"` or empty (the identity's default in Thunderbird). Results carry `security: { technology, signed, encrypted }` – what Thunderbird applied (`technology` is `"OpenPGP"`, `"S/MIME"` or `""` for an identity without key). `sign: "on"` with an identity without key fails with `signing_unavailable`; Thunderbird not taking the requested state fails with `compose_security_unsupported` – the window is closed, nothing is sent.
+
+### Encrypted and signed mails
+
+Thunderbird decrypts OpenPGP and S/MIME mails for add-ons unless told not to. The bridge turns that around:
+
+- `GET /v1/messages/{id}` and `/thread` decrypt **only with `?decrypt=1`**. Without it an encrypted mail comes back with its headers, `security.encrypted: true`, `security.decryption: "skipped"` and **no body and no attachments** – Thunderbird asks for no password or PIN either. Use `decrypt=1` only for an explicit user action on that mail (the app's reading pane, an AI action the user starts on the open mail). Automatic processing (triage, the copilot's own `get_message`) never decrypts.
+- `security` on a message: `encrypted`, `decryption` (`none`, `success`, `fail` – no key or prompt cancelled –, `skipped`) and `signed`. **Signatures are never verified** – Thunderbird's add-on API cannot; `signed` only says that the mail carries one. Open it in Thunderbird (`POST /v1/messages/{id}/open`) to see whether it is valid.
+- A **reply to an encrypted mail** is always encrypted, because it quotes the decrypted original: an identity without key fails with `encryption_unavailable`, and a silent draft of such a reply opens its compose window instead (`windowOpened: true`, `reason: "encrypted_reply"`), since the add-on cannot check whether Thunderbird stores the draft encrypted.
 
 ### Calendar (`omaCalendar`)
 

@@ -907,6 +907,64 @@ test("messages.actions allows at most one folder change", () => {
   throwsCode(() => core.messageMoveKind({ trash: 1 }), "invalid_argument");
 });
 
+test("message security: plain, PGP/MIME, S/MIME, signed, inline", () => {
+  const sec = core.describeMessageSecurity;
+  const plain = { contentType: "multipart/alternative", headers: { "content-type": ["multipart/alternative; boundary=x"] }, parts: [{ contentType: "text/plain", body: "hi" }] };
+  eq(sec(plain, { bodyText: "hi" }), { encrypted: false, decryption: "none", signed: false });
+  eq(sec({ ...plain, decryptionStatus: "none" }, { decrypt: true, bodyText: "hi" }), { encrypted: false, decryption: "none", signed: false });
+
+  // Thunderbird reports the decryption on the root part.
+  eq(sec({ decryptionStatus: "skipped", headers: { "content-type": ["multipart/encrypted; protocol=\"application/pgp-encrypted\""] } }), { encrypted: true, decryption: "skipped", signed: false });
+  eq(sec({ decryptionStatus: "fail" }, { decrypt: true }), { encrypted: true, decryption: "fail", signed: false });
+  const decrypted = { decryptionStatus: "success", contentType: "multipart/signed", parts: [{ contentType: "text/plain", body: "x" }, { contentType: "application/pgp-signature" }] };
+  eq(sec(decrypted, { decrypt: true, bodyText: "x" }), { encrypted: true, decryption: "success", signed: true });
+
+  // Without decryptionStatus the content types decide.
+  eq(sec({ contentType: "multipart/encrypted", parts: [{ contentType: "application/pgp-encrypted" }, { contentType: "application/octet-stream" }] }), { encrypted: true, decryption: "skipped", signed: false });
+  eq(sec({ headers: { "content-type": ["application/pkcs7-mime; smime-type=enveloped-data; name=smime.p7m"] } }, { decrypt: true }), { encrypted: true, decryption: "fail", signed: false });
+  eq(sec({ headers: { "content-type": ["application/pkcs7-mime; smime-type=signed-data"] } }), { encrypted: false, decryption: "none", signed: true });
+  eq(sec({ contentType: "multipart/signed", parts: [{ contentType: "text/plain" }, { contentType: "application/pkcs7-signature" }] }, { bodyText: "x" }).signed, true);
+
+  // Inline PGP shows up only in the text.
+  eq(sec(plain, { bodyText: "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nhi" }), { encrypted: false, decryption: "none", signed: true });
+  eq(sec(plain, { bodyText: "-----BEGIN PGP MESSAGE-----\nabc" }), { encrypted: true, decryption: "skipped", signed: false });
+  eq(sec({ ...plain, decryptionStatus: "none" }, { decrypt: true, bodyText: "-----BEGIN PGP MESSAGE-----\nabc" }).decryption, "fail");
+
+  eq(core.securityReadable({ encrypted: false, decryption: "none" }), true);
+  eq(core.securityReadable({ encrypted: true, decryption: "success" }), true);
+  eq(core.securityReadable({ encrypted: true, decryption: "skipped" }), false);
+  eq(core.securityReadable({ encrypted: true, decryption: "fail" }), false);
+  eq(sec(null), { encrypted: false, decryption: "none", signed: false });
+});
+
+test("compose security: sign on/off, encrypted replies, identities without key", () => {
+  const plan = core.planComposeSecurity;
+  const pgp = { name: "OpenPGP", signMessage: false, encryptBody: false, encryptSubject: false };
+  eq(plan(pgp, {}), { patch: null, result: { technology: "OpenPGP", signed: false, encrypted: false } });
+  eq(plan(pgp, { sign: "on" }).patch, { name: "OpenPGP", signMessage: true, encryptBody: false, encryptSubject: false });
+  eq(plan({ ...pgp, signMessage: true }, { sign: "on" }).patch, null);
+  eq(plan({ ...pgp, signMessage: true }, { sign: "off" }).result, { technology: "OpenPGP", signed: false, encrypted: false });
+  // A reply to an encrypted mail is encrypted, whatever the identity's default.
+  eq(plan(pgp, { requireEncryption: true }).result, { technology: "OpenPGP", signed: false, encrypted: true });
+  eq(plan({ name: "S/MIME", signMessage: true, encryptBody: true }, { sign: "off", requireEncryption: true }).result, { technology: "S/MIME", signed: false, encrypted: true });
+  // No key: nothing to change, but never a silent downgrade.
+  eq(plan(undefined, {}), { patch: null, result: { technology: "", signed: false, encrypted: false } });
+  eq(plan(undefined, { sign: "off" }).patch, null);
+  throwsCode(() => plan(undefined, { sign: "on" }), "signing_unavailable");
+  throwsCode(() => plan(undefined, { requireEncryption: true }), "encryption_unavailable");
+  throwsCode(() => plan(pgp, { sign: "yes" }), "invalid_argument");
+
+  core.verifyComposeSecurity({ signMessage: true, encryptBody: false }, { technology: "OpenPGP", signed: true, encrypted: false });
+  core.verifyComposeSecurity(undefined, { technology: "", signed: false, encrypted: false });
+  throwsCode(() => core.verifyComposeSecurity({ signMessage: false, encryptBody: false }, { technology: "OpenPGP", signed: true, encrypted: false }), "compose_security_unsupported");
+  throwsCode(() => core.verifyComposeSecurity(undefined, { technology: "OpenPGP", signed: false, encrypted: true }), "compose_security_unsupported");
+});
+
+test("messages.open is a read-only UI call", () => {
+  const cfg = { bridge: { enabled: true }, mailbox: { readOnly: true } };
+  eq(core.checkBridgeRPC(cfg, "messages.open", { id: "1" }).kind, "ui");
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

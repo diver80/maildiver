@@ -630,6 +630,20 @@ func (a *App) renderComposeModal(c *ui.Context) {
 			ui.TextInput(c.Key("cmp-cc"), &a.composeCC).Placeholder(a.tr("CC (optional)…", "CC (optional)…")).FillWidth()
 			ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
 			ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext…", "Message body…")).FillWidth().Height(190)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.TextMuted)
+				ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).TextColor(t.TextMuted).
+					Tooltip(a.tr("Standard: wie in Thunderbird für diese Identität eingestellt. Signieren braucht einen OpenPGP- oder S/MIME-Schlüssel.",
+						"Default: as set in Thunderbird for this identity. Signing needs an OpenPGP or S/MIME key."))
+				ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Standard", "Default"), a.tr("Signieren", "Sign"), a.tr("Ohne", "None"))
+			})
+			if a.composeReplyEncrypted {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Icon(c, iconLock).Size(13, 13).TextColor(t.Success)
+					ui.Text(c, a.tr("Antwort auf eine verschlüsselte Mail: wird verschlüsselt gesendet. „Entwurf speichern“ öffnet sie in Thunderbird.",
+						"Reply to an encrypted email: it is sent encrypted. “Save Draft” opens it in Thunderbird.")).FontSize(11.5).TextColor(t.TextMuted).Grow(1)
+				})
+			}
 
 			if a.readOnly {
 				ui.Text(c, a.tr("Read-Only-Modus aktiv: Speichern/Senden in Thunderbird deaktiviert.", "Read-only mode active: saving/sending in Thunderbird is disabled.")).FontSize(11.5).TextColor(t.Warning)
@@ -676,6 +690,7 @@ func (a *App) buildComposeReq(openWindow bool) bridgeclient.ComposeRequest {
 		ReplyToMessageID: a.composeReplyTo,
 		ReplyType:        a.composeReplyType,
 		OpenWindow:       openWindow,
+		Sign:             [...]string{"", "on", "off"}[min(max(a.composeSign, 0), 2)],
 	}
 }
 

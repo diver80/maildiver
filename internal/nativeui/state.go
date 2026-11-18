@@ -129,6 +129,9 @@ type composeState struct {
 	composeBusy      bool
 	composeConfirm   bool
 	composeNonce     string // per compose session; send idempotency key = nonce + content hash
+	composeSign      int    // 0: the identity's default in Thunderbird, 1: sign, 2: don't sign
+	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
+	composeReplyEncrypted bool
 }
 
 // eventState is the new-event modal and the calendar picker data.
@@ -907,7 +910,8 @@ func (a *App) SelectMessage(ctx context.Context, id string) {
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		detail, err := bc.Message(c, id, "both")
+		// Opening a mail is an explicit action: encrypted mails are decrypted for the reading pane.
+		detail, err := bc.MessageWithOptions(c, id, bridgeclient.MessageOptions{Format: "both", Decrypt: true})
 		var body readerBody
 		if err == nil {
 			body = buildReaderBody(&detail) // off the UI thread: large HTML takes a moment
@@ -1253,7 +1257,7 @@ func (a *App) SaveDraft(ctx context.Context, req bridgeclient.ComposeRequest, su
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		_, err := bc.ComposeDraft(c, req)
+		raw, err := bc.ComposeDraft(c, req)
 		a.emitUpdate(func() {
 			a.composeBusy = false
 			if err != nil {
@@ -1261,6 +1265,11 @@ func (a *App) SaveDraft(ctx context.Context, req bridgeclient.ComposeRequest, su
 				return
 			}
 			a.composeOpen = false
+			if res := bridgeclient.ParseComposeResult(raw); res.Reason == "encrypted_reply" && !req.OpenWindow {
+				a.toast(a.tr("Antwort auf eine verschlüsselte Mail: in Thunderbird geöffnet statt still gespeichert, damit sie verschlüsselt bleibt",
+					"Reply to an encrypted email: opened in Thunderbird instead of saved silently, so it stays encrypted"), "success")
+				return
+			}
 			a.toast(successMsg, "success")
 		})
 	}()
@@ -1282,12 +1291,13 @@ func (a *App) SendCompose(ctx context.Context, req bridgeclient.ComposeRequest) 
 		a.composeNonce = bridgeclient.NewIdempotencyKey()
 	}
 	req.IdempotencyKey = bridgeclient.ContentIdempotencyKey(a.composeNonce, "send",
-		strings.Join(req.To, ","), strings.Join(req.CC, ","), req.Subject, req.Body, req.ReplyToMessageID, req.ReplyType)
+		strings.Join(req.To, ","), strings.Join(req.CC, ","), req.Subject, req.Body, req.ReplyToMessageID, req.ReplyType, req.Sign)
 	a.composeBusy = true
 	go func() {
-		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Signing may wait for a key password or smartcard PIN in Thunderbird.
+		c, cancel := context.WithTimeout(ctx, bridgeclient.ComposeSendTimeout)
 		defer cancel()
-		_, err := bc.ComposeSend(c, req)
+		raw, err := bc.ComposeSend(c, req)
 		a.emitUpdate(func() {
 			a.composeBusy = false
 			if err != nil {
@@ -1300,7 +1310,27 @@ func (a *App) SendCompose(ctx context.Context, req bridgeclient.ComposeRequest) 
 			}
 			a.composeOpen = false
 			a.composeConfirm = false
-			a.toast(a.tr("Nachricht direkt über Thunderbird gesendet", "Message sent directly via Thunderbird"), "success")
+			a.toast(a.tr("Nachricht direkt über Thunderbird gesendet", "Message sent directly via Thunderbird")+
+				a.composeSecuritySuffix(bridgeclient.ParseComposeResult(raw).Security), "success")
+		})
+	}()
+}
+
+// OpenInThunderbird shows a mail in Thunderbird, e.g. to check its signature (UI thread).
+func (a *App) OpenInThunderbird(ctx context.Context, id string) {
+	bc, err := a.client()
+	if err != nil || id == "" {
+		a.toast(a.tr("Thunderbird ist nicht verbunden", "Thunderbird is not connected"), "error")
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		err := bc.OpenMessage(c, id)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.toast(a.tr("Fehler: ", "Error: ")+a.errText(err), "error")
+			}
 		})
 	}()
 }
@@ -1441,6 +1471,8 @@ func (a *App) OpenComposeNew() {
 	a.composeBody = ""
 	a.composeConfirm = false
 	a.composeNonce = bridgeclient.NewIdempotencyKey()
+	a.composeSign = 0
+	a.composeReplyEncrypted = false
 	a.composeOpen = true
 }
 
@@ -1460,7 +1492,27 @@ func (a *App) OpenComposeReply(msg *bridgeclient.MessageDetail, body string) {
 	a.composeBody = body
 	a.composeConfirm = false
 	a.composeNonce = bridgeclient.NewIdempotencyKey()
+	a.composeSign = 0
+	a.composeReplyEncrypted = msg.Security.Encrypted
 	a.composeOpen = true
+}
+
+// composeSecuritySuffix names what Thunderbird applied to a sent mail: " (signiert, verschlüsselt)".
+func (a *App) composeSecuritySuffix(sec *bridgeclient.ComposeSecurity) string {
+	if sec == nil {
+		return ""
+	}
+	var parts []string
+	if sec.Signed {
+		parts = append(parts, a.tr("signiert", "signed"))
+	}
+	if sec.Encrypted {
+		parts = append(parts, a.tr("verschlüsselt", "encrypted"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {

@@ -400,3 +400,15 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		t.Fatalf("expected ApplyFolderKanbanColumn to map todo to action, got %+v", inv)
 	}
 }
+
+func TestBodyForAIMarksEncryptedMails(t *testing.T) {
+	if got := (MessageInput{BodyText: "Hallo"}).BodyForAI(); got != "Hallo" {
+		t.Errorf("plain = %q", got)
+	}
+	if got := (MessageInput{Encrypted: true}).BodyForAI(); got != EncryptedPlaceholder {
+		t.Errorf("encrypted without text = %q", got)
+	}
+	if got := (MessageInput{Encrypted: true, BodyText: "decrypted on request"}).BodyForAI(); got != "decrypted on request" {
+		t.Errorf("decrypted = %q", got)
+	}
+}

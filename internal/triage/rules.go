@@ -38,6 +38,21 @@ type MessageInput struct {
 	Snippet     string            `json:"snippet,omitempty"`
 	Unread      bool              `json:"unread"`
 	Attachments []string          `json:"attachments,omitempty"`
+	// Encrypted: the mail is encrypted. Unless it was decrypted on an explicit request, BodyText
+	// and Attachments are empty.
+	Encrypted bool `json:"encrypted,omitempty"`
+}
+
+// EncryptedPlaceholder stands in for the body of an encrypted mail that was not decrypted, so a
+// model knows why it sees no content.
+const EncryptedPlaceholder = "[encrypted email: content not available]"
+
+// BodyForAI returns the body to hand to a model.
+func (m MessageInput) BodyForAI() string {
+	if m.Encrypted && strings.TrimSpace(m.BodyText) == "" {
+		return EncryptedPlaceholder
+	}
+	return m.BodyText
 }
 
 type Classification struct {

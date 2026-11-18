@@ -416,13 +416,23 @@ func (r *Runner) collectContextSnapshot(ctx context.Context, bc *bridgeclient.Cl
 		parts = append(parts, trLang(lang, "Kalender nächste 7 Tage:\n", "Calendar next 7 days:\n")+ai.WrapUntrusted("calendar", compactEvents(evs.Events)))
 	}
 	if selectedID != "" {
-		if detail, err := bc.Message(ctx, selectedID, "text"); err == nil {
+		// The mail the user has open is decrypted: asking the copilot about it is an explicit
+		// action, and the reading pane says that AI actions send its decrypted text.
+		if detail, err := bc.MessageWithOptions(ctx, selectedID, bridgeclient.MessageOptions{Format: "text", Decrypt: true}); err == nil {
 			detail.BodyHtml = ""
-			detail.BodyText = TruncateRunes(detail.BodyText, maxSnapshotBodyRunes)
+			detail.BodyText = TruncateRunes(bodyForModel(detail), maxSnapshotBodyRunes)
 			parts = append(parts, trLang(lang, "Ausgewählte Mail:\n", "Selected email:\n")+ai.WrapUntrusted("email", detail))
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// bodyForModel is a mail's text, or a note when it is encrypted and was not decrypted.
+func bodyForModel(d bridgeclient.MessageDetail) string {
+	if !d.Security.Readable() {
+		return triage.EncryptedPlaceholder
+	}
+	return d.BodyText
 }
 
 type triageCard struct {
@@ -847,11 +857,13 @@ func (r *Runner) executeTool(ctx context.Context, st *runState, name, rawArgs st
 		}
 		c, cancel := callCtx(15 * time.Second)
 		defer cancel()
+		// Mails the model picks itself are never decrypted.
 		detail, err := bc.Message(c, args.ID, "text")
 		if err != nil {
 			return errOut(err.Error())
 		}
 		detail.BodyHtml = ""
+		detail.BodyText = bodyForModel(detail)
 		if utf8.RuneCountInString(detail.BodyText) > maxBodyRunes {
 			detail.BodyText = TruncateRunes(detail.BodyText, maxBodyRunes) + trLang(lang, "\n...[gekürzt]", "\n...[truncated]")
 		}
