@@ -74,12 +74,19 @@ type DoctorReport struct {
 	HostVersion     string               `json:"hostVersion"`
 	Protocol        int                  `json:"protocol"`
 	EnvFile         string               `json:"envFile"`
+	BridgeFile      string               `json:"bridgeFile,omitempty"`
+	Bridge          config.BridgeConfig  `json:"bridge"`
 	Features        config.FeatureFlags  `json:"features"`
 	Mailbox         config.MailboxPolicy `json:"mailbox"`
 }
 
 type Handler struct {
-	store *triage.Store
+	store  *triage.Store
+	rpc    *RPCBroker
+	events *EventHub
+	// configChanged (optional) runs after a config-writing method, e.g. so the bridge
+	// supervisor reacts to bridge.enabled without waiting for its next poll.
+	configChanged func()
 	// cfgMu serializes load-modify-save cycles on the config file; requests run concurrently.
 	cfgMu sync.Mutex
 	// AI call budget of the scan in progress (a scan arrives as several classify_batch calls).
@@ -111,8 +118,16 @@ func (h *Handler) takeAICall(scanID string, limit int) bool {
 }
 
 func NewHandler(store *triage.Store) *Handler {
-	return &Handler{store: store}
+	return &Handler{
+		store:  store,
+		rpc:    NewRPCBroker(),
+		events: NewEventHub(),
+	}
 }
+
+func (h *Handler) Store() *triage.Store { return h.store }
+func (h *Handler) RPC() *RPCBroker      { return h.rpc }
+func (h *Handler) Events() *EventHub    { return h.events }
 
 func BuildDoctorReport() DoctorReport {
 	cfg, _ := config.Load()
@@ -120,6 +135,7 @@ func BuildDoctorReport() DoctorReport {
 	omPath := theme.OmarchyColorsPath()
 	_, omErr := os.Stat(omPath)
 	paths, _ := ManifestPaths()
+	bridgePath, _ := config.BridgeInfoPath()
 
 	clis := map[string]bool{}
 	for _, bin := range []string{"claude", "gemini", "opencode", "codex", "ollama"} {
@@ -127,8 +143,13 @@ func BuildDoctorReport() DoctorReport {
 		clis[bin] = err == nil
 	}
 	envKeys := map[string]bool{
-		"GEMINI_API_KEY":    os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != "",
-		"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY") != "",
+		"GEMINI_API_KEY":       os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != "",
+		"ANTHROPIC_API_KEY":    os.Getenv("ANTHROPIC_API_KEY") != "",
+		"OPENAI_API_KEY":       os.Getenv("OPENAI_API_KEY") != "",
+		"DEEPSEEK_API_KEY":     os.Getenv("DEEPSEEK_API_KEY") != "",
+		"GROQ_API_KEY":         os.Getenv("GROQ_API_KEY") != "",
+		"MISTRAL_API_KEY":      os.Getenv("MISTRAL_API_KEY") != "",
+		"OPENAICOMPAT_API_KEY": os.Getenv("OPENAICOMPAT_API_KEY") != "",
 	}
 	return DoctorReport{
 		OS:              runtime.GOOS,
@@ -143,6 +164,8 @@ func BuildDoctorReport() DoctorReport {
 		HostVersion:     Version,
 		Protocol:        ProtocolVersion,
 		EnvFile:         EnvFilePath(),
+		BridgeFile:      bridgePath,
+		Bridge:          cfg.Bridge,
 		Features:        cfg.Features,
 		Mailbox:         cfg.Mailbox,
 	}
@@ -155,6 +178,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	if configWriters[req.Method] {
 		h.cfgMu.Lock()
 		defer h.cfgMu.Unlock()
+		if h.configChanged != nil {
+			defer h.configChanged()
+		}
 	}
 	switch req.Method {
 	case "ping":
@@ -685,24 +711,76 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		return Response{ID: req.ID, OK: true, Result: stats}
 
+	case "tb_rpc_result":
+		var p struct {
+			ID     string          `json:"id"`
+			OK     bool            `json:"ok"`
+			Result json.RawMessage `json:"result,omitempty"`
+			Error  string          `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		if h.rpc != nil {
+			h.rpc.Resolve(p.ID, p.OK, p.Result, p.Error)
+		}
+		return Response{ID: req.ID, OK: true}
+
+	case "tb_event":
+		var p struct {
+			Event string          `json:"event"`
+			Data  json.RawMessage `json:"data,omitempty"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return fail(req.ID, err.Error())
+		}
+		if h.events != nil && p.Event != "" {
+			h.events.Publish(p.Event, p.Data)
+		}
+		return Response{ID: req.ID, OK: true}
+
 	default:
 		return Response{ID: req.ID, OK: false, Error: "unknown method: " + req.Method}
 	}
 }
 
+// HostOptions customizes RunHostWithOptions without adding circular imports to internal/native.
+type HostOptions struct {
+	OnReady func(ctx context.Context, handler *Handler) (cleanup func(), err error)
+}
+
+// SetConfigChangedHook registers fn to run after every config-writing request. Call it from OnReady.
+func (h *Handler) SetConfigChangedHook(fn func()) { h.configChanged = fn }
+
 // RunHost runs the stdio Native Messaging loop plus a lightweight Omarchy theme watcher.
 // Every request is handled in its own goroutine, so a long AI call does not block the UI.
 func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
+	return RunHostWithOptions(ctx, r, w, HostOptions{})
+}
+
+func RunHostWithOptions(ctx context.Context, r io.Reader, w io.Writer, opts HostOptions) error {
 	store, err := triage.OpenStore()
 	if err != nil {
 		return err
 	}
 	handler := NewHandler(store)
 	conn := NewConn(r, w)
+	handler.rpc.Attach(conn)
+	defer handler.rpc.Detach()
 
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
-	go watchThemeChanges(watchCtx, conn)
+	go watchThemeChanges(watchCtx, conn, handler.events)
+
+	if opts.OnReady != nil {
+		cleanup, err := opts.OnReady(watchCtx, handler)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
 
 	var pending sync.WaitGroup
 	defer pending.Wait()
@@ -718,6 +796,10 @@ func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
 		go func(req Request) {
 			defer pending.Done()
 			resp := handler.Handle(ctx, req)
+			// One-way notifications (tb_rpc_result, tb_event) carry no ID and do not expect a response frame.
+			if req.ID == "" && (req.Method == "tb_rpc_result" || req.Method == "tb_event") {
+				return
+			}
 			if err := conn.Write(resp); err != nil {
 				// e.g. a response above Thunderbird's 1 MB limit: answer with an error instead of dying.
 				_ = conn.Write(fail(req.ID, "response could not be sent: "+err.Error()))
@@ -726,7 +808,7 @@ func RunHost(ctx context.Context, r io.Reader, w io.Writer) error {
 	}
 }
 
-func watchThemeChanges(ctx context.Context, conn *Conn) {
+func watchThemeChanges(ctx context.Context, conn *Conn, events *EventHub) {
 	lastHash := currentThemeFingerprint()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -741,11 +823,15 @@ func watchThemeChanges(ctx context.Context, conn *Conn) {
 				lastHash = next
 				cfg, _ := config.Load()
 				pal, src := theme.ResolveActive(cfg.Theme)
+				payload := theme.BuildPayload(pal, src)
 				_ = conn.Write(Response{
 					Event:  "theme_updated",
 					OK:     true,
-					Result: theme.BuildPayload(pal, src),
+					Result: payload,
 				})
+				if events != nil {
+					events.Publish("theme_updated", payload)
+				}
 			}
 		}
 	}

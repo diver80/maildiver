@@ -2,11 +2,7 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -16,26 +12,7 @@ import (
 )
 
 func TestGeminiClassifyStructuredOutput(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-goog-api-key") != "test-key" {
-			t.Fatalf("missing x-goog-api-key")
-		}
-		if !strings.Contains(r.URL.Path, "gemini-4-hydrogen") {
-			t.Fatalf("expected gemini-4-hydrogen in path, got %s", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"candidates": []map[string]any{
-				{
-					"content": map[string]any{
-						"parts": []map[string]string{
-							{"text": `{"bucket":"action","urgency":"high","summary":"Vertrag bis Freitag unterschreiben","actionHint":"Unterschreiben & zurücksenden","deadline":"2026-11-15","tags":["vertrag"],"needsAttention":true}`},
-						},
-					},
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeGemini(t, "test-key", `{"bucket":"action","urgency":"high","summary":"Vertrag bis Freitag unterschreiben","actionHint":"Unterschreiben & zurücksenden","deadline":"2026-11-15","tags":["vertrag"],"needsAttention":true}`)
 
 	t.Setenv("GEMINI_API_KEY", "test-key")
 	cfg := config.Default().AI
@@ -56,29 +33,24 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 		BodyText: "Bitte bis Freitag unterschrieben zurückschicken.",
 		Unread:   true,
 	}, rules)
+	rec.check(t)
 	if err != nil {
 		t.Fatalf("Classify failed: %v", err)
+	}
+	if rec.count() != 1 || !strings.Contains(rec.path(0), "gemini-4-hydrogen") {
+		t.Fatalf("expected one request for gemini-4-hydrogen, got %q", rec.path(0))
 	}
 	if c.Bucket != triage.BucketAction || c.KanbanColumn != "action" || c.Space != "Partner AG" || c.Deadline != "2026-11-15" {
 		t.Fatalf("unexpected classification: %+v", c)
 	}
+	if c.Model != "gemini-api:gemini-4-hydrogen" {
+		t.Fatalf("unexpected model label %q", c.Model)
+	}
 }
 
 func TestClaudeAPIAgentReviewDraft(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-api-key") != "ant-test" {
-			t.Fatalf("missing x-api-key")
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": "```json\n{\"answer\":\"Dein Entwurf ist freundlich, lässt aber die Frage nach dem Budget offen.\",\"reviewIssues\":[\"Budget-Rückfrage aus der Mail fehlt\"],\"proposals\":[{\"kind\":\"draft_reply\",\"title\":\"Verbesserte Antwort übernehmen\",\"summary\":\"Beantwortet Termin & Budget\",\"subject\":\"Re: Abstimmung\",\"body\":\"Hallo Alex, Donnerstag 10:00 passt. Das Budget liegt im Rahmen bis 5.000 €.\"}]}\n```",
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", "```json\n{\"answer\":\"Dein Entwurf ist freundlich, lässt aber die Frage nach dem Budget offen.\",\"reviewIssues\":[\"Budget-Rückfrage aus der Mail fehlt\"],\"proposals\":[{\"kind\":\"draft_reply\",\"title\":\"Verbesserte Antwort übernehmen\",\"summary\":\"Beantwortet Termin & Budget\",\"subject\":\"Re: Abstimmung\",\"body\":\"Hallo Alex, Donnerstag 10:00 passt. Das Budget liegt im Rahmen bis 5.000 €.\"}]}\n```")
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -173,20 +145,8 @@ func TestExtractJSONAndEscapeDraftTag(t *testing.T) {
 }
 
 func TestAnalyzeSummarizeSelectionAndSnippetLimit(t *testing.T) {
-	var capturedBody string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		capturedBody = string(b)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": `{"answer":"Summary of 12 selected emails in English."}`,
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"Summary of 12 selected emails in English."}`)
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -223,6 +183,7 @@ func TestAnalyzeSummarizeSelectionAndSnippetLimit(t *testing.T) {
 	if len(resp.Proposals) != 0 {
 		t.Fatalf("summarize_selection must not produce draft proposals: %+v", resp.Proposals)
 	}
+	capturedBody := rec.body(-1)
 	if !strings.Contains(capturedBody, "Response language for answer/reviewIssues: en") || !strings.Contains(capturedBody, "Target language for draft_reply body/subject: English") {
 		t.Fatalf("expected targetLanguage=en override in prompt, got: %s", capturedBody)
 	}
@@ -232,20 +193,8 @@ func TestAnalyzeSummarizeSelectionAndSnippetLimit(t *testing.T) {
 }
 
 func TestAnalyzeTranslateDraftAndTargetLanguage(t *testing.T) {
-	var prompts []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		prompts = append(prompts, string(b))
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": "Hello Alex,\n\nThursday at 10:00 works well for us.\n\nBest regards",
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", "Hello Alex,\n\nThursday at 10:00 works well for us.\n\nBest regards")
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -270,8 +219,8 @@ func TestAnalyzeTranslateDraftAndTargetLanguage(t *testing.T) {
 	if len(resp.Proposals) != 1 || resp.Proposals[0].Kind != "draft_reply" || !strings.Contains(resp.Proposals[0].Body, "Thursday at 10:00") {
 		t.Fatalf("translate_draft output must become insertable draft_reply proposal: %+v", resp)
 	}
-	if !strings.Contains(prompts[0], "flip between German and English") {
-		t.Fatalf("expected auto DE<->EN flip hint in prompt: %s", prompts[0])
+	if !strings.Contains(rec.body(0), "flip between German and English") {
+		t.Fatalf("expected auto DE<->EN flip hint in prompt: %s", rec.body(0))
 	}
 
 	// 2. compose_new with TargetLanguage == "en" overrides Language == "de".
@@ -288,20 +237,14 @@ func TestAnalyzeTranslateDraftAndTargetLanguage(t *testing.T) {
 	if len(resp2.Proposals) != 1 || resp2.Proposals[0].Kind != "draft_reply" {
 		t.Fatalf("compose_new must yield insertable draft_reply proposal: %+v", resp2)
 	}
-	if !strings.Contains(prompts[1], "Target language for draft_reply body/subject: English") {
-		t.Fatalf("expected English target override in compose_new prompt: %s", prompts[1])
+	if !strings.Contains(rec.body(1), "Target language for draft_reply body/subject: English") {
+		t.Fatalf("expected English target override in compose_new prompt: %s", rec.body(1))
 	}
 }
 
 func TestAnalyzeMissingAttachmentWarning(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{"type": "text", "text": `{"answer":"Entwurf geprüft.","reviewIssues":[],"proposals":[]}`},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"Entwurf geprüft.","reviewIssues":[],"proposals":[]}`)
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -335,17 +278,8 @@ func TestAnalyzeMissingAttachmentWarning(t *testing.T) {
 }
 
 func TestAnalyzeExtractEventsAndBuildICS(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": `{"answer":"1 Termin gefunden.","events":[{"title":"Architektur-Call, Q4","start":"2026-11-20T14:00:00","end":"2026-11-20T15:00:00","location":"Zoom"}]}`,
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"1 Termin gefunden.","events":[{"title":"Architektur-Call, Q4","start":"2026-11-20T14:00:00","end":"2026-11-20T15:00:00","location":"Zoom"}]}`)
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -373,17 +307,8 @@ func TestAnalyzeExtractEventsAndBuildICS(t *testing.T) {
 }
 
 func TestAnalyzeSuggestFilter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": `{"answer":"Muster erkannt: Atlassian-Testanfragen.","filterSuggestions":[{"name":"Atlassian Testanfragen","reason":"Filtert nur Trial-Mails ohne Rechnungen zu treffen.","domains":["atlassian.com"],"fromContains":["noreply@"],"subjectContains":["würde gerne testen"],"matchAll":true,"suggestedFolder":"Notifications/Atlassian-Tests"}]}`,
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"Muster erkannt: Atlassian-Testanfragen.","filterSuggestions":[{"name":"Atlassian Testanfragen","reason":"Filtert nur Trial-Mails ohne Rechnungen zu treffen.","domains":["atlassian.com"],"fromContains":["noreply@"],"subjectContains":["würde gerne testen"],"matchAll":true,"suggestedFolder":"Notifications/Atlassian-Tests"}]}`)
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -407,20 +332,8 @@ func TestAnalyzeSuggestFilter(t *testing.T) {
 }
 
 func TestAnalyzeSuggestFilterWithNativeDiagnostic(t *testing.T) {
-	var seenPrompt string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		seenPrompt = string(body)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": `{"answer":"Der Filter 'Atlassian Mails join product' hat das neue Betreffmuster noch nicht.","filterSuggestions":[{"action":"append_or","targetFilterName":"Atlassian Mails join product","name":"Atlassian Mails join product","reason":"Ergänzt das neue Betreffmuster als ODER-Bedingung.","subjectContains":["would like to try"],"matchAll":false,"suggestedFolder":"Trash","markRead":true}]}`,
-				},
-			},
-		})
-	}))
-	defer srv.Close()
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"Der Filter 'Atlassian Mails join product' hat das neue Betreffmuster noch nicht.","filterSuggestions":[{"action":"append_or","targetFilterName":"Atlassian Mails join product","name":"Atlassian Mails join product","reason":"Ergänzt das neue Betreffmuster als ODER-Bedingung.","subjectContains":["would like to try"],"matchAll":false,"suggestedFolder":"Trash","markRead":true}]}`)
+	defer rec.check(t)
 
 	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
 	cfg := config.Default().AI
@@ -445,6 +358,7 @@ func TestAnalyzeSuggestFilterWithNativeDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("suggest_filter with native diagnostic failed: %v", err)
 	}
+	seenPrompt := rec.body(-1)
 	if !strings.Contains(seenPrompt, "Atlassian Mails join product") || !strings.Contains(seenPrompt, "filterDiagnostic") {
 		t.Fatalf("expected native filter and diagnostic context in prompt, got: %s", seenPrompt)
 	}
@@ -453,3 +367,34 @@ func TestAnalyzeSuggestFilterWithNativeDiagnostic(t *testing.T) {
 	}
 }
 
+func TestAnalyzeExtractContactsFromFooter(t *testing.T) {
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"1 Kontakt im Footer gefunden.","contacts":[{"firstName":"Alice","lastName":"Weber","email":"alice@acme.de","phone":"+49 30 555010","mobile":"+49 170 987654","company":"ACME GmbH","jobTitle":"Head of Engineering","website":"https://acme.de","address":"Musterstr. 12, 10115 Berlin"}]}`)
+	defer rec.check(t)
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+
+	longIntro := strings.Repeat("Hallo, hier sind viele Projektinformationen. ", 160)
+	footer := "\n\n--\nAlice Weber\nHead of Engineering · ACME GmbH\nTel: +49 30 555010 | Mobil: +49 170 987654\nhttps://acme.de | Musterstr. 12, 10115 Berlin"
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:     "extract_contacts",
+		Language: "de",
+		PrimaryMessage: triage.MessageInput{
+			ID:       "msg-c1",
+			From:     "Alice Weber <alice@acme.de>",
+			Subject:  "Q4 Rollout",
+			BodyText: longIntro + footer,
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract_contacts failed: %v", err)
+	}
+	if !strings.Contains(rec.body(-1), "+49 170 987654") {
+		t.Fatalf("expected footer tail to be preserved in prompt even for long emails")
+	}
+	if len(resp.Contacts) != 1 || resp.Contacts[0].DisplayName != "Alice Weber" || resp.Contacts[0].Company != "ACME GmbH" || resp.Contacts[0].Mobile != "+49 170 987654" {
+		t.Fatalf("unexpected extracted contacts: %+v", resp.Contacts)
+	}
+}

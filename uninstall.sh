@@ -13,7 +13,8 @@ if [[ -x "$BIN_PATH" ]]; then
   rm -f "$BIN_PATH"
   echo "  - Binary entfernt: $BIN_PATH"
 else
-  # Fallback falls Binary bereits gelöscht wurde
+  # Fallback falls Binary bereits gelöscht wurde (oder ein toter Symlink aus älteren Versionen ist)
+  rm -f "$BIN_PATH"
   rm -f \
     "$HOME/Library/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
     "$HOME/Library/Application Support/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
@@ -26,6 +27,18 @@ else
     "$HOME/.config/omathunder" \
     "$HOME/.local/state/omathunder"
   echo "  - Fallback-Cleanup durchgeführt."
+fi
+
+UI_PATH="$PREFIX/omathunder-ui"
+if [[ -e "$UI_PATH" || -L "$UI_PATH" ]]; then
+  rm -f "$UI_PATH"
+  echo "  - App entfernt: $UI_PATH"
+fi
+
+APP_PATH="${OMATHUNDER_APP_DIR:-$HOME/Applications}/OmaThunder.app"
+if [[ -d "$APP_PATH" ]]; then
+  rm -rf "$APP_PATH"
+  echo "  - macOS App entfernt: $APP_PATH"
 fi
 
 echo ""

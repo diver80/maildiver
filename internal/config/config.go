@@ -23,8 +23,12 @@ type ThemeConfig struct {
 }
 
 type ProviderConfig struct {
-	Backend  string `json:"backend"` // "gemini-api", "gemini-cli", "claude-cli", "claude-api", "opencode-cli", "ollama"
-	Model    string `json:"model"`
+	// Backend is a canonical backend name (see BackendNames); Normalize resolves aliases such as
+	// "anthropic" -> "claude-api" and "gemini" -> "gemini-api".
+	Backend string `json:"backend"`
+	Model   string `json:"model"`
+	// Endpoint overrides the backend's official base URL. It is only ever read from config.json:
+	// the backend's API key is sent to it.
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
@@ -43,6 +47,9 @@ type AIConfig struct {
 	// AllowUnrestrictedCLI permits the gemini-cli and opencode-cli backends. They cannot be started
 	// with tools disabled, so a prompt injection in a mail could trigger tool use. Off by default.
 	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
+	// Endpoints optionally sets a base URL per backend (canonical name -> URL) for backends picked
+	// ad hoc (e.g. in the native app) that are neither the agent nor the classifier. Empty = official URL.
+	Endpoints map[string]string `json:"endpoints,omitempty"`
 }
 
 // RoutingRule maps sender domains (and optional sender/subject filters) to a Space label and Thunderbird folder.
@@ -149,10 +156,24 @@ const (
 	maxScanDays       = 365
 )
 
+// BridgeConfig controls the local authenticated REST + SSE backend bridge for external UIs
+// (the native OmaThunder app, scripts). It is off by default: the host only opens the localhost
+// port after the user enabled it (app button, `omathunder bridge enable` or the settings page).
+type BridgeConfig struct {
+	Enabled   bool `json:"enabled"`
+	Port      int  `json:"port,omitempty"`
+	AllowSend bool `json:"allowSend,omitempty"`
+	// AccountIDs optionally limits which Thunderbird accounts bridge clients may read.
+	// Empty = all accounts are readable. Writes additionally always require
+	// mailbox.readOnly=false and an account listed in mailbox.triageAccountIds.
+	AccountIDs []string `json:"accountIds,omitempty"`
+}
+
 type Config struct {
 	Language string        `json:"language,omitempty"` // "auto", "de", "en"
 	Features FeatureFlags  `json:"features"`
 	Mailbox  MailboxPolicy `json:"mailbox"`
+	Bridge   BridgeConfig  `json:"bridge"`
 	Theme    ThemeConfig   `json:"theme"`
 	AI       AIConfig      `json:"ai"`
 	Rules    []RoutingRule `json:"rules"`
@@ -172,6 +193,11 @@ func Default() Config {
 			ScanLimit:          defaultScanLimit,
 			ScanDays:           defaultScanDays,
 			ArchiveDir:         DefaultArchiveDir(),
+		},
+		Bridge: BridgeConfig{
+			Enabled:   false,
+			Port:      0,
+			AllowSend: false,
 		},
 		Theme: ThemeConfig{
 			Mode:          "auto",
@@ -246,6 +272,15 @@ func ConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
+// BridgeInfoPath returns the runtime discovery file path for the local REST/SSE bridge.
+func BridgeInfoPath() (string, error) {
+	dir, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "bridge.json"), nil
+}
+
 func Load() (Config, error) {
 	cfg := Default()
 	path, err := ConfigPath()
@@ -275,6 +310,10 @@ func Normalize(cfg Config) Config {
 	}
 	if cfg.AI.MaxAICallsPerScan > maxMaxAICalls {
 		cfg.AI.MaxAICallsPerScan = maxMaxAICalls
+	}
+	cfg.AI = normalizeAI(cfg.AI)
+	if cfg.Bridge.Port < 0 || cfg.Bridge.Port > 65535 {
+		cfg.Bridge.Port = 0
 	}
 	if cfg.Rules == nil {
 		cfg.Rules = []RoutingRule{}
@@ -326,6 +365,15 @@ func ApplyPatch(base Config, patch []byte) (Config, error) {
 			}
 			if _, ok := mb["kanbanFolders"]; ok {
 				base.Mailbox.KanbanFolders = nil
+			}
+		}
+	}
+	if raw, ok := keys["ai"]; ok {
+		var aiKeys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &aiKeys); err == nil {
+			// A patched endpoints map replaces the old one (and never mutates the caller's map).
+			if _, ok := aiKeys["endpoints"]; ok {
+				base.AI.Endpoints = nil
 			}
 		}
 	}

@@ -3,7 +3,12 @@ const api = typeof messenger !== "undefined" ? messenger : browser;
 // Pure decision logic (unit-tested in tests/core.test.js); this file only talks to Thunderbird.
 const {
   PolicyError, isInboxFolder, findFolderInAccount, requireFeature, triageAccountIds, kanbanAccountIds,
-  requireWritable, requireMovable, acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince,
+  requireWritable, requireMovable, messageMoveKind, requireBridgeSend, summarizeMessageHeader, matchMessageQuery,
+  acceptDirectHit, pickMessageCandidate, selectScanFolders, newestSince,
+  bridgeSettings, isBridgeReadable, requireBridgeReadable, requireBridgeWritable, requireBridgeMovable,
+  checkBridgeRPC, filterBridgeReadable, sanitizeBridgeFilterSpec, bridgeErrorString, normalizeHeaderMessageId,
+  parseBridgeMessageRef, pickBridgeMessage, pickComposeIdentity, createIdempotencyCache, buildMailNewEvent,
+  createBridgeEventQueue, nativeReconnectDelay, isNativeHostMissingError,
   selectScanMessages, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText,
   replaceDraftOwn, htmlToText, isLocalAccount, findLocalAccount, buildArchiveRelativeParts,
   requireLocalArchiveMove, requireArchiveDelete, matchArchiveCandidate,
@@ -19,6 +24,12 @@ let nativePort = null;
 let hostConnected = false;
 let reqCounter = 0;
 const pendingRequests = new Map();
+// Last host config seen (get_config); used for bridge events and the bridge policy.
+let bridgeCfgCache = { cfg: null, at: 0 };
+
+function rememberHostConfig(cfg) {
+  if (cfg && typeof cfg === "object") bridgeCfgCache = { cfg, at: Date.now() };
+}
 
 let currentThemePayload = null;
 let bodyScriptHandle = null;
@@ -84,12 +95,25 @@ function buildStandaloneTheme(cfg) {
   return OmaStandalone.buildThemePayload(OmaStandalone.getPreset(presetName), "standalone-preset");
 }
 
+// The native port stays open while Thunderbird runs: the host serves the local bridge only while
+// it is connected. After a disconnect it is reopened with backoff (1 s -> 30 s); a host that is not
+// installed is not retried automatically (the next UI action tries again).
+let nativeReconnectTimer = null;
+let nativeReconnectAttempt = 0;
+
 async function connectNative() {
   if (nativePort) return nativePort;
+  clearTimeout(nativeReconnectTimer);
+  nativeReconnectTimer = null;
   const port = api.runtime.connectNative(HOST_NAME);
   nativePort = port;
 
   port.onMessage.addListener((msg) => {
+    if (nativePort === port) nativeReconnectAttempt = 0; // the host answers: reset the backoff
+    if (msg && msg.event === "tb_rpc" && msg.id && msg.result) {
+      handleThunderbirdRPC(port, msg.id, msg.result.method, msg.result.params).catch(() => {});
+      return;
+    }
     if (msg && msg.event === "theme_updated" && msg.result) {
       if (!features.theme) return;
       applyThemePayload(msg.result);
@@ -107,17 +131,40 @@ async function connectNative() {
 
   port.onDisconnect.addListener((p) => {
     const errMsg = p?.error?.message || api.runtime.lastError?.message || "Host disconnected";
+    if (nativePort !== port) return;
     nativePort = null;
     hostConnected = false;
+    bridgeCfgCache = { cfg: null, at: 0 };
     for (const [, pending] of pendingRequests) {
       clearTimeout(pending.timer);
       pending.reject(new Error(errMsg));
     }
     pendingRequests.clear();
     broadcastToUI({ type: "omathunder:hostStatus", connected: false, error: errMsg });
+    scheduleNativeReconnect(errMsg);
   });
 
   return port;
+}
+
+function scheduleNativeReconnect(errMsg) {
+  if (isNativeHostMissingError(errMsg)) return; // not installed: no retry loop
+  if (nativeReconnectTimer || nativePort) return;
+  const delay = nativeReconnectDelay(nativeReconnectAttempt++);
+  nativeReconnectTimer = setTimeout(async () => {
+    nativeReconnectTimer = null;
+    if (nativePort) return;
+    try {
+      // Plain get_config (not loadConfig): a failed attempt must not switch the theme to standalone.
+      const cfg = await callNative("get_config", {}, 15000);
+      hostConnected = true;
+      rememberHostConfig(cfg);
+      await syncFeatures(cfg, null, { standalone: false });
+      broadcastToUI({ type: "omathunder:hostStatus", connected: true });
+    } catch (_) {
+      // A disconnect schedules the next attempt itself; other errors leave the (open) port alone.
+    }
+  }, delay);
 }
 
 async function callNative(method, params = {}, timeoutMs = 45000) {
@@ -210,6 +257,7 @@ async function loadConfig() {
   try {
     const cfg = await callNative("get_config");
     hostConnected = true;
+    rememberHostConfig(cfg);
     await syncFeatures(cfg, null, { standalone: false });
     return cfg;
   } catch (err) {
@@ -718,8 +766,11 @@ async function getActiveDisplayedMessage() {
 // Collects the conversation of a mail. Membership is decided by the References / In-Reply-To
 // headers; the subject search only supplies candidates, so unrelated mails with the same
 // subject ("Rechnung", "Angebot") never end up in the AI prompt.
-async function collectThreadMessages(primary) {
+async function collectThreadMessages(primary, max = 8) {
   if (!primary || !api.messages?.query) return primary ? [primary] : [];
+  // Candidate budget follows the requested size (bridge: up to 50 mails), so a large limit really
+  // returns more mails; every candidate costs one getFull().
+  const want = Math.max(1, Math.min(Number(max) || 8, 50));
   const headers = new Map();
   const add = (list) => {
     for (const h of list || []) {
@@ -729,7 +780,7 @@ async function collectThreadMessages(primary) {
   };
 
   // Earlier mails named in the primary mail's own headers.
-  const ancestors = parseMessageIds(primary.headers?.references, primary.headers?.["in-reply-to"]).slice(-8);
+  const ancestors = parseMessageIds(primary.headers?.references, primary.headers?.["in-reply-to"]).slice(-Math.max(8, want));
   for (const id of ancestors) {
     const res = await api.messages.query({ headerMessageId: id }).catch(() => null);
     add((res?.messages || []).slice(0, 1));
@@ -738,12 +789,12 @@ async function collectThreadMessages(primary) {
   const baseSubj = normalizeSubjectForThread(primary.subject);
   if (baseSubj) {
     const res = await api.messages.query({ accountId: primary.accountId || undefined, subject: baseSubj }).catch(() => null);
-    add((res?.messages || []).filter((h) => normalizeSubjectForThread(h.subject).toLowerCase() === baseSubj.toLowerCase()).slice(0, 16));
+    add((res?.messages || []).filter((h) => normalizeSubjectForThread(h.subject).toLowerCase() === baseSubj.toLowerCase()).slice(0, Math.max(16, want + 16)));
   }
 
   const candidates = [];
-  for (const h of [...headers.values()].slice(0, 24)) candidates.push(await buildMessageInput(h));
-  return selectThread(primary, candidates, 8);
+  for (const h of [...headers.values()].slice(0, Math.min(100, Math.max(24, want * 2)))) candidates.push(await buildMessageInput(h));
+  return selectThread(primary, candidates, want);
 }
 
 // Own text of the compose window used last (quote, forward and signature are left out).
@@ -999,6 +1050,7 @@ api.runtime.onMessage.addListener((msg) => {
         try {
           const cfg = await callNative("get_config");
           hostConnected = true;
+          rememberHostConfig(cfg);
           await syncFeatures(cfg, null, { standalone: false });
           const ping = await callNative("ping");
           const [themePayload, themes, stateData, doctor, folderData] = await Promise.all([
@@ -1313,7 +1365,14 @@ api.runtime.onMessage.addListener((msg) => {
         if (!api.omaFilters?.upsertFilter) throw new Error("Native Filter API not available");
         const spec = msg.spec;
         if (!spec || !spec.accountId) throw new Error("Account ID missing for native filter");
-        const res = await api.omaFilters.upsertFilter(spec);
+        let res;
+        try {
+          res = await api.omaFilters.upsertFilter(spec);
+        } catch (err) {
+          // A rule linked to a native filter the user has deleted meanwhile: create it again.
+          if (spec.mode !== "replace" || !/^not_found\b/.test(String(err?.message || ""))) throw err;
+          res = await api.omaFilters.upsertFilter({ ...spec, mode: "create", name: spec.name || spec.existingName });
+        }
         let runResult = null;
         if (msg.runNow && res?.filter?.name) {
           runResult = await api.omaFilters.runFilters(spec.accountId, [res.filter.name]).catch((err) => ({
@@ -1510,6 +1569,7 @@ api.runtime.onMessage.addListener((msg) => {
         if (hostConnected) {
           try {
             const res = await callNative("save_config", msg.config || {});
+            rememberHostConfig(res?.config);
             await syncFeatures(res?.config, res?.theme, { standalone: false });
             return res;
           } catch (err) {
@@ -1937,7 +1997,8 @@ let newMailTimer = null;
 let pendingNewMailAccounts = new Set();
 let pendingNewMailAll = false;
 
-api.messages?.onNewMailReceived?.addListener((folder) => {
+api.messages?.onNewMailReceived?.addListener((folder, messages) => {
+  if (bridgeEventsWanted()) emitMailNew(folder, messages).catch(() => {});
   if (folder?.accountId) pendingNewMailAccounts.add(folder.accountId);
   else pendingNewMailAll = true;
 
@@ -2008,7 +2069,14 @@ function scheduleBoardSync() {
   }, 300);
 }
 
+// Upper bound of mails read from one onDeleted/onMoved list (more is reported as truncated).
+const MAX_EVENT_LIST = 2000;
+
 api.messages?.onUpdated?.addListener((message, changedProperties) => {
+  if (message) {
+    // Bulk changes (e.g. mark 5000 mails read) arrive one by one: batch them into a few mail.updated events.
+    queueBridgeEvent((q) => q.addUpdated(message.id, message.folder?.accountId));
+  }
   if (!features.triage || !hostConnected) return;
   if (changedProperties?.read === true && message) {
     pendingDoneReadRefs.push({
@@ -2020,9 +2088,18 @@ api.messages?.onUpdated?.addListener((message, changedProperties) => {
 });
 
 api.messages?.onDeleted?.addListener(async (messages) => {
-  if (!features.triage || !hostConnected) return;
-  const list = await collectMessageList(messages, 200).catch(() => []);
+  const wantBridge = bridgeEventsWanted();
+  const wantBoard = features.triage && hostConnected;
+  if (!wantBridge && !wantBoard) return;
+  const list = await collectMessageList(messages, MAX_EVENT_LIST + 1).catch(() => []);
   if (list.length === 0) return;
+  if (wantBridge) {
+    queueBridgeEvent((q) => {
+      for (const m of list.slice(0, MAX_EVENT_LIST)) q.addDeleted(m.id, m.folder?.accountId);
+      if (list.length > MAX_EVENT_LIST) q.markTruncated("deleted");
+    });
+  }
+  if (!wantBoard) return;
   for (const m of list) {
     pendingDeleteRefs.push({
       id: m.id != null ? String(m.id) : "",
@@ -2033,11 +2110,34 @@ api.messages?.onDeleted?.addListener(async (messages) => {
 });
 
 api.messages?.onMoved?.addListener(async (originalMessages, movedMessages) => {
-  if (!features.triage || !hostConnected) return;
-  const moved = await collectMessageList(movedMessages, 200).catch(() => []);
+  const wantBridge = bridgeEventsWanted();
+  const wantBoard = features.triage && hostConnected;
+  if (!wantBridge && !wantBoard) return;
+  const [originals, moved] = await Promise.all([
+    collectMessageList(originalMessages, MAX_EVENT_LIST + 1).catch(() => []),
+    collectMessageList(movedMessages, MAX_EVENT_LIST + 1).catch(() => []),
+  ]);
+  if (wantBridge && moved.length > 0) {
+    queueBridgeEvent((q) => {
+      // Thunderbird passes both lists in the same order.
+      for (let i = 0; i < Math.min(moved.length, MAX_EVENT_LIST); i++) {
+        const before = originals[i];
+        const after = moved[i];
+        q.addMoved({
+          oldId: before?.id,
+          id: after?.id,
+          fromFolderId: before?.folder?.id,
+          toFolderId: after?.folder?.id,
+          fromAccountId: before?.folder?.accountId,
+          toAccountId: after?.folder?.accountId,
+        });
+      }
+      if (moved.length > MAX_EVENT_LIST) q.markTruncated("moved");
+    });
+  }
+  if (!wantBoard) return;
   const toTrash = moved.some((m) => m?.folder?.type === "trash" || m?.folder?.type === "junk");
   if (!toTrash) return;
-  const originals = await collectMessageList(originalMessages, 200).catch(() => []);
   for (const m of originals) {
     if (m?.folder?.type === "trash" || m?.folder?.type === "junk") continue;
     pendingDeleteRefs.push({
@@ -2048,10 +2148,586 @@ api.messages?.onMoved?.addListener(async (originalMessages, movedMessages) => {
   if (pendingDeleteRefs.length > 0) scheduleBoardSync();
 });
 
+api.omaCalendar?.onChanged?.addListener((payload) => {
+  queueBridgeEvent((q) => q.addCalendar(payload?.calendarId, payload?.id));
+});
+
+// ---------------------------------------------------------------------------
+// Local bridge: reverse-RPC (tb_rpc) and live events (tb_event) for the native OmaThunder app.
+// Every call is checked centrally (OmaCore.checkBridgeRPC) against the host config before a handler
+// runs; handlers add the per-object checks. Errors are returned as "code: detail" (CONTRACT §2).
+// ---------------------------------------------------------------------------
+
+const bridgeEventQueue = createBridgeEventQueue();
+let bridgeEventTimer = null;
+const BRIDGE_EVENT_BATCH_MS = 500;
+const BRIDGE_CFG_MAX_AGE_MS = 5000;
+
+// Host config for bridge decisions. maxAgeMs=0 always asks the host. Never starts the host itself.
+async function hostConfigForBridge(maxAgeMs = 0) {
+  if (maxAgeMs > 0 && bridgeCfgCache.cfg && Date.now() - bridgeCfgCache.at <= maxAgeMs) return bridgeCfgCache.cfg;
+  if (!nativePort) return null;
+  try {
+    const cfg = await callNative("get_config", {}, 10000);
+    rememberHostConfig(cfg);
+    return cfg;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Cheap pre-check so bulk operations do not page through message lists for nobody.
+function bridgeEventsWanted() {
+  if (!nativePort) return false;
+  const { cfg, at } = bridgeCfgCache;
+  if (cfg && Date.now() - at <= BRIDGE_CFG_MAX_AGE_MS) return bridgeSettings(cfg).enabled;
+  return true; // unknown: queue; the flush decides with a fresh config
+}
+
+function queueBridgeEvent(add) {
+  if (!bridgeEventsWanted()) return;
+  add(bridgeEventQueue);
+  if (!bridgeEventTimer) bridgeEventTimer = setTimeout(flushBridgeEvents, BRIDGE_EVENT_BATCH_MS);
+}
+
+async function flushBridgeEvents() {
+  bridgeEventTimer = null;
+  if (bridgeEventQueue.isEmpty()) return;
+  const cfg = await hostConfigForBridge(BRIDGE_CFG_MAX_AGE_MS);
+  // drain() filters by bridge.enabled and bridge.accountIds and always empties the queue.
+  for (const ev of bridgeEventQueue.drain(cfg)) emitBridgeEvent(ev.event, ev.data);
+}
+
+async function emitMailNew(folder, messages) {
+  const cfg = await hostConfigForBridge(BRIDGE_CFG_MAX_AGE_MS);
+  if (!bridgeSettings(cfg).enabled || !isBridgeReadable(cfg, folder?.accountId)) return;
+  const headers = await collectMessageList(messages, 500).catch(() => []);
+  const payload = buildMailNewEvent(cfg, folder, headers, headers.length);
+  if (payload) emitBridgeEvent("mail.new", payload);
+}
+
+function emitBridgeEvent(eventName, data) {
+  if (!nativePort || !eventName) return;
+  try {
+    nativePort.postMessage({
+      method: "tb_event",
+      params: { event: eventName, data: data || {} },
+    });
+  } catch (_) {
+    // Ignore when host port is closing.
+  }
+}
+
+async function handleThunderbirdRPC(port, rpcId, method, params) {
+  let reply;
+  try {
+    const result = await dispatchThunderbirdRPC(String(method || ""), params && typeof params === "object" ? params : {});
+    reply = { id: rpcId, ok: true, result: result === undefined ? null : result };
+  } catch (err) {
+    reply = { id: rpcId, ok: false, error: bridgeErrorString(err) };
+  }
+  // The host may have gone away while the call ran: nobody waits for this result any more.
+  if (port !== nativePort) return;
+  try {
+    port.postMessage({ method: "tb_rpc_result", params: reply });
+  } catch (_) {
+    // port closed meanwhile
+  }
+}
+
+// Resolves the mail a bridge call addresses (CONTRACT §4): numeric ID (verified against
+// expectedMessageId when given) or RFC Message-ID (unique copy, narrowed by folderId/accountId).
+async function resolveBridgeMessage(cfg, params, idKey = "id") {
+  const ref = parseBridgeMessageRef(params, idKey);
+  let direct = null;
+  if (ref.numericId) direct = await api.messages.get(ref.numericId).catch(() => null);
+  let candidates = [];
+  if ((!ref.numericId || !direct) && ref.headerMessageId && api.messages?.query) {
+    candidates = await collectPagedMessages(api.messages.query({ headerMessageId: ref.headerMessageId }), 5);
+  }
+  return pickBridgeMessage(ref, direct, candidates, cfg);
+}
+
+function requireExperiment(fn, name) {
+  if (typeof fn !== "function") throw new PolicyError(`feature_disabled:${name}`, "experiment API unavailable");
+}
+
+function serializeAccount(acc) {
+  return {
+    id: acc.id,
+    name: acc.name,
+    type: acc.type,
+    identities: (acc.identities || []).map((idn) => ({
+      id: idn.id,
+      email: idn.email,
+      name: idn.name || "",
+    })),
+  };
+}
+
+function bridgeMessageInput(m) {
+  return { ...m, messageId: normalizeHeaderMessageId(m?.threadId) };
+}
+
+async function dispatchThunderbirdRPC(method, params) {
+  const cfg = method === "ping" ? null : await hostConfigForBridge(0);
+  checkBridgeRPC(cfg, method, params);
+
+  switch (method) {
+    case "ping":
+      return { pong: true, timestamp: new Date().toISOString() };
+
+    case "accounts.list": {
+      const accounts = filterBridgeReadable(cfg, (await api.accounts.list(false)) || [], (a) => a?.id);
+      return { accounts: accounts.map(serializeAccount) };
+    }
+
+    case "folders.list": {
+      const folders = filterBridgeReadable(cfg, await listAllFolders());
+      const wantAcc = String(params.accountId || "").trim();
+      return { folders: wantAcc ? folders.filter((f) => f.accountId === wantAcc) : folders };
+    }
+
+    case "messages.list":
+      return rpcListMessages(cfg, params);
+
+    case "messages.get": {
+      const header = await resolveBridgeMessage(cfg, params);
+      const full = await api.messages.getFull(header.id).catch(() => null);
+      const attachments = await api.messages.listAttachments(header.id).catch(() => []);
+      const headers = {};
+      if (full?.headers) {
+        for (const [k, vals] of Object.entries(full.headers)) {
+          if (Array.isArray(vals) && vals.length > 0) headers[k] = String(vals[0]);
+        }
+      }
+      const format = String(params.format || "text").toLowerCase();
+      const out = {
+        ...summarizeMessageHeader(header),
+        headers,
+        bodyText: extractPlainText(full),
+        attachments: (attachments || []).map((a) => ({
+          name: a.name || "",
+          contentType: a.contentType || "",
+          size: Number(a.size || 0),
+          partName: a.partName || "",
+        })),
+      };
+      if (format === "html" || format === "both") out.bodyHtml = findPartText(full, "text/html");
+      return out;
+    }
+
+    case "messages.thread": {
+      const header = await resolveBridgeMessage(cfg, params);
+      const limit = Math.max(1, Math.min(Number(params.limit) || 20, 50));
+      const primary = await buildMessageInput(header, { includeAttachmentText: true });
+      const msgs = await collectThreadMessages(primary, limit);
+      return { messages: filterBridgeReadable(cfg, msgs).map(bridgeMessageInput) };
+    }
+
+    case "messages.actions":
+      return rpcMessageActions(cfg, params);
+
+    case "compose.draft":
+    case "compose.send":
+      return composeIdempotency.run(method, params.idempotencyKey, () => rpcCompose(cfg, method, params));
+
+    case "calendar.list":
+      requireExperiment(api.omaCalendar?.listCalendars, "calendar");
+      return api.omaCalendar.listCalendars();
+
+    case "calendar.events":
+      requireExperiment(api.omaCalendar?.getEvents, "calendar");
+      return api.omaCalendar.getEvents(params);
+
+    case "calendar.create":
+      requireExperiment(api.omaCalendar?.createEvent, "calendar");
+      return api.omaCalendar.createEvent(params);
+
+    case "calendar.update":
+      requireExperiment(api.omaCalendar?.updateEvent, "calendar");
+      return api.omaCalendar.updateEvent(params);
+
+    case "calendar.delete":
+      requireExperiment(api.omaCalendar?.deleteEvent, "calendar");
+      return api.omaCalendar.deleteEvent(params);
+
+    case "contacts.search":
+      return rpcSearchContacts(params);
+
+    case "contacts.upsert":
+      return rpcUpsertContact(params);
+
+    case "filters.list": {
+      const data = await listNativeFiltersSafe(String(params.accountId || ""));
+      return {
+        ...data,
+        accounts: filterBridgeReadable(cfg, data.accounts || []),
+        filters: filterBridgeReadable(cfg, data.filters || []),
+      };
+    }
+
+    case "filters.upsert": {
+      requireExperiment(api.omaFilters?.upsertFilter, "filters");
+      // No delete actions, target folders only inside the (writable) account.
+      return api.omaFilters.upsertFilter(sanitizeBridgeFilterSpec(params));
+    }
+
+    case "filters.run":
+      requireExperiment(api.omaFilters?.runFilters, "filters");
+      return api.omaFilters.runFilters(
+        String(params.accountId || "").trim(),
+        Array.isArray(params.filterNames) ? params.filterNames.map(String) : undefined,
+      );
+
+    case "filters.openDialog":
+      if (!api.omaFilters?.openFilterDialog) return { opened: false };
+      return api.omaFilters.openFilterDialog(String(params.accountId || "").trim() || undefined);
+
+    default:
+      throw new PolicyError("invalid_argument", `unknown method ${method}`);
+  }
+}
+
+async function rpcListMessages(cfg, params) {
+  const limit = Math.max(1, Math.min(Number(params.limit) || 50, 200));
+  const offset = Math.max(0, Number(params.cursor) || 0);
+  const days = Math.max(1, Math.min(Number(params.days) || 30, 365));
+  const since = new Date(Date.now() - days * 86400000);
+  const folderId = String(params.folderId || "").trim();
+  const accountId = String(params.accountId || "").trim();
+  const q = String(params.q || "").trim();
+  const hasUnreadFilter = typeof params.unread === "boolean";
+
+  const folders = await listAllFolders();
+  let targets;
+  if (folderId) {
+    const folder = folders.find((f) => f.id === folderId);
+    if (!folder) throw new PolicyError("not_found", `folder ${folderId}`);
+    if (accountId && folder.accountId !== accountId) throw new PolicyError("invalid_argument", "folderId belongs to another account");
+    requireBridgeReadable(cfg, folder.accountId);
+    targets = [folder];
+  } else {
+    const readable = filterBridgeReadable(cfg, folders).filter((f) => !accountId || f.accountId === accountId);
+    targets = readable.filter((f) => isInboxFolder(f));
+    if (targets.length === 0) {
+      targets = readable.filter((f) => f.type !== "trash" && f.type !== "junk").slice(0, 10);
+    }
+  }
+
+  const headers = [];
+  for (const f of targets) {
+    const query = { folderId: f.id, fromDate: since };
+    if (hasUnreadFilter) query.unread = params.unread;
+    headers.push(...(await collectPagedMessages(api.messages.query(query), folderId ? 20 : 10)));
+  }
+
+  const filtered = headers
+    .filter((h) => isBridgeReadable(cfg, h.folder?.accountId))
+    .filter((h) => (!hasUnreadFilter || Boolean(!h.read) === params.unread) && matchMessageQuery(h, q))
+    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+  const slice = filtered.slice(offset, offset + limit).map(summarizeMessageHeader);
+  const nextCursor = offset + slice.length < filtered.length ? String(offset + slice.length) : "";
+  return { messages: slice, total: filtered.length, nextCursor };
+}
+
+async function rpcMessageActions(cfg, params) {
+  const header = await resolveBridgeMessage(cfg, params);
+  const accountId = header.folder?.accountId || "";
+  requireBridgeWritable(cfg, accountId);
+
+  // Validate the whole request before changing anything.
+  const patch = {};
+  if (params.read !== undefined) {
+    if (typeof params.read !== "boolean") throw new PolicyError("invalid_argument", "read must be a boolean");
+    patch.read = params.read;
+  }
+  if (params.flagged !== undefined) {
+    if (typeof params.flagged !== "boolean") throw new PolicyError("invalid_argument", "flagged must be a boolean");
+    patch.flagged = params.flagged;
+  }
+  for (const key of ["addTags", "removeTags"]) {
+    if (params[key] !== undefined && !Array.isArray(params[key])) throw new PolicyError("invalid_argument", `${key} must be an array`);
+  }
+  if (Array.isArray(params.addTags) || Array.isArray(params.removeTags)) {
+    const cur = new Set(Array.isArray(header.tags) ? header.tags : []);
+    for (const t of params.addTags || []) if (t) cur.add(String(t));
+    for (const t of params.removeTags || []) cur.delete(String(t));
+    patch.tags = [...cur];
+  }
+
+  const moveKind = messageMoveKind(params);
+  if (moveKind === "archive" && typeof api.messages.archive !== "function") {
+    throw new PolicyError("invalid_argument", "this Thunderbird version cannot archive messages");
+  }
+
+  let target = null;
+  let deleteToTrash = false;
+  if (moveKind === "trash" || moveKind === "move") {
+    const folders = await listAllFolders();
+    if (moveKind === "trash") {
+      target = folders.find((f) => f.accountId === accountId && f.type === "trash") || null;
+      deleteToTrash = !target;
+    } else {
+      target = findFolderInAccount(folders, accountId, String(params.moveToFolderId || ""), String(params.moveToPath || ""));
+      if (!target) {
+        const elsewhere = params.moveToFolderId ? folders.find((f) => f.id === params.moveToFolderId) : null;
+        if (elsewhere) throw new PolicyError("cross_account_move", "target folder belongs to another account");
+        throw new PolicyError("not_found", "target folder");
+      }
+    }
+    if (target) requireBridgeMovable(cfg, header, target);
+  }
+
+  if (Object.keys(patch).length > 0) await api.messages.update(header.id, patch);
+
+  let movedTo = "";
+  let newId = String(header.id);
+  if (target && target.id !== header.folder?.id) {
+    await api.messages.move([header.id], target.id);
+    movedTo = target.path;
+    // IMAP moves assign a new numeric ID.
+    if (header.headerMessageId) {
+      const post = await api.messages.query({ headerMessageId: header.headerMessageId, folderId: target.id }).catch(() => null);
+      if (post?.messages?.length === 1) newId = String(post.messages[0].id);
+    }
+  } else if (deleteToTrash) {
+    await api.messages.delete([header.id], false);
+    movedTo = "Trash";
+  } else if (moveKind === "archive") {
+    // Thunderbird files the mail by the identity's archive settings (folder, yearly/monthly).
+    await api.messages.archive([header.id]);
+    movedTo = "Archive";
+    newId = "";
+  }
+  return {
+    ok: true,
+    id: String(header.id),
+    newId,
+    messageId: normalizeHeaderMessageId(header.headerMessageId),
+    movedTo,
+  };
+}
+
+// compose.draft / compose.send (CONTRACT §5). Policy is checked against the account owning the
+// identity that is actually used; that identity is passed to Thunderbird explicitly.
+const composeIdempotency = createIdempotencyCache({ ttlMs: 15 * 60 * 1000 });
+const REPLY_TYPES = new Set(["replyToSender", "replyToList", "replyToAll"]);
+
+async function rpcCompose(cfg, method, params) {
+  const isSend = method === "compose.send";
+  const openWindow = !isSend && params.openWindow === true;
+  if (!api.compose?.beginNew) throw new PolicyError("feature_disabled:compose", "compose API unavailable");
+
+  let replyHeader = null;
+  if (params.replyToMessageId) {
+    replyHeader = await resolveBridgeMessage(cfg, {
+      id: params.replyToMessageId,
+      expectedMessageId: params.replyToExpectedMessageId || "",
+    });
+  }
+  const replyType = String(params.replyType || "replyToSender");
+  if (replyHeader && !REPLY_TYPES.has(replyType)) throw new PolicyError("invalid_argument", `unknown replyType ${replyType}`);
+
+  const accounts = (await api.accounts.list(false)) || [];
+  let defaultAccountId = "";
+  try {
+    defaultAccountId = (await api.accounts.getDefault?.())?.id || "";
+  } catch (_) {
+    // older Thunderbird
+  }
+  const used = pickComposeIdentity(accounts, {
+    identityId: String(params.identityId || ""),
+    accountId: String(params.accountId || ""),
+    preferredAccountIds: [replyHeader?.folder?.accountId, defaultAccountId].filter(Boolean),
+  });
+  if (isSend) requireBridgeSend(cfg, used.accountId);
+  else if (openWindow) requireBridgeReadable(cfg, used.accountId); // only a visible window, nothing saved
+  else requireBridgeWritable(cfg, used.accountId); // silent draft save writes into the Drafts folder
+
+  const details = { identityId: used.identityId };
+  if (params.to) details.to = params.to;
+  if (params.cc) details.cc = params.cc;
+  if (params.bcc) details.bcc = params.bcc;
+  if (params.subject !== undefined) details.subject = String(params.subject);
+  if (params.body !== undefined) {
+    if (params.isHtml) details.body = String(params.body);
+    else details.plainTextBody = String(params.body);
+  }
+
+  if (isSend && !api.compose?.sendMessage) throw new PolicyError("feature_disabled:compose", "compose.sendMessage unavailable");
+  const tab = replyHeader
+    ? await api.compose.beginReply(replyHeader.id, replyType, details)
+    : await api.compose.beginNew(details);
+  const base = { ok: true, identityId: used.identityId, accountId: used.accountId };
+
+  if (isSend) {
+    const sent = await api.compose.sendMessage(tab.id, { mode: "sendNow" });
+    return { ...base, sent };
+  }
+  if (openWindow) return { ...base, tabId: tab.id, windowOpened: true };
+  let saved = null;
+  if (api.compose?.saveMessage) {
+    saved = await api.compose.saveMessage(tab.id, { mode: "draft" });
+    await api.tabs?.remove?.(tab.id).catch(() => {});
+  }
+  return { ...base, tabId: tab.id, saved };
+}
+
+function normalizeContactNode(node, fallbackBookId = "") {
+  const p = node?.properties || {};
+  const addrParts = [p.WorkAddress, p.WorkZipCode, p.WorkCity, p.WorkCountry].filter(Boolean);
+  return {
+    id: String(node?.id || ""),
+    addressBookId: String(node?.parentId || fallbackBookId || ""),
+    displayName: String(p.DisplayName || p.displayName || ""),
+    firstName: String(p.FirstName || p.firstName || ""),
+    lastName: String(p.LastName || p.lastName || ""),
+    email: String(p.PrimaryEmail || p.primaryEmail || ""),
+    secondEmail: String(p.SecondEmail || p.secondEmail || ""),
+    phone: String(p.WorkPhone || p.HomePhone || p.workPhone || ""),
+    mobile: String(p.CellularNumber || p.cellularNumber || ""),
+    company: String(p.Company || p.company || ""),
+    jobTitle: String(p.JobTitle || p.jobTitle || ""),
+    website: String(p.WebPage1 || p.webPage1 || ""),
+    address: addrParts.join(", "),
+    notes: String(p.Notes || p.notes || ""),
+  };
+}
+
+async function rpcSearchContacts(params = {}) {
+  if (!api.addressBooks || !api.contacts) {
+    return { supported: false, addressBooks: [], contacts: [] };
+  }
+  const books = (await api.addressBooks.list(false).catch(() => [])) || [];
+  const addressBooks = books.map((b) => ({
+    id: String(b.id || ""),
+    name: String(b.name || ""),
+    readOnly: Boolean(b.readOnly),
+    type: String(b.type || ""),
+  }));
+
+  const q = String(params?.q || params?.query || "").trim().toLowerCase();
+  const seen = new Map();
+
+  if (q && api.contacts.quickSearch) {
+    let hits = await api.contacts.quickSearch(q).catch(() => null);
+    if (!hits) hits = await api.contacts.quickSearch({ searchString: q }).catch(() => []);
+    for (const c of hits || []) {
+      const norm = normalizeContactNode(c);
+      if (norm.id && !seen.has(norm.id)) seen.set(norm.id, norm);
+    }
+  }
+
+  if (seen.size === 0) {
+    for (const b of books) {
+      const list = (await api.contacts.list(b.id).catch(() => [])) || [];
+      for (const c of list.slice(0, 300)) {
+        const norm = normalizeContactNode(c, b.id);
+        if (!norm.id || seen.has(norm.id)) continue;
+        if (q) {
+          const hay = [norm.displayName, norm.firstName, norm.lastName, norm.email, norm.secondEmail, norm.company]
+            .join(" ")
+            .toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
+        seen.set(norm.id, norm);
+      }
+    }
+  }
+
+  return {
+    supported: true,
+    addressBooks,
+    contacts: [...seen.values()],
+  };
+}
+
+async function rpcUpsertContact(params = {}) {
+  if (!api.addressBooks || !api.contacts) {
+    throw new PolicyError("feature_disabled:contacts", "addressBooks API unavailable");
+  }
+  const c = params?.contact && typeof params.contact === "object" ? params.contact : {};
+  const books = (await api.addressBooks.list(false).catch(() => [])) || [];
+  const writableBooks = books.filter((b) => !b.readOnly);
+  if (writableBooks.length === 0) {
+    throw new PolicyError("not_found", "no writable address book");
+  }
+
+  let bookId = String(params?.addressBookId || "").trim();
+  if (!bookId || !writableBooks.some((b) => b.id === bookId)) {
+    bookId = writableBooks[0].id;
+  }
+
+  const fullName = String(c.displayName || [c.firstName, c.lastName].filter(Boolean).join(" ") || c.email || "").trim();
+  const desired = {
+    DisplayName: fullName,
+    FirstName: String(c.firstName || "").trim(),
+    LastName: String(c.lastName || "").trim(),
+    PrimaryEmail: String(c.email || "").trim(),
+    WorkPhone: String(c.phone || "").trim(),
+    CellularNumber: String(c.mobile || "").trim(),
+    Company: String(c.company || "").trim(),
+    JobTitle: String(c.jobTitle || "").trim(),
+    WebPage1: String(c.website || "").trim(),
+    WorkAddress: String(c.address || "").trim(),
+    Notes: String(c.notes || "").trim(),
+  };
+
+  const contactId = String(params?.contactId || "").trim();
+  if (contactId) {
+    const existing = await api.contacts.get(contactId).catch(() => null);
+    if (!existing) throw new PolicyError("not_found", `contact ${contactId}`);
+    if (books.find((b) => b.id === existing.parentId)?.readOnly) {
+      throw new PolicyError("read_only", "the contact's address book is read-only");
+    }
+    // Only fill fields that are still empty. contacts.update() merges the given properties into the
+    // contact; the existing properties (which include the full `vCard`) must NOT be sent back,
+    // because a `vCard` property makes Thunderbird ignore every other property of the update.
+    const curProps = existing.properties || {};
+    const changes = {};
+    for (const [k, v] of Object.entries(desired)) {
+      if (v && !String(curProps[k] || "").trim()) changes[k] = v;
+    }
+    if (Object.keys(changes).length > 0) await api.contacts.update(contactId, changes);
+    const updated = await api.contacts.get(contactId).catch(() => null);
+    return {
+      ok: true,
+      action: "enriched",
+      changed: Object.keys(changes),
+      contact: normalizeContactNode(updated || { id: contactId, parentId: existing.parentId, properties: { ...curProps, ...changes } }, existing.parentId || bookId),
+    };
+  }
+
+  const createProps = {};
+  for (const [k, v] of Object.entries(desired)) {
+    if (v) createProps[k] = v;
+  }
+  if (Object.keys(createProps).length === 0) throw new PolicyError("invalid_argument", "contact has no data");
+  const created = await api.contacts.create(bookId, createProps);
+  let node = null;
+  if (typeof created === "string") {
+    node = await api.contacts.get(created).catch(() => ({ id: created, parentId: bookId, properties: createProps }));
+  } else if (created && typeof created === "object") {
+    node = created;
+  } else {
+    node = { id: "", parentId: bookId, properties: createProps };
+  }
+  return {
+    ok: true,
+    action: "imported",
+    contact: normalizeContactNode(node, bookId),
+  };
+}
+
 async function bootstrap() {
   await ensureSpacesTab();
   await registerContextMenus();
   try {
+    // Opens the native port at startup (not only on the first UI action), so the host and its local
+    // bridge run as soon as Thunderbird does. Lost connections are retried (scheduleNativeReconnect);
+    // a host that is not installed falls back to standalone mode without retry loops.
     const cfg = await loadConfig();
     if (!cfg?.features?.theme) await removeTheme();
   } catch (err) {

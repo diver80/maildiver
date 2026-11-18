@@ -2,15 +2,17 @@ package triage
 
 import (
 	"fmt"
+	"net/mail"
+	"regexp"
 	"strings"
 
 	"github.com/diver80/omathunder/internal/config"
 )
 
 type NativeCondition struct {
-	Field          string `json:"field"`                    // "from", "to", "cc", "toOrCc", "allAddresses", "subject", "body", "header", "custom", "other"
-	HeaderName     string `json:"headerName,omitempty"`     // e.g. "x-mailer"
-	Op             string `json:"op"`                       // "contains", "doesNotContain", "is", "isNot", "beginsWith", "endsWith", "matches", "doesNotMatch"
+	Field          string `json:"field"`                // "from", "to", "cc", "toOrCc", "allAddresses", "subject", "body", "header", "custom", "other"
+	HeaderName     string `json:"headerName,omitempty"` // e.g. "x-mailer"
+	Op             string `json:"op"`                   // "contains", "doesNotContain", "is", "isNot", "beginsWith", "endsWith", "matches", "doesNotMatch"
 	Value          string `json:"value"`
 	BooleanAnd     bool   `json:"booleanAnd"`
 	MatchAll       bool   `json:"matchAll,omitempty"`
@@ -98,76 +100,218 @@ type SpaceImportCandidate struct {
 	AlreadyImported   bool     `json:"alreadyImported"`
 }
 
-func evalStringOp(candidate, op, needle string) bool {
+// canonicalFilterOp maps Thunderbird search operator spellings to a canonical name.
+// ok=false means the operator is not supported by the local preview/diagnosis.
+func canonicalFilterOp(op string) (canon string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(op)) {
+	case "contains":
+		return "contains", true
+	case "doesnotcontain", "doesntcontain":
+		return "doesNotContain", true
+	case "is":
+		return "is", true
+	case "isnot", "isnt":
+		return "isNot", true
+	case "beginswith":
+		return "beginsWith", true
+	case "endswith":
+		return "endsWith", true
+	case "isempty":
+		return "isEmpty", true
+	case "isnotempty", "isntempty":
+		return "isNotEmpty", true
+	default:
+		return "", false
+	}
+}
+
+// isNegativeFilterOp reports operators that must hold for EVERY address/part of a header
+// (Thunderbird's "match all before deciding" semantics).
+func isNegativeFilterOp(canon string) bool {
+	return canon == "doesNotContain" || canon == "isNot" || canon == "isEmpty"
+}
+
+// matchFilterString applies a canonical operator to one candidate string (case-insensitive).
+func matchFilterString(candidate, canon, needle string) bool {
 	c := strings.ToLower(strings.TrimSpace(candidate))
 	n := strings.ToLower(strings.TrimSpace(needle))
+	switch canon {
+	case "isEmpty":
+		return c == ""
+	case "isNotEmpty":
+		return c != ""
+	}
 	if n == "" {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(op)) {
+	switch canon {
 	case "contains":
 		return strings.Contains(c, n)
-	case "doesnotcontain", "doesntcontain":
+	case "doesNotContain":
 		return !strings.Contains(c, n)
 	case "is":
 		return c == n
-	case "isnot", "isnt":
+	case "isNot":
 		return c != n
-	case "beginswith":
+	case "beginsWith":
 		return strings.HasPrefix(c, n)
-	case "endswith":
+	case "endsWith":
 		return strings.HasSuffix(c, n)
 	default:
-		return strings.Contains(c, n)
+		return false
+	}
+}
+
+// evalStringOp evaluates op on a plain string. Unknown operators never match.
+func evalStringOp(candidate, op, needle string) bool {
+	canon, ok := canonicalFilterOp(op)
+	if !ok {
+		return false
+	}
+	return matchFilterString(candidate, canon, needle)
+}
+
+// addressParts splits one RFC 5322 address into the parts Thunderbird matches separately:
+// the mailbox address and the (decoded) display name.
+func addressParts(raw string) []string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if addr, err := mail.ParseAddress(s); err == nil {
+		parts := []string{addr.Address}
+		if name := strings.TrimSpace(addr.Name); name != "" {
+			parts = append(parts, name)
+		}
+		return parts
+	}
+	address := ExtractEmailAddress(s)
+	name := s
+	if i := strings.Index(s, "<"); i >= 0 {
+		name = s[:i]
+	} else if address != "" {
+		name = ""
+	}
+	name = strings.Trim(strings.TrimSpace(name), `"' `)
+	var parts []string
+	if address != "" {
+		parts = append(parts, address)
+	}
+	if name != "" {
+		parts = append(parts, name)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, s)
+	}
+	return parts
+}
+
+// evalAddressHeader evaluates an address condition the way Thunderbird does: every address
+// is checked by its mailbox address and display name separately (never the combined
+// "Name <addr>" string). Positive operators match if any part of any address matches;
+// negative operators (doesNotContain/isNot) match only if all parts of all addresses satisfy
+// them. An empty header satisfies negative operators only.
+func evalAddressHeader(addresses []string, canon, needle string) bool {
+	neg := isNegativeFilterOp(canon)
+	seen := false
+	for _, a := range addresses {
+		for _, part := range addressParts(a) {
+			seen = true
+			hit := matchFilterString(part, canon, needle)
+			if neg && !hit {
+				return false
+			}
+			if !neg && hit {
+				return true
+			}
+		}
+	}
+	if !seen {
+		return neg || canon == "isEmpty"
+	}
+	return neg
+}
+
+var (
+	tbReplyPrefixRE = regexp.MustCompile(`(?i)^\s*(re|aw|antw|antwort|sv|vs)\s*(\[\d+\]|\(\d+\))?\s*:\s*`)
+	anyRulePrefixRE = regexp.MustCompile(`(?i)^\s*(re|aw|antw|antwort|sv|vs|fwd?|wg|tr|rv)\s*(\[\d+\]|\(\d+\))?\s*:\s*`)
+)
+
+// ThunderbirdFilterSubject returns the subject string Thunderbird's filters match against:
+// reply prefixes (Re:, AW:, Antw:, SV:, Re[2]: …) are stripped and, if any was present, a
+// single "Re: " is put in front. Forward prefixes (Fwd:, WG:) are part of the subject in
+// Thunderbird and stay untouched.
+func ThunderbirdFilterSubject(subject string) string {
+	s := strings.TrimSpace(subject)
+	stripped := false
+	for {
+		loc := tbReplyPrefixRE.FindStringIndex(s)
+		if loc == nil {
+			break
+		}
+		s = strings.TrimSpace(s[loc[1]:])
+		stripped = true
+	}
+	if stripped {
+		return "Re: " + s
+	}
+	return s
+}
+
+// StripSubjectPrefixes removes all reply AND forward prefixes (Re:, AW:, Fwd:, WG:, …) for
+// pattern extraction.
+func StripSubjectPrefixes(subject string) string {
+	s := strings.TrimSpace(subject)
+	for {
+		loc := anyRulePrefixRE.FindStringIndex(s)
+		if loc == nil {
+			return s
+		}
+		s = strings.TrimSpace(s[loc[1]:])
 	}
 }
 
 func evalConditionAgainstMessage(cond NativeCondition, msg MessageInput) (matched bool, hint string) {
+	canon, known := canonicalFilterOp(cond.Op)
+	if !known {
+		return false, "unsupported_operator"
+	}
 	switch strings.ToLower(strings.TrimSpace(cond.Field)) {
 	case "from", "sender":
-		// Thunderbird checks both display/raw From and extracted address.
-		return evalStringOp(msg.From, cond.Op, cond.Value), ""
+		return evalAddressHeader([]string{msg.From}, canon, cond.Value), ""
 	case "to":
-		for _, r := range msg.To {
-			if evalStringOp(r, cond.Op, cond.Value) {
-				return true, ""
-			}
+		return evalAddressHeader(msg.To, canon, cond.Value), ""
+	case "toorcc":
+		// MessageInput carries no Cc list; To is the best local approximation.
+		return evalAddressHeader(msg.To, canon, cond.Value), ""
+	case "alladdresses":
+		all := make([]string, 0, len(msg.To)+1)
+		if strings.TrimSpace(msg.From) != "" {
+			all = append(all, msg.From)
 		}
-		if len(msg.To) == 0 && (cond.Op == "doesNotContain" || cond.Op == "isNot") {
-			return true, ""
-		}
-		return false, ""
-	case "toorcc", "alladdresses":
-		if evalStringOp(msg.From, cond.Op, cond.Value) && strings.EqualFold(cond.Field, "allAddresses") {
-			return true, ""
-		}
-		for _, r := range msg.To {
-			if evalStringOp(r, cond.Op, cond.Value) {
-				return true, ""
-			}
-		}
-		return false, ""
+		all = append(all, msg.To...)
+		return evalAddressHeader(all, canon, cond.Value), ""
 	case "subject":
-		ok := evalStringOp(msg.Subject, cond.Op, cond.Value)
-		if !ok && strings.Contains(cond.Value, "@") && evalStringOp(msg.From, cond.Op, cond.Value) {
+		ok := matchFilterString(ThunderbirdFilterSubject(msg.Subject), canon, cond.Value)
+		if !ok && strings.Contains(cond.Value, "@") && evalAddressHeader([]string{msg.From}, canon, cond.Value) {
 			return false, "email_in_subject"
 		}
 		return ok, ""
 	case "body":
-		return evalStringOp(msg.BodyText, cond.Op, cond.Value), ""
+		return matchFilterString(msg.BodyText, canon, cond.Value), ""
 	case "header":
 		hKey := strings.ToLower(strings.TrimSpace(cond.HeaderName))
 		for k, v := range msg.Headers {
 			if strings.ToLower(strings.TrimSpace(k)) == hKey {
-				return evalStringOp(v, cond.Op, cond.Value), ""
+				return matchFilterString(v, canon, cond.Value), ""
 			}
 		}
-		if cond.Op == "doesNotContain" || cond.Op == "isNot" {
+		if isNegativeFilterOp(canon) {
 			return true, ""
 		}
 		return false, ""
 	default:
-		return false, ""
+		return false, "unsupported_field"
 	}
 }
 

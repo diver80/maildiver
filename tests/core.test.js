@@ -615,6 +615,298 @@ test("selectScanMessages keeps ALL unread mails regardless of limit/since and ca
   eq(core.selectScanMessages(msgs, since, 1).map((m) => m.id), [2, 3, 1, 4]);
 });
 
+test("requireBridgeSend enforces writable account and explicit bridge.allowSend", () => {
+  const sendDisabled = { mailbox: { readOnly: false, triageAccountIds: ["work"] }, bridge: { allowSend: false } };
+  throwsCode(() => core.requireBridgeSend(sendDisabled, "work"), "send_disabled");
+  throwsCode(() => core.requireBridgeSend({ mailbox: { readOnly: true, triageAccountIds: ["work"] }, bridge: { allowSend: true } }, "work"), "read_only");
+  throwsCode(() => core.requireBridgeSend({ mailbox: { readOnly: false, triageAccountIds: ["work"] }, bridge: { allowSend: true } }, "priv"), "account_not_enabled");
+  core.requireBridgeSend({ mailbox: { readOnly: false, triageAccountIds: ["work"] }, bridge: { allowSend: true } }, "work");
+});
+
+test("summarizeMessageHeader and matchMessageQuery normalize headers and evaluate search tokens", () => {
+  const header = {
+    id: 42,
+    headerMessageId: "msg-42@example.com",
+    subject: "Re: Vertrag Update",
+    author: "Alice <alice@acme.de>",
+    recipients: ["frank@avono.de"],
+    ccList: ["team@avono.de"],
+    date: "2026-11-17T09:00:00Z",
+    read: false,
+    flagged: true,
+    tags: ["$label1"],
+    size: 2048,
+    folder: { id: "work:/INBOX", accountId: "work", path: "/INBOX", type: "inbox" },
+  };
+  const summary = core.summarizeMessageHeader(header);
+  eq(summary.id, "42");
+  eq(summary.threadId, "msg-42@example.com");
+  eq(summary.folder, "INBOX");
+  eq(summary.inInbox, true);
+  eq(summary.unread, true);
+  eq(summary.flagged, true);
+
+  eq(core.matchMessageQuery(header, ""), true);
+  eq(core.matchMessageQuery(header, "from:alice@acme.de subject:vertrag"), true);
+  eq(core.matchMessageQuery(header, "to:team@avono.de"), true);
+  eq(core.matchMessageQuery(header, "from:bob@acme.de"), false);
+  eq(core.matchMessageQuery(header, "subject:rechnung"), false);
+});
+
+// --- Local bridge policy (CONTRACT §1-§5) ---
+const bridgeCfg = (over = {}) => ({
+  mailbox: { readOnly: false, triageAccountIds: ["work"], ...(over.mailbox || {}) },
+  bridge: { enabled: true, allowSend: false, accountIds: [], ...(over.bridge || {}) },
+});
+
+test("PolicyError carries code and optional detail", () => {
+  const plain = new core.PolicyError("read_only");
+  eq([plain.code, plain.message, plain.detail], ["read_only", "read_only", ""]);
+  const detailed = new core.PolicyError("not_found", "message 5");
+  eq([detailed.code, detailed.message], ["not_found", "not_found: message 5"]);
+});
+
+test("bridge settings: missing or malformed config means off and nothing readable", () => {
+  eq(core.bridgeSettings(null), { enabled: false, allowSend: false, accountIds: [] });
+  eq(core.bridgeSettings({ bridge: "yes" }).enabled, false);
+  eq(core.bridgeSettings({ bridge: { enabled: "true" } }).enabled, false, "only boolean true enables");
+  eq(core.bridgeSettings(bridgeCfg()).accountIds, null, "empty list = all accounts");
+  eq(core.isBridgeReadable(null, "work"), false);
+  eq(core.isBridgeReadable(bridgeCfg(), "anything"), true);
+  eq(core.isBridgeReadable(bridgeCfg({ bridge: { accountIds: ["work"] } }), "work"), true);
+  eq(core.isBridgeReadable(bridgeCfg({ bridge: { accountIds: ["work"] } }), "priv"), false);
+  eq(core.isBridgeReadable(bridgeCfg({ bridge: { accountIds: "work" } }), "work"), false, "malformed restriction");
+  throwsCode(() => core.requireBridgeReadable(bridgeCfg({ bridge: { accountIds: ["work"] } }), "priv"), "account_not_readable");
+  core.requireBridgeWritable(bridgeCfg(), "work");
+  throwsCode(() => core.requireBridgeWritable(bridgeCfg({ bridge: { accountIds: ["priv"] } }), "work"), "account_not_readable");
+  throwsCode(() => core.requireBridgeWritable(bridgeCfg({ mailbox: { readOnly: true } }), "work"), "read_only");
+  throwsCode(() => core.requireBridgeSend(bridgeCfg({ bridge: { allowSend: true, accountIds: ["priv"] } }), "work"), "account_not_readable");
+  core.requireBridgeSend(bridgeCfg({ bridge: { allowSend: true } }), "work");
+});
+
+test("every bridge RPC method has a policy entry with a known kind", () => {
+  const kinds = new Set(["meta", "read", "write", "send", "filter", "calendar", "contacts", "ui"]);
+  const methods = Object.keys(core.BRIDGE_RPC_POLICY);
+  for (const m of [
+    "ping", "accounts.list", "folders.list", "messages.list", "messages.get", "messages.thread", "messages.actions",
+    "compose.draft", "compose.send", "calendar.list", "calendar.events", "calendar.create", "calendar.update",
+    "calendar.delete", "contacts.search", "contacts.upsert", "filters.list", "filters.upsert", "filters.run", "filters.openDialog",
+  ]) {
+    if (!methods.includes(m)) throw new Error(`missing policy for ${m}`);
+  }
+  for (const m of methods) {
+    if (!kinds.has(core.BRIDGE_RPC_POLICY[m].kind)) throw new Error(`unknown kind for ${m}`);
+  }
+});
+
+test("checkBridgeRPC applies the central policy before any handler", () => {
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg(), "messages.delete", {}), "invalid_argument");
+  eq(core.checkBridgeRPC(null, "ping", {}).kind, "meta");
+  throwsCode(() => core.checkBridgeRPC(null, "messages.list", {}), "feature_disabled:bridge");
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg({ bridge: { enabled: false } }), "accounts.list", {}), "feature_disabled:bridge");
+  core.checkBridgeRPC(bridgeCfg({ mailbox: { readOnly: true } }), "messages.list", {});
+  const restricted = bridgeCfg({ bridge: { accountIds: ["work"] } });
+  throwsCode(() => core.checkBridgeRPC(restricted, "messages.list", { accountId: "priv" }), "account_not_readable");
+  throwsCode(() => core.checkBridgeRPC(restricted, "folders.list", { accountId: "priv" }), "account_not_readable");
+  throwsCode(() => core.checkBridgeRPC(restricted, "filters.openDialog", { accountId: "priv" }), "account_not_readable");
+  core.checkBridgeRPC(restricted, "messages.list", { accountId: "work" });
+  // writes
+  const ro = bridgeCfg({ mailbox: { readOnly: true } });
+  throwsCode(() => core.checkBridgeRPC(ro, "messages.actions", { id: "1" }), "read_only");
+  throwsCode(() => core.checkBridgeRPC(ro, "compose.draft", {}), "read_only");
+  core.checkBridgeRPC(ro, "compose.draft", { openWindow: true });
+  throwsCode(() => core.checkBridgeRPC(ro, "compose.draft", { openWindow: "true" }), "read_only");
+  throwsCode(() => core.checkBridgeRPC(ro, "calendar.create", {}), "read_only");
+  throwsCode(() => core.checkBridgeRPC(ro, "contacts.upsert", {}), "read_only");
+  core.checkBridgeRPC(ro, "calendar.events", {});
+  core.checkBridgeRPC(ro, "contacts.search", {});
+  // send
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg(), "compose.send", {}), "send_disabled");
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg({ mailbox: { readOnly: true }, bridge: { allowSend: true } }), "compose.send", {}), "read_only");
+  core.checkBridgeRPC(bridgeCfg({ bridge: { allowSend: true } }), "compose.send", {});
+  // filters: account scope, not only read-only
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg(), "filters.upsert", {}), "invalid_argument");
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg(), "filters.run", { accountId: "priv" }), "account_not_enabled");
+  throwsCode(() => core.checkBridgeRPC(bridgeCfg({ bridge: { accountIds: ["priv"] } }), "filters.run", { accountId: "work" }), "account_not_readable");
+  throwsCode(() => core.checkBridgeRPC(ro, "filters.upsert", { accountId: "work" }), "read_only");
+  core.checkBridgeRPC(bridgeCfg(), "filters.run", { accountId: "work" });
+});
+
+test("bridge filter specs: no delete, valid conditions, same-account flag forced", () => {
+  const base = { accountId: "work", mode: "create", name: "N", conditions: [{ field: "from", value: "@acme.de" }], actions: [{ type: "moveToFolder", targetFolderPath: "Acme" }] };
+  const ok = core.sanitizeBridgeFilterSpec({ ...base, allowDelete: true, sameAccountOnly: false });
+  eq([ok.allowDelete, ok.sameAccountOnly, ok.mode], [false, true, "create"]);
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, actions: [{ type: "delete" }] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, actions: [{ type: "deleteFromServer" }] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, actions: [{ type: "forward" }] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, actions: [{ type: "moveToFolder" }] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, conditions: [{ field: "from", value: "  " }] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, actions: [] }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, mode: "replace" }), "invalid_argument");
+  throwsCode(() => core.sanitizeBridgeFilterSpec({ ...base, mode: "nuke" }), "invalid_argument");
+  core.sanitizeBridgeFilterSpec({ accountId: "work", mode: "toggle", existingName: "N", enabled: false });
+  eq(core.hasNonEmptyCondition([{ value: "" }, null, { value: " x " }]), true);
+  eq(core.hasNonEmptyCondition([{ value: "" }]), false);
+});
+
+test("bridgeErrorString produces CONTRACT §2 codes", () => {
+  eq(core.bridgeErrorString(new core.PolicyError("read_only")), "read_only");
+  eq(core.bridgeErrorString(new core.PolicyError("not_found", "message 5")), "not_found: message 5");
+  eq(core.bridgeErrorString(new core.PolicyError("feature_disabled:bridge")), "feature_disabled:bridge");
+  eq(core.bridgeErrorString(new core.PolicyError("message_not_found")), "not_found: message");
+  eq(core.bridgeErrorString(new core.PolicyError("target_folder_missing")), "not_found: target folder");
+  eq(core.bridgeErrorString(new Error("ambiguous: 2 copies")), "ambiguous: 2 copies");
+  eq(core.bridgeErrorString(new Error("not_found: Calendar x")), "not_found: Calendar x");
+  eq(core.bridgeErrorString(new Error("message_not_found")), "not_found: message");
+  eq(core.bridgeErrorString(new Error("boom")), "boom");
+  eq(core.bridgeErrorString(null), "internal_error");
+});
+
+test("bridge message resolution verifies numeric IDs and refuses ambiguous Message-IDs", () => {
+  const cfg = bridgeCfg();
+  const a = { id: 1, headerMessageId: "a@x", folder: { id: "work:/INBOX", accountId: "work" } };
+  const d1 = { id: 2, headerMessageId: "d@x", folder: { id: "work:/INBOX", accountId: "work" } };
+  const d2 = { id: 3, headerMessageId: "d@x", folder: { id: "priv:/INBOX", accountId: "priv" } };
+  throwsCode(() => core.parseBridgeMessageRef({}), "invalid_argument");
+  eq(core.parseBridgeMessageRef({ id: "<d@x>" }).headerMessageId, "d@x");
+  eq(core.parseBridgeMessageRef({ id: "12", expectedMessageId: "<a@x>" }), {
+    numericId: 12, headerMessageId: "a@x", expectedMessageId: "a@x", folderId: "", accountId: "",
+  });
+
+  eq(core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "1" }), a, [], cfg).id, 1);
+  eq(core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "1", expectedMessageId: "a@x" }), a, [], cfg).id, 1);
+  throwsCode(() => core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "1", expectedMessageId: "b@x" }), a, [], cfg), "message_changed");
+  throwsCode(() => core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "9" }), null, [], cfg), "not_found");
+  // stale numeric ID with expected Message-ID falls back to the unique copy
+  eq(core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "9", expectedMessageId: "a@x" }), null, [a], cfg).id, 1);
+
+  const dup = core.parseBridgeMessageRef({ id: "d@x" });
+  throwsCode(() => core.pickBridgeMessage(dup, null, [d1, d2], cfg), "ambiguous");
+  eq(core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "d@x", folderId: "priv:/INBOX" }), null, [d1, d2], cfg).id, 3);
+  eq(core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "d@x", accountId: "work" }), null, [d1, d2], cfg).id, 2);
+  throwsCode(() => core.pickBridgeMessage(dup, null, [], cfg), "not_found");
+
+  const restricted = bridgeCfg({ bridge: { accountIds: ["work"] } });
+  eq(core.pickBridgeMessage(dup, null, [d1, d2], restricted).id, 2, "copies in unreadable accounts are ignored");
+  throwsCode(() => core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "3" }), d2, [], restricted), "account_not_readable");
+  throwsCode(() => core.pickBridgeMessage(core.parseBridgeMessageRef({ id: "d@x", folderId: "priv:/INBOX" }), null, [d2], restricted), "account_not_readable");
+
+  eq(core.summarizeMessageHeader(a).messageId, "a@x");
+  eq(core.summarizeMessageHeader(a).threadId, "a@x");
+});
+
+test("compose policy uses the account owning the identity actually used", () => {
+  const accounts = [
+    { id: "local", identities: [] },
+    { id: "work", identities: [{ id: "id-w1" }, { id: "id-w2" }] },
+    { id: "priv", identities: [{ id: "id-p1" }] },
+  ];
+  eq(core.pickComposeIdentity(accounts, { identityId: "id-p1", accountId: "work" }), { identityId: "id-p1", accountId: "priv" });
+  eq(core.pickComposeIdentity(accounts, { accountId: "work" }), { identityId: "id-w1", accountId: "work" });
+  eq(core.pickComposeIdentity(accounts, { preferredAccountIds: ["local", "priv"] }), { identityId: "id-p1", accountId: "priv" });
+  eq(core.pickComposeIdentity(accounts, {}), { identityId: "id-w1", accountId: "work" });
+  throwsCode(() => core.pickComposeIdentity(accounts, { identityId: "nope" }), "not_found");
+  throwsCode(() => core.pickComposeIdentity(accounts, { accountId: "nope" }), "not_found");
+  throwsCode(() => core.pickComposeIdentity(accounts, { accountId: "local" }), "invalid_argument");
+  throwsCode(() => core.pickComposeIdentity([{ id: "local", identities: [] }], {}), "not_found");
+});
+
+testAsync("idempotency cache replays outcomes and dedupes in-flight calls", async () => {
+  let clock = 0;
+  const cache = core.createIdempotencyCache({ ttlMs: 1000, now: () => clock });
+  let runs = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const job = () => { runs++; return gate.then(() => ({ ok: true, n: runs })); };
+  const p1 = cache.run("compose.send", "k", job);
+  const p2 = cache.run("compose.send", "k", job);
+  release();
+  const [r1, r2] = await Promise.all([p1, p2]);
+  eq([runs, r1.n, r2.replayed], [1, 1, true]);
+  const r3 = await cache.run("compose.send", "k", job);
+  eq([runs, r3.replayed], [1, true]);
+  await cache.run("compose.draft", "k", job); // other scope
+  eq(runs, 2);
+  clock = 5000; // expired
+  await cache.run("compose.send", "k", job);
+  eq(runs, 3);
+  await cache.run("compose.send", "", job); // no key: no caching
+  await cache.run("compose.send", "", job);
+  eq(runs, 5);
+  let failing = 0;
+  await cache.run("compose.send", "f", () => { failing++; throw new Error("x"); }).catch(() => {});
+  await cache.run("compose.send", "f", () => { failing++; return { ok: true }; });
+  eq(failing, 2, "failures are not cached");
+  let threw = false;
+  await cache.run("compose.send", "x".repeat(300), job).catch((e) => { threw = e.code === "invalid_argument"; });
+  eq(threw, true);
+});
+
+test("bridge event queue batches, caps, filters accounts and respects bridge.enabled", () => {
+  const q = core.createBridgeEventQueue({ cap: 3 });
+  for (let i = 1; i <= 5; i++) q.addUpdated(i, "work");
+  q.addUpdated(1, "work"); // duplicate
+  q.addUpdated(99, "priv");
+  q.addDeleted(7, "work");
+  q.addMoved({ oldId: 10, id: 11, fromFolderId: "work:/INBOX", toFolderId: "work:/Archiv", fromAccountId: "work", toAccountId: "work" });
+  q.addMoved({ oldId: 20, id: 21, fromFolderId: "work:/INBOX", toFolderId: "priv:/INBOX", fromAccountId: "work", toAccountId: "priv" });
+  q.addMoved({ oldId: 30, id: 31, fromFolderId: "priv:/INBOX", toFolderId: "work:/INBOX", fromAccountId: "priv", toAccountId: "work" });
+  q.addCalendar("cal1", "e1");
+  q.addCalendar("cal1", "e1");
+  q.addCalendar("cal1", "e2");
+  const events = q.drain(bridgeCfg({ bridge: { accountIds: ["work"] } }));
+  const byName = Object.fromEntries(events.map((e) => [e.event, e.data]));
+  eq(byName["mail.updated"], { ids: ["1", "2", "3"], accountIds: ["work"], truncated: true });
+  eq(byName["mail.deleted"], { ids: ["7", "20"], accountIds: ["work"], truncated: false }, "moved out of a readable account = deleted");
+  eq(byName["mail.moved"], { oldIds: ["10"], ids: ["11"], fromFolderIds: ["work:/INBOX"], toFolderIds: ["work:/Archiv"], accountIds: ["work"], truncated: false });
+  eq(byName["calendar.changed"], { calendarId: "cal1", ids: ["e1", "e2"], truncated: false });
+  eq(q.isEmpty(), true, "drain empties the queue");
+  eq(q.drain(bridgeCfg()), []);
+
+  q.addUpdated(1, "work");
+  q.markTruncated("deleted");
+  eq(q.drain(bridgeCfg({ bridge: { enabled: false } })), [], "nothing while the bridge is off");
+  eq(q.isEmpty(), true);
+  q.markTruncated("deleted");
+  eq(q.drain(bridgeCfg()), [{ event: "mail.deleted", data: { ids: [], accountIds: [], truncated: true } }]);
+});
+
+test("mail.new payload carries up to 20 newest messages of readable accounts only", () => {
+  const folder = { id: "work:/INBOX", accountId: "work", path: "/INBOX" };
+  const headers = [];
+  for (let i = 0; i < 25; i++) {
+    headers.push({ id: i, headerMessageId: `m${i}@x`, subject: `S${i}`, author: "a@b", date: new Date(Date.UTC(2026, 10, 1, 0, i)), read: false, folder });
+  }
+  const ev = core.buildMailNewEvent(bridgeCfg(), folder, headers, 25);
+  eq([ev.accountId, ev.folderId, ev.folder, ev.count, ev.messages.length], ["work", "work:/INBOX", "INBOX", 25, 20]);
+  eq(ev.messages[0], { id: "24", messageId: "m24@x", subject: "S24", from: "a@b", date: "2026-11-01T00:24:00.000Z", accountId: "work", folderId: "work:/INBOX", unread: true });
+  eq(core.buildMailNewEvent(bridgeCfg({ bridge: { accountIds: ["priv"] } }), folder, headers, 25), null);
+  eq(core.buildMailNewEvent(bridgeCfg({ bridge: { enabled: false } }), folder, headers, 25), null);
+  eq(core.buildMailNewEvent(null, folder, headers, 25), null);
+});
+
+test("native host reconnect backoff and missing-host detection", () => {
+  eq([0, 1, 2, 3, 4, 5, 6, 20].map((n) => core.nativeReconnectDelay(n)), [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  eq(core.isNativeHostMissingError("No such native application dev.omathunder.host"), true);
+  eq(core.isNativeHostMissingError("Host disconnected"), false);
+  eq(core.isNativeHostMissingError(""), false);
+});
+
+test("messages.actions allows at most one folder change", () => {
+  eq(core.messageMoveKind({}), "");
+  eq(core.messageMoveKind({ read: true }), "");
+  eq(core.messageMoveKind({ trash: true }), "trash");
+  eq(core.messageMoveKind({ trash: false }), "");
+  eq(core.messageMoveKind({ archive: true }), "archive");
+  eq(core.messageMoveKind({ moveToFolderId: "f1" }), "move");
+  eq(core.messageMoveKind({ moveToPath: "Archiv/2026" }), "move");
+  throwsCode(() => core.messageMoveKind({ archive: true, trash: true }), "invalid_argument");
+  throwsCode(() => core.messageMoveKind({ archive: true, moveToFolderId: "f1" }), "invalid_argument");
+  throwsCode(() => core.messageMoveKind({ trash: true, moveToPath: "x" }), "invalid_argument");
+  throwsCode(() => core.messageMoveKind({ archive: "yes" }), "invalid_argument");
+  throwsCode(() => core.messageMoveKind({ trash: 1 }), "invalid_argument");
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

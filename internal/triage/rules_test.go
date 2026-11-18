@@ -400,5 +400,3 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		t.Fatalf("expected ApplyFolderKanbanColumn to map todo to action, got %+v", inv)
 	}
 }
-
-

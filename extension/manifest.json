@@ -26,7 +26,10 @@
     "messagesUpdate",
     "messagesTags",
     "messagesTagsList",
+    "addressBooks",
     "compose",
+    "compose.save",
+    "compose.send",
     "menus",
     "storage",
     "tabs"
@@ -60,6 +63,14 @@
         "scopes": ["addon_parent"],
         "paths": [["omaFilters"]],
         "script": "api/filters/implementation.js"
+      }
+    },
+    "omaCalendar": {
+      "schema": "api/calendar/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["omaCalendar"]],
+        "script": "api/calendar/implementation.js"
       }
     }
   }

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,18 +14,18 @@ import (
 )
 
 type AnalyzeRequest struct {
-	Mode             string                        `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
-	Ephemeral        bool                          `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
-	Language         string                        `json:"language,omitempty"`  // "de" or "en"
-	TargetLanguage   string                        `json:"targetLanguage,omitempty"`
-	Question         string                        `json:"question"`
-	UserDraft        string                        `json:"userDraft,omitempty"`
-	DraftAttachments []string                      `json:"draftAttachments,omitempty"`
-	Tone             string                        `json:"tone,omitempty"` // "kurz", "freundlich", "formal"
-	PrimaryMessage   triage.MessageInput           `json:"primaryMessage"`
-	ThreadMessages   []triage.MessageInput         `json:"threadMessages,omitempty"`
-	CalendarHint     string                        `json:"calendarHint,omitempty"`
-	NativeFilters    []triage.NativeFilter         `json:"nativeFilters,omitempty"`
+	Mode             string                         `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
+	Ephemeral        bool                           `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
+	Language         string                         `json:"language,omitempty"`  // "de" or "en"
+	TargetLanguage   string                         `json:"targetLanguage,omitempty"`
+	Question         string                         `json:"question"`
+	UserDraft        string                         `json:"userDraft,omitempty"`
+	DraftAttachments []string                       `json:"draftAttachments,omitempty"`
+	Tone             string                         `json:"tone,omitempty"` // "kurz", "freundlich", "formal"
+	PrimaryMessage   triage.MessageInput            `json:"primaryMessage"`
+	ThreadMessages   []triage.MessageInput          `json:"threadMessages,omitempty"`
+	CalendarHint     string                         `json:"calendarHint,omitempty"`
+	NativeFilters    []triage.NativeFilter          `json:"nativeFilters,omitempty"`
 	FilterDiagnostic *triage.FilterDiagnosticReport `json:"filterDiagnostic,omitempty"`
 }
 
@@ -35,6 +36,20 @@ type ExtractedEvent struct {
 	AllDay      bool   `json:"allDay,omitempty"`
 	Location    string `json:"location,omitempty"`
 	Description string `json:"description,omitempty"`
+}
+
+type ExtractedContact struct {
+	DisplayName string `json:"displayName,omitempty"`
+	FirstName   string `json:"firstName,omitempty"`
+	LastName    string `json:"lastName,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Phone       string `json:"phone,omitempty"`
+	Mobile      string `json:"mobile,omitempty"`
+	Company     string `json:"company,omitempty"`
+	JobTitle    string `json:"jobTitle,omitempty"`
+	Website     string `json:"website,omitempty"`
+	Address     string `json:"address,omitempty"`
+	Notes       string `json:"notes,omitempty"`
 }
 
 type FilterRuleSuggestion struct {
@@ -57,6 +72,7 @@ type AnalyzeResponse struct {
 	ReviewIssues      []string               `json:"reviewIssues,omitempty"`
 	Proposals         []triage.Proposal      `json:"proposals,omitempty"`
 	Events            []ExtractedEvent       `json:"events,omitempty"`
+	Contacts          []ExtractedContact     `json:"contacts,omitempty"`
 	ICS               string                 `json:"ics,omitempty"`
 	FilterSuggestions []FilterRuleSuggestion `json:"filterSuggestions,omitempty"`
 	Provider          string                 `json:"provider"`
@@ -73,28 +89,46 @@ type TextCompleter interface {
 // ErrUnrestrictedCLI is returned for CLI backends that cannot run with tools disabled.
 const ErrUnrestrictedCLI = "cli_backend_not_allowed"
 
-type refusedCompleter struct{ name, model string }
+// refusedCompleter never calls a model. Without err it reports ErrUnrestrictedCLI.
+type refusedCompleter struct {
+	name, model string
+	err         error
+}
 
 func (r refusedCompleter) Name() string      { return r.name }
 func (r refusedCompleter) ModelName() string { return r.model }
 func (r refusedCompleter) Complete(context.Context, string, string, bool) (string, error) {
-	return "", fmt.Errorf(ErrUnrestrictedCLI)
+	if r.err != nil {
+		return "", r.err
+	}
+	return "", errors.New(ErrUnrestrictedCLI)
 }
 
-// CompleterFor returns the backend for a provider. gemini-cli and opencode-cli run with their
-// tools enabled and receive the mail text as a process argument, so they need an explicit opt-in.
+// CompleterFor returns the backend for a provider taken from config. gemini-cli and opencode-cli
+// run with their tools enabled, so they need an explicit opt-in. An empty endpoint is filled from
+// ai.endpoints.
 func CompleterFor(ai config.AIConfig, p config.ProviderConfig) TextCompleter {
+	p = withConfiguredEndpoint(ai, p)
 	if (p.Backend == "gemini-cli" || p.Backend == "opencode-cli") && !ai.AllowUnrestrictedCLI {
 		return refusedCompleter{name: p.Backend, model: p.Model}
 	}
 	return NewCompleter(p)
 }
 
+// NewCompleter returns the implementation registered for cfg.Backend (case-insensitive, aliases
+// allowed). Unknown or empty backends get a completer that refuses with a clear error – there is
+// no fallback to another provider. cfg must come from config.json (its endpoint receives the key).
 func NewCompleter(cfg config.ProviderConfig) TextCompleter {
-	switch cfg.Backend {
-	case "gemini-api":
-		return NewGeminiAPI(cfg.Model, cfg.Endpoint)
+	cfg = canonicalProvider(cfg)
+	spec, err := lookupBackend(cfg.Backend)
+	if err != nil {
+		return refusedCompleter{name: cfg.Backend, model: cfg.Model, err: err}
+	}
+	switch spec.ID {
+	case "claude-cli":
+		return NewClaudeCLI(cfg.Model)
 	case "gemini-cli":
+		// gemini reads the piped stdin and appends the -p text to it.
 		return NewCLICompleter("gemini-cli", "gemini", cfg.Model, func(prompt string, model string) []string {
 			args := []string{"-p", prompt}
 			if model != "" {
@@ -102,10 +136,6 @@ func NewCompleter(cfg config.ProviderConfig) TextCompleter {
 			}
 			return args
 		})
-	case "claude-cli":
-		return NewClaudeCLI(cfg.Model)
-	case "claude-api":
-		return NewClaudeAPI(cfg.Model, cfg.Endpoint)
 	case "opencode-cli":
 		return NewCLICompleter("opencode-cli", "opencode", cfg.Model, func(prompt string, model string) []string {
 			args := []string{"run", prompt}
@@ -114,11 +144,11 @@ func NewCompleter(cfg config.ProviderConfig) TextCompleter {
 			}
 			return args
 		})
-	case "ollama":
-		return NewOllama(cfg.Model, cfg.Endpoint)
-	default:
-		return NewGeminiAPI(cfg.Model, cfg.Endpoint)
 	}
+	if spec.Kind == kindCLI {
+		return refusedCompleter{name: spec.ID, model: cfg.Model, err: fmt.Errorf("%w: %s has no CLI runner", ErrUnknownBackend, spec.ID)}
+	}
+	return NewAnyLLMCompleter(cfg)
 }
 
 const classifierSystemPrompt = `You classify an email into a structured JSON object.
@@ -145,6 +175,7 @@ that the user explicitly reviews and approves with one click.
 When mode is "summarize": summarize the thread concisely (key facts, open questions, deadlines/amounts); if Owner request asks a specific question, answer that question directly and accurately.
 When mode is "summarize_selection": summarize all selected emails in "thread" cleanly as a structured briefing (group by topic/sender; list key points, decisions, action items, deadlines/amounts, and open questions); if Owner request asks a specific question, answer it directly across the selected emails.
 When mode is "extract_events": extract concrete calendar events, appointments, meetings, or hard deadlines from the emails in "thread" into "events" (each with title, start in ISO-8601 "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" if allDay=true, optional end, allDay, location, description), and summarize them concisely in "answer".
+When mode is "extract_contacts": inspect the email signature / footer (and sender headers) in "thread" to extract contact details for people or sender organizations into "contacts" (displayName, firstName, lastName, email, phone, mobile, company, jobTitle, website, address, notes). Skip automated noreply senders unless meaningful contact/company metadata exists. Summarize the detected contacts concisely in "answer".
 When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing native Thunderbird filter covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, AND instead of OR bug, wrong field), prefer proposing action="append_or" or "fix_and_to_or" or "replace" with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
 When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal.
 When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so it is clearer and fits the requested tone; keep every fact, commitment and the draft's language unless a target language was requested; emit the rewritten text (and an improved/matching "subject" if the existing subject is empty or in the wrong language) as a "draft_reply" proposal.
@@ -169,6 +200,21 @@ Return ONLY valid JSON matching this schema:
       "allDay": false,
       "location": "optional location or video URL",
       "description": "optional brief context"
+    }
+  ],
+  "contacts": [
+    {
+      "displayName": "Alice Weber",
+      "firstName": "Alice",
+      "lastName": "Weber",
+      "email": "alice@acme.de",
+      "phone": "+49 30 123456-0",
+      "mobile": "+49 170 9876543",
+      "company": "ACME GmbH",
+      "jobTitle": "Head of Engineering",
+      "website": "https://acme.de",
+      "address": "Musterstr. 12, 10115 Berlin",
+      "notes": "optional brief note"
     }
   ],
   "filterSuggestions": [
@@ -225,14 +271,15 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		"attachments": msg.Attachments,
 		"snippet":     snippet,
 	}
-	rawJSON, _ := json.MarshalIndent(payload, "", "  ")
 	lang := "German"
 	if cfg.Language == "en" {
 		lang = "English"
 	}
-	userPrompt := fmt.Sprintf("Write \"summary\" and \"actionHint\" in %s.\n\n<untrusted_email>\n%s\n</untrusted_email>", lang, string(rawJSON))
+	userPrompt := fmt.Sprintf("Write \"summary\" and \"actionHint\" in %s.\n\n%s", lang, WrapUntrusted("email", payload))
 
-	completer := CompleterFor(cfg, cfg.Classifier)
+	clsProvider := cfg.Classifier
+	clsProvider.Model = classifierModel(clsProvider)
+	completer := CompleterFor(cfg, clsProvider)
 	out, err := completer.Complete(ctx, classifierSystemPrompt, userPrompt, true)
 	if err != nil {
 		return heuristicFallbackClassification(base, msg, snippet), err
@@ -309,6 +356,15 @@ func ClassifyLocalWithBase(cfg config.AIConfig, msg triage.MessageInput, base tr
 
 // Analyze runs Stage 2 deep thread summary, selection briefing, reply formulation, translation, or draft review.
 func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (AnalyzeResponse, error) {
+	mode := req.Mode
+	if mode == "" {
+		if strings.TrimSpace(req.UserDraft) != "" {
+			mode = "review_draft"
+		} else {
+			mode = "draft_reply"
+		}
+	}
+
 	type threadMsg struct {
 		From    string `json:"from"`
 		Date    string `json:"date"`
@@ -319,28 +375,25 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	if len(req.ThreadMessages) > 10 {
 		snippetLimit = 1500
 	}
+	prepareBody := func(raw string, limit int) string {
+		if mode == "extract_contacts" {
+			return prepareContactSnippet(raw, limit)
+		}
+		return triage.PrepareSnippet(raw, limit)
+	}
 	msgs := make([]threadMsg, 0, 1+len(req.ThreadMessages))
 	for _, m := range req.ThreadMessages {
 		msgs = append(msgs, threadMsg{
 			From: m.From, Date: m.Date, Subject: m.Subject,
-			Body: triage.PrepareSnippet(m.BodyText, snippetLimit),
+			Body: prepareBody(m.BodyText, snippetLimit),
 		})
 	}
 	if len(msgs) == 0 && req.PrimaryMessage.ID != "" {
 		msgs = append(msgs, threadMsg{
 			From: req.PrimaryMessage.From, Date: req.PrimaryMessage.Date,
 			Subject: req.PrimaryMessage.Subject,
-			Body:    triage.PrepareSnippet(req.PrimaryMessage.BodyText, 4000),
+			Body:    prepareBody(req.PrimaryMessage.BodyText, 4500),
 		})
-	}
-
-	mode := req.Mode
-	if mode == "" {
-		if strings.TrimSpace(req.UserDraft) != "" {
-			mode = "review_draft"
-		} else {
-			mode = "draft_reply"
-		}
 	}
 
 	contextObj := map[string]any{
@@ -363,7 +416,6 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	if req.FilterDiagnostic != nil {
 		contextObj["filterDiagnostic"] = req.FilterDiagnostic
 	}
-	ctxJSON, _ := json.MarshalIndent(contextObj, "", "  ")
 
 	targetLang := strings.ToLower(strings.TrimSpace(req.TargetLanguage))
 	if targetLang != "de" && targetLang != "en" {
@@ -389,6 +441,8 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Summarize all selected emails clearly in English. Group related topics or senders and list key points, decisions, action items, deadlines, amounts, and open questions."
 			case "extract_events":
 				question = "Extract all concrete appointments, meetings, calls, and hard deadlines from the emails into events (ISO-8601 dates/times)."
+			case "extract_contacts":
+				question = "Extract all contact details (name, email, phone, mobile, company, job title, website, address) from the email signature / footer into contacts."
 			case "suggest_filter":
 				question = "Analyze the common patterns across these emails (sender, domain, recurring subject phrases) and suggest safe Thunderbird/OmaThunder filter rules that isolate this noise without catching important emails."
 			case "review_draft":
@@ -410,6 +464,8 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Fasse alle ausgewählten E-Mails übersichtlich auf Deutsch zusammen. Gruppiere zusammengehörige Themen oder Absender und liste Kernaussagen, Entscheidungen, Aufgaben, Fristen, Beträge und offene Fragen auf."
 			case "extract_events":
 				question = "Extrahiere alle konkreten Termine, Meetings, Calls und harten Fristen aus den E-Mails in events (ISO-8601 Datum/Uhrzeit)."
+			case "extract_contacts":
+				question = "Erkenne alle Kontaktdaten (Name, E-Mail, Telefon, Mobil, Firma, Position, Website, Adresse) aus dem E-Mail-Footer / der Signatur und liefere sie strukturiert in contacts."
 			case "suggest_filter":
 				question = "Analysiere die gemeinsamen Muster dieser E-Mails (Absender, Domain, wiederkehrende Betreff-Muster) und schlage sichere Thunderbird-/OmaThunder-Filterregeln vor, die diese Benachrichtigungen sauber abfangen, ohne wichtige Mails derselben Domain mitzufiltern."
 			case "review_draft":
@@ -446,7 +502,7 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	if strings.TrimSpace(req.UserDraft) != "" {
 		fmt.Fprintf(&promptBuilder, "<owner_draft>\n%s\n</owner_draft>\n\n", escapeDraftTag(req.UserDraft))
 	}
-	fmt.Fprintf(&promptBuilder, "<untrusted_email_context>\n%s\n</untrusted_email_context>", string(ctxJSON))
+	promptBuilder.WriteString(WrapUntrusted("email_context", contextObj))
 
 	completer := CompleterFor(cfg, cfg.Agent)
 	out, err := completer.Complete(ctx, agentSystemPrompt, promptBuilder.String(), true)
@@ -458,6 +514,7 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		Answer            string                 `json:"answer"`
 		ReviewIssues      []string               `json:"reviewIssues"`
 		Events            []ExtractedEvent       `json:"events"`
+		Contacts          []ExtractedContact     `json:"contacts"`
 		FilterSuggestions []FilterRuleSuggestion `json:"filterSuggestions"`
 		Proposals         []struct {
 			Kind       string   `json:"kind"`
@@ -518,11 +575,108 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		ReviewIssues:      reviewIssues,
 		Proposals:         proposals,
 		Events:            parsed.Events,
+		Contacts:          sanitizeContacts(parsed.Contacts),
 		ICS:               ics,
 		FilterSuggestions: parsed.FilterSuggestions,
 		Provider:          completer.Name(),
 		Model:             completer.ModelName(),
 	}, req, now), nil
+}
+
+var (
+	// replyHeaderRE matches reply attributions and quote separators that start the quoted part.
+	replyHeaderRE = regexp.MustCompile(`(?i)^(-{2,}\s*(original message|original-nachricht|originalnachricht|ursprüngliche nachricht)\s*-{2,}|_{8,}|on\s.+\swrote\s?:|am\s.+\sschrieb.*:|.+\sschrieb am\s.+:|le\s.+\sa écrit\s?:)$`)
+	// replyHeaderStartRE matches the first line of an attribution that the mail client wrapped.
+	replyHeaderStartRE = regexp.MustCompile(`(?i)^(on|am|le)\s`)
+	outlookFromRE      = regexp.MustCompile(`(?i)^(from|von)\s*:\s*\S`)
+	outlookMetaRE      = regexp.MustCompile(`(?i)^(sent|gesendet|date|datum)\s*:\s*\S`)
+)
+
+// isReplyHeader reports whether lines[i] starts the quoted part of a reply.
+func isReplyHeader(lines []string, i int) bool {
+	t := strings.TrimSpace(lines[i])
+	if t == "" {
+		return false
+	}
+	if replyHeaderRE.MatchString(t) {
+		return true
+	}
+	if i+1 < len(lines) && replyHeaderStartRE.MatchString(t) {
+		if replyHeaderRE.MatchString(t + " " + strings.TrimSpace(lines[i+1])) {
+			return true
+		}
+	}
+	// Outlook-style header block: "From:/Von:" followed by "Sent:/Gesendet:/Date:/Datum:".
+	if outlookFromRE.MatchString(t) {
+		for j := i + 1; j < len(lines) && j <= i+4; j++ {
+			if outlookMetaRE.MatchString(strings.TrimSpace(lines[j])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stripQuotedReply drops ">"-quoted lines and everything from the first reply attribution
+// ("On … wrote:", "Am … schrieb …:", "-----Original Message-----", Outlook "From:/Sent:" block) on.
+// In top-posted replies that removes the quoted earlier mail including the mailbox owner's own
+// signature, so the sender's signature is what remains at the end.
+func stripQuotedReply(body string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if isReplyHeader(lines, i) {
+			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), ">") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func prepareContactSnippet(raw string, maxChars int) string {
+	s := stripQuotedReply(raw)
+	if s == "" {
+		// Nothing but quoted text (e.g. a bare forward): keep the original.
+		s = strings.TrimSpace(raw)
+	}
+	if maxChars <= 0 || len([]rune(s)) <= maxChars {
+		return s
+	}
+	runes := []rune(s)
+	head := min(1000, maxChars/4)
+	tail := maxChars - head - 8
+	if tail < 500 {
+		return string(runes[len(runes)-maxChars:])
+	}
+	return string(runes[:head]) + "\n[...]\n" + string(runes[len(runes)-tail:])
+}
+
+func sanitizeContacts(in []ExtractedContact) []ExtractedContact {
+	var out []ExtractedContact
+	for _, c := range in {
+		c.DisplayName = strings.TrimSpace(c.DisplayName)
+		c.FirstName = strings.TrimSpace(c.FirstName)
+		c.LastName = strings.TrimSpace(c.LastName)
+		c.Email = strings.TrimSpace(c.Email)
+		c.Phone = strings.TrimSpace(c.Phone)
+		c.Mobile = strings.TrimSpace(c.Mobile)
+		c.Company = strings.TrimSpace(c.Company)
+		c.JobTitle = strings.TrimSpace(c.JobTitle)
+		c.Website = strings.TrimSpace(c.Website)
+		c.Address = strings.TrimSpace(c.Address)
+		c.Notes = strings.TrimSpace(c.Notes)
+		if c.DisplayName == "" && (c.FirstName != "" || c.LastName != "") {
+			c.DisplayName = strings.TrimSpace(c.FirstName + " " + c.LastName)
+		}
+		if c.DisplayName == "" && c.Email == "" && c.Company == "" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 var attachmentMentionRE = regexp.MustCompile(`(?i)\b(anhang|angehängt|angehaengt|beigefügt|beigefuegt|anbei|siehe anlage|mitgeschickt|attached|attachment|attachments|enclosed|enclosing|see attached)\b`)
@@ -673,28 +827,105 @@ func ensureDraftProposal(resp AnalyzeResponse, req AnalyzeRequest, now time.Time
 	return resp
 }
 
-// ExtractJSON strips optional markdown fences and decodes the first JSON object.
+// errNoJSON is returned by ExtractJSON when the text contains no JSON value.
+var errNoJSON = errors.New("no JSON object found in model output")
+
+// ExtractJSON decodes the JSON object in a model answer. It tries, in order: the whole answer,
+// each markdown code fence (fences only count at the start of a line, so ``` inside a JSON string
+// does not end a block), and the first balanced {...} that is valid JSON (string-aware, so braces
+// and backticks inside string values are ignored).
 func ExtractJSON(raw string, dst any) error {
 	s := strings.TrimSpace(raw)
-	if idx := strings.Index(s, "```"); idx != -1 {
-		after := s[idx+3:]
-		if nl := strings.IndexByte(after, '\n'); nl != -1 {
-			after = after[nl+1:]
-		}
-		if end := strings.Index(after, "```"); end != -1 {
-			s = strings.TrimSpace(after[:end])
+	if json.Valid([]byte(s)) {
+		return json.Unmarshal([]byte(s), dst)
+	}
+	for _, block := range fencedBlocks(s) {
+		if b := strings.TrimSpace(block); json.Valid([]byte(b)) {
+			return json.Unmarshal([]byte(b), dst)
 		}
 	}
-	if start := strings.IndexByte(s, '{'); start >= 0 {
-		dec := json.NewDecoder(strings.NewReader(s[start:]))
-		if err := dec.Decode(dst); err == nil {
-			return nil
+	if obj, ok := firstJSONObject(s); ok {
+		return json.Unmarshal([]byte(obj), dst)
+	}
+	return errNoJSON
+}
+
+// fencedBlocks returns the contents of markdown code fences. Opening and closing fences must
+// start a line; an unterminated last fence counts until the end.
+func fencedBlocks(s string) []string {
+	var blocks []string
+	var cur []string
+	in := false
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if !in {
+			if strings.HasPrefix(t, "```") && !strings.Contains(t[3:], "`") {
+				in, cur = true, cur[:0]
+			}
+			continue
 		}
-		if end := strings.LastIndexByte(s, '}'); end > start {
-			return json.Unmarshal([]byte(s[start:end+1]), dst)
+		if strings.HasPrefix(t, "```") && strings.Trim(t, "`") == "" {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+			in = false
+			continue
+		}
+		cur = append(cur, line)
+	}
+	if in && len(cur) > 0 {
+		blocks = append(blocks, strings.Join(cur, "\n"))
+	}
+	return blocks
+}
+
+// firstJSONObject returns the first balanced {...} in s that is valid JSON.
+func firstJSONObject(s string) (string, bool) {
+	const maxTries = 64
+	for start, tries := 0, 0; start < len(s) && tries < maxTries; tries++ {
+		i := strings.IndexByte(s[start:], '{')
+		if i < 0 {
+			return "", false
+		}
+		i += start
+		if end := matchingBrace(s, i); end > i {
+			if cand := s[i : end+1]; json.Valid([]byte(cand)) {
+				return cand, true
+			}
+		}
+		start = i + 1
+	}
+	return "", false
+}
+
+// matchingBrace returns the index of the '}' closing the '{' at open, skipping JSON strings.
+func matchingBrace(s string, open int) int {
+	depth := 0
+	inString, escaped := false, false
+	for i := open; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
 		}
 	}
-	return json.Unmarshal([]byte(s), dst)
+	return -1
 }
 
 func normalizeBucket(b string) triage.Bucket {

@@ -55,6 +55,7 @@
     .folder-chip:has(input:disabled) { opacity: 0.45; cursor: not-allowed; }
     .status-row { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; margin-top: 8px; }
     .safety { border-left: 3px solid var(--oma-yellow); padding-left: 12px; }
+    .bridge-warn { color: var(--oma-yellow); }
   </style>
 </head>
 <body>
@@ -128,6 +129,26 @@
           <input class="oma-input" id="mb-archive-dir" data-i18n-ph="opts_archive_dir_ph" placeholder="~/OmaThunder-Archiv" />
         </div>
       </div>
+    </div>
+
+    <!-- Local bridge for the native OmaThunder app (host config: bridge.enabled / bridge.allowSend) -->
+    <div class="oma-card section" id="bridge-card">
+      <div class="title" data-i18n="opts_sec_bridge">OmaThunder-App</div>
+      <label class="check" style="margin-top:0;">
+        <input type="checkbox" id="bridge-enabled" />
+        <span>
+          <strong data-i18n="opts_bridge_enabled"></strong>
+          <div class="oma-muted check-sub" data-i18n="opts_bridge_desc"></div>
+          <div class="oma-muted check-sub" id="bridge-host-note" style="display:none;" data-i18n="opts_bridge_needs_host"></div>
+        </span>
+      </label>
+      <label class="check" id="bridge-send-row" style="display:none;">
+        <input type="checkbox" id="bridge-allow-send" />
+        <span>
+          <span data-i18n="opts_bridge_send"></span>
+          <div class="check-sub bridge-warn" data-i18n="opts_bridge_send_desc"></div>
+        </span>
+      </label>
     </div>
   </section>
 

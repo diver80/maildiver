@@ -278,6 +278,19 @@ function updateDependentFields() {
   });
 }
 
+// Bridge for the native app: allowSend is only offered while the bridge is on; both need the Go host.
+function updateBridgeFields(hostAvailable) {
+  const enabled = $("bridge-enabled");
+  const send = $("bridge-allow-send");
+  if (!enabled || !send) return;
+  enabled.disabled = !hostAvailable;
+  const note = $("bridge-host-note");
+  if (note) note.style.display = hostAvailable ? "none" : "";
+  const on = enabled.checked && hostAvailable;
+  $("bridge-send-row").style.display = enabled.checked ? "" : "none";
+  send.disabled = !on;
+}
+
 function switchOptionsTab(tabName) {
   const valid = ["general", "accounts", "theme", "ai"].includes(tabName) ? tabName : "general";
   document.querySelectorAll(".opts-tab[data-tab]").forEach((btn) => {
@@ -334,6 +347,10 @@ async function init() {
   $("mb-scan-limit").value = mb.scanLimit || 20;
   $("mb-scan-days").value = mb.scanDays || 30;
   $("mb-archive-dir").value = mb.archiveDir || "";
+  $("bridge-enabled").checked = cfg?.bridge?.enabled === true;
+  $("bridge-allow-send").checked = cfg?.bridge?.allowSend === true;
+  const bridgeHostAvailable = () => !inExtension || Boolean(lastSnap?.connected);
+  updateBridgeFields(bridgeHostAvailable());
   renderAccounts(accounts, mb.triageAccountIds || [], mb.kanbanAccountIds || [], folders, mb.kanbanFolders || {});
   renderStatus(lastSnap);
   updateSecretPlaceholders(lastSnap?.secretsMeta);
@@ -374,6 +391,7 @@ async function init() {
   }
 
   $("feat-triage").addEventListener("change", updateDependentFields);
+  $("bridge-enabled").addEventListener("change", () => updateBridgeFields(bridgeHostAvailable()));
   $("ui-lang").addEventListener("change", (e) => {
     if (window.OMA_I18N) {
       const curKanbanFolders = collectKanbanFoldersFromDom(cfg?.mailbox?.kanbanFolders || {});
@@ -423,6 +441,16 @@ async function init() {
         scanDays: Number($("mb-scan-days").value) || 30,
         archiveDir: $("mb-archive-dir").value.trim(),
       },
+      // Only enabled/allowSend: bridge.port and bridge.accountIds stay as configured in config.json.
+      // Sending is switched off together with the bridge.
+      ...(bridgeHostAvailable()
+        ? {
+            bridge: {
+              enabled: $("bridge-enabled").checked,
+              allowSend: $("bridge-enabled").checked && $("bridge-allow-send").checked,
+            },
+          }
+        : {}),
       // Mode/preset only when changed here: a theme picked in the gallery or popup meanwhile stays.
       theme: {
         ...($("theme-mode").value !== initialTheme.mode ? { mode: $("theme-mode").value } : {}),
@@ -479,6 +507,8 @@ async function init() {
       renderStatus(freshSnap);
       updateSecretPlaceholders(freshSnap?.secretsMeta);
       updateDependentFields();
+      if (!$("bridge-enabled").checked) $("bridge-allow-send").checked = false;
+      updateBridgeFields(bridgeHostAvailable());
     } catch (err) {
       st.className = "save-status err";
       st.textContent = window.OMA_I18N ? window.OMA_I18N.errText(err) : String(err?.message || err);

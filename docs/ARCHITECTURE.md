@@ -5,7 +5,7 @@
 ## Core Design Principles
 
 1. **Thunderbird stays untouched & intact:**
-   - The Thunderbird extension is a pure, ATN-compatible WebExtension (`extension/manifest.json`) with **zero** `experiment_apis`. The installer never edits `prefs.js`; changes inside Thunderbird (moves, tags, the `oma-*` status tags) only happen through the official add-on APIs and only when read-only mode is off.
+   - The Thunderbird extension is a WebExtension (`extension/manifest.json`) with two small **experiment APIs** where Thunderbird has no official API: `omaFilters` (read/create native message filters, open the filter dialog; it also registers the custom headers filters need in `mailnews.customHeaders`) and `omaCalendar` (Lightning/CalDAV calendars). Experiments need extra ATN review and must be re-checked on every Thunderbird ESR. The installer never edits `prefs.js`; changes inside Thunderbird (moves, tags, the `oma-*` status tags, filters, calendar entries) only happen through the add-on and only when read-only mode is off.
    - `install.sh` / `omathunder setup` only registers a per-user Native Messaging Host manifest (`dev.omathunder.host.json`).
    - `uninstall.sh` / `omathunder uninstall` cleanly removes all registered manifests, hooks, and `omathunder` state without modifying any Thunderbird mail data or user preferences.
 
@@ -37,6 +37,17 @@
 - **Thread context** for the assistant is built from `References` / `In-Reply-To`, not from matching subjects.
 - **CLI backends:** `claude` runs with `--tools ""`, `--strict-mcp-config` and `--disallowedTools "mcp__*"` and gets the prompt on stdin. `gemini-cli` / `opencode-cli` cannot disable tools and need `ai.allowUnrestrictedCli`.
 
+## Local Bridge & Native App
+
+- **Opt-in:** `bridge.enabled` is false by default. `bridge.Supervisor` (started by the host) polls `config.json` every 2 s and right after every config write, opens `127.0.0.1:<port>` when the bridge gets enabled and closes it when it gets disabled. The discovery file `bridge.json` (`0600`, token + URL) is removed on shutdown only if it still belongs to this host, so a second Thunderbird profile keeps its own.
+- **Reverse RPC:** HTTP handlers in `internal/bridge` call `RPCBroker.Call`, which sends a `tb_rpc` frame to the extension; `dispatchThunderbirdRPC` in `background.js` answers with `tb_rpc_result`. The extension reconnects the native port with backoff, so the bridge comes back after a host restart.
+- **One policy table:** every RPC method has an entry in `extension/lib/core.js` (read / write / send / filter / calendar / contacts / ui) that is checked centrally before the handler runs, plus per-object checks (account of the mail, of the target folder, of the sending identity). Reads are limited by `bridge.accountIds` (empty = all), writes need read-only off and an account in `mailbox.triageAccountIds`, sending additionally `bridge.allowSend`. Bridge filters cannot use the `delete` action. Go re-checks read-only, send and assistant gates as a second layer.
+- **Errors** travel as `code: detail` (`read_only`, `account_not_enabled`, `not_found`, `ambiguous`, `message_changed`, …) and are mapped to HTTP status codes. A mutating call that times out returns `504 outcome_unknown`; compose calls carry an `idempotencyKey` so a retry cannot send twice.
+- **Events:** the extension batches mail/calendar changes (~500 ms), filters them by readable account and forwards them as `tb_event`; `EventHub` fans them out to SSE subscribers. Calendar events carry only IDs.
+- **Native app** (`cmd/omathunder-ui`, `internal/nativeui`, `internal/copilot`): a separate binary built with mygo, so the host stays free of GUI code. A connection manager re-reads `bridge.json` when the stream ends and swaps in the new port/token. Background work only touches UI state through `emitUpdate` on the UI thread.
+- **Copilot:** tool calls that change anything (drafts, calendar entries, mark read) are returned as proposals and executed only after the user confirms; mail and tool output are wrapped as untrusted data.
+- **AI providers:** one registry in `internal/ai` maps case-insensitive backend names to one implementation, default model and timeout for both the classify/analyze path and the chat path. Endpoints come only from `config.json`; an API key is only sent to its provider's official host or the endpoint configured for that provider.
+
 ## Writing Assistant
 
 - Entry points: `compose_action` popup (`ui/compose.html`) on the draft being written, `message_display_action` popup on the open mail, and the OmaThunder tab.
@@ -57,17 +68,18 @@
 ## Component Map
 
 ```
-┌──────────────────────────────────┐       4-byte LE JSON        ┌────────────────────────────────┐
-│  Thunderbird WebExtension        │ ◄─────── (stdio) ─────────► │  Go Binary: omathunder host    │
-│  - theme.update()                │                             │  - internal/theme (colors.toml │
-│  - messageDisplay/compose CSS    │                             │    watcher + 22 presets)       │
-│  - spacesToolbar Triage UI       │                             │  - internal/triage (Stage 0)   │
-│  - Action & Proposal executor    │                             │  - internal/ai (Gemini/Claude/ │
-└──────────────────────────────────┘                             │    OpenCode/Ollama + Proposals)│
-                                                                 └───────────────┬────────────────┘
-                                                                                 │ JSON cache
-                                                                 ┌───────────────▼────────────────┐
-                                                                 │  Omarchy Quickshell Plugin     │
-                                                                 │  (omarchy/BarWidget.qml)       │
-                                                                 └────────────────────────────────┘
+┌──────────────────────────────────┐   4-byte LE JSON (stdio)    ┌────────────────────────────────┐
+│  Thunderbird WebExtension        │ ◄─────────────────────────► │  omathunder (host + CLI)       │
+│  - theme.update()                │   requests / theme events   │  - internal/theme (watcher,    │
+│  - messageDisplay/compose CSS    │   tb_rpc ◄─► tb_rpc_result  │    22 presets)                 │
+│  - spacesToolbar Triage UI       │   tb_event ──►              │  - internal/triage (Stage 0)   │
+│  - policy table (lib/core.js)    │                             │  - internal/ai (provider       │
+│  - omaFilters / omaCalendar      │                             │    registry, any-llm, CLIs)    │
+│    experiment APIs               │                             │  - internal/bridge (opt-in)    │
+└──────────────────────────────────┘                             └──────┬─────────────────┬───────┘
+                                                                        │ JSON cache      │ 127.0.0.1 HTTP + SSE
+                                                       ┌────────────────▼──────────┐  ┌───▼──────────────────────────┐
+                                                       │ Omarchy Quickshell Plugin │  │ omathunder-ui / OmaThunder.app│
+                                                       │ (omarchy/BarWidget.qml)   │  │ (nativeui, copilot) & scripts │
+                                                       └───────────────────────────┘  └──────────────────────────────┘
 ```

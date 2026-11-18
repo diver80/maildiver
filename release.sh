@@ -28,7 +28,11 @@ VERSION="$VERSION" ./build.sh
 git tag -a "$TAG" -m "OmaThunder $VERSION"
 git push origin main "$TAG"
 
-gh release create "$TAG" dist/* --repo "$REPO" --title "OmaThunder $VERSION" --generate-notes
+# Upload files only: dist/ also holds the unpacked OmaThunder.app directory used by install.sh.
+shopt -s nullglob
+ASSETS=(dist/omathunder-* dist/OmaThunder-*.zip dist/SHA256SUMS.txt)
+shopt -u nullglob
+gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO" --title "OmaThunder $VERSION" --generate-notes
 
 URL="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
 SHA="$(curl -fsSL "$URL" | shasum -a 256 | cut -d' ' -f1)"

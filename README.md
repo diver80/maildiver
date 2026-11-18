@@ -12,7 +12,9 @@ OmaThunder consists of a Thunderbird add-on and a small helper program (Go) that
 | **AI writing assistant** | Summarizes mails, drafts replies, reviews and improves your drafts – right in the compose window. | on |
 | **Triage** | Scans the inbox and customer folders, sorts mails onto a Kanban board and moves mails from customer domains into their folders. | off |
 
-Nothing is ever sent or deleted. Changes to mails, folders or tags are blocked by default (read-only).
+Nothing is sent or deleted automatically. Changes to mails, folders or tags are blocked by default (read-only).
+
+Optionally there is also a **native desktop app** (`omathunder ui`, on macOS `OmaThunder.app`) with mail cockpit, calendar, quick rules and an AI copilot. It talks to Thunderbird through a local, token-protected bridge that is **off by default** – see [Native app & local bridge](#native-app--local-bridge-optional).
 
 > **Status:** early version (0.2). The Go host and the core logic are covered by unit tests; running inside Thunderbird has seen little real-world use so far. Windows builds are produced but untested.
 
@@ -115,10 +117,12 @@ All values can be changed in the settings.
 | **Narrow auto-move** | Only from the inbox, only on a sender-domain match, optionally only unread mails, never out of customer folders. Mails for which the mail server recorded a failed DKIM/DMARC check are never moved (forged sender). Each mail is checked again in the mailbox right before it is moved. |
 | **Unambiguous mail lookup** | Stored mails are found again by their Message-ID. If the match is ambiguous, nothing happens. |
 | **Undo** | Moves of a scan or of a deleted rule can be undone – but only for mails still in the folder OmaThunder put them in. |
-| **No deleting, no sending** | The add-on does not even have the permissions for it (`messagesDelete`, `compose.send`). |
+| **No automatic deleting or sending** | The add-on holds `messagesDelete` and `compose.send`, but uses them only on explicit request: deleting only in *Archive & Cleanup* after a verified export (or as "move to trash" from the app), sending only through the bridge's send endpoint, which additionally needs `bridge.allowSend` (off by default) and read-only off. AI output never sends or deletes anything. |
+| **Local bridge (optional)** | Off by default. When enabled it listens on `127.0.0.1` only and requires a random 256-bit token from a `0600` file. Bridge clients can read all accounts unless `bridge.accountIds` limits them; every write needs read-only off and an account enabled for triage. Filters created through the bridge can never delete mail. |
+| **AI copilot (app)** | Mail content is passed to the model as untrusted data. The copilot only *proposes* drafts, calendar entries and status changes – nothing happens until you click "Execute". |
 | **AI backends** | The Claude CLI runs without tools and without MCP servers and receives the mail text via stdin. Gemini CLI and OpenCode CLI cannot be started without tools and stay blocked until you explicitly allow them. |
 
-Mail content only goes to the AI backend you chose in the settings. With Ollama everything stays on your machine.
+Mail content only goes to the AI backend you chose in the settings. With Ollama everything stays on your machine. API endpoints come only from your settings, never from a bridge request, and an API key is only sent to the endpoint configured for that provider.
 
 ## Settings
 
@@ -143,6 +147,8 @@ Restart Thunderbird afterwards. The Claude CLI needs no entry; it uses its own l
 ## Command line
 
 ```bash
+omathunder ui               # start the native app (omathunder-ui / OmaThunder.app)
+omathunder bridge enable    # switch the local bridge on (… disable / status / path)
 omathunder setup            # register with Thunderbird
 omathunder doctor           # status: Omarchy, CLIs, API keys, registration
 omathunder theme list       # all 22 themes
@@ -151,6 +157,17 @@ omathunder bar-summary      # numbers for the Omarchy bar
 omathunder classify --subject "..." --from "..." --body "..."   # test classification (calls the AI)
 omathunder uninstall        # remove registration, settings and state
 ```
+
+## Native app & local bridge (optional)
+
+The native app (`omathunder ui`; on macOS `~/Applications/OmaThunder.app`) is a separate program from the small helper that Thunderbird starts. It shows mails, calendar and contacts, creates **quick rules** from selected mails and has an AI copilot.
+
+It needs the **local bridge**, which is off by default. Switch it on in the app ("Enable bridge"), in the add-on settings or with `omathunder bridge enable`; the helper opens the port within about two seconds while Thunderbird runs. Details, endpoints and the safety model: [docs/BRIDGE.md](docs/BRIDGE.md).
+
+* **Quick rules** create a real Thunderbird filter (appended after your own filters) and can apply it to the selected mails right away. Rules that would be too broad (e.g. a whole free-mail domain) are flagged and need a second confirmation. **Editing, sorting, enabling/disabling and deleting filters happens in Thunderbird** (*Tools → Message Filters*).
+* **Copilot** answers questions about your mails and calendar. Drafts, calendar entries and "mark as read" are shown as proposals and only run after you click *Execute*.
+* **Reading pane:** HTML mails are shown formatted (headings, lists, quotes, links by their title) without loading anything from the internet — no tracking pixels, no remote images; a "Formatted / Text" switch shows the text version.
+* **Keyboard:** `j`/`k` next/previous mail, `x` check, `e` archive, `d` trash, `v` move to…, `s` star, `u` read/unread, `r` reply, `esc` back, `/` search, `c` compose, `h` help. The footer always lists the keys that apply right now. Single keys never fire while you type in a field; `d` on several checked mails needs a second press.
 
 ## Uninstall
 
@@ -164,11 +181,13 @@ Then remove the add-on in Thunderbird's add-on manager. `uninstall` also deletes
 ## Development
 
 ```bash
-go test ./...               # host: config, auto-move rules, read-only, concurrency
+go test ./...               # host, bridge, AI layer, native app
 node tests/core.test.js     # add-on core logic (macOS without Node: jsc tests/core.test.js)
-./build.sh                  # both test runs, binaries for macOS/Linux/Windows, .xpi, SHA256SUMS
+./build.sh                  # both test runs, binaries for macOS/Linux/Windows, .xpi, OmaThunder.app, SHA256SUMS
 ./release.sh                # tag, GitHub release and values for the Homebrew formula
 ```
+
+Two programs are built from `cmd/`: `omathunder` (Native Messaging host + CLI, no GUI dependencies) and `omathunder-ui` (the native app, bundled on macOS as `OmaThunder.app` via [mygo](https://github.com/egoist/mygo)). Building needs Go 1.27.3 or newer, because mygo requires it. The Homebrew formula should build both (`go build ./cmd/omathunder ./cmd/omathunder-ui`) so that `omathunder ui` finds the app next to the helper.
 
 Architecture and safety model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

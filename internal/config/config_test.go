@@ -147,3 +147,25 @@ func TestKanbanFoldersPatchAndPolicy(t *testing.T) {
 	}
 }
 
+func TestBridgeConfigDefaultsAndPatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cfg := Default()
+	if cfg.Bridge.Enabled || cfg.Bridge.Port != 0 || cfg.Bridge.AllowSend || len(cfg.Bridge.AccountIDs) != 0 {
+		t.Fatalf("bridge must be off by default: %+v", cfg.Bridge)
+	}
+	path, err := BridgeInfoPath()
+	if err != nil || filepath.Base(path) != "bridge.json" {
+		t.Fatalf("unexpected BridgeInfoPath: %q err=%v", path, err)
+	}
+	norm := Normalize(Config{Bridge: BridgeConfig{Enabled: true, Port: 70000}})
+	if norm.Bridge.Port != 0 {
+		t.Fatalf("out-of-range bridge port must reset to 0, got %d", norm.Bridge.Port)
+	}
+	patched, err := ApplyPatch(cfg, []byte(`{"bridge":{"enabled":true,"port":19876,"allowSend":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !patched.Bridge.Enabled || patched.Bridge.Port != 19876 || !patched.Bridge.AllowSend {
+		t.Fatalf("unexpected patched bridge config: %+v", patched.Bridge)
+	}
+}

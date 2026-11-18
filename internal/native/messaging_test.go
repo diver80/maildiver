@@ -664,5 +664,3 @@ func TestMoveKanbanBatchRPC(t *testing.T) {
 		t.Fatalf("expected c untouched, got %+v", st.Classifications["c"])
 	}
 }
-
-

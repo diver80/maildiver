@@ -122,7 +122,7 @@ func TestStoreDoesNotMergeDifferentMailsWithSameNumericID(t *testing.T) {
 func TestPlanAutoMovesSubjectAndFromContains(t *testing.T) {
 	rules := []config.RoutingRule{{
 		ID:              "atlassian-trials",
-		Space:        "Atlassian Testanfragen",
+		Space:           "Atlassian Testanfragen",
 		AccountID:       "work",
 		FolderPath:      "Notifications/Atlassian-Tests",
 		Domains:         []string{"atlassian.com"},

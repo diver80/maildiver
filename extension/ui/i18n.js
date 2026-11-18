@@ -308,6 +308,15 @@
       err_no_triage_accounts: "Kein Konto für Triage freigegeben (Einstellungen).",
       err_account_not_enabled: "Dieses Konto ist nicht für Triage freigegeben.",
       err_cross_account_move: "Verschieben zwischen Konten ist gesperrt.",
+      err_account_not_readable: "Dieses Konto ist für die OmaThunder-App nicht freigegeben.",
+      err_send_disabled: "Direktes Senden über die OmaThunder-App ist ausgeschaltet.",
+      err_feature_disabled_bridge: "Die lokale Bridge für die OmaThunder-App ist ausgeschaltet.",
+      opts_sec_bridge: "OmaThunder-App",
+      opts_bridge_enabled: "Lokale Bridge für die OmaThunder-App",
+      opts_bridge_desc: "Startet im Go-Host eine nur auf diesem Rechner erreichbare, per Token geschützte Schnittstelle (127.0.0.1). Darüber kann die native OmaThunder-App Mails, Ordner, Kalender und Kontakte lesen und über neue Mails benachrichtigen. Änderungen an Mails sind nur möglich, wenn Read-only aus ist und das Konto oben freigegeben ist.",
+      opts_bridge_needs_host: "Benötigt den optionalen Go-Host (omathunder).",
+      opts_bridge_send: "App darf Mails direkt senden",
+      opts_bridge_send_desc: "Achtung: Die App kann dann ohne weitere Rückfrage in Thunderbird Mails versenden. Nur einschalten, wenn du der App und jedem Programm auf diesem Rechner vertraust, das den Bridge-Token lesen kann. Zusätzlich muss Read-only aus und das Absenderkonto freigegeben sein.",
       err_message_not_found: "Mail nicht (mehr) eindeutig gefunden – nichts verändert.",
       err_message_moved_meanwhile: "Mail wurde inzwischen verschoben – nicht angefasst.",
       err_message_read_meanwhile: "Mail wurde inzwischen gelesen – nicht verschoben.",
@@ -760,6 +769,15 @@
       err_no_triage_accounts: "No account enabled for triage (settings).",
       err_account_not_enabled: "This account is not enabled for triage.",
       err_cross_account_move: "Moving mails between accounts is blocked.",
+      err_account_not_readable: "This account is not shared with the OmaThunder app.",
+      err_send_disabled: "Sending directly from the OmaThunder app is turned off.",
+      err_feature_disabled_bridge: "The local bridge for the OmaThunder app is turned off.",
+      opts_sec_bridge: "OmaThunder app",
+      opts_bridge_enabled: "Local bridge for the OmaThunder app",
+      opts_bridge_desc: "Starts a token-protected interface in the Go host that is only reachable from this computer (127.0.0.1). The native OmaThunder app uses it to read mails, folders, calendars and contacts and to notify you about new mail. Changes to mails are only possible when read-only is off and the account is enabled above.",
+      opts_bridge_needs_host: "Requires the optional Go host (omathunder).",
+      opts_bridge_send: "Allow the app to send mails directly",
+      opts_bridge_send_desc: "Warning: the app can then send mails through Thunderbird without asking again. Only turn this on if you trust the app and every program on this computer that can read the bridge token. Read-only must also be off and the sender account enabled.",
       err_message_not_found: "Mail not found unambiguously – nothing changed.",
       err_message_moved_meanwhile: "Mail was moved in the meantime – left untouched.",
       err_message_read_meanwhile: "Mail was read in the meantime – not moved.",
@@ -965,7 +983,15 @@
     const code = String(err?.message || err || "");
     const key = `err_${code.replace(/[^a-z_]/gi, "_")}`;
     const translated = t(key);
-    return translated === key ? code : translated;
+    if (translated !== key) return translated;
+    // "code: detail" (bridge / experiment errors): translate the code, keep the detail.
+    const m = code.match(/^([a-z_]+(?::[a-z_]+)?): (.+)$/);
+    if (m) {
+      const baseKey = `err_${m[1].replace(/[^a-z_]/gi, "_")}`;
+      const base = t(baseKey);
+      if (base !== baseKey) return `${base} (${m[2]})`;
+    }
+    return code;
   }
 
   window.OMA_I18N = { setLang, getLang, detectLang, t, applyDom, errText };
