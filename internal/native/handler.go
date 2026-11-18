@@ -109,13 +109,13 @@ func BuildDoctorReport() DoctorReport {
 		clis[bin] = err == nil
 	}
 	envKeys := map[string]bool{
-		"GEMINI_API_KEY":       os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != "",
-		"ANTHROPIC_API_KEY":    os.Getenv("ANTHROPIC_API_KEY") != "",
-		"OPENAI_API_KEY":       os.Getenv("OPENAI_API_KEY") != "",
-		"DEEPSEEK_API_KEY":     os.Getenv("DEEPSEEK_API_KEY") != "",
-		"GROQ_API_KEY":         os.Getenv("GROQ_API_KEY") != "",
-		"MISTRAL_API_KEY":      os.Getenv("MISTRAL_API_KEY") != "",
-		"OPENAICOMPAT_API_KEY": os.Getenv("OPENAICOMPAT_API_KEY") != "",
+		"GEMINI_API_KEY":       config.LookupAPIKey("GEMINI_API_KEY", "GOOGLE_API_KEY") != "",
+		"ANTHROPIC_API_KEY":    config.LookupAPIKey("ANTHROPIC_API_KEY") != "",
+		"OPENAI_API_KEY":       config.LookupAPIKey("OPENAI_API_KEY") != "",
+		"DEEPSEEK_API_KEY":     config.LookupAPIKey("DEEPSEEK_API_KEY") != "",
+		"GROQ_API_KEY":         config.LookupAPIKey("GROQ_API_KEY") != "",
+		"MISTRAL_API_KEY":      config.LookupAPIKey("MISTRAL_API_KEY") != "",
+		"OPENAICOMPAT_API_KEY": config.LookupAPIKey("OPENAICOMPAT_API_KEY") != "",
 	}
 	return DoctorReport{
 		OS:              runtime.GOOS,

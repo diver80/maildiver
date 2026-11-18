@@ -47,7 +47,7 @@ const batchKeyConfirmWindow = 4 * time.Second
 const readerScrollStep = 180
 
 func (a *App) modalOpen() bool {
-	return a.composeOpen || a.eventOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open
+	return a.composeOpen || a.eventOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open || a.settings.open
 }
 
 func (a *App) currentKeyContext() keyContext {
@@ -139,6 +139,9 @@ func (a *App) handleShortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyN) {
 		a.OpenComposeNew()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyComma) && !a.modalOpen() {
+		a.OpenSettings()
 	}
 	// Both calls register every frame; "/" needs Shift on German layouts.
 	helpPlain := c.Shortcut(ui.Cmd, ui.KeySlash)

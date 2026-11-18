@@ -108,6 +108,9 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 			a.OpenThunderbirdFilters(context.Background())
 		}
 		m.Separator()
+		if m.Item(a.tr("Einstellungen…", "Settings…")).Shortcut(ui.Cmd, ui.KeyComma).Chosen() {
+			a.OpenSettings()
+		}
 		if m.Item(a.tr("Tastenkürzel…", "Keyboard shortcuts…")).Shortcut(0, ui.KeyH).Chosen() {
 			a.toggleHelp("shortcuts")
 		}

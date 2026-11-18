@@ -71,6 +71,7 @@ func (a *App) RenderMain(c *ui.Context) {
 	a.renderCalDeleteModal(c)
 	a.renderMovePicker(c)
 	a.renderArchiveModal(c)
+	a.renderSettingsModal(c)
 	a.renderHelpModal(c)
 }
 
@@ -1318,7 +1319,8 @@ func (a *App) renderHelpModal(c *ui.Context) {
 								a.tr("• Quick-Regel optional: Nur ein Klick auf „Mit KI verfeinern“ im Assistenten nutzt das Modell für komplexe Betreff-Muster.", "• Quick Rule optional: only clicking “Refine with AI” inside the wizard uses the model for complex patterns."),
 								a.tr("• KI-Assistent & Briefing: „Tagesbriefing“ und jede Chat-Nachricht im Assistent-Panel nutzen das gewählte Modell; Mail- und Kalenderinhalte werden dabei als Daten an den Anbieter gesendet (bei Cloud-Modellen).", "• AI Assistant & Briefing: “Briefing” and each chat prompt use your selected model; mail and calendar content is sent to that provider as data (for cloud models)."),
 								a.tr("• Schreibende Aktionen des Assistenten (Entwurf speichern, Termin anlegen, Gelesen-Status) werden nur als Vorschlag mit allen Details angezeigt und erst nach Klick auf „Ausführen“ in Thunderbird umgesetzt. Mails sendet der Assistent nie.", "• Write actions of the assistant (save draft, create event, read status) are shown as a proposal with all details and only run in Thunderbird after you click “Execute”. The assistant never sends emails."),
-								a.tr("• Optionale Stage-1-Triage: Wird nur bei einem Triage-Scan ausgeführt, wenn ein Klassifikator aktiv ist und keine Stage-0-Regel greift.", "• Optional Stage-1 triage: runs only during a triage scan when a classifier is enabled and no Stage-0 rule matched."),
+								a.tr("• Triage-Scan (☰ → Triage-Scan starten, oder bei neuer Mail): nutzt die KI nur, wenn „Mails per KI einordnen“ an ist (☰ → Einstellungen), höchstens so oft wie dort eingestellt. Verschlüsselte Mails gehen nur mit Absender und Betreff an die KI.", "• Triage scan (☰ → Run triage scan, or on new mail): uses AI only when “Sort mails with AI” is on (☰ → Settings), at most as often as set there. Encrypted emails reach the AI with sender and subject only."),
+								a.tr("• Verschlüsselte Mails: Aktionen, die du auf die geöffnete Mail startest, senden ihren entschlüsselten Text an den Anbieter – der Lesebereich zeigt das an.", "• Encrypted emails: actions you start on the open email send its decrypted text to the provider – the reading pane says so."),
 							},
 						)
 					}

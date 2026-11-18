@@ -20,6 +20,7 @@ import (
 	"github.com/diver80/omathunder/internal/bridge"
 	"github.com/diver80/omathunder/internal/bridgeclient"
 	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/jobs"
 	"github.com/diver80/omathunder/internal/native"
 	"github.com/diver80/omathunder/internal/triage"
 )
@@ -656,6 +657,22 @@ func TestRenderScreens(t *testing.T) {
 	app.OpenMovePicker()
 	saveShot("omathunder-move-dark.png", app.RenderMain, 1380, 860)
 	app.moveOpen = false
+
+	// Screenshot 3c2: settings and the archive dialog
+	app.OpenSettings()
+	saveShot("omathunder-settings-dark.png", app.RenderMain, 1380, 860)
+	app.settings.open = false
+	prevAccounts := app.accounts
+	app.accounts = []bridgeclient.Account{{ID: "acc1", Name: "Work"}}
+	app.cfg.Mailbox.TriageAccountIDs = []string{"acc1"}
+	app.OpenArchiveDialog(context.Background())
+	app.arch.preview = &jobs.ArchivePreview{TotalCount: 2, TotalMatched: 2, TotalBytes: 48000, ScannedFolders: 1, Candidates: []jobs.ArchiveCandidate{
+		{Subject: "Rechnung März 2024", From: "billing@acme.de", Date: "2024-03-02T09:00:00Z", Size: 24000},
+		{Subject: "Angebot Messestand", From: "Laura Weber <laura@messe.de>", Date: "2024-04-11T09:00:00Z", Size: 24000},
+	}}
+	saveShot("omathunder-archive-dark.png", app.RenderMain, 1380, 860)
+	app.arch = archiveUI{}
+	app.accounts = prevAccounts
 
 	// Screenshot 3d: an HTML mail, formatted (links by title, remote images blocked)
 	prevDetail, prevMode, prevResult, prevDraft := app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft

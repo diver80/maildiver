@@ -133,6 +133,7 @@ type composeState struct {
 	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
 	scanRunning bool
 	arch        archiveUI
+	settings    settingsUI
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
 }

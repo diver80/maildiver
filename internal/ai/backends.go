@@ -3,7 +3,6 @@ package ai
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -182,13 +181,27 @@ func classifierModel(p config.ProviderConfig) string {
 	return defaultModelForBackend(p.Backend)
 }
 
+// envKey reads the backend's API key fresh from the env file or the environment, so a key
+// saved in the app works without a restart.
 func (s *backendSpec) envKey() string {
-	for _, k := range s.EnvKeys {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
+	return config.LookupAPIKey(s.EnvKeys...)
+}
+
+// APIKeyName is the variable an API backend reads its key from (the app's settings list them).
+type APIKeyName struct {
+	Backend string `json:"backend"`
+	EnvKey  string `json:"envKey"`
+}
+
+// APIKeyNames lists the key variables of the API backends that need one.
+func APIKeyNames() []APIKeyName {
+	var out []APIKeyName
+	for _, s := range backendRegistry {
+		if s.Kind == kindAPI && len(s.EnvKeys) > 0 && s.PlaceholderKey == "" {
+			out = append(out, APIKeyName{Backend: s.ID, EnvKey: s.EnvKeys[0]})
 		}
 	}
-	return ""
+	return out
 }
 
 // ProviderDescriptor describes one backend for provider pickers.
