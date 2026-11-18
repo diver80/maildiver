@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/diver80/omathunder/internal/config"
 )
 
 type Bucket string
@@ -64,10 +62,6 @@ type Classification struct {
 	Date           string   `json:"date"`
 	Folder         string   `json:"folder,omitempty"`
 	FolderID       string   `json:"folderId,omitempty"`
-	Space          string   `json:"space,omitempty"`
-	MatchedRuleID  string   `json:"matchedRuleId,omitempty"`
-	TargetFolder   string   `json:"targetFolder,omitempty"`
-	TargetFolderID string   `json:"targetFolderId,omitempty"`
 	KanbanColumn   string   `json:"kanbanColumn"` // "incoming", "action", "waiting", "invoice", "done"
 	PinnedColumn   bool     `json:"pinnedColumn,omitempty"`
 	Bucket         Bucket   `json:"bucket"`
@@ -103,112 +97,6 @@ func ExtractSenderDomain(from string) string {
 		return strings.ToLower(dom)
 	}
 	return ""
-}
-
-func ruleMatchesAccount(rule config.RoutingRule, accountID string) bool {
-	return rule.AccountID == "" || accountID == "" || rule.AccountID == accountID
-}
-
-// MatchDomainRule finds the first rule whose domains match the sender (exact or subdomain).
-func MatchDomainRule(from string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	return MatchDomainRuleForAccount(from, "", rules)
-}
-
-func containsAnyFold(haystack string, needles []string) bool {
-	if len(needles) == 0 {
-		return true
-	}
-	h := strings.ToLower(haystack)
-	for _, n := range needles {
-		c := strings.ToLower(strings.TrimSpace(n))
-		if c != "" && strings.Contains(h, c) {
-			return true
-		}
-	}
-	return false
-}
-
-func ruleMatchesMessageSenderAndSubject(r config.RoutingRule, m MessageInput) bool {
-	if !ruleMatchesAccount(r, m.AccountID) {
-		return false
-	}
-	hasDomains := false
-	for _, d := range r.Domains {
-		if strings.TrimSpace(strings.TrimPrefix(d, "@")) != "" {
-			hasDomains = true
-			break
-		}
-	}
-	if hasDomains {
-		dom := ExtractSenderDomain(m.From)
-		if dom == "" {
-			return false
-		}
-		matchedDom := false
-		for _, candidate := range r.Domains {
-			c := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(candidate, "@")))
-			if c != "" && (dom == c || strings.HasSuffix(dom, "."+c)) {
-				matchedDom = true
-				break
-			}
-		}
-		if !matchedDom {
-			return false
-		}
-	}
-	if !containsAnyFold(m.From, r.FromContains) {
-		return false
-	}
-	if !containsAnyFold(m.Subject, r.SubjectContains) {
-		return false
-	}
-	return hasDomains || len(r.FromContains) > 0 || len(r.SubjectContains) > 0
-}
-
-// MatchMessageRuleForAccount finds the first rule whose domain, sender, and subject conditions match m.
-func MatchMessageRuleForAccount(m MessageInput, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	for _, r := range rules {
-		if ruleMatchesMessageSenderAndSubject(r, m) {
-			return r, true
-		}
-	}
-	return config.RoutingRule{}, false
-}
-
-// MatchDomainRuleForAccount finds the first rule matching both sender domain and account scope.
-func MatchDomainRuleForAccount(from, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	return MatchMessageRuleForAccount(MessageInput{From: from, AccountID: accountID}, rules)
-}
-
-// MatchRoutingRule finds the Space for a mail: first by sender/subject rule, then by the folder it lives in.
-// It labels mails for the board only; auto-moves use PlanAutoMoves, which is stricter.
-func MatchRoutingRule(from, currentFolder string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	return MatchRoutingRuleForAccount(from, currentFolder, "", rules)
-}
-
-// MatchRoutingRuleForAccount finds the Space for a mail scoped to accountID.
-func MatchRoutingRuleForAccount(from, currentFolder, accountID string, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	return MatchRoutingRuleForMessage(MessageInput{From: from, Folder: currentFolder, AccountID: accountID}, rules)
-}
-
-// MatchRoutingRuleForMessage finds the rule for a full message (matching rules first, then folder path).
-func MatchRoutingRuleForMessage(msg MessageInput, rules []config.RoutingRule) (config.RoutingRule, bool) {
-	if r, ok := MatchMessageRuleForAccount(msg, rules); ok {
-		return r, true
-	}
-	if msg.Folder != "" {
-		curLower := strings.ToLower(strings.Trim(strings.TrimSpace(msg.Folder), "/"))
-		for _, r := range rules {
-			if !ruleMatchesAccount(r, msg.AccountID) {
-				continue
-			}
-			fp := strings.ToLower(strings.Trim(strings.TrimSpace(r.FolderPath), "/"))
-			if fp != "" && (curLower == fp || strings.HasPrefix(curLower, fp+"/")) {
-				return r, true
-			}
-		}
-	}
-	return config.RoutingRule{}, false
 }
 
 // BucketToKanban maps a classification bucket onto one of the 5 Kanban columns.
@@ -285,7 +173,7 @@ func ApplyFolderKanbanColumn(c *Classification, folderPath string) bool {
 }
 
 // EvaluateStage0 applies zero-token deterministic rules before invoking any LLM.
-func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.RoutingRule) (Classification, bool) {
+func EvaluateStage0(msg MessageInput, skipNewsletters bool) (Classification, bool) {
 	base := Classification{
 		MessageID: msg.ID,
 		ThreadID:  msg.ThreadID,
@@ -297,13 +185,6 @@ func EvaluateStage0(msg MessageInput, skipNewsletters bool, rules []config.Routi
 		FolderID:  msg.FolderID,
 		Stage:     "stage0-rule",
 		Model:     "deterministic",
-	}
-
-	if rule, ok := MatchRoutingRuleForMessage(msg, rules); ok {
-		base.Space = rule.Space
-		base.MatchedRuleID = rule.ID
-		base.TargetFolder = rule.FolderPath
-		base.TargetFolderID = rule.FolderID
 	}
 
 	h := normalizeHeaders(msg.Headers)

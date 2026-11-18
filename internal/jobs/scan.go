@@ -202,7 +202,7 @@ func (r *Runner) classifyMessages(ctx context.Context, cfg config.Config, msgs [
 	var st classifyStats
 	results := make([]triage.Classification, 0, len(allowed))
 	for _, m := range allowed {
-		base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters, nil)
+		base, matched := triage.EvaluateStage0(m, cfg.AI.SkipNewsletters)
 		if matched {
 			results = append(results, base)
 			continue

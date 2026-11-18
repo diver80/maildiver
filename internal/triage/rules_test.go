@@ -4,28 +4,16 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/diver80/omathunder/internal/config"
 )
 
-func TestStage0RulesAndSpaceDomains(t *testing.T) {
-	rules := []config.RoutingRule{
-		{
-			ID:         "r-acme",
-			Space:      "Acme GmbH",
-			FolderPath: "Spaces/Acme/Incoming",
-			Domains:    []string{"acme.de", "acme-cloud.io"},
-			AutoMove:   true,
-		},
-	}
-
+func TestStage0Rules(t *testing.T) {
 	nl, matched := EvaluateStage0(MessageInput{
 		ID:      "m1",
 		Subject: "Weekly Digest",
 		From:    "news@example.com",
 		Headers: map[string]string{"List-Unsubscribe": "<mailto:unsub@example.com>"},
 		Unread:  true,
-	}, true, rules)
+	}, true)
 	if !matched || nl.Bucket != BucketNewsletter || nl.NeedsAttention {
 		t.Fatalf("expected newsletter match, got matched=%v %+v", matched, nl)
 	}
@@ -36,9 +24,9 @@ func TestStage0RulesAndSpaceDomains(t *testing.T) {
 		From:        "Laura Weber <laura@mail.acme.de>",
 		Attachments: []string{"Rechnung_2026_42.pdf"},
 		Unread:      true,
-	}, true, rules)
-	if !matched || inv.Bucket != BucketInvoice || inv.Space != "Acme GmbH" || inv.TargetFolder != "Spaces/Acme/Incoming" {
-		t.Fatalf("expected invoice + space rule match, got matched=%v %+v", matched, inv)
+	}, true)
+	if !matched || inv.Bucket != BucketInvoice {
+		t.Fatalf("expected invoice match, got matched=%v %+v", matched, inv)
 	}
 
 	base, matched := EvaluateStage0(MessageInput{
@@ -47,9 +35,9 @@ func TestStage0RulesAndSpaceDomains(t *testing.T) {
 		From:     "alex@acme.de",
 		BodyText: "Hi, passt morgen 10 Uhr?",
 		Unread:   true,
-	}, true, rules)
-	if matched || base.Space != "Acme GmbH" || base.MatchedRuleID != "r-acme" {
-		t.Fatalf("expected personal space email to carry space metadata to Stage 1, got matched=%v %+v", matched, base)
+	}, true)
+	if matched || base.Stage != "stage0-rule" || base.MessageID != "m3" {
+		t.Fatalf("expected a personal email to go on to Stage 1, got matched=%v %+v", matched, base)
 	}
 }
 
@@ -61,49 +49,6 @@ func TestPrepareSnippetStripsQuotesAndSignatures(t *testing.T) {
 	}
 	if !strings.Contains(got, "freigeben?") {
 		t.Fatalf("expected main body preserved, got %q", got)
-	}
-}
-
-func TestStoreKanbanMoveAndRuleRollback(t *testing.T) {
-	stStore := NewStoreAt(t.TempDir())
-	_, err := stStore.SaveClassifications([]Classification{
-		{MessageID: "a1", ThreadID: "<hdr-a1@acme.de>", Subject: "Vertrag unterschreiben", Bucket: BucketAction, NeedsAttention: true},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	st, err := stStore.MoveKanban("a1", "waiting")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.Classifications["a1"].KanbanColumn != "waiting" || st.Classifications["a1"].Bucket != BucketWaiting {
-		t.Fatalf("expected waiting kanban column, got %+v", st.Classifications["a1"])
-	}
-
-	_, err = stStore.SaveClassifications([]Classification{
-		{MessageID: "a1", ThreadID: "<hdr-a1@acme.de>", Subject: "Vertrag unterschreiben", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st, err := stStore.Load(); err != nil || st.Classifications["a1"].KanbanColumn != "waiting" || !st.Classifications["a1"].PinnedColumn {
-		t.Fatalf("expected pinned KanbanColumn 'waiting' to survive re-scan, got %+v err=%v", st.Classifications["a1"], err)
-	}
-
-	_, err = stStore.RecordMoves([]MovedMessage{
-		{MessageID: "a99", OldMessageID: "a1", HeaderMessageID: "<hdr-a1@acme.de>", RuleID: "r-acme", OriginalFolder: "INBOX", TargetFolder: "Spaces/Acme"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st, err := stStore.Load(); err != nil || st.Classifications["a99"].Folder != "Spaces/Acme" || st.Classifications["a1"].MessageID != "" {
-		t.Fatalf("expected IMAP move ID migration a1 -> a99, got %+v", st.Classifications)
-	}
-
-	popped, st, err := stStore.PopMovedByRule("r-acme")
-	if err != nil || len(popped) != 1 || len(st.MovedMessages) != 0 || st.Classifications["a99"].Folder != "INBOX" {
-		t.Fatalf("expected clean rollback pop & folder restore, got popped=%+v cls=%+v err=%v", popped, st.Classifications["a99"], err)
 	}
 }
 
@@ -121,7 +66,7 @@ func TestStage0DoesNotHideTransactionalMail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, matched := EvaluateStage0(tc.msg, true, nil)
+			c, matched := EvaluateStage0(tc.msg, true)
 			if matched != tc.matched {
 				t.Fatalf("matched=%v, want %v (%+v)", matched, tc.matched, c)
 			}
@@ -154,7 +99,7 @@ func TestPrepareSnippetUTF8AndExactSignature(t *testing.T) {
 	}
 }
 
-func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
+func TestStoreBarSummary(t *testing.T) {
 	s := NewStoreAt(t.TempDir())
 	if _, err := s.SaveClassifications([]Classification{
 		{MessageID: "1", ThreadID: "<1@x>", Subject: "Kickoff", Bucket: BucketEvent, KanbanColumn: "invoice", NeedsAttention: true, Date: "2026-11-10T10:00:00Z"},
@@ -163,17 +108,6 @@ func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddProposal(Proposal{ID: "p1", Status: "pending"}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := s.MoveKanban("1", "invalid-col"); err == nil {
-		t.Fatal("expected invalid kanban column to fail")
-	}
-	if _, err := s.UpdateProposalStatus("p1", "invalid-status"); err == nil {
-		t.Fatal("expected invalid proposal status to fail")
-	}
-
 	// Verify BarSummary counts EventCount for BucketEvent even in invoice column, and is deterministic.
 	st, err := s.Load()
 	if err != nil {
@@ -186,66 +120,6 @@ func TestStoreValidationPopMovedByScanAndBarSummary(t *testing.T) {
 	if sum.TopHeadline != "Vertrag A" {
 		t.Fatalf("expected deterministic tie-break by MessageID ('Vertrag A'), got %q", sum.TopHeadline)
 	}
-
-	// Verify PopMovedByScan restores Folder & FolderID and keeps MatchedRuleID/Space.
-	if _, err := s.SaveClassifications([]Classification{
-		{MessageID: "50", ThreadID: "<50@x>", AccountID: "work", Space: "Acme", MatchedRuleID: "r1", Folder: "INBOX", FolderID: "f-in"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RecordMoves([]MovedMessage{
-		{MessageID: "51", OldMessageID: "50", HeaderMessageID: "<50@x>", AccountID: "work", RuleID: "r1", ScanID: "scan-1", OriginalFolder: "INBOX", OriginalFolderID: "f-in", TargetFolder: "Spaces/Acme", TargetFolderID: "f-acme"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	popped, err := s.PopMovedByScan("scan-1")
-	if err != nil || len(popped) != 1 {
-		t.Fatalf("PopMovedByScan failed: popped=%+v err=%v", popped, err)
-	}
-	st2, err := s.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := st2.Classifications["51"]; got.Folder != "INBOX" || got.FolderID != "f-in" || got.MatchedRuleID != "r1" {
-		t.Fatalf("expected PopMovedByScan to restore folder while keeping rule attribution, got %+v", got)
-	}
-}
-
-func TestStoreDismissProposals(t *testing.T) {
-	s := NewStoreAt(t.TempDir())
-	for _, p := range []Proposal{
-		{ID: "p1", AccountID: "acc-a", Status: "pending"},
-		{ID: "p2", AccountID: "acc-b", Status: "pending"},
-		{ID: "p3", AccountID: "acc-b", Status: "applied"},
-	} {
-		if _, err := s.AddProposal(p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	st, err := s.DismissProposals([]string{"p1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sum := ComputeBarSummary(st); sum.PendingProposals != 1 {
-		t.Fatalf("expected 1 pending proposal after dismissing p1, got %d", sum.PendingProposals)
-	}
-	stAll, err := s.DismissProposals(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sum := ComputeBarSummary(stAll); sum.PendingProposals != 0 {
-		t.Fatalf("expected 0 pending proposals after dismiss all, got %d", sum.PendingProposals)
-	}
-	// Applied status must remain preserved.
-	var p3Status string
-	for _, p := range stAll.Proposals {
-		if p.ID == "p3" {
-			p3Status = p.Status
-		}
-	}
-	if p3Status != "applied" {
-		t.Fatalf("expected applied proposal p3 to stay 'applied', got %q", p3Status)
-	}
 }
 
 func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
@@ -253,7 +127,7 @@ func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
 	// Seed an unread newsletter in Done and a pinned read newsletter in Action.
 	_, err := s.SaveScanBatch([]Classification{
 		{MessageID: "nl-unread", ThreadID: "<nl1@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
-		{MessageID: "nl-pinned", ThreadID: "<nl2@x>", Bucket: BucketNewsletter, KanbanColumn: "done"},
+		{MessageID: "nl-pinned", ThreadID: "<nl2@x>", Bucket: BucketAction, KanbanColumn: "action", PinnedColumn: true, NeedsAttention: true},
 		{MessageID: "act-read", ThreadID: "<act@x>", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
 	}, map[string]bool{
 		"nl-unread": false,
@@ -261,9 +135,6 @@ func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
 		"act-read":  true,
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.MoveKanban("nl-pinned", "action"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,34 +179,6 @@ func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
 	}
 }
 
-func TestStoreMoveKanbanBatch(t *testing.T) {
-	s := NewStoreAt(t.TempDir())
-	_, err := s.SaveClassifications([]Classification{
-		{MessageID: "m1", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
-		{MessageID: "m2", Bucket: BucketAction, KanbanColumn: "action", NeedsAttention: true},
-		{MessageID: "m3", Bucket: BucketIncoming, KanbanColumn: "incoming", NeedsAttention: true},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := s.MoveKanbanBatch([]string{"m1", "m2", "missing", ""}, "done")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"m1", "m2"} {
-		c := st.Classifications[id]
-		if c.KanbanColumn != "done" || !c.PinnedColumn || c.Bucket != BucketDone || c.NeedsAttention {
-			t.Fatalf("expected %s moved & pinned to done, got %+v", id, c)
-		}
-	}
-	if got := st.Classifications["m3"].KanbanColumn; got != "incoming" {
-		t.Fatalf("expected m3 untouched in incoming, got %q", got)
-	}
-	if _, err := s.MoveKanbanBatch([]string{"m1"}, "invalid"); err == nil {
-		t.Fatalf("expected invalid column to fail")
-	}
-}
-
 func TestFolderKanbanColumnMapping(t *testing.T) {
 	cases := []struct {
 		folder string
@@ -366,7 +209,7 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		Subject: "Bitte kurz pruefen",
 		From:    "max@avono.de",
 		Unread:  true,
-	}, true, nil)
+	}, true)
 	if matched || cTodo.KanbanColumn != "action" || cTodo.Bucket != BucketAction || !cTodo.NeedsAttention {
 		t.Fatalf("expected todo subfolder mail to pre-set action column on base, got matched=%v %+v", matched, cTodo)
 	}
@@ -377,7 +220,7 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		Subject: "Angebot versendet",
 		From:    "ich@avono.de",
 		Unread:  false,
-	}, true, nil)
+	}, true)
 	if matched || cWait.KanbanColumn != "waiting" || cWait.Bucket != BucketWaiting || cWait.NeedsAttention {
 		t.Fatalf("expected waiting subfolder mail to pre-set waiting column on base, got matched=%v %+v", matched, cWait)
 	}
@@ -389,7 +232,7 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		Subject: "Hotelbuchung Rueckfrage",
 		From:    "kollege@avono.de",
 		Unread:  true,
-	}, true, nil)
+	}, true)
 	if matchedOther || cOther.KanbanColumn != "" {
 		t.Fatalf("expected neutral subfolder to continue to Stage 1 without column override, got matched=%v %+v", matchedOther, cOther)
 	}

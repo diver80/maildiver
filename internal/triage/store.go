@@ -3,7 +3,6 @@ package triage
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,36 +29,20 @@ type Proposal struct {
 	CreatedAt  string   `json:"createdAt"`
 }
 
-// MovedMessage records an auto-moved email so deleting a routing rule can cleanly revert it to Incoming.
-type MovedMessage struct {
-	MessageID        string `json:"messageId"`
-	OldMessageID     string `json:"oldMessageId,omitempty"`
-	HeaderMessageID  string `json:"headerMessageId,omitempty"`
-	AccountID        string `json:"accountId,omitempty"`
-	RuleID           string `json:"ruleId"`
-	ScanID           string `json:"scanId,omitempty"` // scan that moved the mail, for "undo last scan"
-	OriginalFolder   string `json:"originalFolder"`
-	OriginalFolderID string `json:"originalFolderId,omitempty"`
-	TargetFolder     string `json:"targetFolder"`
-	TargetFolderID   string `json:"targetFolderId,omitempty"`
-	MovedAt          string `json:"movedAt"`
-}
-
+// State is the triage result the app shows. Older files with the Kanban board's proposals and
+// tracked moves load fine; those parts are dropped on the next write.
 type State struct {
 	UpdatedAt       string                    `json:"updatedAt"`
 	Classifications map[string]Classification `json:"classifications"`
-	Proposals       []Proposal                `json:"proposals"`
-	MovedMessages   []MovedMessage            `json:"movedMessages"`
 }
 
 type BarSummary struct {
-	UpdatedAt        string `json:"updatedAt"`
-	ActionCount      int    `json:"actionCount"`
-	WaitingCount     int    `json:"waitingCount"`
-	InvoiceCount     int    `json:"invoiceCount"`
-	EventCount       int    `json:"eventCount"`
-	PendingProposals int    `json:"pendingProposals"`
-	TopHeadline      string `json:"topHeadline,omitempty"`
+	UpdatedAt    string `json:"updatedAt"`
+	ActionCount  int    `json:"actionCount"`
+	WaitingCount int    `json:"waitingCount"`
+	InvoiceCount int    `json:"invoiceCount"`
+	EventCount   int    `json:"eventCount"`
+	TopHeadline  string `json:"topHeadline,omitempty"`
 }
 
 type Store struct {
@@ -92,11 +75,7 @@ func (s *Store) Load() (State, error) {
 }
 
 func (s *Store) loadLocked() (State, error) {
-	st := State{
-		Classifications: map[string]Classification{},
-		Proposals:       []Proposal{},
-		MovedMessages:   []MovedMessage{},
-	}
+	st := State{Classifications: map[string]Classification{}}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -105,20 +84,10 @@ func (s *Store) loadLocked() (State, error) {
 		return st, err
 	}
 	if err := json.Unmarshal(data, &st); err != nil {
-		return State{
-			Classifications: map[string]Classification{},
-			Proposals:       []Proposal{},
-			MovedMessages:   []MovedMessage{},
-		}, nil
+		return State{Classifications: map[string]Classification{}}, nil
 	}
 	if st.Classifications == nil {
 		st.Classifications = map[string]Classification{}
-	}
-	if st.Proposals == nil {
-		st.Proposals = []Proposal{}
-	}
-	if st.MovedMessages == nil {
-		st.MovedMessages = []MovedMessage{}
 	}
 	return st, nil
 }
@@ -187,7 +156,7 @@ func (s *Store) SaveScanBatch(items []Classification, isRead map[string]bool) (S
 	return st, nil
 }
 
-// RemoveClassifications deletes the given message IDs from the Kanban board state.
+// RemoveClassifications deletes the given message IDs from the triage state.
 func (s *Store) RemoveClassifications(ids []string) (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -267,343 +236,6 @@ func (s *Store) RetainAccounts(policy config.MailboxPolicy) (State, error) {
 	return st, s.writeLocked(st)
 }
 
-func validKanbanColumn(col string) bool {
-	switch col {
-	case "incoming", "action", "waiting", "invoice", "done":
-		return true
-	default:
-		return false
-	}
-}
-
-func applyKanbanColumn(c *Classification, column string) {
-	c.KanbanColumn = column
-	c.PinnedColumn = true
-	switch column {
-	case "action":
-		c.Bucket = BucketAction
-		c.NeedsAttention = true
-	case "waiting":
-		c.Bucket = BucketWaiting
-		c.NeedsAttention = false
-	case "invoice":
-		c.Bucket = BucketInvoice
-		c.NeedsAttention = true
-	case "done":
-		c.Bucket = BucketDone
-		c.NeedsAttention = false
-	case "incoming":
-		c.Bucket = BucketIncoming
-		c.NeedsAttention = true
-	}
-}
-
-func (s *Store) MoveKanban(messageID, column string) (State, error) {
-	return s.MoveKanbanBatch([]string{messageID}, column)
-}
-
-func (s *Store) MoveKanbanBatch(messageIDs []string, column string) (State, error) {
-	if !validKanbanColumn(column) {
-		return State{}, fmt.Errorf("invalid kanban column: %s", column)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	changed := false
-	for _, messageID := range messageIDs {
-		if messageID == "" {
-			continue
-		}
-		if c, ok := st.Classifications[messageID]; ok {
-			applyKanbanColumn(&c, column)
-			st.Classifications[messageID] = c
-			changed = true
-		}
-	}
-	if !changed {
-		return st, nil
-	}
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
-func (s *Store) RecordMoves(entries []MovedMessage) (State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, e := range entries {
-		if e.MovedAt == "" {
-			e.MovedAt = now
-		}
-		st.MovedMessages = append(st.MovedMessages, e)
-
-		// Migrate classification key if Thunderbird assigned a new MessageHeader.id after IMAP move
-		if e.OldMessageID != "" && e.MessageID != "" {
-			if c, ok := st.Classifications[e.OldMessageID]; ok {
-				if e.OldMessageID != e.MessageID {
-					delete(st.Classifications, e.OldMessageID)
-				}
-				c.MessageID = e.MessageID
-				if e.TargetFolder != "" {
-					c.Folder = e.TargetFolder
-				}
-				if e.TargetFolderID != "" {
-					c.FolderID = e.TargetFolderID
-				}
-				st.Classifications[e.MessageID] = c
-			}
-		}
-	}
-	if len(st.MovedMessages) > 5000 {
-		st.MovedMessages = st.MovedMessages[len(st.MovedMessages)-5000:]
-	}
-	st.UpdatedAt = now
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
-// SyncRevertedFolders updates classification keys and folders after a revert move back to Inbox.
-func (s *Store) SyncRevertedFolders(entries []MovedMessage) (State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	changed := false
-	for _, e := range entries {
-		lookupID := e.OldMessageID
-		if lookupID == "" {
-			lookupID = e.MessageID
-		}
-		c, ok := st.Classifications[lookupID]
-		if !ok && e.HeaderMessageID != "" {
-			for k, item := range st.Classifications {
-				if item.ThreadID == e.HeaderMessageID {
-					lookupID = k
-					c = item
-					ok = true
-					break
-				}
-			}
-		}
-		if !ok {
-			continue
-		}
-		if e.MessageID != "" && e.MessageID != lookupID {
-			delete(st.Classifications, lookupID)
-			c.MessageID = e.MessageID
-		}
-		if e.OriginalFolder != "" {
-			c.Folder = e.OriginalFolder
-		}
-		if e.OriginalFolderID != "" {
-			c.FolderID = e.OriginalFolderID
-		}
-		st.Classifications[c.MessageID] = c
-		changed = true
-	}
-	if !changed {
-		return st, nil
-	}
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
-func restoreClassificationFoldersLocked(st *State, popped []MovedMessage, clearRule bool) {
-	if len(popped) == 0 {
-		return
-	}
-	revertedByMsgID := make(map[string]MovedMessage, len(popped))
-	revertedByHdrID := make(map[string]MovedMessage, len(popped))
-	for _, m := range popped {
-		if m.MessageID != "" {
-			revertedByMsgID[m.MessageID] = m
-		}
-		if m.HeaderMessageID != "" {
-			revertedByHdrID[m.HeaderMessageID] = m
-		}
-	}
-	for id, c := range st.Classifications {
-		m, ok := revertedByMsgID[id]
-		if !ok && c.ThreadID != "" {
-			m, ok = revertedByHdrID[c.ThreadID]
-		}
-		if !ok {
-			continue
-		}
-		if clearRule {
-			c.Space = ""
-			c.MatchedRuleID = ""
-			c.TargetFolder = ""
-			c.TargetFolderID = ""
-		}
-		if m.OriginalFolder != "" {
-			c.Folder = m.OriginalFolder
-		}
-		if m.OriginalFolderID != "" {
-			c.FolderID = m.OriginalFolderID
-		}
-		st.Classifications[id] = c
-	}
-}
-
-// PopMovedByRule removes and returns all tracked moves associated with a ruleId (for clean rollback to Incoming).
-func (s *Store) PopMovedByRule(ruleID string) ([]MovedMessage, State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return nil, st, err
-	}
-	var popped []MovedMessage
-	kept := make([]MovedMessage, 0, len(st.MovedMessages))
-	for _, m := range st.MovedMessages {
-		if m.RuleID == ruleID {
-			popped = append(popped, m)
-		} else {
-			kept = append(kept, m)
-		}
-	}
-	restoreClassificationFoldersLocked(&st, popped, true)
-	st.MovedMessages = kept
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return nil, st, err
-	}
-	return popped, st, nil
-}
-
-// PopMovedByScan removes and returns the moves one scan made, so they can be undone.
-func (s *Store) PopMovedByScan(scanID string) ([]MovedMessage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return nil, err
-	}
-	var popped []MovedMessage
-	kept := make([]MovedMessage, 0, len(st.MovedMessages))
-	for _, m := range st.MovedMessages {
-		if scanID != "" && m.ScanID == scanID {
-			popped = append(popped, m)
-		} else {
-			kept = append(kept, m)
-		}
-	}
-	if len(popped) == 0 {
-		return nil, nil
-	}
-	restoreClassificationFoldersLocked(&st, popped, false)
-	st.MovedMessages = kept
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return popped, s.writeLocked(st)
-}
-
-func (s *Store) AddProposal(p Proposal) (State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	if p.Status == "" {
-		p.Status = "pending"
-	}
-	if p.CreatedAt == "" {
-		p.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	st.Proposals = append([]Proposal{p}, st.Proposals...)
-	if len(st.Proposals) > 100 {
-		st.Proposals = st.Proposals[:100]
-	}
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
-func validProposalStatus(status string) bool {
-	switch status {
-	case "pending", "applied", "dismissed":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Store) UpdateProposalStatus(id, status string) (State, error) {
-	if !validProposalStatus(status) {
-		return State{}, fmt.Errorf("invalid proposal status: %s", status)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	for i := range st.Proposals {
-		if st.Proposals[i].ID == id {
-			st.Proposals[i].Status = status
-			break
-		}
-	}
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
-// DismissProposals marks matching pending proposals (or all pending proposals when ids is empty) as dismissed.
-func (s *Store) DismissProposals(ids []string) (State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, err := s.loadLocked()
-	if err != nil {
-		return st, err
-	}
-	idSet := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		if id != "" {
-			idSet[id] = struct{}{}
-		}
-	}
-	dismissAll := len(idSet) == 0
-	for i := range st.Proposals {
-		if st.Proposals[i].Status != "pending" {
-			continue
-		}
-		if !dismissAll {
-			if _, ok := idSet[st.Proposals[i].ID]; !ok {
-				continue
-			}
-		}
-		st.Proposals[i].Status = "dismissed"
-	}
-	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.writeLocked(st); err != nil {
-		return st, err
-	}
-	return st, nil
-}
-
 func (s *Store) writeLocked(st State) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
@@ -663,11 +295,6 @@ func ComputeBarSummary(st State) BarSummary {
 					b.InvoiceCount++
 				}
 			}
-		}
-	}
-	for _, p := range st.Proposals {
-		if p.Status == "pending" {
-			b.PendingProposals++
 		}
 	}
 	return b

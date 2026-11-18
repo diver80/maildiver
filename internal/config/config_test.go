@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,9 +27,6 @@ func TestDefaultsAreSafe(t *testing.T) {
 	if cfg.Theme.StyleBody {
 		t.Fatal("mail bodies must not be recolored by default")
 	}
-	if !cfg.Mailbox.AutoMoveOnlyUnread {
-		t.Fatal("auto-move must default to unread mails only")
-	}
 }
 
 func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
@@ -45,19 +43,22 @@ func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Features.Triage || !cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 0 || len(cfg.Mailbox.KanbanAccountIDs) != 0 {
+	if cfg.Features.Triage || !cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 0 {
 		t.Fatalf("legacy config must load with triage off and read-only on: %+v %+v", cfg.Features, cfg.Mailbox)
 	}
-	if len(cfg.Rules) != 1 || cfg.Rules[0].ID != "r1" || cfg.Rules[0].Space != "Acme" {
-		t.Fatalf("rules lost: %+v", cfg.Rules)
+	// The Kanban board's Spaces rules are gone; such a file still loads, and saving drops them.
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, AppID, "config.json"))
+	if strings.Contains(string(data), `"rules"`) || strings.Contains(string(data), "kanban") {
+		t.Fatalf("saved config keeps board fields: %s", data)
 	}
 }
 
 func TestApplyPatchKeepsAbsentFields(t *testing.T) {
 	base := Default()
-	base.Rules = []RoutingRule{{ID: "keep", Space: "Keep", FolderPath: "Spaces/Keep", Domains: []string{"keep.de"}}}
 	base.Mailbox.TriageAccountIDs = []string{"account1"}
-	base.Mailbox.KanbanAccountIDs = []string{"account1"}
 
 	next, err := ApplyPatch(base, []byte(`{"language":"en","features":{"triage":true}}`))
 	if err != nil {
@@ -69,35 +70,21 @@ func TestApplyPatchKeepsAbsentFields(t *testing.T) {
 	if !next.Features.Theme || !next.Features.Assistant {
 		t.Fatalf("nested fields absent from patch must be kept: %+v", next.Features)
 	}
-	if len(next.Rules) != 1 || next.Rules[0].ID != "keep" {
-		t.Fatalf("rules absent from patch must be kept: %+v", next.Rules)
-	}
-	if len(next.Mailbox.TriageAccountIDs) != 1 || len(next.Mailbox.KanbanAccountIDs) != 1 || !next.Mailbox.ReadOnly {
+	if len(next.Mailbox.TriageAccountIDs) != 1 || !next.Mailbox.ReadOnly {
 		t.Fatalf("mailbox absent from patch must be kept: %+v", next.Mailbox)
 	}
 }
 
-func TestApplyPatchReplacesRulesWithoutStaleFields(t *testing.T) {
+func TestApplyPatchReplacesAccountList(t *testing.T) {
 	base := Default()
-	base.Rules = []RoutingRule{{ID: "old", FolderPath: "Spaces/Old", AutoMove: true, ColumnFolders: map[string]string{"done": "Spaces/Old/Done"}}}
 	base.Mailbox.TriageAccountIDs = []string{"a1", "a2"}
-	base.Mailbox.KanbanAccountIDs = []string{"a1", "a2"}
 
-	next, err := ApplyPatch(base, []byte(`{"rules":[{"id":"new","folderPath":"Spaces/New","domains":["new.de"]}],"mailbox":{"triageAccountIds":["a2"],"kanbanAccountIds":["a2"]}}`))
+	next, err := ApplyPatch(base, []byte(`{"mailbox":{"triageAccountIds":["a2"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(next.Rules) != 1 || next.Rules[0].ID != "new" {
-		t.Fatalf("rules not replaced: %+v", next.Rules)
-	}
-	if next.Rules[0].AutoMove || len(next.Rules[0].ColumnFolders) != 0 {
-		t.Fatalf("fields of the replaced rule leaked into the new one: %+v", next.Rules[0])
-	}
 	if len(next.Mailbox.TriageAccountIDs) != 1 || next.Mailbox.TriageAccountIDs[0] != "a2" {
 		t.Fatalf("account list not replaced: %+v", next.Mailbox.TriageAccountIDs)
-	}
-	if len(next.Mailbox.KanbanAccountIDs) != 1 || next.Mailbox.KanbanAccountIDs[0] != "a2" {
-		t.Fatalf("kanban account list not replaced: %+v", next.Mailbox.KanbanAccountIDs)
 	}
 	if !next.Mailbox.ReadOnly {
 		t.Fatal("readOnly absent from mailbox patch must be kept")
@@ -105,45 +92,13 @@ func TestApplyPatchReplacesRulesWithoutStaleFields(t *testing.T) {
 }
 
 func TestMailboxPolicy(t *testing.T) {
-	p := MailboxPolicy{ReadOnly: false, TriageAccountIDs: []string{"a1", "a2"}, KanbanAccountIDs: []string{"a1"}}
+	p := MailboxPolicy{ReadOnly: false, TriageAccountIDs: []string{"a1", "a2"}}
 	if !p.CanWrite("a1") || !p.CanWrite("a2") || p.CanWrite("a3") || p.CanWrite("") {
 		t.Fatal("CanWrite must only allow enabled accounts")
-	}
-	if !p.KanbanEnabled("a1") || p.KanbanEnabled("a2") || p.KanbanEnabled("a3") {
-		t.Fatal("KanbanEnabled must require both AccountEnabled and KanbanAccountIDs membership")
 	}
 	p.ReadOnly = true
 	if p.CanWrite("a1") {
 		t.Fatal("read-only must block writes")
-	}
-}
-
-func TestKanbanFoldersPatchAndPolicy(t *testing.T) {
-	base := Default()
-	base.Mailbox.KanbanFolders = map[string][]string{
-		"a1": {"INBOX", "INBOX/atlassian", "INBOX/avono"},
-		"a2": {"INBOX"},
-	}
-	if !base.Mailbox.HasKanbanFolders("a1") || base.Mailbox.HasKanbanFolders("missing") {
-		t.Fatalf("unexpected HasKanbanFolders result: %+v", base.Mailbox.KanbanFolders)
-	}
-
-	// Patching an unrelated mailbox field preserves KanbanFolders.
-	kept, err := ApplyPatch(base, []byte(`{"mailbox":{"scanOnNewMail":true}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(kept.Mailbox.KanbanFolders["a1"]) != 3 || len(kept.Mailbox.KanbanFolders["a2"]) != 1 {
-		t.Fatalf("kanbanFolders should be preserved when absent from patch: %+v", kept.Mailbox.KanbanFolders)
-	}
-
-	// Patching kanbanFolders replaces the map cleanly instead of keeping deleted entries.
-	replaced, err := ApplyPatch(base, []byte(`{"mailbox":{"kanbanFolders":{"a1":["INBOX/avono"]}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(replaced.Mailbox.KanbanFolders) != 1 || len(replaced.Mailbox.KanbanFolders["a1"]) != 1 || replaced.Mailbox.KanbanFolders["a1"][0] != "INBOX/avono" {
-		t.Fatalf("kanbanFolders not cleanly replaced: %+v", replaced.Mailbox.KanbanFolders)
 	}
 }
 

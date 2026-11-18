@@ -119,7 +119,7 @@ func main() {
 			From:     *from,
 			BodyText: *body,
 			Unread:   true,
-		}, cfg.Rules)
+		})
 		out, _ := json.MarshalIndent(res, "", "  ")
 		fmt.Println(string(out))
 		if err != nil {

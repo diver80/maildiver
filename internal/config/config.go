@@ -52,42 +52,20 @@ type AIConfig struct {
 	Endpoints map[string]string `json:"endpoints,omitempty"`
 }
 
-// RoutingRule maps sender domains (and optional sender/subject filters) to a Space label and Thunderbird folder.
-type RoutingRule struct {
-	ID                string            `json:"id"`
-	Space             string            `json:"space"`
-	AccountID         string            `json:"accountId,omitempty"` // Thunderbird account ID for multi-account disambiguation & auto-create
-	FolderPath        string            `json:"folderPath"`          // e.g. "Spaces/Acme" or "Rechnungen"
-	FolderID          string            `json:"folderId,omitempty"`  // Thunderbird folder ID if bound from UI
-	Domains           []string          `json:"domains"`             // e.g. ["acme.de", "acme-corp.com"]
-	FromContains      []string          `json:"fromContains,omitempty"`
-	SubjectContains   []string          `json:"subjectContains,omitempty"`
-	NativeFilterNames []string          `json:"nativeFilterNames,omitempty"` // Linked native Thunderbird filter names
-	AutoMove          bool              `json:"autoMove"`                    // Stage-0 deterministic move from INBOX -> FolderPath
-	IncludeInScan     bool              `json:"includeInScan"`               // Scan this folder + subfolders for the Kanban board
-	ColumnFolders     map[string]string `json:"columnFolders,omitempty"`     // Optional: action/waiting/done -> subfolderPath
-}
-
 // FeatureFlags switches the three independent OmaThunder building blocks on or off.
 type FeatureFlags struct {
 	Theme     bool `json:"theme"`     // Omarchy theme sync (chrome, message body, compose)
 	Assistant bool `json:"assistant"` // AI writing assistant (summarize, draft reply, review draft)
-	Triage    bool `json:"triage"`    // Scan, classification, Kanban, Space routing & auto-move
+	Triage    bool `json:"triage"`    // Triage scans: classification of the triage inboxes (app: action view)
 }
 
 // MailboxPolicy limits what OmaThunder may read and change in Thunderbird.
 type MailboxPolicy struct {
 	// ReadOnly blocks every change to mails, folders and tags. Scans only report planned moves.
 	ReadOnly bool `json:"readOnly"`
-	// TriageAccountIDs lists the Thunderbird accounts enabled for Spaces, rules, cleanup and triage. Empty = none.
+	// TriageAccountIDs lists the Thunderbird accounts OmaThunder may change (mail actions, filters)
+	// and whose inboxes it scans and archives. Empty = none.
 	TriageAccountIDs []string `json:"triageAccountIds"`
-	// KanbanAccountIDs lists the subset of enabled accounts scanned and displayed on the Kanban board.
-	KanbanAccountIDs []string `json:"kanbanAccountIds"`
-	// KanbanFolders maps accountID -> enabled level-1 folder paths (each scanned recursively except INBOX itself).
-	// When an account is absent from this map, only its INBOX is scanned (legacy default).
-	KanbanFolders map[string][]string `json:"kanbanFolders,omitempty"`
-	// AutoMoveOnlyUnread restricts deterministic auto-moves to unread inbox mails.
-	AutoMoveOnlyUnread bool `json:"autoMoveOnlyUnread"`
 	// ScanOnNewMail runs a triage scan automatically when new mail arrives (same limits as a manual scan).
 	ScanOnNewMail bool `json:"scanOnNewMail"`
 	// ScanLimit is the number of newest mails scanned per folder.
@@ -118,28 +96,6 @@ func (p MailboxPolicy) AccountEnabled(accountID string) bool {
 		}
 	}
 	return false
-}
-
-// KanbanEnabled reports whether the given account is enabled for the Kanban board and scans.
-func (p MailboxPolicy) KanbanEnabled(accountID string) bool {
-	if !p.AccountEnabled(accountID) {
-		return false
-	}
-	for _, id := range p.KanbanAccountIDs {
-		if id == accountID {
-			return true
-		}
-	}
-	return false
-}
-
-// HasKanbanFolders reports whether per-account folder selection is configured for accountID.
-func (p MailboxPolicy) HasKanbanFolders(accountID string) bool {
-	if p.KanbanFolders == nil {
-		return false
-	}
-	_, ok := p.KanbanFolders[accountID]
-	return ok
 }
 
 // CanWrite reports whether OmaThunder may change mails, folders or tags in the given account.
@@ -176,7 +132,6 @@ type Config struct {
 	Bridge   BridgeConfig  `json:"bridge"`
 	Theme    ThemeConfig   `json:"theme"`
 	AI       AIConfig      `json:"ai"`
-	Rules    []RoutingRule `json:"rules"`
 }
 
 func Default() Config {
@@ -185,14 +140,12 @@ func Default() Config {
 		// Safe defaults: theme + writing assistant on, triage off until explicitly enabled.
 		Features: FeatureFlags{Theme: true, Assistant: true, Triage: false},
 		Mailbox: MailboxPolicy{
-			ReadOnly:           true,
-			TriageAccountIDs:   []string{},
-			KanbanAccountIDs:   []string{},
-			AutoMoveOnlyUnread: true,
-			ScanOnNewMail:      true,
-			ScanLimit:          defaultScanLimit,
-			ScanDays:           defaultScanDays,
-			ArchiveDir:         DefaultArchiveDir(),
+			ReadOnly:         true,
+			TriageAccountIDs: []string{},
+			ScanOnNewMail:    true,
+			ScanLimit:        defaultScanLimit,
+			ScanDays:         defaultScanDays,
+			ArchiveDir:       DefaultArchiveDir(),
 		},
 		Bridge: BridgeConfig{
 			Enabled:   false,
@@ -222,7 +175,6 @@ func Default() Config {
 			SkipNewsletters:   true,
 			MaxSnippetChars:   1600,
 		},
-		Rules: []RoutingRule{},
 	}
 }
 
@@ -315,14 +267,8 @@ func Normalize(cfg Config) Config {
 	if cfg.Bridge.Port < 0 || cfg.Bridge.Port > 65535 {
 		cfg.Bridge.Port = 0
 	}
-	if cfg.Rules == nil {
-		cfg.Rules = []RoutingRule{}
-	}
 	if cfg.Mailbox.TriageAccountIDs == nil {
 		cfg.Mailbox.TriageAccountIDs = []string{}
-	}
-	if cfg.Mailbox.KanbanAccountIDs == nil {
-		cfg.Mailbox.KanbanAccountIDs = []string{}
 	}
 	if cfg.Mailbox.ScanLimit <= 0 {
 		cfg.Mailbox.ScanLimit = defaultScanLimit
@@ -349,22 +295,13 @@ func ApplyPatch(base Config, patch []byte) (Config, error) {
 	if err := json.Unmarshal(patch, &keys); err != nil {
 		return base, err
 	}
-	// encoding/json decodes into existing slice elements, so stale fields of old rules
-	// could survive. Reset slices the patch replaces before decoding.
-	if _, ok := keys["rules"]; ok {
-		base.Rules = nil
-	}
+	// encoding/json decodes into existing slice elements, so stale entries could survive.
+	// Reset slices the patch replaces before decoding.
 	if raw, ok := keys["mailbox"]; ok {
 		var mb map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &mb); err == nil {
 			if _, ok := mb["triageAccountIds"]; ok {
 				base.Mailbox.TriageAccountIDs = nil
-			}
-			if _, ok := mb["kanbanAccountIds"]; ok {
-				base.Mailbox.KanbanAccountIDs = nil
-			}
-			if _, ok := mb["kanbanFolders"]; ok {
-				base.Mailbox.KanbanFolders = nil
 			}
 		}
 	}

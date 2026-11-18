@@ -5,8 +5,6 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
-
-	"github.com/diver80/omathunder/internal/config"
 )
 
 type NativeCondition struct {
@@ -86,18 +84,6 @@ type FilterDiagnosticReport struct {
 	MatchedFilters   []FilterMatchDiagnostic `json:"matchedFilters,omitempty"`
 	NearMisses       []FilterMatchDiagnostic `json:"nearMisses,omitempty"`
 	Issues           []FilterIssue           `json:"issues,omitempty"`
-}
-
-type SpaceImportCandidate struct {
-	AccountID         string   `json:"accountId"`
-	AccountName       string   `json:"accountName,omitempty"`
-	Space             string   `json:"space"`
-	FolderPath        string   `json:"folderPath"`
-	Domains           []string `json:"domains,omitempty"`
-	FromContains      []string `json:"fromContains,omitempty"`
-	SubjectContains   []string `json:"subjectContains,omitempty"`
-	NativeFilterNames []string `json:"nativeFilterNames"`
-	AlreadyImported   bool     `json:"alreadyImported"`
 }
 
 // canonicalFilterOp maps Thunderbird search operator spellings to a canonical name.
@@ -565,34 +551,6 @@ func FindFilterIssues(filters []NativeFilter, accountFilter string) []FilterIssu
 	return issues
 }
 
-func isNoiseTargetFolder(folderPath string) bool {
-	low := strings.ToLower(strings.Trim(strings.TrimSpace(folderPath), "/"))
-	for _, bad := range []string{"trash", "papierkorb", "deleted", "junk", "spam", "bin"} {
-		if low == bad || strings.HasSuffix(low, "/"+bad) {
-			return true
-		}
-	}
-	return false
-}
-
-func deriveSpaceName(filterName, folderPath string) string {
-	base := folderPath
-	if idx := strings.LastIndex(base, "/"); idx >= 0 && idx+1 < len(base) {
-		base = base[idx+1:]
-	}
-	base = strings.TrimSpace(base)
-	if base != "" && !strings.EqualFold(base, "incoming") && !strings.EqualFold(base, "inbox") {
-		return base
-	}
-	name := strings.TrimSpace(filterName)
-	for _, sep := range []string{"»", "=>", "->"} {
-		if idx := strings.LastIndex(name, sep); idx >= 0 {
-			name = strings.TrimSpace(name[idx+len(sep):])
-		}
-	}
-	return name
-}
-
 func dedupStrings(items []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(items))
@@ -606,81 +564,6 @@ func dedupStrings(items []string) []string {
 			seen[low] = true
 			out = append(out, c)
 		}
-	}
-	return out
-}
-
-// SuggestSpaceRulesFromFilters builds Space overlay rule candidates from Thunderbird's
-// native MoveToFolder filters so Spaces sit cleanly over native filters.
-func SuggestSpaceRulesFromFilters(filters []NativeFilter, existingRules []config.RoutingRule) []SpaceImportCandidate {
-	type key struct {
-		accountID  string
-		folderPath string
-	}
-	grouped := map[key]*SpaceImportCandidate{}
-	var order []key
-
-	existingByFolder := map[key]bool{}
-	for _, r := range existingRules {
-		fp := strings.ToLower(strings.Trim(strings.TrimSpace(r.FolderPath), "/"))
-		if fp != "" {
-			existingByFolder[key{accountID: r.AccountID, folderPath: fp}] = true
-		}
-	}
-
-	for _, f := range filters {
-		var targetPath string
-		for _, a := range f.Actions {
-			if a.Type == "moveToFolder" && strings.TrimSpace(a.TargetFolderPath) != "" {
-				targetPath = strings.Trim(strings.TrimSpace(a.TargetFolderPath), "/")
-				break
-			}
-		}
-		if targetPath == "" || isNoiseTargetFolder(targetPath) {
-			continue
-		}
-		k := key{accountID: f.AccountID, folderPath: strings.ToLower(targetPath)}
-		cand, exists := grouped[k]
-		if !exists {
-			cand = &SpaceImportCandidate{
-				AccountID:       f.AccountID,
-				AccountName:     f.AccountName,
-				Space:           deriveSpaceName(f.Name, targetPath),
-				FolderPath:      targetPath,
-				AlreadyImported: existingByFolder[k],
-			}
-			grouped[k] = cand
-			order = append(order, k)
-		}
-		cand.NativeFilterNames = append(cand.NativeFilterNames, f.Name)
-		for _, c := range f.Conditions {
-			val := strings.TrimSpace(c.Value)
-			if val == "" {
-				continue
-			}
-			switch strings.ToLower(c.Field) {
-			case "from", "sender", "to", "toorcc", "alladdresses":
-				if strings.HasPrefix(val, "@") && !strings.ContainsAny(val[1:], " @") {
-					cand.Domains = append(cand.Domains, strings.TrimPrefix(strings.ToLower(val), "@"))
-				} else if at := strings.LastIndexByte(val, '@'); at == 0 && !strings.Contains(val, " ") {
-					cand.Domains = append(cand.Domains, strings.ToLower(val[1:]))
-				} else if strings.EqualFold(c.Field, "from") || strings.EqualFold(c.Field, "sender") {
-					cand.FromContains = append(cand.FromContains, val)
-				}
-			case "subject":
-				cand.SubjectContains = append(cand.SubjectContains, val)
-			}
-		}
-	}
-
-	out := make([]SpaceImportCandidate, 0, len(order))
-	for _, k := range order {
-		c := grouped[k]
-		c.Domains = dedupStrings(c.Domains)
-		c.FromContains = dedupStrings(c.FromContains)
-		c.SubjectContains = dedupStrings(c.SubjectContains)
-		c.NativeFilterNames = dedupStrings(c.NativeFilterNames)
-		out = append(out, *c)
 	}
 	return out
 }

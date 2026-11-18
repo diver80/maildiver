@@ -246,8 +246,8 @@ Return ONLY valid JSON matching this schema:
 }`
 
 // Classify runs Stage 0 rules first, then falls back to Stage 1 LLM classification.
-func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput, rules []config.RoutingRule) (triage.Classification, error) {
-	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters, rules)
+func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput) (triage.Classification, error) {
+	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters)
 	if matched {
 		return base, nil
 	}
@@ -266,7 +266,6 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		"from":        msg.From,
 		"date":        msg.Date,
 		"folder":      msg.Folder,
-		"space":       base.Space,
 		"unread":      msg.Unread,
 		"attachments": msg.Attachments,
 		"snippet":     snippet,
@@ -314,10 +313,6 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 		Date:           msg.Date,
 		Folder:         msg.Folder,
 		FolderID:       msg.FolderID,
-		Space:          base.Space,
-		MatchedRuleID:  base.MatchedRuleID,
-		TargetFolder:   base.TargetFolder,
-		TargetFolderID: base.TargetFolderID,
 		KanbanColumn:   triage.BucketToKanban(bucket, needs || msg.Unread),
 		Bucket:         bucket,
 		Urgency:        normalizeUrgency(parsed.Urgency),
@@ -332,16 +327,6 @@ func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.Messa
 	}
 	triage.ApplyFolderKanbanColumn(&cls, msg.Folder)
 	return cls, nil
-}
-
-// ClassifyLocal classifies without any model call (0 tokens): Stage 0 rules, then the keyword estimate.
-// The result is not cached as an AI result, so a later scan with AI enabled classifies the mail properly.
-func ClassifyLocal(cfg config.AIConfig, msg triage.MessageInput, rules []config.RoutingRule, noteKey, note string) triage.Classification {
-	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters, rules)
-	if matched {
-		return base
-	}
-	return ClassifyLocalWithBase(cfg, msg, base, noteKey, note)
 }
 
 // ClassifyLocalWithBase produces a local heuristic estimate from a precomputed Stage 0 base result.

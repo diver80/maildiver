@@ -15,7 +15,7 @@ const {
   describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity, checkHostRPC,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
-const PROTOCOL = 3;
+const PROTOCOL = 4;
 const HOST_NAME = "dev.omathunder.host";
 const STANDALONE_CFG_KEY = "oma_standalone_config";
 const STANDALONE_SECRETS_KEY = "oma_standalone_secrets";

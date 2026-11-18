@@ -2,8 +2,6 @@ package triage
 
 import (
 	"testing"
-
-	"github.com/diver80/omathunder/internal/config"
 )
 
 func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
@@ -110,53 +108,5 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 		if !codes[want] {
 			t.Fatalf("missing expected issue %q in %+v", want, rep1.Issues)
 		}
-	}
-}
-
-func TestSuggestSpaceRulesFromFilters(t *testing.T) {
-	filters := []NativeFilter{
-		{
-			AccountID:   "acc3",
-			AccountName: "frank.hess@avono.de",
-			Name:        "Inbox » Börse",
-			Enabled:     true,
-			Conditions: []NativeCondition{
-				{Field: "from", Op: "endsWith", Value: "@boerse-stuttgart.de"},
-				{Field: "from", Op: "endsWith", Value: "@bsdigital.com"},
-			},
-			Actions: []NativeAction{{Type: "moveToFolder", TargetFolderPath: "INBOX/Boerse"}},
-		},
-		{
-			AccountID:   "acc3",
-			AccountName: "frank.hess@avono.de",
-			Name:        "frank.hess@avono.de » Inbox => REWE",
-			Enabled:     true,
-			Conditions: []NativeCondition{
-				{Field: "from", Op: "endsWith", Value: "@rewe-group.com"},
-				{Field: "from", Op: "endsWith", Value: "@rewe.atlassian.net"},
-			},
-			Actions: []NativeAction{{Type: "moveToFolder", TargetFolderPath: "INBOX/REWE"}},
-		},
-		{
-			AccountID:  "acc3",
-			Name:       "Trash Atlassian",
-			Enabled:    true,
-			Conditions: []NativeCondition{{Field: "subject", Op: "contains", Value: "join"}},
-			Actions:    []NativeAction{{Type: "moveToFolder", TargetFolderPath: "Trash"}},
-		},
-	}
-	existing := []config.RoutingRule{
-		{ID: "r1", AccountID: "acc3", Space: "REWE", FolderPath: "INBOX/REWE"},
-	}
-
-	cands := SuggestSpaceRulesFromFilters(filters, existing)
-	if len(cands) != 2 {
-		t.Fatalf("expected 2 space candidates (skipping Trash), got %d: %+v", len(cands), cands)
-	}
-	if cands[0].Space != "Boerse" || len(cands[0].Domains) != 2 || cands[0].AlreadyImported {
-		t.Fatalf("unexpected first candidate: %+v", cands[0])
-	}
-	if cands[1].Space != "REWE" || !cands[1].AlreadyImported {
-		t.Fatalf("expected REWE to be marked alreadyImported=true, got %+v", cands[1])
 	}
 }
