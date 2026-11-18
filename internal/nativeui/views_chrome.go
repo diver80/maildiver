@@ -94,6 +94,16 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 			}
 		})
 		m.Separator()
+		scanLbl := a.tr("Triage-Scan starten", "Run triage scan")
+		if a.scanRunning {
+			scanLbl = a.tr("Triage-Scan läuft…", "Triage scan running…")
+		}
+		if m.Item(scanLbl).Disabled(!a.thunderbirdConnected || a.scanRunning || !a.cfg.Features.Triage).Chosen() {
+			a.StartTriageScan(context.Background())
+		}
+		if m.Item(a.tr("Archiv & Aufräumen…", "Archive & cleanup…")).Disabled(!a.thunderbirdConnected).Chosen() {
+			a.OpenArchiveDialog(context.Background())
+		}
 		if m.Item(a.tr("Thunderbird-Filter öffnen…", "Open Thunderbird filters…")).Disabled(!a.thunderbirdConnected).Chosen() {
 			a.OpenThunderbirdFilters(context.Background())
 		}

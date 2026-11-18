@@ -965,6 +965,27 @@ test("messages.open is a read-only UI call", () => {
   eq(core.checkBridgeRPC(cfg, "messages.open", { id: "1" }).kind, "ui");
 });
 
+test("host RPC: mailbox policy, never bridge methods", () => {
+  const cfg = { features: { triage: true }, bridge: { enabled: false }, mailbox: { readOnly: true, triageAccountIds: ["a1"] } };
+  // Works with the bridge switched off: these are the host's own jobs.
+  eq(core.checkHostRPC(cfg, "host.triage.collect", {}).kind, "read");
+  eq(core.checkHostRPC(cfg, "host.archive.candidates", { accountId: "a1" }).kind, "read");
+  eq(core.checkHostRPC(cfg, "host.archive.raw", { accountId: "a1", messageId: "5" }).kind, "read");
+  throwsCode(() => core.checkHostRPC(cfg, "host.archive.finish", { candidate: { accountId: "a1" }, action: "delete" }), "read_only");
+  eq(core.checkHostRPC({ ...cfg, mailbox: { ...cfg.mailbox, readOnly: false } }, "host.archive.finish", { candidate: { accountId: "a1" } }).kind, "write");
+  throwsCode(() => core.checkHostRPC(cfg, "host.archive.candidates", { accountId: "a2" }), "account_not_enabled");
+  throwsCode(() => core.checkHostRPC(cfg, "host.archive.finish", { candidate: { accountId: "a2" } }), "account_not_enabled");
+  throwsCode(() => core.checkHostRPC(cfg, "host.archive.candidates", {}), "invalid_argument");
+  throwsCode(() => core.checkHostRPC({ ...cfg, features: { triage: false } }, "host.triage.collect", {}), "feature_disabled:triage");
+  // Archive does not need the triage feature, only the account.
+  eq(core.checkHostRPC({ ...cfg, features: { triage: false } }, "host.archive.candidates", { accountId: "a1" }).kind, "read");
+  throwsCode(() => core.checkHostRPC({ ...cfg, mailbox: { triageAccountIds: [] } }, "host.triage.collect", {}), "no_triage_accounts");
+  throwsCode(() => core.checkHostRPC(cfg, "messages.get", { id: "1" }), "invalid_argument");
+  throwsCode(() => core.checkHostRPC(null, "host.triage.collect", {}), "host_config_unavailable");
+  // ...and the bridge never accepts host methods.
+  throwsCode(() => core.checkBridgeRPC({ bridge: { enabled: true } }, "host.archive.finish", {}), "invalid_argument");
+});
+
 Promise.all(asyncQueue).then(() => {
   out(`${count - failed}/${count} core tests passed`);
   if (failed > 0) {

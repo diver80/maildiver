@@ -70,6 +70,7 @@ func (a *App) RenderMain(c *ui.Context) {
 	a.renderQuickRuleModal(c)
 	a.renderCalDeleteModal(c)
 	a.renderMovePicker(c)
+	a.renderArchiveModal(c)
 	a.renderHelpModal(c)
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/diver80/omathunder/internal/ai"
 	"github.com/diver80/omathunder/internal/archive"
 	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/jobs"
 	"github.com/diver80/omathunder/internal/theme"
 	"github.com/diver80/omathunder/internal/triage"
 )
@@ -84,6 +85,8 @@ type Handler struct {
 	store  *triage.Store
 	rpc    *RPCBroker
 	events *EventHub
+	// jobs runs triage scans and archive runs in this process (set by RunHostWithOptions).
+	jobs *jobs.Runner
 	// configChanged (optional) runs after a config-writing method, e.g. so the bridge
 	// supervisor reacts to bridge.enabled without waiting for its next poll.
 	configChanged func()
@@ -128,6 +131,7 @@ func NewHandler(store *triage.Store) *Handler {
 func (h *Handler) Store() *triage.Store { return h.store }
 func (h *Handler) RPC() *RPCBroker      { return h.rpc }
 func (h *Handler) Events() *EventHub    { return h.events }
+func (h *Handler) Jobs() *jobs.Runner   { return h.jobs }
 
 func BuildDoctorReport() DoctorReport {
 	cfg, _ := config.Load()
@@ -726,6 +730,13 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		return Response{ID: req.ID, OK: true}
 
+	case "triage_new_mail":
+		// The add-on reports new mail; the scan runs here when the settings ask for it.
+		if h.jobs != nil {
+			h.jobs.NewMail()
+		}
+		return Response{ID: req.ID, OK: true}
+
 	case "tb_event":
 		var p struct {
 			Event string          `json:"event"`
@@ -770,6 +781,7 @@ func RunHostWithOptions(ctx context.Context, r io.Reader, w io.Writer, opts Host
 
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
+	handler.jobs = jobs.New(watchCtx, handler.rpc, handler.events, store, config.Load)
 	go watchThemeChanges(watchCtx, conn, handler.events)
 
 	if opts.OnReady != nil {
@@ -797,7 +809,7 @@ func RunHostWithOptions(ctx context.Context, r io.Reader, w io.Writer, opts Host
 			defer pending.Done()
 			resp := handler.Handle(ctx, req)
 			// One-way notifications (tb_rpc_result, tb_event) carry no ID and do not expect a response frame.
-			if req.ID == "" && (req.Method == "tb_rpc_result" || req.Method == "tb_event") {
+			if req.ID == "" && (req.Method == "tb_rpc_result" || req.Method == "tb_event" || req.Method == "triage_new_mail") {
 				return
 			}
 			if err := conn.Write(resp); err != nil {

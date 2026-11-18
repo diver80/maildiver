@@ -295,6 +295,8 @@ func (a *App) handleBridgeEvent(ctx context.Context, bc *bridgeclient.Client, na
 		a.msgReload.trigger(func() { a.LoadMessages(ctx) })
 	case "calendar.changed":
 		a.calReload.trigger(func() { a.RefreshAll(ctx) })
+	default:
+		a.handleJobEvent(ctx, name, payload)
 	}
 }
 

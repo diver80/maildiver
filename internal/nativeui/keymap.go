@@ -47,7 +47,7 @@ const batchKeyConfirmWindow = 4 * time.Second
 const readerScrollStep = 180
 
 func (a *App) modalOpen() bool {
-	return a.composeOpen || a.eventOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen
+	return a.composeOpen || a.eventOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open
 }
 
 func (a *App) currentKeyContext() keyContext {

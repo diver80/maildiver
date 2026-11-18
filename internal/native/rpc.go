@@ -56,7 +56,20 @@ func (b *RPCBroker) Connected() bool {
 	return ok
 }
 
+// Call sends a bridge call: the add-on checks it against the bridge policy (bridge.enabled,
+// bridge.accountIds, read-only, allowSend).
 func (b *RPCBroker) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return b.call(ctx, method, params, "")
+}
+
+// CallHost sends a call of the host's own jobs (triage scans, archive runs). The add-on accepts
+// only its "host.*" methods this way and checks them against the mailbox policy instead of the
+// bridge policy. Bridge clients cannot reach this path: the bridge server only uses Call.
+func (b *RPCBroker) CallHost(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return b.call(ctx, method, params, "host")
+}
+
+func (b *RPCBroker) call(ctx context.Context, method string, params any, origin string) (json.RawMessage, error) {
 	b.mu.Lock()
 	conn := b.conn
 	if conn == nil {
@@ -76,6 +89,9 @@ func (b *RPCBroker) Call(ctx context.Context, method string, params any) (json.R
 
 	payload := map[string]any{
 		"method": method,
+	}
+	if origin != "" {
+		payload["origin"] = origin
 	}
 	if params != nil {
 		payload["params"] = params

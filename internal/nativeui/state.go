@@ -130,6 +130,9 @@ type composeState struct {
 	composeConfirm   bool
 	composeNonce     string // per compose session; send idempotency key = nonce + content hash
 	composeSign      int    // 0: the identity's default in Thunderbird, 1: sign, 2: don't sign
+	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
+	scanRunning bool
+	arch        archiveUI
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
 }

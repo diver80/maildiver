@@ -19,8 +19,10 @@ import (
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
 	"github.com/diver80/omathunder/internal/ai"
+	"github.com/diver80/omathunder/internal/archive"
 	"github.com/diver80/omathunder/internal/bridge"
 	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/jobs"
 	"github.com/diver80/omathunder/internal/triage"
 )
 
@@ -773,6 +775,53 @@ type TriageStateResponse struct {
 func (c *Client) TriageState(ctx context.Context) (TriageStateResponse, error) {
 	var res TriageStateResponse
 	err := c.DoJSON(ctx, http.MethodGet, "/v1/triage/state", nil, &res)
+	return res, err
+}
+
+// StartScan starts a triage scan in the host (accountID "" = all triage inboxes). The result
+// arrives as event "triage.scan.finished" (jobs.ScanReport) or "triage.scan.failed".
+func (c *Client) StartScan(ctx context.Context, accountID string) (string, error) {
+	var res struct {
+		ScanID string `json:"scanId"`
+	}
+	err := c.DoJSON(ctx, http.MethodPost, "/v1/triage/scan", map[string]string{"accountId": accountID}, &res)
+	return res.ScanID, err
+}
+
+func (c *Client) ScanStatus(ctx context.Context) (jobs.ScanStatus, error) {
+	var res jobs.ScanStatus
+	err := c.DoJSON(ctx, http.MethodGet, "/v1/triage/scan", nil, &res)
+	return res, err
+}
+
+func (c *Client) ArchiveStats(ctx context.Context) (archive.ArchiveStats, error) {
+	var res archive.ArchiveStats
+	err := c.DoJSON(ctx, http.MethodGet, "/v1/archive/stats", nil, &res)
+	return res, err
+}
+
+// ArchivePreviewTimeout covers listing old mails across many folders in Thunderbird.
+const ArchivePreviewTimeout = 150 * time.Second
+
+func (c *Client) ArchivePreview(ctx context.Context, req jobs.ArchiveRequest) (jobs.ArchivePreview, error) {
+	var res jobs.ArchivePreview
+	err := c.doJSON(ctx, ArchivePreviewTimeout, http.MethodPost, "/v1/archive/preview", req, &res)
+	return res, err
+}
+
+// StartArchive starts an archive & cleanup run in the host. Progress and the report arrive as
+// events "archive.progress", "archive.finished" (jobs.ArchiveReport) or "archive.failed".
+func (c *Client) StartArchive(ctx context.Context, req jobs.ArchiveRequest) (string, error) {
+	var res struct {
+		RunID string `json:"runId"`
+	}
+	err := c.DoJSON(ctx, http.MethodPost, "/v1/archive/run", req, &res)
+	return res.RunID, err
+}
+
+func (c *Client) ArchiveStatus(ctx context.Context) (jobs.ArchiveStatus, error) {
+	var res jobs.ArchiveStatus
+	err := c.DoJSON(ctx, http.MethodGet, "/v1/archive/run", nil, &res)
 	return res, err
 }
 

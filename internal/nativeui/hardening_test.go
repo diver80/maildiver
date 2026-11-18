@@ -21,6 +21,7 @@ import (
 	"github.com/diver80/omathunder/internal/bridgeclient"
 	"github.com/diver80/omathunder/internal/config"
 	"github.com/diver80/omathunder/internal/copilot"
+	"github.com/diver80/omathunder/internal/jobs"
 	"github.com/diver80/omathunder/internal/native"
 	"github.com/diver80/omathunder/internal/triage"
 )
@@ -114,6 +115,26 @@ func (r *countingRPC) Call(_ context.Context, method string, params any) (json.R
 	}
 }
 
+// CallHost answers the host jobs' calls (triage scans, archive runs).
+func (r *countingRPC) CallHost(_ context.Context, method string, params any) (json.RawMessage, error) {
+	rawParams, _ := json.Marshal(params)
+	var p map[string]any
+	_ = json.Unmarshal(rawParams, &p)
+	r.mu.Lock()
+	if r.last == nil {
+		r.last = map[string]map[string]any{}
+	}
+	r.last[method] = p
+	r.mu.Unlock()
+	switch method {
+	case "host.triage.collect":
+		return json.RawMessage(`{"messages":[{"id":"m1","threadId":"m1@acme.de","accountId":"acc1","subject":"Angebot Q4","from":"Alice <alice@acme.de>","unread":true},{"id":"m9","threadId":"m9@acme.de","accountId":"acc1","subject":"Vertrag","from":"Bob <bob@acme.de>","encrypted":true,"unread":true}],"scannedFolders":1}`), nil
+	case "host.archive.candidates":
+		return json.RawMessage(`{"candidates":[{"messageId":"old1","headerMessageId":"old1@x","accountId":"acc1","accountName":"Work","folderId":"f1","folderPath":"INBOX","subject":"Alte Rechnung","from":"a@b.de","date":"2024-02-03T10:00:00Z","size":2048}],"totalMatched":1,"scannedFolders":1,"hasLocalAccount":true}`), nil
+	}
+	return json.RawMessage(`{}`), nil
+}
+
 func (r *countingRPC) snapshot() ([]string, []map[string]any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -182,6 +203,7 @@ func (s *testStack) startBridge() {
 	s.hub = native.NewEventHub()
 	srv, err := bridge.Start(s.ctx, bridge.Options{
 		Port: 0, DiscoveryPath: s.discPath, RPC: s.rpc, Events: s.hub, Store: s.store, ConfigLoader: s.box.load,
+		Jobs: jobs.New(s.ctx, s.rpc, s.hub, s.store, s.box.load),
 	})
 	if err != nil {
 		s.t.Fatal(err)

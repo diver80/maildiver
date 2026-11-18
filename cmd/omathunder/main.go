@@ -160,6 +160,7 @@ func runHostWithBridge(ctx context.Context) error {
 				RPC:    h.RPC(),
 				Events: h.Events(),
 				Store:  h.Store(),
+				Jobs:   h.Jobs(),
 			}, 2*time.Second, func(format string, args ...any) {
 				fmt.Fprintf(os.Stderr, format+"\n", args...)
 			})

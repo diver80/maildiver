@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/diver80/omathunder/internal/ai"
 	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/omathunder/internal/jobs"
 	"github.com/diver80/omathunder/internal/native"
 	"github.com/diver80/omathunder/internal/triage"
 )
@@ -52,6 +54,8 @@ type Options struct {
 	Store         *triage.Store
 	ConfigLoader  func() (config.Config, error)
 	AnyLLMOpts    []anyllm.Option
+	// Jobs runs triage scans and archive runs in the host (nil: those endpoints answer 503).
+	Jobs *jobs.Runner
 }
 
 type Server struct {
@@ -252,6 +256,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/filters/open", s.auth(s.handleFiltersOpen))
 
 	mux.HandleFunc("GET /v1/triage/state", s.auth(s.handleTriageState))
+	mux.HandleFunc("GET /v1/triage/scan", s.auth(s.handleScanStatus))
+	mux.HandleFunc("POST /v1/triage/scan", s.auth(s.handleScanStart))
+	mux.HandleFunc("GET /v1/archive/stats", s.auth(s.handleArchiveStats))
+	mux.HandleFunc("POST /v1/archive/preview", s.auth(s.handleArchivePreview))
+	mux.HandleFunc("GET /v1/archive/run", s.auth(s.handleArchiveStatus))
+	mux.HandleFunc("POST /v1/archive/run", s.auth(s.handleArchiveRun))
 	mux.HandleFunc("GET /v1/ai/providers", s.auth(s.handleAIProviders))
 	mux.HandleFunc("POST /v1/ai/chat", s.auth(s.handleAIChat))
 	mux.HandleFunc("POST /v1/ai/analyze", s.auth(s.handleAIAnalyze))
@@ -788,6 +798,143 @@ func (s *Server) handleTriageState(w http.ResponseWriter, r *http.Request) {
 			"barSummary": triage.ComputeBarSummary(st),
 		},
 	})
+}
+
+// writeJobError maps job errors to HTTP statuses; the body keeps the stable error code.
+func writeJobError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	switch {
+	case errors.Is(err, jobs.ErrBusy):
+		status = http.StatusConflict
+	case errors.Is(err, jobs.ErrTriageDisabled), errors.Is(err, jobs.ErrNoTriageAccounts),
+		errors.Is(err, jobs.ErrAccountNotEnabled), errors.Is(err, jobs.ErrReadOnly):
+		status = http.StatusForbidden
+	case errors.Is(err, jobs.ErrDisconnected):
+		status = http.StatusServiceUnavailable
+	case strings.HasPrefix(err.Error(), "invalid_argument"):
+		status = http.StatusBadRequest
+	}
+	writeError(w, status, err.Error())
+}
+
+// jobsReady answers 503 when the host has no job runner (tests, old wiring).
+func (s *Server) jobsReady(w http.ResponseWriter) bool {
+	if s.opts.Jobs == nil {
+		writeError(w, http.StatusServiceUnavailable, "jobs unavailable")
+		return false
+	}
+	return true
+}
+
+// bridgeMayRead applies bridge.accountIds to an account a request names.
+func (s *Server) bridgeMayRead(w http.ResponseWriter, accountID string) bool {
+	if accountID == "" {
+		return true
+	}
+	cfg, _ := s.opts.ConfigLoader()
+	if len(cfg.Bridge.AccountIDs) == 0 || slices.Contains(cfg.Bridge.AccountIDs, accountID) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "account_not_readable")
+	return false
+}
+
+func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": s.opts.Jobs.ScanStatus()})
+}
+
+// handleScanStart starts a triage scan of the triage inboxes (or one account) in the host.
+func (s *Server) handleScanStart(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	var body struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := decodeJSONBody(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.bridgeMayRead(w, body.AccountID) {
+		return
+	}
+	id, err := s.opts.Jobs.StartScan(strings.TrimSpace(body.AccountID), "manual")
+	if err != nil {
+		writeJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "result": map[string]any{"scanId": id}})
+}
+
+func (s *Server) handleArchiveStats(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	st, err := s.opts.Jobs.ArchiveStats()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": st})
+}
+
+func (s *Server) decodeArchiveRequest(w http.ResponseWriter, r *http.Request) (jobs.ArchiveRequest, bool) {
+	var req jobs.ArchiveRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return req, false
+	}
+	req.AccountID = strings.TrimSpace(req.AccountID)
+	if req.AccountID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_argument: accountId is required")
+		return req, false
+	}
+	return req, s.bridgeMayRead(w, req.AccountID)
+}
+
+func (s *Server) handleArchivePreview(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	req, ok := s.decodeArchiveRequest(w, r)
+	if !ok {
+		return
+	}
+	p, err := s.opts.Jobs.PreviewArchive(r.Context(), req)
+	if err != nil {
+		writeJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": p})
+}
+
+func (s *Server) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": s.opts.Jobs.ArchiveStatus()})
+}
+
+// handleArchiveRun starts an archive & cleanup run in the host; progress and the report arrive as
+// events. Modes that change the mailbox need read-only off (checked here, in the host and in the
+// add-on).
+func (s *Server) handleArchiveRun(w http.ResponseWriter, r *http.Request) {
+	if !s.jobsReady(w) {
+		return
+	}
+	req, ok := s.decodeArchiveRequest(w, r)
+	if !ok {
+		return
+	}
+	id, err := s.opts.Jobs.StartArchive(req)
+	if err != nil {
+		writeJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "result": map[string]any{"runId": id}})
 }
 
 func (s *Server) handleAIProviders(w http.ResponseWriter, r *http.Request) {

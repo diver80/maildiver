@@ -152,6 +152,20 @@ Thunderbird decrypts OpenPGP and S/MIME mails for add-ons unless told not to. Th
 | `POST` | `/v1/filters/run` | Run filters on an account's inbox (`accountId`, `filterNames`). Same permissions as writes. |
 | `POST` | `/v1/filters/open` | Open Thunderbird's filter dialog. Editing, ordering and deleting filters happens there. |
 
+### Triage scans and archive runs (run in the host)
+
+Both run inside the `omathunder` host process, not in the add-on, and keep running while the app is closed. They read mails through host-only add-on methods that bridge clients cannot call, and never decrypt encrypted mails. They work on the accounts in `mailbox.triageAccountIds`; an account the request names must also be readable through the bridge (`bridge.accountIds`).
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/v1/triage/state` | Stored classifications and bar summary. |
+| `POST` | `/v1/triage/scan` | Starts a scan of the triage inboxes (`{ "accountId": "" }` = all) and answers `202 { scanId }` at once. Needs `features.triage`. One scan at a time (`409 busy`). With `mailbox.scanOnNewMail` the host also scans by itself when new mail arrives. |
+| `GET` | `/v1/triage/scan` | `{ running, last }` – the last finished scan's report. |
+| `GET` | `/v1/archive/stats` | Files and bytes in the archive folder (`mailbox.archiveDir`). |
+| `POST` | `/v1/archive/preview` | What a run would cover: `{ accountId, scope: "inbox"\|"folder"\|"all", folderPath, includeSubfolders, olderThanDays (365), onlyRead (true), excludeStarred (true), maxMessages (200, max 1000) }`. |
+| `POST` | `/v1/archive/run` | Same fields plus `mode` and `skipTrash`; answers `202 { runId }`. Modes: `simulate` (default, writes nothing), `export_only`, `export_and_local` (then move into *Local Folders/OmaThunder-Archiv/…*), `export_and_delete` (then delete at the provider; `skipTrash` deletes for good). Every backup is a `.eml` file read back with the same SHA-256 before a mail is moved or deleted; the two last modes need read-only off. The archive folder always comes from `config.json`, never from a request. |
+| `GET` | `/v1/archive/run` | `{ running, last }`. |
+
 ### AI (`any-llm-go` + CLIs)
 
 | Method | Path | Description |
@@ -181,6 +195,12 @@ The first event is `connected` (`{ "thunderbirdConnected": true, "version": "...
 | `mail.moved` | `{ oldIds, ids, fromFolderIds, toFolderIds, accountIds, truncated }` |
 | `calendar.changed` | `{ calendarId, ids }` – IDs only; fetch details via `/v1/calendar/events` |
 | `theme_updated` | active theme palette |
+| `triage.scan.started` | `{ scanId, reason: "manual"\|"new_mail", accountId }` |
+| `triage.scan.finished` | scan report: `{ scanId, reason, scannedFolders, scannedMessages, classified, encrypted, aiCalls, aiSkipped, classifyErrors, classifyError, … }` |
+| `triage.scan.failed` | `{ scanId, error }` |
+| `archive.progress` | `{ runId, done, total }` |
+| `archive.finished` | run report: `{ runId, mode, dryRun, exported, skippedDuplicates, moved, deleted, bytesExported, failed: [{subject, error}], items: [...] }` |
+| `archive.failed` | `{ runId, error }` |
 
 Events only cover readable accounts: a mail moved out of a readable account arrives as `mail.deleted`, one moved into a readable account as `mail.updated`. `mail.new` is sent immediately (not batched). When Thunderbird or the add-on goes away, the stream ends; reconnect after re-reading `bridge.json`.
 

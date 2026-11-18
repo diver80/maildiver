@@ -12,7 +12,7 @@ const {
   selectScanMessages, mergeTags, normalizeSubjectForThread, parseMessageIds, selectThread, draftOwnText,
   replaceDraftOwn, htmlToText, isLocalAccount, findLocalAccount, buildArchiveRelativeParts,
   requireLocalArchiveMove, requireArchiveDelete, matchArchiveCandidate,
-  describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity,
+  describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity, checkHostRPC,
 } = OmaCore;
 // Must match ProtocolVersion in internal/native/handler.go.
 const PROTOCOL = 3;
@@ -112,7 +112,7 @@ async function connectNative() {
   port.onMessage.addListener((msg) => {
     if (nativePort === port) nativeReconnectAttempt = 0; // the host answers: reset the backoff
     if (msg && msg.event === "tb_rpc" && msg.id && msg.result) {
-      handleThunderbirdRPC(port, msg.id, msg.result.method, msg.result.params).catch(() => {});
+      handleThunderbirdRPC(port, msg.id, msg.result.method, msg.result.params, msg.result.origin).catch(() => {});
       return;
     }
     if (msg && msg.event === "theme_updated" && msg.result) {
@@ -1709,7 +1709,6 @@ async function ensureLocalArchiveFolder(cfg, localAccountId, pathSegments, folde
 const EXCLUDED_CLEANUP_FOLDER_TYPES = new Set(["trash", "junk", "drafts", "outbox", "templates"]);
 
 async function collectCleanupCandidates(cfg, params = {}) {
-  requireFeature(cfg, "triage");
   const enabled = triageAccountIds(cfg);
   if (enabled.size === 0) throw new PolicyError("no_triage_accounts");
 
@@ -2005,42 +2004,16 @@ api.menus?.onClicked?.addListener(async (info, tab) => {
   }
 });
 
-// Live Kanban sync: automatically scan newly arrived mail (when scanOnNewMail is active) and prune
-// Done-read or deleted/trashed messages so board counters stay aligned with Thunderbird.
-let newMailTimer = null;
-let pendingNewMailAccounts = new Set();
-let pendingNewMailAll = false;
-
+// New mail: the bridge gets a mail.new event; the host decides whether a triage scan runs
+// (mailbox.scanOnNewMail) and coalesces bursts itself.
 api.messages?.onNewMailReceived?.addListener((folder, messages) => {
   if (bridgeEventsWanted()) emitMailNew(folder, messages).catch(() => {});
-  if (folder?.accountId) pendingNewMailAccounts.add(folder.accountId);
-  else pendingNewMailAll = true;
-
-  clearTimeout(newMailTimer);
-  newMailTimer = setTimeout(async () => {
-    const scanAll = pendingNewMailAll;
-    const accIds = [...pendingNewMailAccounts];
-    pendingNewMailAccounts.clear();
-    pendingNewMailAll = false;
-    try {
-      const cfg = await loadConfig();
-      if (!hostConnected || !cfg.features?.triage || !cfg.mailbox?.scanOnNewMail) return;
-      const enabled = kanbanAccountIds(cfg);
-      if (enabled.size === 0) return;
-      if (scanAll || accIds.length === 0) {
-        const res = await runTriage();
-        broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport });
-      } else {
-        for (const accId of accIds) {
-          if (!enabled.has(accId)) continue;
-          const res = await runTriage("", accId);
-          broadcastToUI({ type: "omathunder:scanFinished", report: res.moveReport, accountId: accId });
-        }
-      }
-    } catch (err) {
-      console.info("OmaThunder auto scan skipped:", errorCode(err));
-    }
-  }, 3500);
+  if (!nativePort) return; // never starts the host just for this
+  try {
+    nativePort.postMessage({ method: "triage_new_mail", params: { accountId: folder?.accountId || "" } });
+  } catch (_) {
+    // port closing
+  }
 });
 
 let boardSyncTimer = null;
@@ -2232,10 +2205,16 @@ function emitBridgeEvent(eventName, data) {
   }
 }
 
-async function handleThunderbirdRPC(port, rpcId, method, params) {
+// origin "host": a call of the host's own jobs (host.* methods, mailbox policy); otherwise a call
+// of a bridge client (bridge policy). Only the host writes to this port, and its bridge server
+// never sets an origin.
+async function handleThunderbirdRPC(port, rpcId, method, params, origin = "") {
   let reply;
   try {
-    const result = await dispatchThunderbirdRPC(String(method || ""), params && typeof params === "object" ? params : {});
+    const p = params && typeof params === "object" ? params : {};
+    const result = origin === "host"
+      ? await dispatchHostRPC(String(method || ""), p)
+      : await dispatchThunderbirdRPC(String(method || ""), p);
     reply = { id: rpcId, ok: true, result: result === undefined ? null : result };
   } catch (err) {
     reply = { id: rpcId, ok: false, error: bridgeErrorString(err) };
@@ -2417,6 +2396,102 @@ async function dispatchThunderbirdRPC(method, params) {
     default:
       throw new PolicyError("invalid_argument", `unknown method ${method}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Host jobs: triage scans and archive runs run in the host; these methods only read and change
+// mails for them. Encrypted mails are never decrypted here.
+// ---------------------------------------------------------------------------
+
+async function dispatchHostRPC(method, params) {
+  const cfg = await hostConfigForBridge(0);
+  checkHostRPC(cfg, method, params);
+  switch (method) {
+    case "host.triage.collect":
+      return hostCollectScanMessages(cfg, params);
+    case "host.archive.candidates": {
+      const data = await collectCleanupCandidates(cfg, params);
+      const localAcc = findLocalAccount(data.folderState.accounts);
+      return {
+        candidates: data.candidates,
+        totalMatched: data.totalMatched,
+        totalBytesAll: data.totalBytesAll,
+        scannedFolders: data.scannedFolders,
+        truncated: data.truncated,
+        hasLocalAccount: Boolean(localAcc),
+        localAccountName: localAcc?.name || "",
+      };
+    }
+    case "host.archive.raw":
+      return hostArchiveRaw(params);
+    case "host.archive.finish":
+      return hostArchiveFinish(cfg, params);
+    default:
+      throw new PolicyError("invalid_argument", `unknown host method ${method}`);
+  }
+}
+
+// The inboxes of the triage accounts: all unread mails plus the newest `limit` read ones of the
+// last `days` days, at most `max` in all, as AI input without decryption.
+async function hostCollectScanMessages(cfg, params = {}) {
+  const enabled = triageAccountIds(cfg);
+  const accountId = String(params.accountId || "");
+  const limit = Math.max(1, Math.min(Number(params.limit) || 20, 200));
+  const days = Math.max(1, Math.min(Number(params.days) || 30, 365));
+  const max = Math.max(1, Math.min(Number(params.max) || 300, 1000));
+  const inboxes = findAllInboxes(await listAllFolders())
+    .filter((f) => enabled.has(f.accountId) && (!accountId || f.accountId === accountId));
+  const messages = [];
+  for (const f of inboxes) {
+    const headers = (await listRecentMessages(f, limit, days)).slice(0, Math.max(0, max - messages.length));
+    for (let i = 0; i < headers.length; i += 6) {
+      messages.push(...(await Promise.all(headers.slice(i, i + 6).map((h) => buildMessageInput(h, { decrypt: false })))));
+    }
+    if (messages.length >= max) break;
+  }
+  return { messages, scannedFolders: inboxes.length };
+}
+
+// Re-finds an archive candidate and checks that it is still where it was found.
+async function liveArchiveCandidate(c, messageId = "") {
+  const live = await resolveMessage({
+    messageId: messageId || c.messageId,
+    headerMessageId: c.headerMessageId,
+    accountId: c.accountId,
+    folderId: c.folderId,
+  }, { strict: true });
+  if (!live) throw new PolicyError("message_not_found");
+  if (live.folder?.id !== c.folderId) throw new PolicyError("message_moved_meanwhile");
+  return live;
+}
+
+// The stored message (encrypted mails stay encrypted) for a verified .eml backup.
+async function hostArchiveRaw(c) {
+  const live = await liveArchiveCandidate(c);
+  const { base64, byteLength } = await readRawEmlBase64(live.id);
+  return { messageId: String(live.id), base64, byteLength };
+}
+
+// Runs after the host verified the backup: moves the mail into Local Folders or deletes it.
+async function hostArchiveFinish(cfg, params) {
+  const c = params.candidate || {};
+  const live = await liveArchiveCandidate(c, String(params.messageId || ""));
+  const folderState = await listAccountFolders();
+  if (params.action === "local") {
+    const localAcc = findLocalAccount(folderState.accounts);
+    if (!localAcc) throw new PolicyError("local_folder_required");
+    const parts = ["OmaThunder-Archiv", ...buildArchiveRelativeParts(c.accountName, c.folderPath, c.date)];
+    const target = await ensureLocalArchiveFolder(cfg, localAcc.id, parts, folderState);
+    requireLocalArchiveMove(cfg, live, target, folderState.accounts);
+    await api.messages.move([live.id], target.id);
+    return { moved: true, targetFolder: target.path };
+  }
+  if (params.action === "delete") {
+    requireArchiveDelete(cfg, live);
+    await api.messages.delete([live.id], Boolean(params.skipTrash));
+    return { deleted: true };
+  }
+  throw new PolicyError("invalid_argument", "action must be local or delete");
 }
 
 async function rpcListMessages(cfg, params) {

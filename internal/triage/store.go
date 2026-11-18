@@ -245,7 +245,7 @@ func pruneClassifications(st *State, limit int) {
 	}
 }
 
-// RetainAccounts drops classifications of accounts that are no longer enabled for Kanban.
+// RetainAccounts drops classifications of accounts that are no longer enabled for triage.
 func (s *Store) RetainAccounts(policy config.MailboxPolicy) (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,7 +255,7 @@ func (s *Store) RetainAccounts(policy config.MailboxPolicy) (State, error) {
 	}
 	changed := false
 	for id, c := range st.Classifications {
-		if !policy.KanbanEnabled(c.AccountID) {
+		if !policy.AccountEnabled(c.AccountID) {
 			delete(st.Classifications, id)
 			changed = true
 		}

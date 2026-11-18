@@ -1056,6 +1056,34 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Host-only RPC: the host's own jobs (triage scans, archive runs) reach Thunderbird through these
+  // methods. They arrive with origin "host", which only the host can set (the bridge server never
+  // does), and are checked against the mailbox policy instead of the bridge policy.
+  // ---------------------------------------------------------------------------
+
+  const HOST_RPC_POLICY = Object.freeze({
+    "host.triage.collect": { kind: "read", feature: "triage" },
+    "host.archive.candidates": { kind: "read" },
+    "host.archive.raw": { kind: "read" },
+    "host.archive.finish": { kind: "write" },
+  });
+
+  function checkHostRPC(cfg, method, params = {}) {
+    const policy = Object.prototype.hasOwnProperty.call(HOST_RPC_POLICY, method) ? HOST_RPC_POLICY[method] : null;
+    if (!policy) throw new PolicyError("invalid_argument", `unknown host method ${String(method || "")}`);
+    if (!cfg) throw new PolicyError("host_config_unavailable");
+    if (policy.feature) requireFeature(cfg, policy.feature);
+    const enabled = triageAccountIds(cfg);
+    if (enabled.size === 0) throw new PolicyError("no_triage_accounts");
+    const p = params && typeof params === "object" ? params : {};
+    const accountId = String(p.accountId || p.candidate?.accountId || "").trim();
+    if (accountId && !enabled.has(accountId)) throw new PolicyError("account_not_enabled");
+    if (method !== "host.triage.collect" && !accountId) throw new PolicyError("invalid_argument", "accountId is required");
+    if (policy.kind === "write" && cfg?.mailbox?.readOnly !== false) throw new PolicyError("read_only");
+    return policy;
+  }
+
   // Keeps only items whose account the bridge may read.
   function filterBridgeReadable(cfg, items, accountOf = (x) => x?.accountId) {
     return (Array.isArray(items) ? items : []).filter((item) => isBridgeReadable(cfg, accountOf(item)));
@@ -1445,6 +1473,7 @@
     isLocalAccount, findLocalAccount, buildArchiveRelativeParts, requireLocalArchiveMove,
     requireArchiveDelete, matchArchiveCandidate,
     describeMessageSecurity, securityReadable, planComposeSecurity, verifyComposeSecurity,
+    HOST_RPC_POLICY, checkHostRPC,
   };
   root.OmaCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
