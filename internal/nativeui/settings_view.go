@@ -27,6 +27,8 @@ type settingsUI struct {
 	open      bool
 	providers []string
 
+	markRead int // 0: at once, 1: after 3 s, 2: never
+
 	agentBackend, agentModel, agentEndpoint string
 
 	classifyAI                        bool
@@ -63,6 +65,12 @@ func (a *App) OpenSettings() {
 		scanLimit:     strconv.Itoa(cfg.Mailbox.ScanLimit),
 		scanDays:      strconv.Itoa(cfg.Mailbox.ScanDays),
 		archiveDir:    cfg.Mailbox.ArchiveDir,
+	}
+	switch cfg.App.MarkRead {
+	case config.MarkReadDelay:
+		s.markRead = 1
+	case config.MarkReadNever:
+		s.markRead = 2
 	}
 	for _, p := range ai.SupportedProviders() {
 		s.providers = append(s.providers, p.ID)
@@ -122,6 +130,7 @@ func (a *App) SaveSettings() bool {
 	cfg.Mailbox.ScanLimit = limit
 	cfg.Mailbox.ScanDays = days
 	cfg.Mailbox.ArchiveDir = strings.TrimSpace(s.archiveDir)
+	cfg.App.MarkRead = [...]string{config.MarkReadOnOpen, config.MarkReadDelay, config.MarkReadNever}[min(max(s.markRead, 0), 2)]
 	cfg = config.Normalize(cfg)
 	if err := a.opts.ConfigSaver(cfg); err != nil {
 		s.err = a.tr("Nicht gespeichert: ", "Not saved: ") + err.Error()
@@ -184,6 +193,14 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	}
 	note := func(text string, color ui.Color) {
 		ui.Text(c, text).FontSize(11.5).TextColor(color)
+	}
+
+	a.settingsSection(c, a.tr("Lesen", "Reading"))
+	field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {
+		ui.Segmented(c.Key("set-read-s"), &s.markRead, a.tr("Beim Öffnen", "On open"), a.tr("Nach 3 Sekunden", "After 3 seconds"), a.tr("Nie", "Never"))
+	})
+	if a.readOnly {
+		note(a.tr("„Nur lesen“ ist in den Einstellungen des Thunderbird-Add-ons an: Mails bleiben ungelesen, bis du sie in Thunderbird liest.", "Read-only is on in the Thunderbird add-on's settings: mails stay unread until you read them in Thunderbird."), t.Warning)
 	}
 
 	a.settingsSection(c, a.tr("KI-Assistent", "AI assistant"))

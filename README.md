@@ -55,7 +55,7 @@ Then install `dist/omathunder-extension.xpi` in Thunderbird as described above.
 
 ## The app
 
-* **Mail:** folder tree per account, two-line list, reading pane, archive and *move to…*, star, read/unread, trash, compose and reply.
+* **Mail:** folder tree per account, two-line list, reading pane, archive and *move to…*, star, read/unread, trash, compose and reply. Opened mails are marked as read like in Thunderbird – at once, after 3 seconds or never (☰ → Settings).
 * **Keyboard:** `j`/`k` next/previous mail, `x` check, `e` archive, `d` trash, `v` move to…, `s` star, `u` read/unread, `r` reply, `esc` back, `/` search, `c` compose, `h` help, `⌘,` settings. The footer always lists the keys that apply right now. Single keys never fire while you type in a field; `d` on several checked mails needs a second press.
 * **Reading pane:** HTML mails are shown formatted (headings, lists, quotes, links by their title) without loading anything from the internet – no tracking pixels, no remote images; a *Formatted / Text* switch shows the text version.
 

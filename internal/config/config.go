@@ -14,6 +14,20 @@ const (
 	NativeHostName = "dev.omathunder.host"
 )
 
+// AppConfig holds preferences of the OmaThunder app.
+type AppConfig struct {
+	// MarkRead: when the app marks an opened unread mail as read – "" (at once, like
+	// Thunderbird), "delay" (after a few seconds) or "never".
+	MarkRead string `json:"markRead,omitempty"`
+}
+
+// Values of AppConfig.MarkRead.
+const (
+	MarkReadOnOpen = ""
+	MarkReadDelay  = "delay"
+	MarkReadNever  = "never"
+)
+
 type ThemeConfig struct {
 	Mode          string `json:"mode"`   // "auto", "omarchy", "preset"
 	Preset        string `json:"preset"` // e.g. "tokyo-night", "catppuccin", "flexoki-light"
@@ -132,6 +146,7 @@ type Config struct {
 	Bridge   BridgeConfig  `json:"bridge"`
 	Theme    ThemeConfig   `json:"theme"`
 	AI       AIConfig      `json:"ai"`
+	App      AppConfig     `json:"app"`
 }
 
 func Default() Config {
@@ -254,6 +269,11 @@ func Load() (Config, error) {
 
 // Normalize fills empty or out-of-range values with safe defaults.
 func Normalize(cfg Config) Config {
+	switch cfg.App.MarkRead {
+	case MarkReadOnOpen, MarkReadDelay, MarkReadNever:
+	default:
+		cfg.App.MarkRead = MarkReadOnOpen
+	}
 	if cfg.AI.MaxSnippetChars <= 0 {
 		cfg.AI.MaxSnippetChars = 1600
 	}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 (2026-11-18)
+
+### Fixes
+- **Geöffnete Mails werden als gelesen markiert**, wie in Thunderbird. Einstellbar unter ☰ → *Einstellungen* → *Lesen*: beim Öffnen (Standard), nach 3 Sekunden oder nie. „Als ungelesen markieren“ (`u`) bleibt bestehen, auch wenn die Mail danach neu geladen wird. In der Ansicht *Fokus (Ungelesen)* bleibt die offene Mail an ihrer Stelle, damit `j`/`k` von dort weitergehen. Bei „Nur lesen“ oder nicht freigegebenen Konten bleibt die Mail ungelesen, ohne Fehlermeldung.
+
 ## 0.3.0 (2026-11-18)
 
 ### Umbau: App statt Kanban-Board

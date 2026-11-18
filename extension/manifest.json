@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "OmaThunder — Bridge & Omarchy Theme",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Connects Thunderbird to the OmaThunder app (local bridge for mail, calendar, contacts and filters) and themes Thunderbird with Omarchy colors.",
   "author": "omathunder",
   "browser_specific_settings": {

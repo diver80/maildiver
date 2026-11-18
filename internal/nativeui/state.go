@@ -134,6 +134,9 @@ type composeState struct {
 	scanRunning bool
 	arch        archiveUI
 	settings    settingsUI
+	// markReadSeq identifies the latest opening of a mail, so a delayed "mark read" from an
+	// earlier one is dropped.
+	markReadSeq int
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
 }
@@ -825,6 +828,9 @@ func (a *App) applyMessageLoad(req messageLoad, msgs []bridgeclient.MessageHeade
 			a.seenMails[m.ID] = true
 		}
 	}
+	if req.navID == "focus" {
+		msgs = a.keepOpenMail(msgs)
+	}
 	a.setMessages(msgs)
 	a.totalMessages = total
 	if req.navID == "focus" {
@@ -884,7 +890,19 @@ func (a *App) messageIDFor(id string) string {
 }
 
 // SelectMessage selects a mail and loads its detail (UI thread).
+// SelectMessage opens a mail because the user asked for it (click, j/k, notification): an
+// unread mail gets marked read as set in the app's settings (UI thread).
 func (a *App) SelectMessage(ctx context.Context, id string) {
+	a.selectMessage(ctx, id, true)
+}
+
+// reloadMessage shows the open mail again after an action, without marking it read: "mark as
+// unread" must stay unread.
+func (a *App) reloadMessage(ctx context.Context, id string) {
+	a.selectMessage(ctx, id, false)
+}
+
+func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 	if id == "" {
 		return
 	}
@@ -930,6 +948,9 @@ func (a *App) SelectMessage(ctx context.Context, id string) {
 			}
 			a.selectedMsg = &detail
 			a.readerBody = body
+			if userOpened {
+				a.scheduleMarkRead(ctx, id)
+			}
 		})
 	}()
 }
@@ -1384,7 +1405,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch bridgec
 			a.toast(toastMsg, "success")
 			a.startMessageLoad(ctx)
 			if !removed && a.selectedID == id {
-				a.SelectMessage(ctx, id)
+				a.reloadMessage(ctx, id)
 			}
 		})
 	}()

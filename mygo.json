@@ -2,7 +2,7 @@
   "name": "OmaThunder",
   "slug": "omathunder",
   "identifier": "dev.omathunder.ui",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "icon": "resources/icon.png",
   "main": "./cmd/omathunder-ui",
   "out": "dist",
