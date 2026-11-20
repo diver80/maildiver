@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publishes the version in ./VERSION: builds and tests, tags, pushes, creates the GitHub release
 # with the binaries and app packages, and prints the url/sha256 for the Homebrew formula
-# (diver80/homebrew-tap, Formula/maildiver.rb).
+# (diver80/homebrew-tap: Formula/maildiver.rb takes the binaries, Casks/maildiver.rb the .dmg).
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,8 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
 fi
 
 # The Android app comes along when the NDK is there (build.sh finds it in the SDK).
-BUILD_FLAGS=()
+# --universal: the macOS app for Intel and Apple silicon, with the .dmg the Homebrew cask takes.
+BUILD_FLAGS=(--universal)
 if [[ -n "${ANDROID_NDK_HOME:-}" || -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk" || -d "$HOME/Android/Sdk/ndk" ]]; then
   BUILD_FLAGS+=(--android)
 fi
