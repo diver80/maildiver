@@ -348,6 +348,13 @@ func ImportFromPairingURI(ctx context.Context, pairURI string, curCfg config.Con
 		merged.Direct.Accounts = append(merged.Direct.Accounts, a)
 		existingAcc[em] = true
 		added++
+		// As an account added in the accounts dialog: MailDiver may act on it.
+		if !merged.Mailbox.AccountEnabled(a.ID) {
+			merged.Mailbox.TriageAccountIDs = append(merged.Mailbox.TriageAccountIDs, a.ID)
+		}
+	}
+	if added > 0 {
+		merged.Mailbox.ReadOnly = false
 	}
 	if secrets != nil {
 		for k, v := range bundle.Secrets {

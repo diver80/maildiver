@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"github.com/diver80/maildiver/internal/mailengine"
 	"log"
 	"runtime"
 	"strings"
@@ -35,6 +36,9 @@ type desktopShell struct {
 // Run starts the native mygo desktop UI (main window, menu bar status widget, and native notifications).
 func Run(ctx context.Context, opts Options) error {
 	mygo.App.SetName("MailDiver")
+	if isMobileOS() {
+		mailengine.BrowserOpener = mygo.Shell.OpenExternal
+	}
 	if runtime.GOOS == "linux" {
 		_ = mygo.App.RequestSingleInstanceLock()
 	}
@@ -100,6 +104,7 @@ func Run(ctx context.Context, opts Options) error {
 	mygo.App.WhenReady(func() {
 		s.ready(opts)
 	})
+	s.setupBackgroundMail(ctx, opts)
 
 	go func() {
 		<-ctx.Done()

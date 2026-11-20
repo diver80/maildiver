@@ -253,6 +253,8 @@ type App struct {
 	readOnly        bool
 	lastSync        time.Time
 	lastError       string
+	phone           phoneUI           // the phone layout (phone.go)
+	winW, winH      float32           // the main window's size, as last built
 	syncErrors      map[string]string // account ID → last sync error, until it syncs again
 	lastLoadWarning string
 	loading         bool
@@ -834,6 +836,9 @@ func (a *App) startRefresh(ctx context.Context) {
 // finishRefresh ends a refresh and runs a coalesced follow-up (UI thread).
 func (a *App) finishRefresh(ctx context.Context) {
 	a.refreshing = false
+	if !a.isDirectMode() {
+		a.phone.refresh.Refreshing = false
+	}
 	a.loading = false
 	a.notifyTray()
 	if a.refreshPending {

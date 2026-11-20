@@ -29,9 +29,15 @@ func (a *App) RenderMain(c *ui.Context) {
 		a.toasts = nil
 	}
 
-	a.handleShortcuts(c)
-
+	a.winW, a.winH = c.Size()
 	c.Root().Background(t.Background)
+	if a.isPhone() {
+		a.renderPhone(c)
+		a.renderDialogs(c)
+		return
+	}
+
+	a.handleShortcuts(c)
 
 	ui.Column(c).Fill().Children(func() {
 		a.renderToolbar(c)
@@ -72,6 +78,11 @@ func (a *App) RenderMain(c *ui.Context) {
 		a.renderComposeModal(c)
 		a.guardComposeClose()
 	}
+	a.renderDialogs(c)
+}
+
+// renderDialogs shows the dialogs over the main window (desktop and phone).
+func (a *App) renderDialogs(c *ui.Context) {
 	a.renderEventModal(c)
 	a.renderEventDetailModal(c)
 	a.renderQuickRuleModal(c)
@@ -582,6 +593,24 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 							}
 						}
 						ui.Spacer(c)
+						iconBtn(c.Key("act-open-in"), iconExternal, a.tr("Unterhaltung öffnen in… (Claude, Antigravity)", "Open conversation in… (Claude, Antigravity)"), ui.Color{}, false).PopoverMenuButton(func(m *ui.Menu) {
+							if m.Item(a.tr("In Claude Code (Terminal)", "In Claude Code (terminal)")).Chosen() {
+								a.OpenConversationIn(context.Background(), msg, handoffClaudeCode)
+							}
+							if m.Item(a.tr("In Antigravity (App)", "In Antigravity (app)")).Chosen() {
+								a.OpenConversationIn(context.Background(), msg, handoffAntigravity)
+							}
+							if m.Item(a.tr("In Antigravity-Agent (Terminal)", "In Antigravity agent (terminal)")).Chosen() {
+								a.OpenConversationIn(context.Background(), msg, handoffAgy)
+							}
+							if m.Item(a.tr("In Claude (App, über Zwischenablage)", "In Claude (app, via clipboard)")).Chosen() {
+								a.OpenConversationIn(context.Background(), msg, handoffClaudeApp)
+							}
+							m.Separator()
+							if m.Item(a.tr("Als Markdown kopieren", "Copy as Markdown")).Chosen() {
+								a.OpenConversationIn(context.Background(), msg, handoffCopy)
+							}
+						})
 						if iconBtn(c.Key("act-print"), iconPrinter, a.tr("Mail drucken (⌘P)", "Print email (⌘P)"), ui.Color{}, false).Clicked() {
 							a.PrintSelectedMessage(context.Background())
 						}
@@ -611,104 +640,8 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 						}
 					})
 
-					// .ics Calendar Invitation Banner (RSVP Accept/Tentative/Decline + 1-click import, 0 AI tokens)
-					if msg.HasICS {
-						ui.Column(c.Key("ics-banner")).FillWidth().Padding(10, 12).Radius(8).Background(withAlpha(t.Accent, 0.12)).Border(1, withAlpha(t.Accent, 0.45)).Gap(8).Children(func() {
-							ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
-								ui.Icon(c, iconCal).Size(18, 18).TextColor(t.Accent).Shrink(0)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-									invTitle := a.tr("Termineinladung (.ics)", "Calendar Invitation (.ics)")
-									if msg.ICSInvite != nil && msg.ICSInvite.Title != "" {
-										invTitle = msg.ICSInvite.Title
-									}
-									ui.Text(c, invTitle).FontSize(12.5).Bold().Selectable()
-									if msg.ICSInvite != nil {
-										var parts []string
-										if msg.ICSInvite.Start != "" {
-											parts = append(parts, formatDateTimeLang(msg.ICSInvite.Start, a.uiLang()))
-										}
-										if msg.ICSInvite.Location != "" {
-											parts = append(parts, msg.ICSInvite.Location)
-										}
-										if msg.ICSInvite.Organizer != "" {
-											parts = append(parts, a.tr("Organisator: ", "Organizer: ")+msg.ICSInvite.Organizer)
-										}
-										if len(parts) > 0 {
-											ui.Text(c, strings.Join(parts, " · ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
-										}
-									}
-								})
-								if msg.ICSInvite != nil {
-									if joinURL, joinLabel := a.eventJoinLink(*msg.ICSInvite); joinURL != "" {
-										if iconLabelBtn(c.Key("ics-join"), iconLink, joinLabel, true, joinURL).Clicked() {
-											_ = openExternalURL(joinURL)
-										}
-									}
-								}
-							})
-							if a.isDirectMode() {
-								ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-									if iconLabelBtn(c.Key("ics-accept"), iconCheck, a.tr("Zusagen", "Accept"), true, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply")).Clicked() {
-										a.RespondMailICS(context.Background(), msg.ID, "accepted")
-									}
-									if ui.Button(c.Key("ics-tentative"), a.tr("Vielleicht", "Tentative")).Clicked() {
-										a.RespondMailICS(context.Background(), msg.ID, "tentative")
-									}
-									if ui.Button(c.Key("ics-decline"), a.tr("Absagen", "Decline")).TextColor(t.Danger).Clicked() {
-										a.RespondMailICS(context.Background(), msg.ID, "declined")
-									}
-									ui.Spacer(c)
-									if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
-										a.ImportMailICS(context.Background(), msg.ID)
-									}
-								})
-							}
-						})
-					}
-
-					// AI Result Card (rendered natively via markdown.View)
-					if a.inspectorLoading || a.inspectorResult != "" || a.inspectorError != "" || len(a.inspectorContacts) > 0 {
-						ui.Column(c).FillWidth().Padding(14).Radius(10).Border(1, t.Accent).Background(t.Surface).Gap(10).Children(func() {
-							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-								ui.Icon(c, iconSparkles).Size(14, 14).TextColor(t.Accent)
-								ui.Text(c, a.tr("KI-Analyse", "AI Analysis")+" ("+inspectorModeLabelLang(a.inspectorMode, a.uiLang())+")").FontSize(12.5).Bold().TextColor(t.Accent).Grow(1)
-								if a.inspectorLoading {
-									ui.Spinner(c)
-								}
-							})
-							if a.inspectorError != "" {
-								ui.Text(c, a.inspectorError).FontSize(12).TextColor(t.Danger)
-							}
-							if a.inspectorResult != "" {
-								markdown.View(c, a.inspectorResult, &a.widgets.mdInspector)
-							}
-							if len(a.inspectorContacts) > 0 {
-								a.renderInspectorContacts(c)
-							}
-							if a.inspectorDraft != "" {
-								ui.Row(c).Gap(8).Wrap().Children(func() {
-									if iconLabelBtn(c.Key("draft-reply"), iconReply, a.tr("In Antworten öffnen", "Open in Reply"), true, a.tr("Entwurf im Antworten-Dialog bearbeiten & senden", "Edit & send draft in Reply modal")).Clicked() {
-										a.OpenComposeReply(msg, a.inspectorDraft)
-									}
-									if !a.readOnly && iconLabelBtn(c.Key("draft-save"), iconCheck, a.tr("Als Entwurf speichern", "Save Draft"), false, a.tr("Im Entwürfe-Ordner speichern", "Save to Drafts folder")).Clicked() {
-										a.SaveDraft(context.Background(), backend.ComposeRequest{
-											AccountID:        msg.AccountID,
-											ReplyToMessageID: msg.ID,
-											ReplyType:        "reply",
-											Body:             a.inspectorDraft,
-										}, a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
-									}
-								})
-							}
-							if a.inspectorEvent != nil && !a.readOnly {
-								ui.Row(c).Gap(8).Children(func() {
-									if iconLabelBtn(c.Key("ev-adopt"), iconCalPlus, a.tr("Termin übernehmen: ", "Add Event: ")+a.inspectorEvent.Title, true, "").Clicked() {
-										a.OpenNewEventModal(a.inspectorEvent)
-									}
-								})
-							}
-						})
-					}
+					a.renderICSBanner(c, msg)
+					a.renderInspectorAIResult(c, msg)
 
 					ui.Divider(c)
 
@@ -719,25 +652,7 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 					// Body
 					a.renderMailBody(c, msg)
 
-					// Attachments (clickable download & open)
-					if len(msg.Attachments) > 0 {
-						ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
-							ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
-							ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
-								for i, att := range msg.Attachments {
-									attCopy := att
-									lbl := fmt.Sprintf("%s (%d KB)", attCopy.Name, max(1, attCopy.Size/1024))
-									if a.isDirectMode() {
-										if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
-											a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
-										}
-									} else {
-										pillBadge(c, lbl, t.Background, t.Text)
-									}
-								}
-							})
-						})
-					}
+					a.renderAttachments(c, msg)
 
 					a.renderConversationGroup(c, "older", a.trf("Frühere Mails in dieser Unterhaltung (%d)", "Earlier emails in this conversation (%d)", len(olderMails)), olderMails)
 				})
@@ -759,6 +674,140 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 			}).Fill()
 		}
 	})
+}
+
+// renderICSBanner shows a calendar invitation in a mail with its answers (desktop and phone).
+func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	// .ics Calendar Invitation Banner (RSVP Accept/Tentative/Decline + 1-click import, 0 AI tokens)
+	if msg.HasICS {
+		ui.Column(c.Key("ics-banner")).FillWidth().Padding(10, 12).Radius(8).Background(withAlpha(t.Accent, 0.12)).Border(1, withAlpha(t.Accent, 0.45)).Gap(8).Children(func() {
+			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconCal).Size(18, 18).TextColor(t.Accent).Shrink(0)
+				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					invTitle := a.tr("Termineinladung (.ics)", "Calendar Invitation (.ics)")
+					if msg.ICSInvite != nil && msg.ICSInvite.Title != "" {
+						invTitle = msg.ICSInvite.Title
+					}
+					ui.Text(c, invTitle).FontSize(12.5).Bold().Selectable()
+					if msg.ICSInvite != nil {
+						var parts []string
+						if msg.ICSInvite.Start != "" {
+							parts = append(parts, formatDateTimeLang(msg.ICSInvite.Start, a.uiLang()))
+						}
+						if msg.ICSInvite.Location != "" {
+							parts = append(parts, msg.ICSInvite.Location)
+						}
+						if msg.ICSInvite.Organizer != "" {
+							parts = append(parts, a.tr("Organisator: ", "Organizer: ")+msg.ICSInvite.Organizer)
+						}
+						if len(parts) > 0 {
+							ui.Text(c, strings.Join(parts, " · ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
+						}
+					}
+				})
+				if msg.ICSInvite != nil {
+					if joinURL, joinLabel := a.eventJoinLink(*msg.ICSInvite); joinURL != "" {
+						if iconLabelBtn(c.Key("ics-join"), iconLink, joinLabel, true, joinURL).Clicked() {
+							_ = openExternalURL(joinURL)
+						}
+					}
+				}
+			})
+			if a.isDirectMode() {
+				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+					if iconLabelBtn(c.Key("ics-accept"), iconCheck, a.tr("Zusagen", "Accept"), true, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply")).Clicked() {
+						a.RespondMailICS(context.Background(), msg.ID, "accepted")
+					}
+					if ui.Button(c.Key("ics-tentative"), a.tr("Vielleicht", "Tentative")).Clicked() {
+						a.RespondMailICS(context.Background(), msg.ID, "tentative")
+					}
+					if ui.Button(c.Key("ics-decline"), a.tr("Absagen", "Decline")).TextColor(t.Danger).Clicked() {
+						a.RespondMailICS(context.Background(), msg.ID, "declined")
+					}
+					ui.Spacer(c)
+					if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
+						a.ImportMailICS(context.Background(), msg.ID)
+					}
+				})
+			}
+		})
+	}
+
+}
+
+// renderInspectorAIResult shows the result of an AI action on the open mail (desktop and phone).
+func (a *App) renderInspectorAIResult(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	// AI Result Card (rendered natively via markdown.View)
+	if a.inspectorLoading || a.inspectorResult != "" || a.inspectorError != "" || len(a.inspectorContacts) > 0 {
+		ui.Column(c).FillWidth().Padding(14).Radius(10).Border(1, t.Accent).Background(t.Surface).Gap(10).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Icon(c, iconSparkles).Size(14, 14).TextColor(t.Accent)
+				ui.Text(c, a.tr("KI-Analyse", "AI Analysis")+" ("+inspectorModeLabelLang(a.inspectorMode, a.uiLang())+")").FontSize(12.5).Bold().TextColor(t.Accent).Grow(1)
+				if a.inspectorLoading {
+					ui.Spinner(c)
+				}
+			})
+			if a.inspectorError != "" {
+				ui.Text(c, a.inspectorError).FontSize(12).TextColor(t.Danger)
+			}
+			if a.inspectorResult != "" {
+				markdown.View(c, a.inspectorResult, &a.widgets.mdInspector)
+			}
+			if len(a.inspectorContacts) > 0 {
+				a.renderInspectorContacts(c)
+			}
+			if a.inspectorDraft != "" {
+				ui.Row(c).Gap(8).Wrap().Children(func() {
+					if iconLabelBtn(c.Key("draft-reply"), iconReply, a.tr("In Antworten öffnen", "Open in Reply"), true, a.tr("Entwurf im Antworten-Dialog bearbeiten & senden", "Edit & send draft in Reply modal")).Clicked() {
+						a.OpenComposeReply(msg, a.inspectorDraft)
+					}
+					if !a.readOnly && iconLabelBtn(c.Key("draft-save"), iconCheck, a.tr("Als Entwurf speichern", "Save Draft"), false, a.tr("Im Entwürfe-Ordner speichern", "Save to Drafts folder")).Clicked() {
+						a.SaveDraft(context.Background(), backend.ComposeRequest{
+							AccountID:        msg.AccountID,
+							ReplyToMessageID: msg.ID,
+							ReplyType:        "reply",
+							Body:             a.inspectorDraft,
+						}, a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+					}
+				})
+			}
+			if a.inspectorEvent != nil && !a.readOnly {
+				ui.Row(c).Gap(8).Children(func() {
+					if iconLabelBtn(c.Key("ev-adopt"), iconCalPlus, a.tr("Termin übernehmen: ", "Add Event: ")+a.inspectorEvent.Title, true, "").Clicked() {
+						a.OpenNewEventModal(a.inspectorEvent)
+					}
+				})
+			}
+		})
+	}
+
+}
+
+// renderAttachments lists the open mail's attachments (desktop and phone).
+func (a *App) renderAttachments(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	// Attachments (clickable download & open)
+	if len(msg.Attachments) > 0 {
+		ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+			ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
+			ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
+				for i, att := range msg.Attachments {
+					attCopy := att
+					lbl := fmt.Sprintf("%s (%d KB)", attCopy.Name, max(1, attCopy.Size/1024))
+					if a.isDirectMode() {
+						if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
+							a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
+						}
+					} else {
+						pillBadge(c, lbl, t.Background, t.Text)
+					}
+				}
+			})
+		})
+	}
+
 }
 
 // RenderComposeWindow renders the detached native Compose window on desktop.
@@ -785,7 +834,7 @@ func (a *App) renderComposeModal(c *ui.Context) {
 	}
 	t := c.Theme()
 	ui.Modal(c, &a.composeOpen, func() {
-		ui.Column(c).Width(620).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(620)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			a.renderComposeContent(c, false)
 		})
 	})
@@ -890,11 +939,19 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 		if ui.Button(c.Key("cmp-fmt-ul"), "• Liste").Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
 			a.composeBody = insertComposeSnippet(a.composeBody, "\n- Punkt 1\n- Punkt 2")
 		}
+		if ui.Button(c.Key("cmp-fmt-table"), a.tr("▦ Tabelle", "▦ Table")).Padding(1, 7).Tooltip(a.tr(
+			"Tabelle einfügen: übernimmt eine kopierte Tabelle (Confluence, Excel, Webseite) mit Links, sonst eine leere Vorlage. Wird als echte Tabelle gesendet.",
+			"Insert table: takes a copied table (Confluence, Excel, web page) with its links, or an empty template. Sent as a real table.")).Clicked() {
+			a.insertComposeTable()
+		}
 	})
 	bodyArea := ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext (⌘↩ zum Senden)…", "Message body (⌘↩ to send)…")).FillWidth()
-	if inWindow {
+	switch {
+	case inWindow:
 		bodyArea.Grow(1).MinHeight(180)
-	} else {
+	case a.isPhone():
+		bodyArea.MinHeight(max(240, a.winH-380))
+	default:
 		bodyArea.Height(190)
 	}
 	if !a.readOnly && !a.composeBusy && (bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) || c.Shortcut(ui.Cmd, ui.KeyEnter)) {
@@ -1478,7 +1535,7 @@ func (a *App) renderCalDeleteModal(c *ui.Context) {
 	ui.Modal(c, &a.calDelOpen, func() {
 		ev := a.calDelEvent
 		recurring := ev.IsRecurring || ev.RecurrenceID != ""
-		ui.Column(c).Width(440).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(440)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconTrash).Size(16, 16).TextColor(t.Danger)
 				ui.Text(c, a.tr("Termin löschen?", "Delete event?")).FontSize(15).Bold().Grow(1)
@@ -1545,7 +1602,7 @@ func (a *App) renderCalDeleteModal(c *ui.Context) {
 func (a *App) renderHelpModal(c *ui.Context) {
 	t := c.Theme()
 	ui.Modal(c, &a.helpOpen, func() {
-		ui.Column(c).Width(720).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(720)).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconHelp).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Hilfe · Überblick, Filterregeln & KI-Transparenz", "Help · Overview, Filter Rules & AI Transparency")).FontSize(16).Bold().Grow(1)

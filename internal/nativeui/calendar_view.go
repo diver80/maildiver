@@ -808,7 +808,7 @@ func (a *App) renderEventModal(c *ui.Context) {
 	}
 	t := c.Theme()
 	ui.Modal(c, &a.eventOpen, func() {
-		ui.Column(c).Width(520).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(520)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			a.renderEventFormContent(c, false)
 		})
 	})

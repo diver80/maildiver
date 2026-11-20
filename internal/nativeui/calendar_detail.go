@@ -252,7 +252,7 @@ func (a *App) renderEventDetailModal(c *ui.Context) {
 	ui.Modal(c, &a.evDetailOpen, func() {
 		ev := a.evDetail
 		evClr := a.calColorForEvent(ev, t.Accent)
-		ui.Column(c).Width(580).MaxHeight(640).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
+		ui.Column(c).Width(a.modalW(580)).MaxHeight(640).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
 			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Box(c).Size(5, 32).Radius(3).Background(evClr).Shrink(0)
 				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {

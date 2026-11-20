@@ -162,7 +162,7 @@ func (a *App) renderMovePicker(c *ui.Context) {
 			a.moveCursor = max(len(rows)-1, 0)
 		}
 		src := a.moveSourceFolderID()
-		ui.Column(c).Width(440).MaxHeight(560).Padding(16).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(440)).MaxHeight(560).Padding(16).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconFolderInput).Size(16, 16).TextColor(t.Accent)
 				title := a.tr("Verschieben nach…", "Move to…")

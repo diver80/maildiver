@@ -53,6 +53,10 @@ func TestLANQREncryptedOneShotTransfer(t *testing.T) {
 	if added != 1 || len(dstCfg.Direct.Accounts) != 1 || dstCfg.Direct.Accounts[0].Email != "frank@example.org" {
 		t.Fatalf("unexpected imported accounts: added=%d %+v", added, dstCfg.Direct.Accounts)
 	}
+	// A fresh phone starts read-only with no account enabled: the transferred one must be usable.
+	if dstCfg.Mailbox.ReadOnly || !dstCfg.Mailbox.CanWrite("acc-1") {
+		t.Fatalf("transferred account must be writable: readOnly=%v triage=%v", dstCfg.Mailbox.ReadOnly, dstCfg.Mailbox.TriageAccountIDs)
+	}
 	gotPass, err := dstSecrets.Get("account:acc-1")
 	if err != nil || gotPass != "super-secret-imap-pass" {
 		t.Fatalf("expected secret transferred securely, got %q err=%v", gotPass, err)

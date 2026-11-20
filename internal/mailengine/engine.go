@@ -347,6 +347,13 @@ func (e *Engine) setAccountState(accountID, state, lastErr string) {
 	e.mu.Unlock()
 }
 
+// ReloadAccounts starts syncing accounts that came into the configuration from elsewhere (a
+// transfer from another device) and stops those that left it.
+func (e *Engine) ReloadAccounts() {
+	e.reconcileAccountWorkers()
+	e.emitMailSync("")
+}
+
 func (e *Engine) reconcileAccountWorkers() {
 	cfg := e.loadConfig()
 	e.mu.Lock()

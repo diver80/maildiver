@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"github.com/egoist/mygo"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -526,6 +527,7 @@ func (a *App) syncDirectAccountNow(ctx context.Context, accountID string) {
 		defer cancel()
 		err := dc.SyncNow(c, accountID)
 		a.emitUpdate(func() {
+			a.phone.refresh.Refreshing = false
 			if err != nil {
 				a.toast(a.tr("Sync-Fehler: ", "Sync error: ")+err.Error(), "error")
 			} else {
@@ -953,11 +955,26 @@ func (a *App) renderDirectOnboarding(c *ui.Context) {
 				"Verbinde jetzt dein E-Mail-Postfach (z. B. IONOS, Gmail, iCloud) per IMAP/SMTP, deinen Google-/iCal-Kalender oder übernimm Konten, Signaturen, Kontakte & Regeln direkt aus einem vorhandenen Thunderbird-Profil.",
 				"Connect your email mailbox (e.g. IONOS, Gmail, iCloud) via IMAP/SMTP, your Google/iCal calendar, or import accounts, signatures, contacts & rules directly from an existing Thunderbird profile.",
 			)).FontSize(12.5).TextColor(t.TextMuted)
+			if isMobileOS() {
+				ui.Text(c, a.tr(
+					"Am schnellsten: Auf dem Computer unter ☰ → Einstellungen → Geräte-Übertragung einen QR-Code erzeugen und hier abfotografieren (gleiches WLAN).",
+					"Quickest: on your computer, create a QR code under ☰ → Settings → Device Transfer and photograph it here (same Wi-Fi).",
+				)).FontSize(12.5).TextColor(t.TextMuted)
+				if iconLabelBtn(c.Key("onb-qr"), iconCamera, a.tr("Vom Computer übernehmen (QR-Code)", "Transfer from computer (QR code)"), true, "").Disabled(a.settings.lanBusy).FillWidth().Clicked() {
+					a.ScanPairingQR(context.Background())
+				}
+				if a.settings.lanBusy {
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Spinner(c)
+						ui.Text(c, a.tr("Übertrage…", "Transferring…")).FontSize(12.5).TextColor(t.TextMuted)
+					})
+				}
+			}
 			ui.Row(c).FillWidth().Gap(8).Wrap().Children(func() {
-				if iconLabelBtn(c.Key("onb-mail"), iconMail, a.tr("IMAP/SMTP-Konto verbinden", "Connect IMAP/SMTP Account"), true, "").Clicked() {
+				if iconLabelBtn(c.Key("onb-mail"), iconMail, a.tr("IMAP/SMTP-Konto verbinden", "Connect IMAP/SMTP Account"), !isMobileOS(), "").Clicked() {
 					a.OpenDirectModal(0)
 				}
-				if iconLabelBtn(c.Key("onb-tb"), iconDownload, a.tr("Aus Thunderbird importieren", "Import from Thunderbird"), false, a.tr("Konten, Signaturen, Kalender, Kontakte & Regeln nur lesend übernehmen", "Read-only import of accounts, signatures, calendars, contacts & rules")).Clicked() {
+				if !isMobileOS() && iconLabelBtn(c.Key("onb-tb"), iconDownload, a.tr("Aus Thunderbird importieren", "Import from Thunderbird"), false, a.tr("Konten, Signaturen, Kalender, Kontakte & Regeln nur lesend übernehmen", "Read-only import of accounts, signatures, calendars, contacts & rules")).Clicked() {
 					a.OpenDirectModal(3)
 				}
 				if iconLabelBtn(c.Key("onb-cal"), iconCal, a.tr("Google Kalender / .ics", "Google Calendar / .ics"), false, "").Clicked() {
@@ -976,7 +993,7 @@ func (a *App) renderDirectModal(c *ui.Context) {
 	t := c.Theme()
 	d := &a.direct
 	ui.Modal(c, &d.open, func() {
-		ui.Column(c).Width(760).MaxHeight(780).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
+		ui.Column(c).Width(a.modalW(760)).MaxHeight(780).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconMail).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Konten, Kalender, Regeln & Import", "Accounts, Calendars, Rules & Import")).FontSize(16).Bold().Grow(1)
@@ -1897,6 +1914,9 @@ func (a *App) EmptyAccountTrash(ctx context.Context, accountID string) {
 }
 
 func openLocalFile(path string) error {
+	if isMobileOS() {
+		return mygo.Shell.OpenPath(path)
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"fmt"
+	"github.com/egoist/mygo"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -394,6 +395,10 @@ func (a *App) LoadPreviewURL(rawURL, ruleName string) {
 	}
 }
 
+// isMobileOS reports a phone or tablet, where links and files open through the system (mygo.Shell)
+// rather than open/xdg-open.
+func isMobileOS() bool { return runtime.GOOS == "android" || runtime.GOOS == "ios" }
+
 func openExternalURL(rawURL string) error {
 	trimmed := strings.TrimSpace(rawURL)
 	if !isSafeWebURL(trimmed) {
@@ -404,6 +409,9 @@ func openExternalURL(rawURL string) error {
 		return fmt.Errorf("invalid url: %w", err)
 	}
 	safe := u.String()
+	if isMobileOS() {
+		return mygo.Shell.OpenExternal(safe)
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

@@ -334,7 +334,7 @@ func (a *App) renderArchiveModal(c *ui.Context) {
 	t := c.Theme()
 	ar := &a.arch
 	ui.Modal(c, &ar.open, func() {
-		ui.Column(c).Width(600).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(600)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("Archiv & Aufräumen", "Archive & Cleanup")).FontSize(15).Bold().Grow(1)
 				if ui.Button(c.Key("ar-x"), "✕").Clicked() {

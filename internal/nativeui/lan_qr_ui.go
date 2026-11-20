@@ -2,7 +2,9 @@ package nativeui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/lansync"
+	"github.com/diver80/maildiver/internal/qrphoto"
+	"github.com/diver80/maildiver/internal/qrscan"
 	"github.com/diver80/maildiver/internal/secretstore"
 )
 
@@ -56,33 +60,87 @@ func (a *App) startLANQRSession() {
 	a.settings.lanErr = false
 }
 
+// importLANPairingURI fetches the accounts and settings a desktop offers under the pairing link
+// in the settings field (UI thread; the transfer runs in the background).
 func (a *App) importLANPairingURI(ctx context.Context) {
 	uri := strings.TrimSpace(a.settings.lanImportURI)
-	if uri == "" {
+	if uri == "" || a.settings.lanBusy {
 		return
 	}
 	curCfg, err := a.opts.ConfigLoader()
 	if err != nil {
 		curCfg = a.cfg
 	}
-	merged, added, err := lansync.ImportFromPairingURI(ctx, uri, curCfg, secretstore.Default())
-	if err != nil {
-		a.settings.lanMsg = err.Error()
-		a.settings.lanErr = true
+	a.settings.lanBusy = true
+	a.settings.lanMsg, a.settings.lanErr = a.tr("Übertrage…", "Transferring…"), false
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		merged, added, err := lansync.ImportFromPairingURI(c, uri, curCfg, secretstore.Default())
+		if err == nil && a.opts.ConfigSaver != nil {
+			err = a.opts.ConfigSaver(merged)
+		}
+		a.emitUpdate(func() {
+			a.settings.lanBusy = false
+			if err != nil {
+				a.settings.lanMsg, a.settings.lanErr = err.Error(), true
+				a.toast(a.tr("Übertragung fehlgeschlagen: ", "Transfer failed: ")+err.Error(), "error")
+				return
+			}
+			a.applyConfig(merged)
+			if r, ok := a.opts.Direct.(interface{ ReloadAccounts() }); ok {
+				r.ReloadAccounts() // sync the new accounts now
+			}
+			a.settings.lanImportURI = ""
+			a.settings.lanMsg = a.trf("Import erfolgreich: %d Konto/Konten & Einstellungen übernommen.", "Import succeeded: %d account(s) & settings transferred.", added)
+			a.settings.lanErr = false
+			a.toast(a.settings.lanMsg, "success")
+			if a.opts.Direct != nil {
+				a.reloadDirectState(context.Background())
+			}
+			a.RefreshAll(context.Background())
+		})
+	}()
+}
+
+// ScanPairingQR takes a photo of the desktop's transfer QR code with the system's camera screen
+// (no camera permission needed), reads the pairing link from it and imports what it offers
+// (UI thread). Phones only.
+func (a *App) ScanPairingQR(ctx context.Context) {
+	if a.settings.lanBusy {
 		return
 	}
-	if a.opts.ConfigSaver != nil {
-		if serr := a.opts.ConfigSaver(merged); serr != nil {
-			a.settings.lanMsg = serr.Error()
-			a.settings.lanErr = true
-			return
+	a.settings.lanBusy = true
+	go func() {
+		path, err := qrphoto.Capture(ctx)
+		if err != nil {
+			// No camera app answered: a photo or screenshot of the code from the library.
+			a.emitUpdate(func() {
+				a.toast(a.tr("Kamera nicht verfügbar – wähle ein Foto oder einen Screenshot des Codes.", "Camera not available – choose a photo or screenshot of the code."), "warning")
+			})
+			path, err = qrphoto.PickPhoto(ctx)
 		}
-	}
-	a.applyConfig(merged)
-	a.settings.lanImportURI = ""
-	a.settings.lanMsg = a.trf("Import erfolgreich: %d Konto/Konten & Einstellungen übernommen.", "Import succeeded: %d account(s) & settings transferred.", added)
-	a.settings.lanErr = false
-	a.RefreshAll(ctx)
+		uri := ""
+		if err == nil && path != "" {
+			uri, err = qrscan.DecodeFile(path)
+			_ = os.Remove(path)
+			if err == nil && !strings.HasPrefix(uri, "maildiver-pair://") {
+				err = errors.New(a.tr("Das ist kein MailDiver-Übertragungscode.", "This is not a MailDiver transfer code."))
+			}
+		}
+		a.emitUpdate(func() {
+			a.settings.lanBusy = false
+			switch {
+			case errors.Is(err, qrscan.ErrNoCode):
+				a.toast(a.tr("Kein QR-Code erkannt – Code bildfüllend und scharf fotografieren.", "No QR code found – photograph it sharp and large."), "warning")
+			case err != nil:
+				a.toast(err.Error(), "error")
+			case uri != "":
+				a.settings.lanImportURI = uri
+				a.importLANPairingURI(ctx)
+			}
+		})
+	}()
 }
 
 func (a *App) renderSettingsLANQRSection(c *ui.Context) {
@@ -128,10 +186,15 @@ func (a *App) renderSettingsLANQRSection(c *ui.Context) {
 		ui.Divider(c)
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("lan-imp-uri"), &s.lanImportURI).Placeholder("maildiver-pair://v1?…").Grow(1)
-			if ui.Button(c.Key("lan-imp-btn"), a.tr("Empfangen", "Import")).Clicked() && strings.TrimSpace(s.lanImportURI) != "" {
+			if ui.Button(c.Key("lan-imp-btn"), a.tr("Empfangen", "Import")).Disabled(s.lanBusy).Clicked() && strings.TrimSpace(s.lanImportURI) != "" {
 				a.importLANPairingURI(context.Background())
 			}
 		})
+		if isMobileOS() {
+			if iconLabelBtn(c.Key("lan-scan"), iconCamera, a.tr("QR-Code mit Kamera scannen", "Scan QR code with camera"), true, "").Disabled(s.lanBusy).FillWidth().Clicked() {
+				a.ScanPairingQR(context.Background())
+			}
+		}
 
 		if s.lanMsg != "" {
 			clr := t.Success

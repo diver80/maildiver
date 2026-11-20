@@ -708,6 +708,26 @@ func TestRenderScreens(t *testing.T) {
 	app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft = prevDetail, prevMode, prevResult, prevDraft
 	app.readerBody = readerBody{}
 
+	// Phone layout (Android, or a narrow window): mailboxes, a folder's mails, one mail, compose.
+	prevNav := app.navID
+	app.phone.router = ui.NewRouter(phoneRouteMailboxes)
+	saveShot("maildiver-phone-mailboxes.png", app.RenderMain, 390, 844)
+	app.navID = "focus"
+	app.phone.router = ui.NewRouter(phoneRouteList)
+	saveShot("maildiver-phone-list.png", app.RenderMain, 390, 844)
+	app.phone.router = ui.NewRouter(phoneRouteMail)
+	saveShot("maildiver-phone-mail.png", app.RenderMain, 390, 844)
+	app.phone.more = true
+	saveShot("maildiver-phone-mail-more.png", app.RenderMain, 390, 844)
+	app.phone.more = false
+	app.OpenComposeReply(app.selectedMsg, "")
+	saveShot("maildiver-phone-compose.png", app.RenderMain, 390, 844)
+	app.closeCompose()
+	app.OpenSettings()
+	saveShot("maildiver-phone-settings.png", app.RenderMain, 390, 844)
+	app.settings.open = false
+	app.navID, app.phone.router = prevNav, nil
+
 	// Screenshot 4: English UI switch verification shot
 	app.SetLanguage("en")
 	app.inspectorMode = "summarize"

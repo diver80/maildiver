@@ -1,0 +1,9 @@
+{
+  "mobile": {
+    "id": "qrphoto",
+    "android": {
+      "sources": ["android/*.kt"],
+      "class": "QRPhotoPlugin"
+    }
+  }
+}

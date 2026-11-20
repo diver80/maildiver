@@ -120,4 +120,31 @@ func TestSyncBackfillsOlderMails(t *testing.T) {
 	if err != nil || len(res.NewMessages) != 1 || res.NewMessages[0].Subject != "Neu" {
 		t.Fatalf("new mail: %+v err=%v", res.NewMessages, err)
 	}
+
+	// Phones: the first wake-up only sets the watermark; then each new mail is reported once,
+	// and mails the user saw in the app are not reported.
+	if got, err := eng.TakeNewInboxMail(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("first wake-up must not report the mailbox: %d %v", len(got), err)
+	}
+	appendMemMsg(t, memUser, "INBOX", "From: b@c.de\nTo: me@example.org\nSubject: Im Hintergrund\nMessage-ID: <bg@x>\n\nText\n")
+	if err := eng.SyncInboxes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := eng.TakeNewInboxMail(ctx)
+	if err != nil || len(got) != 1 || got[0].Subject != "Im Hintergrund" {
+		t.Fatalf("background mail: %+v %v", got, err)
+	}
+	if got, _ := eng.TakeNewInboxMail(ctx); len(got) != 0 {
+		t.Fatal("a mail is reported once")
+	}
+	appendMemMsg(t, memUser, "INBOX", "From: b@c.de\nTo: me@example.org\nSubject: Gesehen\nMessage-ID: <seen@x>\n\nText\n")
+	if err := eng.SyncInboxes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.MarkInboxSeen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := eng.TakeNewInboxMail(ctx); len(got) != 0 {
+		t.Fatal("mail seen in the open app must not be reported again")
+	}
 }

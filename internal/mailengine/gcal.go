@@ -748,12 +748,19 @@ func randomBase64URL(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// BrowserOpener, when set, opens a web page instead of open/xdg-open – the app sets it on
+// phones, where only the system can.
+var BrowserOpener func(url string) error
+
 func openURLInBrowser(rawURL string) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
 		return fmt.Errorf("ungültige Browser-URL")
 	}
 	clean := u.String()
+	if BrowserOpener != nil {
+		return BrowserOpener(clean)
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

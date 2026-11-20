@@ -39,6 +39,9 @@ type Store interface {
 // Reads transparently fall back to legacy OmaThunder entries so existing passwords
 // and OAuth tokens continue working seamlessly after rebranding to MailDiver.
 func Default() Store {
+	if d := defaultOverride.Load(); d != nil {
+		return *d
+	}
 	dir, err := config.ConfigDir()
 	if err != nil {
 		dir = "."
@@ -132,6 +135,8 @@ func (m *MemoryStore) Delete(key string) error {
 type FileStore struct {
 	path string
 	mu   sync.Mutex
+	// seal and unseal, when set, encrypt the file's content (SealedFileStore).
+	seal, unseal func([]byte) ([]byte, error)
 }
 
 func NewFileStore(path string) *FileStore {
@@ -150,6 +155,11 @@ func (f *FileStore) loadLocked() (map[string]string, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return out, nil
 	}
+	if f.unseal != nil {
+		if data, err = f.unseal(data); err != nil {
+			return nil, err
+		}
+	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
@@ -165,6 +175,12 @@ func (f *FileStore) saveLocked(m map[string]string) error {
 	if err != nil {
 		return err
 	}
+	b = append(b, '\n')
+	if f.seal != nil {
+		if b, err = f.seal(b); err != nil {
+			return err
+		}
+	}
 	tmp, err := os.CreateTemp(dir, ".secrets-*.tmp")
 	if err != nil {
 		return err
@@ -175,7 +191,7 @@ func (f *FileStore) saveLocked(m map[string]string) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
+	if _, err := tmp.Write(b); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return err

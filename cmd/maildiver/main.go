@@ -50,6 +50,10 @@ func run() error {
 		}
 	}
 
+	// Passwords on Android: sealed with a key of the Android keystore.
+	nativeui.SetupPlatformSecrets()
+	nativeui.RepairTransferredAccounts(config.Load, config.Save)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

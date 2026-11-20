@@ -68,6 +68,7 @@ type settingsUI struct {
 	lanSession   *lansync.Session
 	lanQRImg     ui.ImageSource
 	lanImportURI string
+	lanBusy      bool // a transfer or scan is running
 	lanMsg       string
 	lanErr       bool
 }
@@ -307,7 +308,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
 	ui.Modal(c, &s.open, func() {
-		ui.Column(c).Width(680).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(8).Children(func() {
+		ui.Column(c).Width(a.modalW(680)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(8).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
 				if ui.Button(c.Key("set-x"), "✕").Clicked() {
@@ -341,6 +342,14 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
 	field := func(key, label string, body func()) {
+		if a.isPhone() {
+			// Too narrow for label and control side by side: the control goes below.
+			ui.Column(c.Key(key)).FillWidth().Gap(4).Children(func() {
+				ui.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted)
+				ui.Row(c).FillWidth().Wrap().Gap(6).Children(body)
+			})
+			return
+		}
 		ui.Row(c.Key(key)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			a.settingsLabel(c, label)
 			body()
