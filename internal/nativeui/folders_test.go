@@ -180,3 +180,51 @@ func TestCustomExpandedFoldersPerAccountAndPersistence(t *testing.T) {
 		t.Fatalf("expected persisted ExpandedFolders[acc1]=[Archives], got %+v", cfg.App.ExpandedFolders["acc1"])
 	}
 }
+
+func TestAccountOrderingAndReorderPersistence(t *testing.T) {
+	cfg := config.Default()
+	cfg.Direct.Accounts = []config.DirectAccount{
+		{ID: "acc-work", Name: "Work", Email: "alice@acme.de", Enabled: true},
+		{ID: "acc-home", Name: "Home", Email: "alice@example.org", Enabled: true},
+		{ID: "acc-list", Name: "Lists", Email: "lists@example.org", Enabled: true},
+	}
+	app := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+	})
+	app.applyConfig(cfg)
+	app.accounts = []backend.Account{
+		{ID: "acc-work", Name: "Work"},
+		{ID: "acc-home", Name: "Home"},
+		{ID: "acc-list", Name: "Lists"},
+	}
+	// Folders arrive in a different order than configured accounts: sidebar must still follow a.accounts.
+	app.folders = []backend.Folder{
+		{ID: "f-l", AccountID: "acc-list", AccountName: "Lists", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "f-h", AccountID: "acc-home", AccountName: "Home", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "f-w", AccountID: "acc-work", AccountName: "Work", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+	}
+
+	groups := app.groupFoldersByAccount()
+	if len(groups) != 3 || groups[0].AccountID != "acc-work" || groups[1].AccountID != "acc-home" || groups[2].AccountID != "acc-list" {
+		t.Fatalf("initial sidebar order = %+v, want [acc-work, acc-home, acc-list]", groups)
+	}
+
+	// Drag "acc-list" onto "acc-work" (top).
+	app.ReorderAccounts("acc-list", "acc-work")
+	groups = app.groupFoldersByAccount()
+	if groups[0].AccountID != "acc-list" || groups[1].AccountID != "acc-work" || groups[2].AccountID != "acc-home" {
+		t.Fatalf("after drag to top = [%s, %s, %s]", groups[0].AccountID, groups[1].AccountID, groups[2].AccountID)
+	}
+	if cfg.Direct.Accounts[0].ID != "acc-list" || cfg.Direct.Accounts[1].ID != "acc-work" || cfg.Direct.Accounts[2].ID != "acc-home" {
+		t.Fatalf("persisted config order = %+v", cfg.Direct.Accounts)
+	}
+
+	// Drag "acc-list" onto "acc-home" (bottom).
+	app.ReorderAccounts("acc-list", "acc-home")
+	groups = app.groupFoldersByAccount()
+	if groups[0].AccountID != "acc-work" || groups[1].AccountID != "acc-home" || groups[2].AccountID != "acc-list" {
+		t.Fatalf("after drag to bottom = [%s, %s, %s]", groups[0].AccountID, groups[1].AccountID, groups[2].AccountID)
+	}
+}

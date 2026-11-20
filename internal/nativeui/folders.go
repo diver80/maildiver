@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/mailengine"
 )
 
 // Folder tree
@@ -215,19 +218,39 @@ func (a *App) currentExpandedFolderPaths(accountID string) []string {
 	return out
 }
 
-// groupFoldersByAccount splits folders per account in the order the accounts first appear and
-// builds each account's tree.
+// draggedAccount is the typed drag-and-drop payload when reordering mail accounts.
+type draggedAccount string
+
+// groupFoldersByAccount splits folders per account in the configured a.accounts order (falling
+// back to first appearance in a.folders for any unmapped account) and builds each account's tree.
 func (a *App) groupFoldersByAccount() []folderAccountGroup {
-	var order []string
 	byAcc := make(map[string][]backend.Folder)
 	names := make(map[string]string)
+	var folderOrder []string
 	for _, f := range a.folders {
 		if _, ok := byAcc[f.AccountID]; !ok {
-			order = append(order, f.AccountID)
+			folderOrder = append(folderOrder, f.AccountID)
 		}
 		byAcc[f.AccountID] = append(byAcc[f.AccountID], f)
 		if names[f.AccountID] == "" && f.AccountName != "" {
 			names[f.AccountID] = f.AccountName
+		}
+	}
+	order := make([]string, 0, len(folderOrder)+len(a.accounts))
+	seen := make(map[string]bool, len(folderOrder)+len(a.accounts))
+	for _, acc := range a.accounts {
+		if len(byAcc[acc.ID]) > 0 && !seen[acc.ID] {
+			seen[acc.ID] = true
+			order = append(order, acc.ID)
+			if names[acc.ID] == "" && acc.Name != "" {
+				names[acc.ID] = acc.Name
+			}
+		}
+	}
+	for _, id := range folderOrder {
+		if !seen[id] {
+			seen[id] = true
+			order = append(order, id)
 		}
 	}
 	groups := make([]folderAccountGroup, 0, len(order))
@@ -240,6 +263,107 @@ func (a *App) groupFoldersByAccount() []folderAccountGroup {
 		groups = append(groups, folderAccountGroup{AccountID: id, Name: name, Rows: buildFolderRows(byAcc[id], a.collapsedFolders)})
 	}
 	return groups
+}
+
+// ReorderAccounts moves account fromID directly to the position of targetID (UI thread) and
+// persists the new order to config.json so sidebar, toolbar and compose pickers stay in sync.
+func (a *App) ReorderAccounts(fromID, targetID string) {
+	if fromID == "" || targetID == "" || fromID == targetID {
+		return
+	}
+	// Reorder a.accounts in memory immediately for zero-latency UI update.
+	fromIdx, toIdx := -1, -1
+	for i, acc := range a.accounts {
+		if acc.ID == fromID {
+			fromIdx = i
+		}
+		if acc.ID == targetID {
+			toIdx = i
+		}
+	}
+	if fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx {
+		item := a.accounts[fromIdx]
+		without := append(a.accounts[:fromIdx], a.accounts[fromIdx+1:]...)
+		reordered := make([]backend.Account, 0, len(without)+1)
+		reordered = append(reordered, without[:toIdx]...)
+		reordered = append(reordered, item)
+		reordered = append(reordered, without[toIdx:]...)
+		a.accounts = reordered
+	}
+
+	// Keep Accounts modal list in sync as well.
+	dFrom, dTo := -1, -1
+	for i, acc := range a.direct.accounts {
+		if acc.AccountID == fromID {
+			dFrom = i
+		}
+		if acc.AccountID == targetID {
+			dTo = i
+		}
+	}
+	if dFrom >= 0 && dTo >= 0 && dFrom != dTo {
+		item := a.direct.accounts[dFrom]
+		without := append(a.direct.accounts[:dFrom], a.direct.accounts[dFrom+1:]...)
+		reordered := make([]mailengine.AccountSyncStatus, 0, len(without)+1)
+		reordered = append(reordered, without[:dTo]...)
+		reordered = append(reordered, item)
+		reordered = append(reordered, without[dTo:]...)
+		a.direct.accounts = reordered
+	}
+
+	orderedIDs := make([]string, 0, len(a.accounts))
+	for _, acc := range a.accounts {
+		orderedIDs = append(orderedIDs, acc.ID)
+	}
+	if len(orderedIDs) == 0 {
+		for _, acc := range a.direct.accounts {
+			orderedIDs = append(orderedIDs, acc.AccountID)
+		}
+	}
+	if len(orderedIDs) == 0 {
+		return
+	}
+
+	if a.opts.Direct != nil {
+		dc := a.opts.Direct
+		idsCopy := append([]string(nil), orderedIDs...)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := dc.ReorderAccounts(ctx, idsCopy); err != nil {
+				a.emitUpdate(func() {
+					a.toast(a.tr("Reihenfolge nicht gespeichert: ", "Failed to save order: ")+err.Error(), "error")
+				})
+			}
+		}()
+		return
+	}
+
+	// Non-direct / unit-test fallback via ConfigLoader + ConfigSaver.
+	if a.opts.ConfigLoader != nil && a.opts.ConfigSaver != nil {
+		if cfg, err := a.opts.ConfigLoader(); err == nil && len(cfg.Direct.Accounts) > 0 {
+			byID := make(map[string]int, len(cfg.Direct.Accounts))
+			for i, acc := range cfg.Direct.Accounts {
+				byID[acc.ID] = i
+			}
+			next := make([]config.DirectAccount, 0, len(cfg.Direct.Accounts))
+			seen := make(map[string]bool, len(orderedIDs))
+			for _, id := range orderedIDs {
+				if idx, ok := byID[id]; ok && !seen[id] {
+					seen[id] = true
+					next = append(next, cfg.Direct.Accounts[idx])
+				}
+			}
+			for _, acc := range cfg.Direct.Accounts {
+				if !seen[acc.ID] {
+					next = append(next, acc)
+				}
+			}
+			cfg.Direct.Accounts = next
+			_ = a.opts.ConfigSaver(cfg)
+			a.applyConfig(cfg)
+		}
+	}
 }
 
 // folderIcon picks the icon of a special folder (folder type or specialUse).
@@ -295,52 +419,92 @@ func (a *App) accountSectionOpen(accountID string) *bool {
 }
 
 // renderFolderSections draws the folder tree inside the sidebar: one section per account, or a
-// single "Folders" section when only one account is listed.
+// single "Folders" section when only one account is listed. When multiple accounts exist, each
+// account header can be dragged and dropped to reorder the accounts persistently.
 func (a *App) renderFolderSections(c *ui.Context) {
 	groups := a.groupFoldersByAccount()
 	if len(groups) == 0 {
 		return
 	}
 	t := c.Theme()
-	for _, g := range groups {
-		gCopy := g
-		title, open := gCopy.Name, a.accountSectionOpen(gCopy.AccountID)
-		if len(groups) == 1 {
-			title, open = a.tr("Ordner", "Folders"), &a.secFoldersOpen
+	renderRows := func(gCopy folderAccountGroup) {
+		for _, row := range gCopy.Rows {
+			a.renderFolderRow(c, row)
 		}
-		ui.SidebarSection(c, title, open, func() {
-			for _, row := range gCopy.Rows {
-				a.renderFolderRow(c, row)
-			}
-			if a.isDirectMode() && !a.readOnly {
-				if a.direct.newFolderAccountID == gCopy.AccountID {
-					ui.Row(c.Key("nf-row-"+gCopy.AccountID)).FillWidth().Padding(4, 8).Gap(4).AlignItems(ui.Center).Children(func() {
-						inp := ui.TextInput(c.Key("nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
-						okBtn := ui.Button(c.Key("nf-ok-"+gCopy.AccountID), "✓").Padding(3, 6)
-						if a.direct.newFolderBusy {
-							okBtn.Disabled(true)
-						}
-						if (okBtn.Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
-							a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
-						}
-						if ui.Button(c.Key("nf-x-"+gCopy.AccountID), "✕").Padding(3, 6).Clicked() {
-							a.direct.newFolderAccountID = ""
-							a.direct.newFolderName = ""
-						}
-					})
-				} else {
-					btn := ui.ButtonBase(c.Key("nf-add-"+gCopy.AccountID)).FillWidth().Padding(4, 10).Radius(6).Label(a.tr("Neuer Ordner", "New Folder"))
-					btn.Children(func() {
-						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Icon(c, iconFolderPlus).Size(13, 13).TextColor(t.TextMuted)
-							ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(11.5).TextColor(t.TextMuted)
-						})
-					})
-					if btn.Clicked() {
-						a.direct.newFolderAccountID = gCopy.AccountID
+		if a.isDirectMode() && !a.readOnly {
+			if a.direct.newFolderAccountID == gCopy.AccountID {
+				ui.Row(c.Key("nf-row-"+gCopy.AccountID)).FillWidth().Padding(4, 8).Gap(4).AlignItems(ui.Center).Children(func() {
+					inp := ui.TextInput(c.Key("nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
+					okBtn := ui.Button(c.Key("nf-ok-"+gCopy.AccountID), "✓").Padding(3, 6)
+					if a.direct.newFolderBusy {
+						okBtn.Disabled(true)
+					}
+					if (okBtn.Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
+						a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
+					}
+					if ui.Button(c.Key("nf-x-"+gCopy.AccountID), "✕").Padding(3, 6).Clicked() {
+						a.direct.newFolderAccountID = ""
 						a.direct.newFolderName = ""
 					}
+				})
+			} else {
+				btn := ui.ButtonBase(c.Key("nf-add-"+gCopy.AccountID)).FillWidth().Padding(4, 10).Radius(6).Label(a.tr("Neuer Ordner", "New Folder"))
+				btn.Children(func() {
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, iconFolderPlus).Size(13, 13).TextColor(t.TextMuted)
+						ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(11.5).TextColor(t.TextMuted)
+					})
+				})
+				if btn.Clicked() {
+					a.direct.newFolderAccountID = gCopy.AccountID
+					a.direct.newFolderName = ""
 				}
+			}
+		}
+	}
+
+	if len(groups) == 1 {
+		gCopy := groups[0]
+		ui.SidebarSection(c, a.tr("Ordner", "Folders"), &a.secFoldersOpen, func() {
+			renderRows(gCopy)
+		})
+		return
+	}
+
+	for _, g := range groups {
+		gCopy := g
+		open := a.accountSectionOpen(gCopy.AccountID)
+		sec := ui.Column(c.Key("sb-acc-"+gCopy.AccountID)).FillWidth().Gap(2).Padding(6, 0, 2, 0)
+		if src, ok := ui.DragOver[draggedAccount](sec); ok && string(src) != gCopy.AccountID {
+			sec.BorderWidth(2, 0, 0, 0).BorderColor(t.Accent).Background(withAlpha(t.Accent, 0.08)).Radius(6)
+		}
+		if src, ok := ui.Drop[draggedAccount](sec); ok && string(src) != gCopy.AccountID {
+			a.ReorderAccounts(string(src), gCopy.AccountID)
+		}
+		sec.Children(func() {
+			hdr := ui.ButtonBase(c.Key("sb-acc-hdr-"+gCopy.AccountID)).FillWidth().Padding(5, 8).Radius(6).
+				Label(gCopy.Name).
+				Tooltip(a.tr("Klicken zum Ein-/Ausklappen · Ziehen zum Sortieren", "Click to collapse/expand · Drag to reorder")).
+				Drag(draggedAccount(gCopy.AccountID))
+			if hdr.Dragging() {
+				hdr.Opacity(0.45)
+			}
+			hdr.Children(func() {
+				ui.Row(c).FillWidth().Gap(5).AlignItems(ui.Center).Children(func() {
+					chev := iconChevronDn
+					if !*open {
+						chev = iconChevronRt
+					}
+					ui.Icon(c, chev).Size(12, 12).TextColor(t.TextMuted).Shrink(0)
+					ui.Text(c, gCopy.Name).FontSize(11.5).Bold().TextColor(t.TextMuted).SingleLine().Grow(1)
+					ui.Text(c, "⋮⋮").FontSize(11).TextColor(withAlpha(t.TextMuted, 0.55)).Shrink(0)
+				})
+			})
+			if hdr.Clicked() {
+				*open = !*open
+			}
+			if *open {
+				renderRows(gCopy)
 			}
 		})
 	}

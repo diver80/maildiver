@@ -589,6 +589,41 @@ func (e *Engine) DeleteAccount(ctx context.Context, accountID string) error {
 	return nil
 }
 
+// ReorderAccounts persists a new display order for configured DirectAccounts.
+// Accounts not listed in orderedIDs are preserved at the end in their existing relative order.
+func (e *Engine) ReorderAccounts(_ context.Context, orderedIDs []string) error {
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	e.cfgMu.Lock()
+	cfg := e.loadConfig()
+	byID := make(map[string]config.DirectAccount, len(cfg.Direct.Accounts))
+	for _, a := range cfg.Direct.Accounts {
+		byID[a.ID] = a
+	}
+	reordered := make([]config.DirectAccount, 0, len(cfg.Direct.Accounts))
+	seen := make(map[string]bool, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if acc, ok := byID[id]; ok && !seen[id] {
+			seen[id] = true
+			reordered = append(reordered, acc)
+		}
+	}
+	for _, a := range cfg.Direct.Accounts {
+		if !seen[a.ID] {
+			reordered = append(reordered, a)
+		}
+	}
+	cfg.Direct.Accounts = reordered
+	err := e.saveConfig(cfg)
+	e.cfgMu.Unlock()
+	if err != nil {
+		return err
+	}
+	e.emitMailSync("")
+	return nil
+}
+
 // SyncAccount runs a serialized IMAP sync for one account and emits live SSE events.
 func (e *Engine) SyncAccount(ctx context.Context, accountID string, inboxOnly bool) (SyncResult, error) {
 	acc, ok := e.findAccount(accountID)

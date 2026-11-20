@@ -26,6 +26,7 @@ type DirectController interface {
 	TestAccount(ctx context.Context, acc config.DirectAccount, password string) mailengine.AccountTestResult
 	SaveAccount(ctx context.Context, acc config.DirectAccount, password string) (config.DirectAccount, error)
 	DeleteAccount(ctx context.Context, accountID string) error
+	ReorderAccounts(ctx context.Context, orderedIDs []string) error
 	SyncNow(ctx context.Context, accountID string) error
 	ImportICSFile(ctx context.Context, calendarID, filePath string) (int, error)
 	AddICSFeed(ctx context.Context, name, rawURL string) (int, error)
@@ -1053,8 +1054,23 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 				stateClr = t.TextMuted
 				stateLbl = a.tr("Pausiert", "Paused")
 			}
-			ui.Column(c.Key("dir-acc-"+accCopy.AccountID)).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+			card := ui.Column(c.Key("dir-acc-"+accCopy.AccountID)).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).
+				Tooltip(a.tr("Ziehen zum Ändern der Konto-Reihenfolge", "Drag to reorder accounts")).
+				Drag(draggedAccount(accCopy.AccountID))
+			if card.Dragging() {
+				card.Opacity(0.45)
+			}
+			if src, ok := ui.DragOver[draggedAccount](card); ok && string(src) != accCopy.AccountID {
+				card.BorderWidth(2, 1, 1, 1).BorderColor(t.Accent).Background(withAlpha(t.Accent, 0.08))
+			}
+			if src, ok := ui.Drop[draggedAccount](card); ok && string(src) != accCopy.AccountID {
+				a.ReorderAccounts(string(src), accCopy.AccountID)
+			}
+			card.Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+					if len(d.accounts) > 1 {
+						ui.Text(c, "⋮⋮").FontSize(12).TextColor(withAlpha(t.TextMuted, 0.7)).Shrink(0)
+					}
 					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 						ui.Text(c, accCopy.Name).FontSize(13).Bold().SingleLine()
 						ui.Text(c, fmt.Sprintf("%s · %d %s", accCopy.Email, accCopy.MessageCount, a.tr("Mails lokal", "emails cached"))).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
