@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // confluenceHTML is shaped like Atlassian's notification mails: a hidden preheader, layout
@@ -72,11 +72,11 @@ func TestHTMLMailMarkdown(t *testing.T) {
 	}
 }
 
-// Jira change mails: "~~Unassigned~~ [arrow image] Frank Hess"; footers: links in a row.
+// Jira change mails: "~~Unassigned~~ [arrow image] Max Muster"; footers: links in a row.
 func TestInlineDetails(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{`<p>Assignee: <del>Unassigned</del><img src="https://x.example/arrow.png" width="16" height="16">Frank Hess</p>`,
-			"Assignee: <s>Unassigned</s> Frank Hess"},
+		{`<p>Assignee: <del>Unassigned</del><img src="https://x.example/arrow.png" width="16" height="16">Max Muster</p>`,
+			"Assignee: <s>Unassigned</s> Max Muster"},
 		{`<p><span style="text-decoration: line-through">alt</span><img src="https://x.example/a.gif" width="1" height="1">neu</p>`,
 			"<s>alt</s> neu"},
 		{`<p><s>a</s> and <strike>b</strike></p>`, "<s>a</s> and <s>b</s>"},
@@ -130,7 +130,7 @@ func TestPlainMailMarkdown(t *testing.T) {
 }
 
 func TestBuildReaderBodyPrefersHTML(t *testing.T) {
-	msg := &bridgeclient.MessageDetail{BodyText: "plain [https://x.example/a]", BodyHtml: "<p>Hello <b>you</b></p><img src='https://x.example/i.png'>"}
+	msg := &backend.MessageDetail{BodyText: "plain [https://x.example/a]", BodyHtml: "<p>Hello <b>you</b></p><img src='https://x.example/i.png'>"}
 	msg.ID = "m1"
 	b := buildReaderBody(msg)
 	if !b.FromHTML || b.Markdown != "Hello <b>you</b>" || b.BlockedImages != 1 {
@@ -191,7 +191,7 @@ func TestSafeHrefAndShortURL(t *testing.T) {
 func TestMailBodyRendersHeadless(t *testing.T) {
 	app, loop, _ := keymapApp(t)
 	app.selectedID = "m1"
-	app.selectedMsg = &bridgeclient.MessageDetail{
+	app.selectedMsg = &backend.MessageDetail{
 		MessageHeader: app.messages[0],
 		BodyText:      "Plain version\n[https://plain.example/doc]",
 		BodyHtml:      confluenceHTML,

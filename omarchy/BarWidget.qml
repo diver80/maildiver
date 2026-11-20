@@ -12,7 +12,7 @@ Item {
     property int pendingProposals: 0
     property string topHeadline: ""
 
-    readonly property string summaryPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omathunder/bar-summary.json"
+    readonly property string summaryPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/maildiver/bar-summary.json"
 
     Timer {
         interval: 3000
@@ -39,8 +39,8 @@ Item {
     }
 
     Process {
-        id: launchTb
-        command: ["sh", "-c", "hyprctl dispatch focuswindow class:thunderbird || thunderbird &"]
+        id: launchApp
+        command: ["sh", "-c", "hyprctl dispatch focuswindow class:maildiver || maildiver &"]
     }
 
     Rectangle {
@@ -88,7 +88,7 @@ Item {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: launchTb.running = true
+            onClicked: launchApp.running = true
         }
     }
 }

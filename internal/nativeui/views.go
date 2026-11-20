@@ -3,16 +3,18 @@ package nativeui
 import (
 	"context"
 	"fmt"
-	"sort"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/mailengine"
 )
 
-// RenderMain builds the entire native GPU-accelerated OmaThunder Command Center UI.
+// RenderMain builds the entire native GPU-accelerated MailDiver UI.
 func (a *App) RenderMain(c *ui.Context) {
 	if a.uiTheme != nil && a.uiTheme.theme != nil {
 		c.SetTheme(a.uiTheme.theme)
@@ -65,13 +67,19 @@ func (a *App) RenderMain(c *ui.Context) {
 		a.renderFooter(c)
 	})
 
-	a.renderComposeModal(c)
+	if !a.detachedAuxWindows {
+		a.guardComposeClose()
+		a.renderComposeModal(c)
+		a.guardComposeClose()
+	}
 	a.renderEventModal(c)
+	a.renderEventDetailModal(c)
 	a.renderQuickRuleModal(c)
 	a.renderCalDeleteModal(c)
 	a.renderMovePicker(c)
 	a.renderArchiveModal(c)
 	a.renderSettingsModal(c)
+	a.renderDirectModal(c)
 	a.renderHelpModal(c)
 }
 
@@ -86,6 +94,11 @@ func (a *App) themeLabelList() []string {
 func (a *App) renderSidebar(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Width(a.sidebarWidth()).FillHeight().Background(t.Surface).Shrink(0).Children(func() {
+		ui.Row(c).FillWidth().Padding(10, 10, 4, 10).Children(func() {
+			if iconLabelBtn(c.Key("sb-compose"), iconCompose, a.tr("Neue E-Mail", "New Email"), true, a.tr("Neue E-Mail verfassen (c / ⌘N)", "Compose new email (c / ⌘N)")).FillWidth().Clicked() {
+				a.OpenComposeNew()
+			}
+		})
 		sb := ui.Sidebar(c, &a.navID, func() {
 			ui.SidebarSection(c, a.tr("Arbeitsbereich", "Workspace"), &a.secViewsOpen, func() {
 				ui.SidebarItem(c, "focus", iconFocus, a.tr("Fokus (Ungelesen)", "Focus (Unread)")).Children(func() {
@@ -108,6 +121,13 @@ func (a *App) renderSidebar(c *ui.Context) {
 						ui.Badge(c, fmt.Sprintf("%d", n))
 					}
 				})
+				if a.isDirectMode() {
+					ui.SidebarItem(c, "contacts", iconUsers, a.tr("Kontakte", "Contacts")).Children(func() {
+						if len(a.contacts.list) > 0 {
+							ui.Badge(c, fmt.Sprintf("%d", len(a.contacts.list)))
+						}
+					})
+				}
 			})
 
 			a.renderFolderSections(c)
@@ -116,13 +136,19 @@ func (a *App) renderSidebar(c *ui.Context) {
 		if sb.Changed() {
 			a.selectedID = ""
 			a.selectedMsg = nil
+			a.syncPreviewForMessage(nil)
 			a.setNav(a.navID)
-			if a.navID != "calendar" {
+			switch a.navID {
+			case "calendar":
+				// Calendar events are loaded via RefreshAll.
+			case "contacts":
+				a.LoadContacts(context.Background())
+			default:
 				a.LoadMessages(context.Background())
 			}
 		}
 
-		// Compact "Today" mini-agenda & notification switch at bottom of sidebar
+		// Compact "Today" mini-agenda at bottom of sidebar
 		ui.Divider(c)
 		ui.Column(c).FillWidth().Padding(10, 12).Gap(6).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
@@ -149,11 +175,27 @@ func (a *App) renderSidebar(c *ui.Context) {
 }
 
 func (a *App) renderWorkspace(c *ui.Context) {
-	if a.navID == "calendar" {
+	switch a.navID {
+	case "calendar":
 		a.renderCalendarWorkspace(c)
-		return
+	case "contacts":
+		a.renderContactsWorkspace(c)
+	default:
+		a.renderMailWorkspace(c)
 	}
-	a.renderMailWorkspace(c)
+}
+
+func (a *App) currentTrashAccountID() string {
+	if !strings.HasPrefix(a.navID, "folder:") {
+		return ""
+	}
+	fid := strings.TrimPrefix(a.navID, "folder:")
+	for _, f := range a.folders {
+		if f.ID == fid && strings.EqualFold(f.Type, "trash") {
+			return f.AccountID
+		}
+	}
+	return ""
 }
 
 func (a *App) renderMailWorkspace(c *ui.Context) {
@@ -161,32 +203,115 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 	ui.Split(c, &a.mailSplit, func() {
 		// Message list column
 		ui.Column(c).Fill().Background(t.Background).Children(func() {
-			ui.Row(c).FillWidth().Padding(8, 12).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			ui.Row(c).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 				title := a.currentViewTitle()
 				ui.Text(c, title).FontSize(13).Bold().Grow(1).SingleLine()
+				if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
+					hasUnread := a.navID == "focus" && a.unreadCount() > 0
+					if !hasUnread {
+						for _, m := range a.messages {
+							if m.Unread {
+								hasUnread = true
+								break
+							}
+						}
+					}
+					if !hasUnread && strings.HasPrefix(a.navID, "folder:") {
+						fid := strings.TrimPrefix(a.navID, "folder:")
+						for _, f := range a.folders {
+							if f.ID == fid && f.UnreadCount > 0 {
+								hasUnread = true
+								break
+							}
+						}
+					}
+					if hasUnread {
+						if iconBtn(c.Key("list-mark-all-read"), iconMailOpen, a.tr("Alle in dieser Ansicht als gelesen markieren", "Mark all in this view as read"), t.Accent, false).Clicked() {
+							a.MarkCurrentViewAllRead(context.Background())
+						}
+					}
+				}
+				if trashAcc := a.currentTrashAccountID(); trashAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+					armed := a.direct.emptyTrashArmID == trashAcc && time.Since(a.direct.emptyTrashArmAt) < 5*time.Second
+					lbl := a.tr("Papierkorb leeren", "Empty Trash")
+					if armed {
+						lbl = a.tr("Wirklich leeren?", "Confirm Empty?")
+					}
+					btn := ui.Button(c.Key("trash-empty"), lbl).Padding(3, 8)
+					if armed {
+						btn.Background(withAlpha(t.Danger, 0.18)).Border(1, t.Danger)
+					}
+					if btn.Clicked() {
+						if armed {
+							a.EmptyAccountTrash(context.Background(), trashAcc)
+						} else {
+							a.direct.emptyTrashArmID = trashAcc
+							a.direct.emptyTrashArmAt = time.Now()
+						}
+					}
+				}
 				ui.Text(c, a.trf("%d Mails", "%d emails", len(a.messages))).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
 			})
+
+			// Server-side IMAP full-text search bar (searches mail bodies not yet downloaded locally).
+			if q := strings.TrimSpace(a.searchQuery); q != "" && a.engineReady {
+				ui.Row(c.Key("srv-search-bar")).FillWidth().Padding(6, 10).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+					if a.serverSearchBusy {
+						ui.Spinner(c)
+						ui.Text(c, a.tr("Suche auf IMAP-Server…", "Searching on IMAP server…")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
+					} else if a.serverSearchDoneKey == a.serverSearchScopeKey(q) {
+						ui.Icon(c, iconSearch).Size(13, 13).TextColor(t.Success)
+						ui.Text(c, a.trf("Server-Suche: %d Treffer", "Server search: %d matches", a.serverSearchCount)).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
+						if ui.Button(c.Key("srv-search-again"), a.tr("Erneut", "Retry")).Padding(2, 7).Clicked() {
+							a.SearchMessagesOnServer(context.Background())
+						}
+					} else {
+						ui.Text(c, a.tr("Lokal gesucht (geladene Texte).", "Searched locally (downloaded bodies).")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
+						if iconLabelBtn(c.Key("srv-search-go"), iconSearch, a.tr("Auf Server suchen", "Search on Server"), false, a.tr("Gesamtes Postfach inkl. noch nicht geladener Mailtexte auf dem IMAP-Server durchsuchen", "Search entire mailbox including unfetched bodies on IMAP server")).Clicked() {
+							a.SearchMessagesOnServer(context.Background())
+						}
+					}
+				})
+			}
+
+			// Inline Undo bar for recent reversible mail actions (Archive, Move, Trash, Read, Star).
+			if a.undo != nil && time.Since(a.undo.CreatedAt) <= undoExpiry {
+				ui.Row(c.Key("undo-bar")).FillWidth().Padding(6, 10).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.10)).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+					ui.Icon(c, iconUndo).Size(13, 13).TextColor(t.Accent).Shrink(0)
+					ui.Text(c, a.undo.Label).FontSize(11.5).Grow(1).MinWidth(0).SingleLine()
+					undoBtn := ui.Button(c.Key("undo-do"), a.tr("Rückgängig (⌘Z)", "Undo (⌘Z)")).Padding(2, 8)
+					if a.undoBusy {
+						undoBtn.Disabled(true)
+					}
+					if undoBtn.Clicked() && !a.undoBusy {
+						a.PerformUndo(context.Background())
+					}
+					if ui.Button(c.Key("undo-dismiss"), "✕").Padding(2, 6).Clicked() {
+						a.undo = nil
+					}
+				})
+			}
 
 			checked := a.CheckedMessageIDs()
 			if len(checked) > 0 {
 				ui.Row(c.Key("bulk-bar")).FillWidth().Padding(6, 10).Gap(6).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.12)).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 					ui.Text(c, a.trf("%d markiert", "%d selected", len(checked))).FontSize(11.5).Bold().TextColor(t.Accent).Grow(1).SingleLine()
-					if iconLabelBtn(c.Key("bulk-rule"), iconFilter, a.tr("Quick-Regel", "Quick Rule"), true, a.tr("Aus markierten Mails Thunderbird-Filter erstellen (q · mit Preview)", "Create Thunderbird filter from selected emails (q · with preview)")).Clicked() {
+					if iconLabelBtn(c.Key("bulk-rule"), iconFilter, a.tr("Quick-Regel", "Quick Rule"), true, a.tr("Aus markierten Mails eine Filterregel erstellen (q · mit Preview)", "Create filter rule from selected emails (q · with preview)")).Clicked() {
 						a.OpenQuickRuleWizard()
 					}
 					if iconBtn(c.Key("bulk-read"), iconMailOpen, a.tr("Markierte als gelesen markieren (u)", "Mark selected as read (u)"), t.Accent, false).Clicked() {
 						readTrue := true
-						a.PerformBatchAction(context.Background(), checked, bridgeclient.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
+						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
 					}
 					if !a.readOnly {
 						if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {
-							a.PerformBatchAction(context.Background(), checked, bridgeclient.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
+							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
 						}
 						if iconBtn(c.Key("bulk-move"), iconFolderInput, a.tr("Markierte verschieben nach… (v)", "Move selected to… (v)"), ui.Color{}, false).Clicked() {
 							a.OpenMovePicker()
 						}
 						if iconBtn(c.Key("bulk-trash"), iconTrash, a.tr("Markierte in Papierkorb verschieben (d d)", "Move selected to Trash (d d)"), t.Danger, false).Clicked() {
-							a.PerformBatchAction(context.Background(), checked, bridgeclient.MessageActionsRequest{Trash: true}, a.tr("In Papierkorb verschoben", "Moved to Trash"))
+							a.trashMails(context.Background(), checked, "")
 						}
 					}
 					if ui.Button(c.Key("bulk-clear"), "✕").Padding(4, 7).Tooltip(a.tr("Auswahl aufheben (esc)", "Clear selection (esc)")).Clicked() {
@@ -195,8 +320,12 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 				})
 			}
 
-			if !a.bridgeOnline || !a.thunderbirdConnected {
+			if !a.engineReady {
 				a.renderOfflineBanner(c)
+				return
+			}
+			if a.isDirectMode() && len(a.accounts) == 0 {
+				a.renderDirectOnboarding(c)
 				return
 			}
 			if len(a.messages) == 0 {
@@ -209,6 +338,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 
 			ls := a.ensureListState()
 			crossFolder := !strings.HasPrefix(a.navID, "folder:")
+			outboundView := a.isCurrentViewOutbound()
 			listEl := ui.List(c, ls, len(a.messages), func(i int) {
 				if i < 0 || i >= len(a.messages) {
 					return
@@ -249,7 +379,15 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 								statusDot(c, t.Accent, 6)
 							}
 							// Muted only on plain rows: the highlighted row brings its own text color.
-							st := ui.Text(c, shortSender(m.From)).FontSize(11.5).Grow(1).MinWidth(0).SingleLine()
+							peerLabel := shortSender(m.From)
+							if outboundView {
+								if len(m.To) > 0 {
+									peerLabel = a.tr("An: ", "To: ") + shortSender(strings.Join(m.To, ", "))
+								} else {
+									peerLabel = a.tr("(Kein Empfänger)", "(No recipient)")
+								}
+							}
+							st := ui.Text(c, peerLabel).FontSize(11.5).Grow(1).MinWidth(0).SingleLine()
 							if m.Unread {
 								st.Bold()
 							} else if !selected {
@@ -271,6 +409,9 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 							subTxt := ui.Text(c, subj).FontSize(13).Grow(1).MinWidth(0).SingleLine()
 							if m.Unread {
 								subTxt.Bold()
+							}
+							if m.ThreadCount > 1 {
+								threadBadge(c, m.ThreadCount)
 							}
 							if crossFolder && m.Folder != "" {
 								miniTag(c, m.Folder, t.TextMuted, t.Surface)
@@ -306,29 +447,10 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 func (a *App) renderOfflineBanner(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Center().Padding(28).Gap(10).Children(func() {
-		if a.bridgeDisabled {
-			ui.Text(c, a.tr("Lokale Bridge ist deaktiviert", "Local bridge is disabled")).FontSize(15).Bold()
-			ui.Text(c, a.tr(
-				"Die App spricht über die lokale REST/SSE-Bridge mit Thunderbird. Sie ist in config.json ausgeschaltet (bridge.enabled=false). Aktivieren startet sie beim laufenden Host innerhalb weniger Sekunden.",
-				"The app talks to Thunderbird via the local REST/SSE bridge. It is switched off in config.json (bridge.enabled=false). Enabling starts it within a few seconds while the host is running.",
-			)).FontSize(12.5).TextColor(t.TextMuted)
-			lbl := a.tr("Bridge aktivieren", "Enable bridge")
-			if a.enablingBridge {
-				lbl = a.tr("Aktiviere…", "Enabling…")
-			}
-			btn := ui.PrimaryButton(c.Key("enable-bridge"), lbl)
-			if a.enablingBridge {
-				btn.Disabled(true)
-			}
-			if btn.Clicked() && !a.enablingBridge {
-				a.EnableBridge(context.Background())
-			}
-			return
-		}
-		ui.Text(c, a.tr("Thunderbird nicht verbunden", "Thunderbird not connected")).FontSize(15).Bold()
+		ui.Text(c, a.tr("Mail-Engine startet…", "Starting mail engine…")).FontSize(15).Bold()
 		ui.Text(c, a.tr(
-			"Starte Thunderbird mit aktivierter OmaThunder-Erweiterung. Der KI-Assistent und die Live-Bridge verbinden sich automatisch.",
-			"Launch Thunderbird with the OmaThunder extension enabled. The AI Assistant and live bridge connect automatically.",
+			"MailDiver verbindet sich lokal mit der IMAP/SMTP-Engine. Falls ein Fehler auftritt, prüfe deine Kontoeinstellungen.",
+			"MailDiver is connecting to the local IMAP/SMTP engine. If an error occurs, check your account settings.",
 		)).FontSize(12.5).TextColor(t.TextMuted)
 		if a.lastError != "" {
 			ui.Text(c, a.lastError).FontSize(11.5).TextColor(t.Danger)
@@ -364,383 +486,584 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 			return
 		}
 		msg := a.selectedMsg
+		if a.preview.msgID != msg.ID {
+			a.syncPreviewForMessage(msg)
+		}
 
-		ui.Scroll(c.Key("insp-scroll")).TrackScroll(&a.widgets.inspectorScroll).Fill().Children(func() {
-			ui.Column(c).FillWidth().Padding(18).Gap(14).Children(func() {
-				// Header block
-				ui.Column(c).FillWidth().Gap(6).Children(func() {
-					subj := msg.Subject
-					if subj == "" {
-						subj = a.tr("(Kein Betreff)", "(No Subject)")
-					}
-					ui.Text(c, subj).FontSize(18).Bold()
-					ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-						ui.Text(c, a.tr("Von: ", "From: ")+msg.From).FontSize(12).Bold()
-						ui.Text(c, "· "+formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12).TextColor(t.TextMuted)
-						if msg.Folder != "" {
-							pillBadge(c, msg.Folder, t.Surface, t.TextMuted)
+		renderMailPane := func() {
+			ui.Scroll(c.Key("insp-scroll")).TrackScroll(&a.widgets.inspectorScroll).Fill().Children(func() {
+				ui.Column(c).FillWidth().Padding(18).Gap(14).Children(func() {
+					// Header block
+					ui.Column(c).FillWidth().Gap(6).Children(func() {
+						subj := msg.Subject
+						if subj == "" {
+							subj = a.tr("(Kein Betreff)", "(No Subject)")
 						}
-					})
-					if len(msg.To) > 0 {
-						ui.Text(c, a.tr("An: ", "To: ")+strings.Join(msg.To, ", ")).FontSize(11.5).TextColor(t.TextMuted)
-					}
-				})
-
-				// Mail actions first (the single keys are in the tooltips), the AI actions below.
-				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-					if iconBtn(c.Key("act-reply-edit"), iconReply, a.tr("Antworten (r)", "Reply (r)"), ui.Color{}, false).Clicked() {
-						a.OpenComposeReply(msg, a.inspectorDraft)
-					}
-					readIcon := iconMailOpen
-					readTip := a.tr("Als gelesen markieren", "Mark as read")
-					readClr := t.Accent
-					readActive := msg.Unread
-					targetRead := true
-					if !msg.Unread {
-						readIcon = iconMailUnread
-						readTip = a.tr("Als ungelesen markieren", "Mark as unread")
-						readClr = ui.Color{}
-						targetRead = false
-					}
-					if iconBtn(c.Key("act-read"), readIcon, readTip+" (u)", readClr, readActive).Clicked() {
-						a.PerformMessageAction(context.Background(), msg.ID, bridgeclient.MessageActionsRequest{Read: &targetRead}, a.tr("Lesestatus aktualisiert", "Read status updated"))
-					}
-					starIcon := iconStar
-					starTip := a.tr("Mit Stern markieren", "Add star")
-					starClr := ui.Color{}
-					targetFlag := true
-					if msg.Flagged {
-						starIcon = iconStarFilled
-						starTip = a.tr("Markierung entfernen", "Remove star")
-						starClr = t.Warning
-						targetFlag = false
-					}
-					if iconBtn(c.Key("act-star"), starIcon, starTip+" (s)", starClr, msg.Flagged).Clicked() {
-						a.PerformMessageAction(context.Background(), msg.ID, bridgeclient.MessageActionsRequest{Flagged: &targetFlag}, a.tr("Markierung aktualisiert", "Star updated"))
-					}
-					if !a.readOnly {
-						ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 4)
-						if iconBtn(c.Key("act-archive"), iconArchive, a.tr("Archivieren (e)", "Archive (e)"), ui.Color{}, false).Clicked() {
-							a.performMessageAction(context.Background(), msg.ID, bridgeclient.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"), a.neighborAfterRemoval(msg.ID))
-						}
-						if iconBtn(c.Key("act-move"), iconFolderInput, a.tr("Verschieben nach… (v)", "Move to… (v)"), ui.Color{}, false).Clicked() {
-							a.OpenMovePicker()
-						}
-						if iconBtn(c.Key("act-trash"), iconTrash, a.tr("In Papierkorb verschieben (d)", "Move to Trash (d)"), t.Danger, false).Clicked() {
-							a.performMessageAction(context.Background(), msg.ID, bridgeclient.MessageActionsRequest{Trash: true}, a.tr("In Papierkorb verschoben", "Moved to Trash"), a.neighborAfterRemoval(msg.ID))
-						}
-					}
-					ui.Spacer(c)
-					if iconLabelBtn(c.Key("act-rule"), iconFilter, a.tr("Regel", "Rule"), false, a.tr("Quick-Regel-Assistent für Thunderbird-Filter öffnen (q · 0 Tokens)", "Open Quick-Rule Wizard for Thunderbird filters (q · 0 tokens)")).Clicked() {
-						a.OpenQuickRuleWizard()
-					}
-				})
-				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-					if iconLabelBtn(c.Key("ai-sum"), iconSparkles, a.tr("Zusammenfassen", "Summarize"), true, a.tr("Mail mit KI zusammenfassen (verbraucht KI-Tokens)", "Summarize email with AI (uses AI tokens)")).Clicked() {
-						a.RunInspectorAI(context.Background(), "summarize")
-					}
-					if iconLabelBtn(c.Key("ai-rep"), iconPen, a.tr("Entwurf", "Draft"), false, a.tr("Antwort mit KI entwerfen (verbraucht KI-Tokens)", "Draft reply with AI (uses AI tokens)")).Clicked() {
-						a.RunInspectorAI(context.Background(), "draft_reply")
-					}
-					if iconLabelBtn(c.Key("ai-ev"), iconCalPlus, a.tr("Termin", "Event"), false, a.tr("Termine aus Mail erkennen (verbraucht KI-Tokens)", "Extract event from email (uses AI tokens)")).Clicked() {
-						a.RunInspectorAI(context.Background(), "extract_events")
-					}
-					if iconLabelBtn(c.Key("ai-contacts"), iconUserPlus, a.tr("Kontakte", "Contacts"), false, a.tr("Kontakte aus E-Mail-Footer per KI erkennen (verbraucht KI-Tokens)", "Extract contacts from footer with AI (uses AI tokens)")).Clicked() {
-						a.RunInspectorAI(context.Background(), "extract_contacts")
-					}
-				})
-
-				// AI Result Card (rendered natively via markdown.View)
-				if a.inspectorLoading || a.inspectorResult != "" || a.inspectorError != "" || len(a.inspectorContacts) > 0 {
-					ui.Column(c).FillWidth().Padding(14).Radius(10).Border(1, t.Accent).Background(t.Surface).Gap(10).Children(func() {
-						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-							ui.Icon(c, iconSparkles).Size(14, 14).TextColor(t.Accent)
-							ui.Text(c, a.tr("KI-Analyse", "AI Analysis")+" ("+inspectorModeLabelLang(a.inspectorMode, a.uiLang())+")").FontSize(12.5).Bold().TextColor(t.Accent).Grow(1)
-							if a.inspectorLoading {
-								ui.Spinner(c)
+						ui.Text(c, subj).FontSize(18).Bold().Selectable()
+						ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, a.tr("Von: ", "From: ")+msg.From).FontSize(12).Bold().Selectable()
+							ui.Text(c, "· "+formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12).TextColor(t.TextMuted)
+							if msg.Folder != "" {
+								pillBadge(c, msg.Folder, t.Surface, t.TextMuted)
 							}
 						})
-						if a.inspectorError != "" {
-							ui.Text(c, a.inspectorError).FontSize(12).TextColor(t.Danger)
+						if len(msg.To) > 0 {
+							ui.Text(c, a.tr("An: ", "To: ")+strings.Join(msg.To, ", ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
 						}
-						if a.inspectorResult != "" {
-							markdown.View(c, a.inspectorResult, &a.widgets.mdInspector)
-						}
-						if len(a.inspectorContacts) > 0 {
-							a.renderInspectorContacts(c)
-						}
-						if a.inspectorDraft != "" {
-							ui.Row(c).Gap(8).Wrap().Children(func() {
-								if !a.readOnly && iconLabelBtn(c.Key("draft-save"), iconCheck, a.tr("Entwurf speichern", "Save Draft"), true, a.tr("Als Entwurf in Thunderbird speichern", "Save as draft in Thunderbird")).Clicked() {
-									a.SaveDraft(context.Background(), bridgeclient.ComposeRequest{
-										ReplyToMessageID: msg.ID,
-										ReplyType:        "reply",
-										Body:             a.inspectorDraft,
-									}, a.tr("Entwurf in Thunderbird gespeichert", "Draft saved in Thunderbird"))
-								}
-								if iconLabelBtn(c.Key("draft-open"), iconExternal, a.tr("In Thunderbird öffnen", "Open in Thunderbird"), false, a.tr("Compose-Fenster in Thunderbird öffnen", "Open compose window in Thunderbird")).Clicked() {
-									a.SaveDraft(context.Background(), bridgeclient.ComposeRequest{
-										ReplyToMessageID: msg.ID,
-										ReplyType:        "reply",
-										Body:             a.inspectorDraft,
-										OpenWindow:       true,
-									}, a.tr("Compose-Fenster geöffnet", "Compose window opened"))
-								}
-							})
-						}
-						if a.inspectorEvent != nil && !a.readOnly {
-							ui.Row(c).Gap(8).Children(func() {
-								if iconLabelBtn(c.Key("ev-adopt"), iconCalPlus, a.tr("Termin übernehmen: ", "Add Event: ")+a.inspectorEvent.Title, true, "").Clicked() {
-									a.OpenNewEventModal(a.inspectorEvent)
-								}
-							})
+						if len(msg.CC) > 0 {
+							ui.Text(c, "CC: "+strings.Join(msg.CC, ", ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
 						}
 					})
-				}
 
-				ui.Divider(c)
+					// Mail actions first (the single keys are in the tooltips), the AI actions below.
+					ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+						if a.isDraftsMessage(msg) {
+							if iconLabelBtn(c.Key("act-edit-draft"), iconPen, a.tr("Entwurf weiterbearbeiten", "Edit Draft"), true, a.tr("Gespeicherten Entwurf im Editor öffnen", "Open saved draft in compose editor")).Clicked() {
+								a.OpenComposeFromDraft(msg)
+							}
+							ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 2)
+						}
+						if iconBtn(c.Key("act-reply-edit"), iconReply, a.tr("Antworten (r)", "Reply (r)"), ui.Color{}, false).Clicked() {
+							a.OpenComposeReply(msg, a.inspectorDraft)
+						}
+						if iconBtn(c.Key("act-reply-all"), iconReplyAll, a.tr("Allen antworten", "Reply All"), ui.Color{}, false).Clicked() {
+							a.OpenComposeReplyAll(msg, a.inspectorDraft)
+						}
+						if iconBtn(c.Key("act-forward"), iconForward, a.tr("Weiterleiten", "Forward"), ui.Color{}, false).Clicked() {
+							a.OpenComposeForward(msg)
+						}
+						ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 2)
+						readIcon := iconMailOpen
+						readTip := a.tr("Als gelesen markieren", "Mark as read")
+						readClr := t.Accent
+						readActive := msg.Unread
+						targetRead := true
+						if !msg.Unread {
+							readIcon = iconMailUnread
+							readTip = a.tr("Als ungelesen markieren", "Mark as unread")
+							readClr = ui.Color{}
+							targetRead = false
+						}
+						if iconBtn(c.Key("act-read"), readIcon, readTip+" (u)", readClr, readActive).Clicked() {
+							a.PerformMessageAction(context.Background(), msg.ID, backend.MessageActionsRequest{Read: &targetRead}, a.tr("Lesestatus aktualisiert", "Read status updated"))
+						}
+						starIcon := iconStar
+						starTip := a.tr("Mit Stern markieren", "Add star")
+						starClr := ui.Color{}
+						targetFlag := true
+						if msg.Flagged {
+							starIcon = iconStarFilled
+							starTip = a.tr("Markierung entfernen", "Remove star")
+							starClr = t.Warning
+							targetFlag = false
+						}
+						if iconBtn(c.Key("act-star"), starIcon, starTip+" (s)", starClr, msg.Flagged).Clicked() {
+							a.PerformMessageAction(context.Background(), msg.ID, backend.MessageActionsRequest{Flagged: &targetFlag}, a.tr("Markierung aktualisiert", "Star updated"))
+						}
+						if !a.readOnly {
+							ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 2)
+							if iconBtn(c.Key("act-archive"), iconArchive, a.tr("Archivieren (e)", "Archive (e)"), ui.Color{}, false).Clicked() {
+								a.performMessageAction(context.Background(), msg.ID, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"), a.neighborAfterRemoval(msg.ID))
+							}
+							if iconBtn(c.Key("act-move"), iconFolderInput, a.tr("Verschieben nach… (v)", "Move to… (v)"), ui.Color{}, false).Clicked() {
+								a.OpenMovePicker()
+							}
+							if a.isDirectMode() {
+								if a.isJunkMessage(msg) {
+									if iconLabelBtn(c.Key("act-not-spam"), iconCheck, a.tr("Kein Spam", "Not Spam"), false, a.tr("Aus Spam-Ordner zurück in den Posteingang verschieben", "Move out of Spam back to Inbox")).Clicked() {
+										a.MarkMailNotSpam(context.Background(), msg.ID)
+									}
+								} else if iconBtn(c.Key("act-spam"), iconSpam, a.tr("Als Spam markieren", "Mark as Spam"), t.Warning, false).Clicked() {
+									a.MarkMailSpam(context.Background(), msg.ID)
+								}
+							}
+							if iconBtn(c.Key("act-trash"), iconTrash, a.tr("In Papierkorb verschieben (d)", "Move to Trash (d)"), t.Danger, false).Clicked() {
+								a.trashMails(context.Background(), nil, msg.ID)
+							}
+						}
+						ui.Spacer(c)
+						if iconBtn(c.Key("act-print"), iconPrinter, a.tr("Mail drucken (⌘P)", "Print email (⌘P)"), ui.Color{}, false).Clicked() {
+							a.PrintSelectedMessage(context.Background())
+						}
+						prevLbl := a.tr("Web-Vorschau", "Web Preview")
+						if len(a.preview.links) > 0 && !a.preview.open {
+							prevLbl = fmt.Sprintf("%s (%d)", prevLbl, len(a.preview.links))
+						}
+						if iconLabelBtn(c.Key("act-preview"), iconLink, prevLbl, a.preview.open, a.tr("Eingebettete Browser-Vorschau im Split-Panel ein/ausblenden", "Toggle embedded browser preview split panel")).Clicked() {
+							a.ToggleWebPreview()
+						}
+						if iconLabelBtn(c.Key("act-rule"), iconFilter, a.tr("Regel", "Rule"), false, a.tr("Quick-Regel-Assistent öffnen (q · 0 Tokens)", "Open Quick-Rule Wizard (q · 0 tokens)")).Clicked() {
+							a.OpenQuickRuleWizard()
+						}
+					})
+					ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+						if iconLabelBtn(c.Key("ai-sum"), iconSparkles, a.tr("Zusammenfassen", "Summarize"), true, a.tr("Mail mit KI zusammenfassen (verbraucht KI-Tokens)", "Summarize email with AI (uses AI tokens)")).Clicked() {
+							a.RunInspectorAI(context.Background(), "summarize")
+						}
+						if iconLabelBtn(c.Key("ai-rep"), iconPen, a.tr("Entwurf", "Draft"), false, a.tr("Antwort mit KI entwerfen (verbraucht KI-Tokens)", "Draft reply with AI (uses AI tokens)")).Clicked() {
+							a.RunInspectorAI(context.Background(), "draft_reply")
+						}
+						if iconLabelBtn(c.Key("ai-ev"), iconCalPlus, a.tr("Termin", "Event"), false, a.tr("Termine aus Mail erkennen (verbraucht KI-Tokens)", "Extract event from email (uses AI tokens)")).Clicked() {
+							a.RunInspectorAI(context.Background(), "extract_events")
+						}
+						if iconLabelBtn(c.Key("ai-contacts"), iconUserPlus, a.tr("Kontakte", "Contacts"), false, a.tr("Kontakte aus E-Mail-Footer per KI erkennen (verbraucht KI-Tokens)", "Extract contacts from footer with AI (uses AI tokens)")).Clicked() {
+							a.RunInspectorAI(context.Background(), "extract_contacts")
+						}
+					})
 
-				// Body
-				a.renderMailBody(c, msg)
-
-				// Attachments
-				if len(msg.Attachments) > 0 {
-					ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
-						ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
-						ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
-							for _, att := range msg.Attachments {
-								pillBadge(c, fmt.Sprintf("%s (%d KB)", att.Name, max(1, att.Size/1024)), t.Background, t.Text)
+					// .ics Calendar Invitation Banner (RSVP Accept/Tentative/Decline + 1-click import, 0 AI tokens)
+					if msg.HasICS {
+						ui.Column(c.Key("ics-banner")).FillWidth().Padding(10, 12).Radius(8).Background(withAlpha(t.Accent, 0.12)).Border(1, withAlpha(t.Accent, 0.45)).Gap(8).Children(func() {
+							ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+								ui.Icon(c, iconCal).Size(18, 18).TextColor(t.Accent).Shrink(0)
+								ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+									invTitle := a.tr("Termineinladung (.ics)", "Calendar Invitation (.ics)")
+									if msg.ICSInvite != nil && msg.ICSInvite.Title != "" {
+										invTitle = msg.ICSInvite.Title
+									}
+									ui.Text(c, invTitle).FontSize(12.5).Bold().Selectable()
+									if msg.ICSInvite != nil {
+										var parts []string
+										if msg.ICSInvite.Start != "" {
+											parts = append(parts, formatDateTimeLang(msg.ICSInvite.Start, a.uiLang()))
+										}
+										if msg.ICSInvite.Location != "" {
+											parts = append(parts, msg.ICSInvite.Location)
+										}
+										if msg.ICSInvite.Organizer != "" {
+											parts = append(parts, a.tr("Organisator: ", "Organizer: ")+msg.ICSInvite.Organizer)
+										}
+										if len(parts) > 0 {
+											ui.Text(c, strings.Join(parts, " · ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
+										}
+									}
+								})
+								if msg.ICSInvite != nil {
+									if joinURL, joinLabel := a.eventJoinLink(*msg.ICSInvite); joinURL != "" {
+										if iconLabelBtn(c.Key("ics-join"), iconLink, joinLabel, true, joinURL).Clicked() {
+											_ = openExternalURL(joinURL)
+										}
+									}
+								}
+							})
+							if a.isDirectMode() {
+								ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+									if iconLabelBtn(c.Key("ics-accept"), iconCheck, a.tr("Zusagen", "Accept"), true, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply")).Clicked() {
+										a.RespondMailICS(context.Background(), msg.ID, "accepted")
+									}
+									if ui.Button(c.Key("ics-tentative"), a.tr("Vielleicht", "Tentative")).Clicked() {
+										a.RespondMailICS(context.Background(), msg.ID, "tentative")
+									}
+									if ui.Button(c.Key("ics-decline"), a.tr("Absagen", "Decline")).TextColor(t.Danger).Clicked() {
+										a.RespondMailICS(context.Background(), msg.ID, "declined")
+									}
+									ui.Spacer(c)
+									if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
+										a.ImportMailICS(context.Background(), msg.ID)
+									}
+								})
 							}
 						})
-					})
-				}
+					}
+
+					// AI Result Card (rendered natively via markdown.View)
+					if a.inspectorLoading || a.inspectorResult != "" || a.inspectorError != "" || len(a.inspectorContacts) > 0 {
+						ui.Column(c).FillWidth().Padding(14).Radius(10).Border(1, t.Accent).Background(t.Surface).Gap(10).Children(func() {
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+								ui.Icon(c, iconSparkles).Size(14, 14).TextColor(t.Accent)
+								ui.Text(c, a.tr("KI-Analyse", "AI Analysis")+" ("+inspectorModeLabelLang(a.inspectorMode, a.uiLang())+")").FontSize(12.5).Bold().TextColor(t.Accent).Grow(1)
+								if a.inspectorLoading {
+									ui.Spinner(c)
+								}
+							})
+							if a.inspectorError != "" {
+								ui.Text(c, a.inspectorError).FontSize(12).TextColor(t.Danger)
+							}
+							if a.inspectorResult != "" {
+								markdown.View(c, a.inspectorResult, &a.widgets.mdInspector)
+							}
+							if len(a.inspectorContacts) > 0 {
+								a.renderInspectorContacts(c)
+							}
+							if a.inspectorDraft != "" {
+								ui.Row(c).Gap(8).Wrap().Children(func() {
+									if iconLabelBtn(c.Key("draft-reply"), iconReply, a.tr("In Antworten öffnen", "Open in Reply"), true, a.tr("Entwurf im Antworten-Dialog bearbeiten & senden", "Edit & send draft in Reply modal")).Clicked() {
+										a.OpenComposeReply(msg, a.inspectorDraft)
+									}
+									if !a.readOnly && iconLabelBtn(c.Key("draft-save"), iconCheck, a.tr("Als Entwurf speichern", "Save Draft"), false, a.tr("Im Entwürfe-Ordner speichern", "Save to Drafts folder")).Clicked() {
+										a.SaveDraft(context.Background(), backend.ComposeRequest{
+											AccountID:        msg.AccountID,
+											ReplyToMessageID: msg.ID,
+											ReplyType:        "reply",
+											Body:             a.inspectorDraft,
+										}, a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+									}
+								})
+							}
+							if a.inspectorEvent != nil && !a.readOnly {
+								ui.Row(c).Gap(8).Children(func() {
+									if iconLabelBtn(c.Key("ev-adopt"), iconCalPlus, a.tr("Termin übernehmen: ", "Add Event: ")+a.inspectorEvent.Title, true, "").Clicked() {
+										a.OpenNewEventModal(a.inspectorEvent)
+									}
+								})
+							}
+						})
+					}
+
+					ui.Divider(c)
+
+					// Conversation: newer mails above the open one, older ones below (newest on top).
+					newerMails, olderMails := a.conversationSplit(msg)
+					a.renderConversationGroup(c, "newer", a.trf("Neuere Mails in dieser Unterhaltung (%d)", "Newer emails in this conversation (%d)", len(newerMails)), newerMails)
+
+					// Body
+					a.renderMailBody(c, msg)
+
+					// Attachments (clickable download & open)
+					if len(msg.Attachments) > 0 {
+						ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+							ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
+							ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
+								for i, att := range msg.Attachments {
+									attCopy := att
+									lbl := fmt.Sprintf("%s (%d KB)", attCopy.Name, max(1, attCopy.Size/1024))
+									if a.isDirectMode() {
+										if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
+											a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
+										}
+									} else {
+										pillBadge(c, lbl, t.Background, t.Text)
+									}
+								}
+							})
+						})
+					}
+
+					a.renderConversationGroup(c, "older", a.trf("Frühere Mails in dieser Unterhaltung (%d)", "Earlier emails in this conversation (%d)", len(olderMails)), olderMails)
+				})
 			})
-		})
+		}
+
+		if !a.preview.open {
+			renderMailPane()
+			return
+		}
+		a.preview.splitPct = clampPreviewSplitPct(a.preview.splitPct)
+		if a.preview.layout == "bottom" {
+			ui.SplitVerticalPercent(c.Key("insp-prev-vsplit"), &a.preview.splitPct, renderMailPane, func() {
+				a.renderWebPreviewPane(c)
+			}).Fill()
+		} else {
+			ui.SplitPercent(c.Key("insp-prev-hsplit"), &a.preview.splitPct, renderMailPane, func() {
+				a.renderWebPreviewPane(c)
+			}).Fill()
+		}
 	})
 }
 
-func (a *App) renderCalendarWorkspace(c *ui.Context) {
+// RenderComposeWindow renders the detached native Compose window on desktop.
+func (a *App) RenderComposeWindow(c *ui.Context) {
+	if a.uiTheme != nil && a.uiTheme.theme != nil {
+		c.SetTheme(a.uiTheme.theme)
+	}
 	t := c.Theme()
-	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		ui.Row(c).FillWidth().Padding(12, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-			ui.Text(c, a.tr("Kalender & Termine", "Calendar & Events")).FontSize(15).Bold().Grow(1)
-			winIdx := 1
-			switch a.calDays {
-			case 7:
-				winIdx = 0
-			case 30:
-				winIdx = 2
-			}
-			if ui.Segmented(c, &winIdx, a.tr("7 Tage", "7 Days"), a.tr("14 Tage", "14 Days"), a.tr("30 Tage", "30 Days")).Changed() {
-				switch winIdx {
-				case 0:
-					a.calDays = 7
-				case 2:
-					a.calDays = 30
-				default:
-					a.calDays = 14
-				}
-				a.RefreshAll(context.Background())
-			}
-			if !a.readOnly {
-				if iconLabelBtn(c.Key("cal-new"), iconCalPlus, a.tr("Neuer Termin", "New Event"), true, a.tr("Neuen Kalendereintrag anlegen", "Create new calendar event")).Clicked() {
-					a.OpenNewEventModal(nil)
-				}
-			}
-		})
-
-		if !a.bridgeOnline || !a.thunderbirdConnected {
-			a.renderOfflineBanner(c)
-			return
-		}
-
-		ui.Scroll(c.Key("cal-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(16).Gap(14).Children(func() {
-				if len(a.events) == 0 {
-					ui.Text(c, a.trf("Keine Termine in den nächsten %d Tagen.", "No events in the next %d days.", a.calDays)).FontSize(13).TextColor(t.TextMuted)
-					return
-				}
-
-				grouped := make(map[string][]bridgeclient.CalendarEvent)
-				var keys []string
-				for _, ev := range a.events {
-					dk := eventDayKey(ev.Start)
-					if _, ok := grouped[dk]; !ok {
-						keys = append(keys, dk)
-					}
-					grouped[dk] = append(grouped[dk], ev)
-				}
-				sort.Strings(keys)
-
-				for _, dk := range keys {
-					ui.Column(c.Key("calday-" + dk)).FillWidth().Gap(8).Children(func() {
-						ui.Text(c, dayHeadingLang(dk, a.uiLang())).FontSize(12.5).Bold().TextColor(t.Accent)
-						for _, ev := range grouped[dk] {
-							evCopy := ev
-							ui.Row(c).FillWidth().Padding(10, 12).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(12).AlignItems(ui.Center).Children(func() {
-								ui.Text(c, formatEventRangeLang(evCopy.AllDay, evCopy.Start, evCopy.End, a.uiLang())).FontSize(12).Bold().TextColor(t.Accent).Width(110).Shrink(0)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-										ui.Text(c, evCopy.Title).FontSize(13).Bold()
-										if evCopy.IsRecurring || evCopy.RecurrenceID != "" {
-											pillBadge(c, a.tr("Serie", "Recurring"), t.Background, t.TextMuted)
-										}
-									})
-									var meta []string
-									if evCopy.Calendar != "" {
-										meta = append(meta, evCopy.Calendar)
-									}
-									if evCopy.Location != "" {
-										meta = append(meta, evCopy.Location)
-									}
-									if len(meta) > 0 {
-										ui.Text(c, strings.Join(meta, " · ")).FontSize(11.5).TextColor(t.TextMuted)
-									}
-									if evCopy.Description != "" {
-										ui.Text(c, truncateText(evCopy.Description, 140)).FontSize(11.5).TextColor(t.TextMuted)
-									}
-								})
-								if !a.readOnly && !evCopy.ReadOnly {
-									if iconBtn(c.Key("ev-del-"+evCopy.ID+"-"+evCopy.RecurrenceID), iconTrash, a.tr("Termin löschen…", "Delete event…"), t.Danger, false).Clicked() {
-										a.RequestDeleteCalendarEvent(evCopy)
-									}
-								}
-							})
-						}
-					})
-				}
-			})
-		})
+	c.Root().Background(t.Surface)
+	if a.composeOpen && a.composeBaseline == "" {
+		a.composeBaseline = a.composeSnapshot()
+	}
+	if c.Shortcut(0, ui.KeyEscape) {
+		a.TryCloseComposeWindow()
+	}
+	ui.Column(c).Fill().Padding(16).Background(t.Surface).Gap(10).Children(func() {
+		a.renderComposeContent(c, true)
 	})
 }
 
 func (a *App) renderComposeModal(c *ui.Context) {
+	if a.detachedAuxWindows {
+		return
+	}
 	t := c.Theme()
 	ui.Modal(c, &a.composeOpen, func() {
-		ui.Column(c).Width(560).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
-			title := a.tr("Neue E-Mail", "New Email")
-			if a.composeReplyTo != "" {
-				title = a.tr("Antwort verfassen", "Compose Reply")
-			}
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).FontSize(15).Bold().Grow(1)
-				if ui.Button(c.Key("cmp-x"), "✕").Clicked() {
-					a.composeOpen = false
-				}
-			})
-			ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).FillWidth()
-			ui.TextInput(c.Key("cmp-cc"), &a.composeCC).Placeholder(a.tr("CC (optional)…", "CC (optional)…")).FillWidth()
-			ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
-			ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext…", "Message body…")).FillWidth().Height(190)
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-				ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.TextMuted)
-				ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).TextColor(t.TextMuted).
-					Tooltip(a.tr("Standard: wie in Thunderbird für diese Identität eingestellt. Signieren braucht einen OpenPGP- oder S/MIME-Schlüssel.",
-						"Default: as set in Thunderbird for this identity. Signing needs an OpenPGP or S/MIME key."))
-				ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Standard", "Default"), a.tr("Signieren", "Sign"), a.tr("Ohne", "None"))
-			})
-			if a.composeReplyEncrypted {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Icon(c, iconLock).Size(13, 13).TextColor(t.Success)
-					ui.Text(c, a.tr("Antwort auf eine verschlüsselte Mail: wird verschlüsselt gesendet. „Entwurf speichern“ öffnet sie in Thunderbird.",
-						"Reply to an encrypted email: it is sent encrypted. “Save Draft” opens it in Thunderbird.")).FontSize(11.5).TextColor(t.TextMuted).Grow(1)
-				})
-			}
-
-			if a.readOnly {
-				ui.Text(c, a.tr("Read-Only-Modus aktiv: Speichern/Senden in Thunderbird deaktiviert.", "Read-only mode active: saving/sending in Thunderbird is disabled.")).FontSize(11.5).TextColor(t.Warning)
-			}
-
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Spacer(c)
-				if !a.readOnly {
-					if ui.Button(c.Key("cmp-draft"), a.tr("Entwurf speichern", "Save Draft")).Clicked() {
-						a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf in Thunderbird gespeichert", "Draft saved in Thunderbird"))
-					}
-					if ui.Button(c.Key("cmp-open"), a.tr("In Thunderbird öffnen", "Open in Thunderbird")).Clicked() {
-						a.SaveDraft(context.Background(), a.buildComposeReq(true), a.tr("Compose-Fenster in Thunderbird geöffnet", "Compose window opened in Thunderbird"))
-					}
-					if a.cfg.Bridge.AllowSend {
-						sendLabel := a.tr("Direkt senden", "Send Now")
-						if a.composeConfirm {
-							sendLabel = a.tr("Wirklich senden?", "Confirm Send?")
-						}
-						if a.composeBusy {
-							sendLabel = a.tr("Sende…", "Sending…")
-						}
-						if ui.PrimaryButton(c.Key("cmp-send"), sendLabel).Clicked() && !a.composeBusy {
-							if !a.composeConfirm {
-								a.composeConfirm = true
-							} else {
-								a.SendCompose(context.Background(), a.buildComposeReq(false))
-							}
-						}
-					}
-				}
-			})
+		ui.Column(c).Width(620).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+			a.renderComposeContent(c, false)
 		})
 	})
 }
 
-func (a *App) buildComposeReq(openWindow bool) bridgeclient.ComposeRequest {
-	return bridgeclient.ComposeRequest{
-		AccountID:        a.selectedAccount,
-		To:               splitEmailList(a.composeTo),
-		CC:               splitEmailList(a.composeCC),
-		Subject:          strings.TrimSpace(a.composeSubject),
-		Body:             a.composeBody,
-		ReplyToMessageID: a.composeReplyTo,
-		ReplyType:        a.composeReplyType,
-		OpenWindow:       openWindow,
-		Sign:             [...]string{"", "on", "off"}[min(max(a.composeSign, 0), 2)],
-	}
-}
-
-func (a *App) renderEventModal(c *ui.Context) {
+func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 	t := c.Theme()
-	ui.Modal(c, &a.eventOpen, func() {
-		ui.Column(c).Width(480).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				ui.Text(c, a.tr("Neuer Kalendereintrag", "New Calendar Event")).FontSize(15).Bold().Grow(1)
-				if ui.Button(c.Key("ev-x"), "✕").Clicked() {
-					a.eventOpen = false
-				}
-			})
-			if len(a.eventCalLabels) > 0 {
-				ui.Select(c.Key("ev-cal"), &a.eventCalendar, a.eventCalLabels).FillWidth()
+	title := a.ComposeWindowTitle()
+	if !inWindow {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, title).FontSize(15).Bold().Grow(1)
+			if ui.Button(c.Key("cmp-x"), "✕").Tooltip(a.tr("Schließen (esc)", "Close (esc)")).Clicked() {
+				a.composeOpen = false
 			}
-			ui.TextInput(c.Key("ev-title"), &a.eventTitle).Placeholder(a.tr("Titel…", "Title…")).FillWidth()
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.TextInput(c.Key("ev-start"), &a.eventStart).Placeholder("Start (YYYY-MM-DDTHH:MM)").Grow(1)
-				ui.TextInput(c.Key("ev-end"), &a.eventEnd).Placeholder(a.tr("Ende (YYYY-MM-DDTHH:MM)", "End (YYYY-MM-DDTHH:MM)")).Grow(1)
-			})
-			ui.Checkbox(c.Key("ev-allday"), &a.eventAllDay, a.tr("Ganztägiger Termin", "All-day event"))
-			ui.TextInput(c.Key("ev-loc"), &a.eventLocation).Placeholder(a.tr("Ort / Meeting-Link…", "Location / Meeting link…")).FillWidth()
-			ui.TextArea(c.Key("ev-desc"), &a.eventDesc).Placeholder(a.tr("Notizen…", "Notes…")).FillWidth().Height(90)
+		})
+	}
+	if a.composeCloseAsk {
+		ui.Row(c.Key("cmp-close-ask")).FillWidth().Padding(8, 10).Gap(8).AlignItems(ui.Center).Radius(8).
+			Background(withAlpha(t.Warning, 0.16)).Border(1, withAlpha(t.Warning, 0.5)).Children(func() {
+			ui.Text(c, a.tr("Nicht gesendet.", "Not sent.")).FontSize(12.5).Bold().Grow(1).MinWidth(0).SingleLine()
+			if !a.readOnly && ui.PrimaryButton(c.Key("cmp-ask-save"), a.tr("Als Entwurf speichern", "Save as draft")).Clicked() {
+				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+			}
+			if ui.Button(c.Key("cmp-ask-discard"), a.tr("Verwerfen", "Discard")).Clicked() {
+				a.closeCompose()
+			}
+			if ui.Button(c.Key("cmp-ask-keep"), a.tr("Weiter schreiben", "Keep writing")).Clicked() {
+				a.composeCloseAsk = false
+			}
+		})
+	}
 
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c.Key("ev-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
-					a.eventOpen = false
+	// Sender account / alias identity selector when multiple identities exist
+	if choices := a.composeIdentityChoices(); len(choices) > 1 {
+		labels := make([]string, 0, len(choices))
+		choiceByLabel := make(map[string]composeIdentityChoice, len(choices))
+		for _, ch := range choices {
+			labels = append(labels, ch.Label)
+			choiceByLabel[ch.Label] = ch
+		}
+		if _, ok := choiceByLabel[a.composeAccountLabel]; !ok && len(choices) > 0 {
+			a.composeAccountLabel = choices[0].Label
+			a.composeAccountID = choices[0].AccountID
+			a.composeIdentityID = choices[0].IdentityID
+			a.composeFromEmail = choices[0].Email
+			a.composeFromName = choices[0].Name
+		}
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.tr("Von:", "From:")).FontSize(12).Width(42).TextColor(t.TextMuted)
+			if ui.Select(c.Key("cmp-from"), &a.composeAccountLabel, labels).Grow(1).Changed() {
+				oldSig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+				ch := choiceByLabel[a.composeAccountLabel]
+				a.composeAccountID = ch.AccountID
+				a.composeIdentityID = ch.IdentityID
+				a.composeFromEmail = ch.Email
+				a.composeFromName = ch.Name
+				newSig := stripSignatureDelim(ch.Signature)
+				if newSig == "" {
+					newSig = stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
 				}
-				saveLbl := a.tr("Termin speichern", "Save Event")
-				if a.eventBusy {
-					saveLbl = a.tr("Speichere…", "Saving…")
+				if oldSig != "" && strings.Contains(a.composeBody, "-- \n"+oldSig) {
+					if newSig != "" {
+						a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "-- \n"+newSig, 1)
+					} else {
+						a.composeBody = strings.Replace(a.composeBody, "\n\n-- \n"+oldSig, "", 1)
+						a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "", 1)
+					}
+				} else if oldSig == "" && newSig != "" {
+					a.composeBody = appendAccountSignature(a.composeBody, newSig)
 				}
-				if ui.PrimaryButton(c.Key("ev-save"), saveLbl).Clicked() && !a.eventBusy {
-					a.CreateCalendarEvent(context.Background(), bridgeclient.CreateCalendarEventRequest{
-						CalendarID:  a.eventCalByLabel[a.eventCalendar],
-						Title:       strings.TrimSpace(a.eventTitle),
-						Start:       normalizeDateTimeInput(a.eventStart),
-						End:         normalizeDateTimeInput(a.eventEnd),
-						AllDay:      a.eventAllDay,
-						Location:    strings.TrimSpace(a.eventLocation),
-						Description: strings.TrimSpace(a.eventDesc),
+			}
+		})
+	}
+
+	// To field + autocomplete suggestions
+	ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).FillWidth()
+	a.refreshComposeSuggestions("to", a.composeTo)
+	a.renderComposeSuggestions(c, "to", a.composeSuggestTo)
+
+	// CC & BCC row + autocomplete suggestions
+	ui.Row(c).FillWidth().Gap(8).Children(func() {
+		ui.TextInput(c.Key("cmp-cc"), &a.composeCC).Placeholder(a.tr("CC (optional)…", "CC (optional)…")).Grow(1)
+		ui.TextInput(c.Key("cmp-bcc"), &a.composeBCC).Placeholder(a.tr("BCC (optional)…", "BCC (optional)…")).Grow(1)
+	})
+	a.refreshComposeSuggestions("cc", a.composeCC)
+	a.renderComposeSuggestions(c, "cc", a.composeSuggestCC)
+	a.refreshComposeSuggestions("bcc", a.composeBCC)
+	a.renderComposeSuggestions(c, "bcc", a.composeSuggestBCC)
+
+	ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
+	ui.Row(c.Key("cmp-fmt-bar")).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, a.tr("Format:", "Format:")).FontSize(11).TextColor(t.TextMuted)
+		if ui.Button(c.Key("cmp-fmt-b"), "B").Padding(1, 7).Tooltip(a.tr("Fett (**Text**)", "Bold (**text**)")).Clicked() {
+			a.composeBody = insertComposeSnippet(a.composeBody, "**fett**")
+		}
+		if ui.Button(c.Key("cmp-fmt-i"), "I").Padding(1, 7).Tooltip(a.tr("Kursiv (*Text*)", "Italic (*text*)")).Clicked() {
+			a.composeBody = insertComposeSnippet(a.composeBody, "*kursiv*")
+		}
+		if ui.Button(c.Key("cmp-fmt-code"), "</>").Padding(1, 7).Tooltip(a.tr("Code (`code`)", "Code (`code`)")).Clicked() {
+			a.composeBody = insertComposeSnippet(a.composeBody, "`code`")
+		}
+		if ui.Button(c.Key("cmp-fmt-ul"), "• Liste").Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
+			a.composeBody = insertComposeSnippet(a.composeBody, "\n- Punkt 1\n- Punkt 2")
+		}
+	})
+	bodyArea := ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext (⌘↩ zum Senden)…", "Message body (⌘↩ to send)…")).FillWidth()
+	if inWindow {
+		bodyArea.Grow(1).MinHeight(180)
+	} else {
+		bodyArea.Height(190)
+	}
+	if !a.readOnly && !a.composeBusy && (bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) || c.Shortcut(ui.Cmd, ui.KeyEnter)) {
+		if !a.composeConfirm {
+			a.composeConfirm = true
+			a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
+		} else {
+			a.SendCompose(context.Background(), a.buildComposeReq(false))
+		}
+	}
+
+	if a.composeForwardHTML != "" {
+		ui.Checkbox(c.Key("cmp-keep-html"), &a.composeKeepHTML, a.tr("Original-Formatierung (HTML) beim Weiterleiten beibehalten", "Keep original HTML formatting when forwarding"))
+	}
+
+	// Outgoing attachments bar (native file picker + manual path input + carried-over draft/forward attachments)
+	ui.Column(c).FillWidth().Gap(6).Children(func() {
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconPaperclip).Size(14, 14).TextColor(t.TextMuted)
+			if ui.Button(c.Key("cmp-att-browse"), a.tr("Datei wählen…", "Browse…")).Clicked() {
+				a.pickFile(FilePickRequest{
+					Mode:  "open-multi",
+					Title: a.tr("Anhänge auswählen", "Select Attachments"),
+				}, func(paths []string) {
+					for _, p := range paths {
+						a.addComposeAttachment(p)
+					}
+				})
+			}
+			attIn := ui.TextInput(c.Key("cmp-att-in"), &a.composeAttachInput).Placeholder(a.tr("Oder Pfad eingeben (z. B. ~/Downloads/datei.pdf)…", "Or type path (e.g. ~/Downloads/file.pdf)…")).Grow(1)
+			addClicked := ui.Button(c.Key("cmp-att-add"), a.tr("Anhängen", "Attach")).Clicked()
+			if (addClicked || attIn.Submitted()) && strings.TrimSpace(a.composeAttachInput) != "" {
+				a.addComposeAttachment(a.composeAttachInput)
+			}
+		})
+		if len(a.composeSourceAttachments) > 0 || len(a.composeAttachments) > 0 {
+			removeSrcIdx := -1
+			removeIdx := -1
+			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				for i, sa := range a.composeSourceAttachments {
+					idx := i
+					name := sa.Name
+					if name == "" {
+						name = "attachment"
+					}
+					ui.Row(c.Key(fmt.Sprintf("cmp-src-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
+						ui.Text(c, name).FontSize(11.5).SingleLine()
+						if ui.Button(c.Key(fmt.Sprintf("cmp-src-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
+							removeSrcIdx = idx
+						}
+					})
+				}
+				for i, p := range a.composeAttachments {
+					idx := i
+					name := filepath.Base(p)
+					ui.Row(c.Key(fmt.Sprintf("cmp-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
+						ui.Text(c, name).FontSize(11.5).SingleLine()
+						if ui.Button(c.Key(fmt.Sprintf("cmp-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
+							removeIdx = idx
+						}
 					})
 				}
 			})
-		})
+			if removeSrcIdx >= 0 {
+				a.removeComposeSourceAttachment(removeSrcIdx)
+			}
+			if removeIdx >= 0 {
+				a.removeComposeAttachment(removeIdx)
+			}
+		}
 	})
+
+	if a.composeReplyEncrypted {
+		ui.Text(c, a.tr(
+			"Hinweis: Die Original-Mail war verschlüsselt. Aktiviere unten „S/MIME verschlüsseln“, falls das Empfänger-Zertifikat vorhanden ist.",
+			"Note: the original email was encrypted. Enable “S/MIME encrypt” below if the recipient certificate is available.",
+		)).FontSize(11.5).TextColor(t.Warning)
+	}
+
+	if a.isDirectMode() && !a.readOnly {
+		ui.Row(c.Key("cmp-smime-bar")).FillWidth().Gap(10).Wrap().AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
+			ui.Text(c, "S/MIME:").FontSize(11.5).TextColor(t.TextMuted)
+			ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Auto", "Auto"), a.tr("Signieren", "Sign"), a.tr("Ohne", "Off"))
+			ui.Checkbox(c.Key("cmp-enc"), &a.composeEncrypt, a.tr("Verschlüsseln", "Encrypt"))
+		})
+	}
+
+	if a.readOnly {
+		ui.Text(c, a.tr("Bitte zuerst ein IMAP/SMTP-Konto verbinden, um E-Mails zu senden.", "Please connect an IMAP/SMTP account first to send emails.")).FontSize(11.5).TextColor(t.Warning)
+	}
+
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		if inWindow {
+			if ui.Button(c.Key("cmp-win-close"), a.tr("Schließen", "Close")).Clicked() {
+				a.TryCloseComposeWindow()
+			}
+		}
+		ui.Spacer(c)
+		if !a.readOnly {
+			if ui.Button(c.Key("cmp-draft"), a.tr("Entwurf speichern", "Save Draft")).Clicked() {
+				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+			}
+			sendLabel := a.tr("Senden", "Send")
+			if a.composeConfirm {
+				sendLabel = a.tr("Wirklich senden?", "Confirm Send?")
+			}
+			if a.composeBusy {
+				sendLabel = a.tr("Sende…", "Sending…")
+			}
+			if ui.PrimaryButton(c.Key("cmp-send"), sendLabel).Tooltip(a.tr("Senden (⌘↩)", "Send (⌘↩)")).Clicked() && !a.composeBusy {
+				if !a.composeConfirm {
+					a.composeConfirm = true
+				} else {
+					a.SendCompose(context.Background(), a.buildComposeReq(false))
+				}
+			}
+		}
+	})
+}
+
+func (a *App) renderComposeSuggestions(c *ui.Context, field string, suggestions []mailengine.RecipientSuggestion) {
+	if len(suggestions) == 0 {
+		return
+	}
+	t := c.Theme()
+	ui.Row(c.Key("cmp-sug-" + field)).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+		for i, s := range suggestions {
+			sCopy := s
+			lbl := sCopy.Email
+			if sCopy.DisplayName != "" && !strings.EqualFold(sCopy.DisplayName, sCopy.Email) {
+				lbl = fmt.Sprintf("%s <%s>", sCopy.DisplayName, sCopy.Email)
+			}
+			btn := ui.Button(c.Key(fmt.Sprintf("cmp-sug-%s-%d", field, i)), lbl).Padding(3, 8).Background(t.Background).Border(1, withAlpha(t.Accent, 0.45))
+			if btn.Clicked() {
+				a.applyComposeSuggestion(field, sCopy)
+			}
+		}
+	})
+}
+
+func (a *App) buildComposeReq(openWindow bool) backend.ComposeRequest {
+	accID := a.composeAccountID
+	if accID == "" {
+		accID = a.selectedAccount
+	}
+	return backend.ComposeRequest{
+		AccountID:         accID,
+		IdentityID:        a.composeIdentityID,
+		FromEmail:         a.composeFromEmail,
+		FromName:          a.composeFromName,
+		DraftMessageID:    a.composeDraftID,
+		To:                splitEmailList(a.composeTo),
+		CC:                splitEmailList(a.composeCC),
+		BCC:               splitEmailList(a.composeBCC),
+		Subject:           strings.TrimSpace(a.composeSubject),
+		Body:              a.composeBody,
+		Attachments:       append([]string(nil), a.composeAttachments...),
+		SourceAttachments: append([]backend.SourceAttachment(nil), a.composeSourceAttachments...),
+		ReplyToMessageID:  a.composeReplyTo,
+		ReplyType:         a.composeReplyType,
+		InReplyTo:         a.composeInReplyTo,
+		References:        a.composeReferences,
+		OpenWindow:        openWindow,
+		Sign:              [...]string{"", "on", "off"}[min(max(a.composeSign, 0), 2)],
+		Encrypt:           a.composeEncrypt,
+	}
 }
 
 func (a *App) currentViewTitle() string {
@@ -753,6 +1076,8 @@ func (a *App) currentViewTitle() string {
 		return a.tr("Action & Warten", "Action & Waiting")
 	case "calendar":
 		return a.tr("Kalender & Termine", "Calendar & Events")
+	case "contacts":
+		return a.tr("Kontakte", "Contacts")
 	default:
 		if strings.HasPrefix(a.navID, "folder:") {
 			fid := strings.TrimPrefix(a.navID, "folder:")
@@ -863,14 +1188,14 @@ func (a *App) renderInspectorContacts(c *ui.Context) {
 				if !p.Applied && p.Status != "complete" {
 					if p.Status == "enrich" {
 						prompt := a.tr(
-							"Kontakt existiert in Thunderbird — fehlende Felder ergänzen: ",
-							"Contact exists in Thunderbird — fill missing fields: ",
+							"Kontakt existiert im Adressbuch — fehlende Felder ergänzen: ",
+							"Contact exists in address book — fill missing fields: ",
 						) + strings.Join(p.MissingFields, ", ") + "?"
 						ui.Text(c, prompt).FontSize(12).Bold().TextColor(t.Warning)
 					} else {
 						ui.Text(c, a.tr(
-							"Neuer Kontakt im Footer erkannt — in dein Thunderbird-Adressbuch importieren?",
-							"New contact detected in footer — import into your Thunderbird address book?",
+							"Neuer Kontakt im Footer erkannt — in dein MailDiver-Adressbuch importieren?",
+							"New contact detected in footer — import into your MailDiver address book?",
 						)).FontSize(12).Bold().TextColor(t.Accent)
 					}
 
@@ -882,7 +1207,7 @@ func (a *App) renderInspectorContacts(c *ui.Context) {
 					} else {
 						ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 							if p.Status == "enrich" {
-								btn := iconLabelBtn(c.Key(fmt.Sprintf("ct-apply-%d", idx)), iconCheck, a.tr("Daten vervollständigen", "Complete Missing Fields"), true, a.tr("Nur fehlende Felder im bestehenden Thunderbird-Kontakt ergänzen", "Only add missing fields to existing Thunderbird contact"))
+								btn := iconLabelBtn(c.Key(fmt.Sprintf("ct-apply-%d", idx)), iconCheck, a.tr("Daten vervollständigen", "Complete Missing Fields"), true, a.tr("Nur fehlende Felder im bestehenden Kontakt ergänzen", "Only add missing fields to existing contact"))
 								if a.contactsBusy {
 									btn.Disabled(true)
 								}
@@ -890,7 +1215,7 @@ func (a *App) renderInspectorContacts(c *ui.Context) {
 									a.ApplyContactProposal(context.Background(), idx)
 								}
 							} else {
-								btn := iconLabelBtn(c.Key(fmt.Sprintf("ct-apply-%d", idx)), iconUserPlus, a.tr("Kontakt importieren", "Import Contact"), true, a.tr("Neuen Kontakt in Thunderbird anlegen", "Create new contact in Thunderbird"))
+								btn := iconLabelBtn(c.Key(fmt.Sprintf("ct-apply-%d", idx)), iconUserPlus, a.tr("Kontakt importieren", "Import Contact"), true, a.tr("Neuen Kontakt im Adressbuch anlegen", "Create new contact in address book"))
 								if a.contactsBusy {
 									btn.Disabled(true)
 								}
@@ -916,7 +1241,7 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 		ui.Column(c).Width(740).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconFilter).Size(18, 18).TextColor(t.Accent)
-				ui.Text(c, a.tr("Quick-Regel-Assistent · Thunderbird-Filter", "Quick-Rule Wizard · Thunderbird Filter")).FontSize(16).Bold().Grow(1)
+				ui.Text(c, a.tr("Quick-Regel-Assistent · Filterregel", "Quick-Rule Wizard · Filter Rule")).FontSize(16).Bold().Grow(1)
 				pillBadge(c, a.tr("Vorschlag & Preview: 0 Tokens", "Draft & Preview: 0 Tokens"), withAlpha(t.Success, 0.18), t.Success)
 				if ui.Button(c.Key("qr-x"), "✕").Clicked() {
 					a.quickRuleOpen = false
@@ -1095,12 +1420,13 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 						}
 					})
 
-					// Maintenance notice: Thunderbird manages rules directly
+					// Maintenance notice
 					ui.Row(c).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-						ui.Text(c, a.tr(
-							"Hinweis: Die Regel wird als echter Thunderbird-Filter (ans Ende der Filterliste) gespeichert und sofort nur auf die Mails angewendet, die sie tatsächlich trifft. Die Pflege, Bearbeitung und Sortierung aller Regeln erfolgt anschließend direkt in Thunderbird (Extras → Filter).",
-							"Note: The rule is saved as a native Thunderbird filter (appended to the filter list) and applied right away only to the emails it actually matches. Ongoing maintenance, editing, and ordering of all rules happens directly in Thunderbird (Tools → Message Filters).",
-						)).FontSize(11.5).TextColor(t.TextMuted)
+						notice := a.tr(
+							"Hinweis: Die Regel wird lokal in MailDiver gespeichert, sofort auf die passenden Mails angewendet und künftig automatisch bei neu eintreffenden Posteingangs-Mails ausgeführt. Verwalten & Löschen unter Konten → Filterregeln.",
+							"Note: The rule is saved locally in MailDiver, applied right away to matching emails, and executed automatically on newly arriving inbox mail. Manage or delete rules under Accounts → Filter Rules.",
+						)
+						ui.Text(c, notice).FontSize(11.5).TextColor(t.TextMuted)
 					})
 				})
 			})
@@ -1115,14 +1441,14 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 			}
 
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				if iconLabelBtn(c.Key("qr-open-tb"), iconExternal, a.tr("Filter in TB öffnen", "Open TB Filters"), false, a.tr("Regelverwaltung direkt in Thunderbird öffnen", "Open Message Filters directly in Thunderbird")).Clicked() {
-					a.OpenThunderbirdFilters(context.Background())
+				if iconLabelBtn(c.Key("qr-open-tb"), iconFilter, a.tr("Filterregeln verwalten", "Manage Filter Rules"), false, a.tr("Gespeicherte MailDiver-Regeln anzeigen und verwalten", "View and manage saved MailDiver filter rules")).Clicked() {
+					a.OpenFilterRules(context.Background())
 				}
 				ui.Spacer(c)
 				if ui.Button(c.Key("qr-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
 					a.quickRuleOpen = false
 				}
-				saveLbl := a.tr("TB-Filter speichern & anwenden", "Save TB Filter & Apply")
+				saveLbl := a.tr("Regel speichern & anwenden", "Save Rule & Apply")
 				armed := preview.RequiresConfirm && a.quickRuleConfirmArmed()
 				switch {
 				case a.quickRuleBusy:
@@ -1193,14 +1519,14 @@ func (a *App) renderCalDeleteModal(c *ui.Context) {
 						occ.Disabled(true)
 					}
 					if occ.Clicked() && !a.calDelBusy && ev.RecurrenceID != "" {
-						a.ConfirmDeleteCalendarEvent(context.Background(), bridgeclient.ScopeOccurrence)
+						a.ConfirmDeleteCalendarEvent(context.Background(), backend.ScopeOccurrence)
 					}
 					series := ui.PrimaryButton(c.Key("cd-series"), a.tr("Ganze Serie löschen", "Delete whole series")).Background(t.Danger)
 					if a.calDelBusy {
 						series.Disabled(true)
 					}
 					if series.Clicked() && !a.calDelBusy {
-						a.ConfirmDeleteCalendarEvent(context.Background(), bridgeclient.ScopeSeries)
+						a.ConfirmDeleteCalendarEvent(context.Background(), backend.ScopeSeries)
 					}
 				} else {
 					del := ui.PrimaryButton(c.Key("cd-del"), a.tr("Löschen", "Delete")).Background(t.Danger)
@@ -1222,7 +1548,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 		ui.Column(c).Width(720).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconHelp).Size(18, 18).TextColor(t.Accent)
-				ui.Text(c, a.tr("Hilfe · Überblick, TB-Filter & KI-Transparenz", "Help · Overview, TB Filters & AI Transparency")).FontSize(16).Bold().Grow(1)
+				ui.Text(c, a.tr("Hilfe · Überblick, Filterregeln & KI-Transparenz", "Help · Overview, Filter Rules & AI Transparency")).FontSize(16).Bold().Grow(1)
 				if ui.Button(c.Key("help-x"), "✕").Clicked() {
 					a.helpOpen = false
 				}
@@ -1263,7 +1589,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 				{"local", a.tr("1. 100% Lokal", "1. 100% Local")},
 				{"ai", a.tr("2. KI-Aktionen", "2. AI Actions")},
 				{"tokens", a.tr("3. Tokens", "3. Tokens")},
-				{"rules", a.tr("4. TB-Filter & Regeln", "4. TB Filters & Rules")},
+				{"rules", a.tr("4. Filterregeln", "4. Filter Rules")},
 				{"contacts", a.tr("5. Kontakte", "5. Contacts")},
 				{"shortcuts", a.tr("6. Kürzel", "6. Shortcuts")},
 			}
@@ -1290,11 +1616,11 @@ func (a *App) renderHelpModal(c *ui.Context) {
 				ui.Column(c).FillWidth().Gap(10).Children(func() {
 					if show("overview") {
 						helpSection(c, iconBookOpen, t.Accent,
-							a.tr("Was OmaThunder macht · Überblick", "What OmaThunder Does · Overview"),
+							a.tr("Was MailDiver macht · Überblick", "What MailDiver Does · Overview"),
 							[]string{
-								a.tr("• OmaThunder ist dein natives Cockpit direkt neben Thunderbird: Fokus-Posteingang, Kalender, Desktop-Meldungen und optionale KI-Hilfe in einer schnellen macOS-App.", "• OmaThunder is your native command center alongside Thunderbird: Focus inbox, calendar, desktop notifications, and optional AI assistance in one fast macOS app."),
-								a.tr("• Aufräumen statt manuell löschen: Wiederkehrende Mails per Multi-Select bündeln, mit dem Quick-Regel-Assistenten inklusive Preview prüfen und als native Thunderbird-Regel automatisieren.", "• Clean up instead of daily manual deletes: batch-select recurring emails, preview matches with the Quick-Rule Wizard, and automate them as native Thunderbird rules."),
-								a.tr("• KI bleibt strikt opt-in: Solange du keinen KI-Button klickst, läuft die App lokal über Thunderbird ohne Token-Verbrauch.", "• AI stays strictly opt-in: until you trigger an AI action, everything runs locally via Thunderbird with zero token usage."),
+								a.tr("• MailDiver ist dein eigenständiger nativer E-Mail-, Kalender- & Kontakte-Client: direkte IMAP/SMTP-Anbindung mit Echtzeit-Sync (IDLE), Google Kalender & iCal (.ics), Adressbuch und optionale KI-Hilfe in einer schnellen Desktop-App.", "• MailDiver is your standalone native email, calendar & contacts client: direct IMAP/SMTP with real-time sync (IDLE), Google Calendar & iCal (.ics), address book, and optional AI assistance in one fast desktop app."),
+								a.tr("• Aufräumen statt manuell löschen: Wiederkehrende Mails per Multi-Select bündeln, mit dem Quick-Regel-Assistenten inklusive Preview prüfen und als automatische MailDiver-Filterregel speichern.", "• Clean up instead of daily manual deletes: batch-select recurring emails, preview matches with the Quick-Rule Wizard, and automate them as MailDiver filter rules."),
+								a.tr("• KI bleibt strikt opt-in: Solange du keinen KI-Button klickst, läuft die App 100 % lokal direkt über IMAP/SMTP ohne Token-Verbrauch.", "• AI stays strictly opt-in: until you trigger an AI action, everything runs 100% locally via IMAP/SMTP with zero token usage."),
 							},
 						)
 					}
@@ -1303,10 +1629,10 @@ func (a *App) renderHelpModal(c *ui.Context) {
 						helpSection(c, iconShieldChk, t.Success,
 							a.tr("1. 100% Lokal · Keine KI, 0 Tokens", "1. 100% Local · No AI, 0 Tokens"),
 							[]string{
-								a.tr("• Postfach-Sync, Ordner-Navigation, Suche (⌘K), Multi-Select und Lesen laufen direkt über Thunderbird.", "• Mailbox sync, folder navigation, search (⌘K), multi-select, and reading run directly via Thunderbird."),
-								a.tr("• Mail-Aktionen (Gelesen/Ungelesen, Stern, Papierkorb, Entwurf öffnen/speichern) nutzen keine KI.", "• Mail actions (mark read/unread, star, trash, save/open draft) do not use AI."),
-								a.tr("• Quick-Regel-Assistent & Live-Preview prüfen lokale Absender-/Betreff-Muster komplett ohne KI-Tokens.", "• Quick-Rule Wizard & live preview evaluate sender/subject patterns completely locally without AI tokens."),
-								a.tr("• Kalender-Anzeige, Termin-Erstellung, native Meldungen und Adressbuch-Abgleich kosten 0 Tokens.", "• Calendar views, event creation, native notifications, and address-book matching cost 0 tokens."),
+								a.tr("• Postfach-Sync (IMAP IDLE), Senden (SMTP), Anhänge, Ordner-Verwaltung, Suche (⌘K), Multi-Select und Lesen laufen komplett lokal ohne KI.", "• Mailbox sync (IMAP IDLE), sending (SMTP), attachments, folder management, search (⌘K), multi-select, and reading run completely locally without AI."),
+								a.tr("• Mail-Aktionen (Antworten, Allen antworten, Weiterleiten, Gelesen/Ungelesen, Stern, Spam, Papierkorb, Archivieren) nutzen keine KI.", "• Mail actions (Reply, Reply All, Forward, read/unread, star, spam, trash, archive) do not use AI."),
+								a.tr("• Quick-Regel-Assistent & Live-Preview prüfen Absender-/Betreff-Muster komplett lokal ohne KI-Tokens.", "• Quick-Rule Wizard & live preview evaluate sender/subject patterns completely locally without AI tokens."),
+								a.tr("• Kalender (Google & .ics-Einladungen), Kontakte (.vcf Import/Export, Google Sync, Autocomplete) und Desktop-Meldungen kosten 0 Tokens.", "• Calendar (Google & .ics invites), Contacts (.vcf import/export, Google Sync, autocomplete), and desktop notifications cost 0 tokens."),
 							},
 						)
 					}
@@ -1317,10 +1643,9 @@ func (a *App) renderHelpModal(c *ui.Context) {
 							[]string{
 								a.tr("• Inspector-Buttons: „Zusammenfassen“, „Entwurf“, „Termin“ und „Kontakte“ starten erst nach deinem Klick und senden nur den benötigten Mail-Kontext.", "• Inspector buttons: “Summarize”, “Draft”, “Event”, and “Contacts” only run when clicked and send only the required email context."),
 								a.tr("• Quick-Regel optional: Nur ein Klick auf „Mit KI verfeinern“ im Assistenten nutzt das Modell für komplexe Betreff-Muster.", "• Quick Rule optional: only clicking “Refine with AI” inside the wizard uses the model for complex patterns."),
-								a.tr("• KI-Assistent & Briefing: „Tagesbriefing“ und jede Chat-Nachricht im Assistent-Panel nutzen das gewählte Modell; Mail- und Kalenderinhalte werden dabei als Daten an den Anbieter gesendet (bei Cloud-Modellen).", "• AI Assistant & Briefing: “Briefing” and each chat prompt use your selected model; mail and calendar content is sent to that provider as data (for cloud models)."),
-								a.tr("• Schreibende Aktionen des Assistenten (Entwurf speichern, Termin anlegen, Gelesen-Status) werden nur als Vorschlag mit allen Details angezeigt und erst nach Klick auf „Ausführen“ in Thunderbird umgesetzt. Mails sendet der Assistent nie.", "• Write actions of the assistant (save draft, create event, read status) are shown as a proposal with all details and only run in Thunderbird after you click “Execute”. The assistant never sends emails."),
-								a.tr("• Triage-Scan (☰ → Triage-Scan starten, oder bei neuer Mail): nutzt die KI nur, wenn „Mails per KI einordnen“ an ist (☰ → Einstellungen), höchstens so oft wie dort eingestellt. Verschlüsselte Mails gehen nur mit Absender und Betreff an die KI.", "• Triage scan (☰ → Run triage scan, or on new mail): uses AI only when “Sort mails with AI” is on (☰ → Settings), at most as often as set there. Encrypted emails reach the AI with sender and subject only."),
-								a.tr("• Verschlüsselte Mails: Aktionen, die du auf die geöffnete Mail startest, senden ihren entschlüsselten Text an den Anbieter – der Lesebereich zeigt das an.", "• Encrypted emails: actions you start on the open email send its decrypted text to the provider – the reading pane says so."),
+								a.tr("• KI-Assistent & Briefing: „Briefing“ und jede Chat-Nachricht im Assistent-Panel nutzen das gewählte Modell; Mail- und Kalenderinhalte werden dabei als Daten an den Anbieter gesendet (bei Cloud-Modellen).", "• AI Assistant & Briefing: “Briefing” and each chat prompt use your selected model; mail and calendar content is sent to that provider as data (for cloud models)."),
+								a.tr("• Schreibende Aktionen des Assistenten (Entwurf speichern, Termin anlegen, Gelesen-Status) werden nur als Vorschlag mit allen Details angezeigt und erst nach Klick auf „Ausführen“ umgesetzt. Mails sendet der Assistent nie.", "• Write actions of the assistant (save draft, create event, read status) are shown as a proposal with all details and only run after you click “Execute”. The assistant never sends emails."),
+								a.tr("• Triage-Scan (☰ → Triage-Scan starten): nutzt die KI nur, wenn „Mails per KI einordnen“ in den Einstellungen aktiviert ist.", "• Triage scan (☰ → Run triage scan): uses AI only when “Sort mails with AI” is enabled in Settings."),
 							},
 						)
 					}
@@ -1330,7 +1655,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 							a.tr("3. Wo Tokens anfallen — Lokal vs. Cloud vs. CLI", "3. Where Tokens Apply — Local vs. Cloud vs. CLI"),
 							[]string{
 								a.tr("• Cloud-APIs (anthropic, openai, gemini, mistral, deepseek, groq): Verbrauchen bezahlte API-Tokens beim jeweiligen Anbieter.", "• Cloud APIs (anthropic, openai, gemini, mistral, deepseek, groq): Consume paid API tokens with that provider."),
-								a.tr("• Lokale Modelle (ollama, llamacpp, llamafile): Laufen komplett auf deinem Mac — keine Cloud-Übertragung, 0 Token-Kosten.", "• Local models (ollama, llamacpp, llamafile): Run entirely on your machine — no cloud traffic, 0 token cost."),
+								a.tr("• Lokale Modelle (ollama, llamacpp, llamafile): Laufen komplett auf deinem Gerät — keine Cloud-Übertragung, 0 Token-Kosten.", "• Local models (ollama, llamacpp, llamafile): Run entirely on your machine — no cloud traffic, 0 token cost."),
 								a.tr("• CLI-Agenten (claude-cli, gemini-cli, opencode-cli): Nutzen dein lokal installiertes CLI-Konto bzw. Abo.", "• CLI agents (claude-cli, gemini-cli, opencode-cli): Use your locally installed CLI account or subscription."),
 							},
 						)
@@ -1340,15 +1665,16 @@ func (a *App) renderHelpModal(c *ui.Context) {
 						ui.Column(c).FillWidth().Padding(12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(7).Children(func() {
 								ui.Icon(c, iconFilter).Size(15, 15).TextColor(t.Accent)
-								ui.Text(c, a.tr("4. Quick-Regeln & Thunderbird-Filter (Pflege in TB)", "4. Quick Rules & Thunderbird Filters (Managed in TB)")).FontSize(13).Bold().Grow(1)
-								if iconLabelBtn(c.Key("help-open-tb-filters"), iconExternal, a.tr("Filter in TB öffnen", "Open TB Filters"), false, a.tr("Filterverwaltung direkt in Thunderbird öffnen", "Open Message Filters in Thunderbird")).Clicked() {
-									a.OpenThunderbirdFilters(context.Background())
+								ui.Text(c, a.tr("4. Quick-Regeln & Automatische Filter", "4. Quick Rules & Automatic Filters")).FontSize(13).Bold().Grow(1)
+								if iconLabelBtn(c.Key("help-open-tb-filters"), iconFilter, a.tr("Filterregeln verwalten", "Manage Filter Rules"), false, a.tr("Gespeicherte Filterregeln öffnen", "Open saved filter rules")).Clicked() {
+									a.helpOpen = false
+									a.OpenFilterRules(context.Background())
 								}
 							})
 							for _, line := range []string{
 								a.tr("• Workflow: Mehrere ähnliche Mails per Checkbox (oder ⌘-Klick / Shift-Klick) markieren → „Quick-Regel“ klicken → Live-Preview prüfen → speichern & sofort anwenden.", "• Workflow: Check multiple similar emails (or ⌘-click / Shift-click) → click “Quick Rule” → review live preview → save & apply immediately."),
-								a.tr("• Sichere Voreinstellung: Standardaktion ist „In Papierkorb verschieben“, damit versehentliche Treffer wiederherstellbar bleiben. Angewendet wird nur auf Mails, die die Regel tatsächlich trifft; breite Regeln (ganze Domain, Freemail-Anbieter, nur ein Absender) brauchen eine zweite Bestätigung.", "• Safe default: Default action is “Move to Trash” so any unexpected match remains recoverable. The action only applies to emails the rule actually matches; broad rules (whole domain, free-mail provider, sender only) need a second confirmation."),
-								a.tr("• Wichtig — Pflege aller Regeln direkt in Thunderbird: OmaThunder kapselt nur die Erstellung. Die laufende Pflege, Bearbeitung, Reihenfolge, Aktivierung oder Löschung aller Regeln erfolgt direkt in Thunderbird unter Extras → Filter.", "• Important — Manage all rules directly in Thunderbird: OmaThunder encapsulates rule creation only. Ongoing editing, reordering, toggling, or deleting of all rules takes place directly in Thunderbird under Tools → Message Filters."),
+								a.tr("• Sichere Voreinstellung: Standardaktion ist „In Papierkorb verschieben“, damit versehentliche Treffer wiederherstellbar bleiben. Breite Regeln brauchen eine zweite Bestätigung.", "• Safe default: Default action is “Move to Trash” so any unexpected match remains recoverable. Broad rules require a second confirmation."),
+								a.tr("• Verwaltung: Alle gespeicherten Regeln findest du unter Konten → Filterregeln (Pausieren, manuell Ausführen oder Löschen).", "• Management: View, pause, manually run, or delete all saved rules under Accounts → Filter Rules."),
 							} {
 								ui.Text(c, line).FontSize(12).TextColor(t.TextMuted)
 							}
@@ -1357,12 +1683,12 @@ func (a *App) renderHelpModal(c *ui.Context) {
 
 					if show("contacts") {
 						helpSection(c, iconUserPlus, t.Accent,
-							a.tr("5. Kontakte automatisch aus E-Mail-Footer erkennen", "5. Extract Contacts from Email Signatures"),
+							a.tr("5. Kontakte, vCard (.vcf), Google Sync & Footer-Erkennung", "5. Contacts, vCard (.vcf), Google Sync & Footer Extraction"),
 							[]string{
-								a.tr("• Klicke in einer E-Mail auf „Kontakte“: Die KI liest Name, E-Mail, Telefon/Mobil, Firma, Position, Website und Adresse aus der Signatur.", "• Click “Contacts” on an email: AI extracts name, email, phone/mobile, company, job title, website, and address from the footer."),
-								a.tr("• Danach prüft OmaThunder lokal (0 Tokens) gegen dein Thunderbird-Adressbuch und fragt explizit nach:", "• OmaThunder then checks your Thunderbird address books locally (0 tokens) and prompts before saving:"),
-								a.tr("  – Neuer Kontakt: Per Klick auf „Kontakt importieren“ im gewählten Adressbuch anlegen.", "  – New contact: Click “Import Contact” to add it to the chosen address book."),
-								a.tr("  – Bestehender Kontakt: Bei Lücken erscheint „Daten vervollständigen“ — vorhandene Felder bleiben unverändert geschützt.", "  – Existing contact: When fields are missing, click “Complete Missing Fields” — existing data stays untouched."),
+								a.tr("• Eigene Kontakte-Ansicht in der Seitenleiste: Kontakte suchen, anlegen, bearbeiten, löschen und mit 1 Klick eine E-Mail schreiben.", "• Dedicated Contacts view in the sidebar: search, create, edit, delete contacts, and compose an email with 1 click."),
+								a.tr("• Import & Sync: vCard-Dateien (.vcf) importieren/exportieren oder Google Kontakte (über deine Google-Anmeldung) synchronisieren.", "• Import & Sync: import/export vCard (.vcf) files or sync Google Contacts using your Google sign-in."),
+								a.tr("• Autocomplete im Verfassen-Dialog: Beim Tippen in „An:“ oder „CC:“ schlägt MailDiver passende Kontakte und letzte Absender vor.", "• Compose autocomplete: typing in “To:” or “CC:” suggests matching contacts and recent senders."),
+								a.tr("• KI-Footer-Erkennung: Klicke in einer Mail auf „Kontakte“, um Kontaktdaten aus der Signatur automatisch zu erkennen und nach Bestätigung zu importieren oder fehlende Felder zu ergänzen.", "• AI footer extraction: click “Contacts” on any email to extract signature details and import or fill missing fields after confirmation."),
 							},
 						)
 					}
@@ -1375,8 +1701,8 @@ func (a *App) renderHelpModal(c *ui.Context) {
 
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr(
-					"Datenschutz: Schreibaktionen, Assistent-Vorschläge & Regeln wirken in Thunderbird erst nach deinem Klick.",
-					"Privacy: write actions, assistant proposals and filters only take effect in Thunderbird after your explicit click.",
+					"Datenschutz: Passwörter liegen im System-Schlüsselbund; Schreibaktionen, Assistent-Vorschläge & Regeln wirken erst nach deinem Klick.",
+					"Privacy: passwords stay in your system keychain; write actions, assistant proposals and filters only take effect after your explicit click.",
 				)).FontSize(11.5).TextColor(t.TextMuted).Grow(1)
 				if ui.PrimaryButton(c.Key("help-close"), a.tr("Verstanden", "Got it")).Clicked() {
 					a.helpOpen = false

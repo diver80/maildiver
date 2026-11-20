@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 const unreadGet = `{"id":"m1","messageId":"m1@x","accountId":"acc1","folder":"INBOX","subject":"Eins","from":"Alice <alice@acme.de>","bodyText":"Hallo","read":false,"unread":true}`
@@ -120,27 +120,27 @@ func TestMarkReadSettings(t *testing.T) {
 // In the unread view the open mail stays in place after it was marked read, so j/k go on.
 func TestKeepOpenMail(t *testing.T) {
 	app, _, _ := keymapApp(t)
-	h := func(id string) bridgeclient.MessageHeader { return bridgeclient.MessageHeader{ID: id} }
-	app.messages = []bridgeclient.MessageHeader{h("a"), h("b"), h("c"), h("d")}
+	h := func(id string) backend.MessageHeader { return backend.MessageHeader{ID: id} }
+	app.messages = []backend.MessageHeader{h("a"), h("b"), h("c"), h("d")}
 	app.selectedID = "c"
-	ids := func(ms []bridgeclient.MessageHeader) string {
+	ids := func(ms []backend.MessageHeader) string {
 		s := ""
 		for _, m := range ms {
 			s += m.ID
 		}
 		return s
 	}
-	if got := ids(app.keepOpenMail([]bridgeclient.MessageHeader{h("a"), h("b"), h("d")})); got != "abcd" {
+	if got := ids(app.keepOpenMail([]backend.MessageHeader{h("a"), h("b"), h("d")})); got != "abcd" {
 		t.Errorf("got %s", got)
 	}
-	if got := ids(app.keepOpenMail([]bridgeclient.MessageHeader{h("d")})); got != "cd" {
+	if got := ids(app.keepOpenMail([]backend.MessageHeader{h("d")})); got != "cd" {
 		t.Errorf("earlier read mails go, the open one stays: got %s", got)
 	}
-	if got := ids(app.keepOpenMail([]bridgeclient.MessageHeader{h("a"), h("c")})); got != "ac" {
+	if got := ids(app.keepOpenMail([]backend.MessageHeader{h("a"), h("c")})); got != "ac" {
 		t.Errorf("listed anyway: got %s", got)
 	}
 	app.selectedID = ""
-	if got := ids(app.keepOpenMail([]bridgeclient.MessageHeader{h("a")})); got != "a" {
+	if got := ids(app.keepOpenMail([]backend.MessageHeader{h("a")})); got != "a" {
 		t.Errorf("nothing open: got %s", got)
 	}
 }

@@ -7,13 +7,13 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/lansync"
 )
 
-// The app's settings: AI providers and keys, triage scans and the archive folder. What OmaThunder
-// may do at all (accounts, read-only, bridge, modules) stays in the Thunderbird add-on's settings,
-// so the app cannot widen its own permissions.
+// The app's settings: reading behavior, embedded Web Preview auto-link rules, AI providers and keys,
+// triage scans, and the archive folder.
 
 type keyRow struct {
 	backend string
@@ -23,11 +23,32 @@ type keyRow struct {
 	remove  bool
 }
 
+type accountFolderPref struct {
+	custom   bool
+	expanded map[string]bool // clean folder path (exact case from folder list) -> start expanded
+}
+
 type settingsUI struct {
 	open      bool
 	providers []string
 
 	markRead int // 0: at once, 1: after 3 s, 2: never
+
+	// Per-mailbox startup folder expansion preferences
+	folderAccLabels []string
+	folderAccByLbl  map[string]string
+	folderAccLabel  string
+	folderPrefs     map[string]*accountFolderPref
+
+	linkPreviewEnabled  bool
+	linkPreviewAutoLoad bool
+	linkPreviewLayout   int // 0: side, 1: bottom
+	linkPreviewRules    []config.LinkPreviewRule
+	newRuleName         string
+	newRuleSender       string
+	newRuleURL          string
+	allowedImageSenders []string
+	newImageSender      string
 
 	agentBackend, agentModel, agentEndpoint string
 
@@ -42,6 +63,13 @@ type settingsUI struct {
 
 	keys []keyRow
 	err  string
+
+	// Encrypted LAN QR-code device transfer (Phase 3)
+	lanSession   *lansync.Session
+	lanQRImg     ui.ImageSource
+	lanImportURI string
+	lanMsg       string
+	lanErr       bool
 }
 
 // OpenSettings fills the dialog from config.json and the key store (UI thread).
@@ -50,21 +78,32 @@ func (a *App) OpenSettings() {
 	if err != nil {
 		cfg = a.cfg
 	}
+	lpRules := make([]config.LinkPreviewRule, len(cfg.App.LinkPreview.Rules))
+	copy(lpRules, cfg.App.LinkPreview.Rules)
+	lpLayout := 0
+	if cfg.App.LinkPreview.Layout == "bottom" {
+		lpLayout = 1
+	}
 	s := settingsUI{
-		open:          true,
-		agentBackend:  ai.CanonicalBackend(cfg.AI.Agent.Backend),
-		agentModel:    cfg.AI.Agent.Model,
-		agentEndpoint: cfg.AI.Agent.Endpoint,
-		classifyAI:    cfg.AI.ClassifyWithAI,
-		clfBackend:    ai.CanonicalBackend(cfg.AI.Classifier.Backend),
-		clfModel:      cfg.AI.Classifier.Model,
-		clfEndpoint:   cfg.AI.Classifier.Endpoint,
-		maxCalls:      strconv.Itoa(cfg.AI.MaxAICallsPerScan),
-		allowCLI:      cfg.AI.AllowUnrestrictedCLI,
-		scanOnNewMail: cfg.Mailbox.ScanOnNewMail,
-		scanLimit:     strconv.Itoa(cfg.Mailbox.ScanLimit),
-		scanDays:      strconv.Itoa(cfg.Mailbox.ScanDays),
-		archiveDir:    cfg.Mailbox.ArchiveDir,
+		open:                true,
+		linkPreviewEnabled:  cfg.App.LinkPreview.Enabled,
+		linkPreviewAutoLoad: cfg.App.LinkPreview.AutoLoad,
+		linkPreviewLayout:   lpLayout,
+		linkPreviewRules:    lpRules,
+		allowedImageSenders: append([]string(nil), cfg.App.AllowedImageSenders...),
+		agentBackend:        ai.CanonicalBackend(cfg.AI.Agent.Backend),
+		agentModel:          cfg.AI.Agent.Model,
+		agentEndpoint:       cfg.AI.Agent.Endpoint,
+		classifyAI:          cfg.AI.ClassifyWithAI,
+		clfBackend:          ai.CanonicalBackend(cfg.AI.Classifier.Backend),
+		clfModel:            cfg.AI.Classifier.Model,
+		clfEndpoint:         cfg.AI.Classifier.Endpoint,
+		maxCalls:            strconv.Itoa(cfg.AI.MaxAICallsPerScan),
+		allowCLI:            cfg.AI.AllowUnrestrictedCLI,
+		scanOnNewMail:       cfg.Mailbox.ScanOnNewMail,
+		scanLimit:           strconv.Itoa(cfg.Mailbox.ScanLimit),
+		scanDays:            strconv.Itoa(cfg.Mailbox.ScanDays),
+		archiveDir:          cfg.Mailbox.ArchiveDir,
 	}
 	switch cfg.App.MarkRead {
 	case config.MarkReadDelay:
@@ -78,6 +117,53 @@ func (a *App) OpenSettings() {
 	for _, k := range ai.APIKeyNames() {
 		s.keys = append(s.keys, keyRow{backend: k.Backend, envKey: k.EnvKey, set: config.LookupAPIKey(k.EnvKey) != ""})
 	}
+
+	// Populate per-mailbox startup folder preferences from config.json + known folders.
+	s.folderPrefs = make(map[string]*accountFolderPref)
+	s.folderAccByLbl = make(map[string]string)
+	seenAcc := make(map[string]bool)
+	addAcc := func(accID, name string) {
+		if accID == "" || seenAcc[accID] {
+			return
+		}
+		seenAcc[accID] = true
+		lbl := strings.TrimSpace(name)
+		if lbl == "" {
+			lbl = a.accountDisplayName(accID)
+		}
+		if lbl == "" {
+			lbl = accID
+		}
+		if _, dup := s.folderAccByLbl[lbl]; dup {
+			lbl = lbl + " (" + accID + ")"
+		}
+		s.folderAccLabels = append(s.folderAccLabels, lbl)
+		s.folderAccByLbl[lbl] = accID
+
+		pref := &accountFolderPref{expanded: make(map[string]bool)}
+		if paths, ok := cfg.App.ExpandedFolders[accID]; ok {
+			pref.custom = true
+			for _, p := range paths {
+				pref.expanded[strings.ToLower(cleanFolderPath(p))] = true
+			}
+		} else {
+			// Seed checkboxes with current live expanded state so toggling custom mode starts sensible.
+			for _, p := range a.currentExpandedFolderPaths(accID) {
+				pref.expanded[strings.ToLower(cleanFolderPath(p))] = true
+			}
+		}
+		s.folderPrefs[accID] = pref
+	}
+	for _, acc := range a.accounts {
+		addAcc(acc.ID, acc.Name)
+	}
+	for _, f := range a.folders {
+		addAcc(f.AccountID, f.AccountName)
+	}
+	if len(s.folderAccLabels) > 0 {
+		s.folderAccLabel = s.folderAccLabels[0]
+	}
+
 	a.settings = s
 }
 
@@ -116,7 +202,6 @@ func (a *App) SaveSettings() bool {
 			return false
 		}
 	}
-	// Read the file again right before writing: the add-on may have saved meanwhile.
 	cfg, err := a.opts.ConfigLoader()
 	if err != nil {
 		cfg = a.cfg
@@ -131,12 +216,80 @@ func (a *App) SaveSettings() bool {
 	cfg.Mailbox.ScanDays = days
 	cfg.Mailbox.ArchiveDir = strings.TrimSpace(s.archiveDir)
 	cfg.App.MarkRead = [...]string{config.MarkReadOnOpen, config.MarkReadDelay, config.MarkReadNever}[min(max(s.markRead, 0), 2)]
+	layout := "side"
+	if s.linkPreviewLayout == 1 {
+		layout = "bottom"
+	}
+	rules := make([]config.LinkPreviewRule, 0, len(s.linkPreviewRules))
+	for _, r := range s.linkPreviewRules {
+		r.Name = strings.TrimSpace(r.Name)
+		r.SenderPattern = strings.TrimSpace(r.SenderPattern)
+		r.URLPattern = strings.TrimSpace(r.URLPattern)
+		if r.URLPattern == "" {
+			continue
+		}
+		if r.Name == "" {
+			r.Name = r.URLPattern
+		}
+		rules = append(rules, r)
+	}
+	cfg.App.LinkPreview = config.LinkPreviewConfig{
+		Enabled:  s.linkPreviewEnabled,
+		AutoLoad: s.linkPreviewAutoLoad,
+		Layout:   layout,
+		Rules:    rules,
+	}
+	if len(s.folderPrefs) > 0 {
+		expMap := make(map[string][]string)
+		// Preserve any configured accounts not currently loaded in memory.
+		for accID, paths := range cfg.App.ExpandedFolders {
+			if _, managed := s.folderPrefs[accID]; !managed {
+				expMap[accID] = append([]string(nil), paths...)
+			}
+		}
+		for accID, pref := range s.folderPrefs {
+			if !pref.custom {
+				continue
+			}
+			// Preserve original folder path casing from known folders where available.
+			canonByLow := make(map[string]string)
+			for _, row := range a.expandableFoldersForAccount(accID) {
+				cp := cleanFolderPath(row.Folder.Path)
+				canonByLow[strings.ToLower(cp)] = cp
+			}
+			out := make([]string, 0, len(pref.expanded))
+			for low, on := range pref.expanded {
+				if !on {
+					continue
+				}
+				if orig, ok := canonByLow[low]; ok {
+					out = append(out, orig)
+				} else {
+					out = append(out, low)
+				}
+			}
+			expMap[accID] = out
+		}
+		if len(expMap) > 0 {
+			cfg.App.ExpandedFolders = expMap
+		} else {
+			cfg.App.ExpandedFolders = nil
+		}
+	}
+	cfg.App.AllowedImageSenders = append([]string(nil), s.allowedImageSenders...)
 	cfg = config.Normalize(cfg)
 	if err := a.opts.ConfigSaver(cfg); err != nil {
 		s.err = a.tr("Nicht gespeichert: ", "Not saved: ") + err.Error()
 		return false
 	}
 	a.applyConfig(cfg)
+	a.applyConfiguredFolderCollapse()
+	a.preview.layout = cfg.App.LinkPreview.Layout
+	if a.selectedMsg != nil {
+		a.preview.msgID = "" // re-evaluate auto-preview rules for the currently open mail
+		a.syncPreviewForMessage(a.selectedMsg)
+	}
+	a.stopLANQRSession()
 	s.open = false
 	a.toast(a.tr("Einstellungen gespeichert", "Settings saved"), "success")
 	return true
@@ -154,14 +307,15 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
 	ui.Modal(c, &s.open, func() {
-		ui.Column(c).Width(640).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(8).Children(func() {
+		ui.Column(c).Width(680).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(8).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
 				if ui.Button(c.Key("set-x"), "✕").Clicked() {
+					a.stopLANQRSession()
 					s.open = false
 				}
 			})
-			ui.Scroll(c.Key("set-scroll")).FillWidth().MaxHeight(560).Children(func() {
+			ui.Scroll(c.Key("set-scroll")).FillWidth().MaxHeight(580).Children(func() {
 				ui.Column(c).FillWidth().Gap(8).Padding(0, 6, 0, 0).Children(func() {
 					a.renderSettingsBody(c)
 				})
@@ -172,6 +326,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 			ui.Row(c).FillWidth().Gap(8).Children(func() {
 				ui.Spacer(c)
 				if ui.Button(c.Key("set-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
+					a.stopLANQRSession()
 					s.open = false
 				}
 				if ui.PrimaryButton(c.Key("set-save"), a.tr("Speichern", "Save")).Clicked() {
@@ -200,32 +355,215 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		ui.Segmented(c.Key("set-read-s"), &s.markRead, a.tr("Beim Öffnen", "On open"), a.tr("Nach 3 Sekunden", "After 3 seconds"), a.tr("Nie", "Never"))
 	})
 	if a.readOnly {
-		note(a.tr("„Nur lesen“ ist in den Einstellungen des Thunderbird-Add-ons an: Mails bleiben ungelesen, bis du sie in Thunderbird liest.", "Read-only is on in the Thunderbird add-on's settings: mails stay unread until you read them in Thunderbird."), t.Warning)
+		note(a.tr("„Nur lesen“ ist in config.json aktiviert: Mails bleiben ungelesen.", "Read-only is enabled in config.json: emails stay unread."), t.Warning)
 	}
+
+	if len(s.folderAccLabels) > 0 {
+		a.settingsSection(c, a.tr("Ordner beim Start (pro Postfach)", "Startup folders (per mailbox)"))
+		note(a.tr(
+			"Standardmäßig ist nur INBOX bis Ebene 2 aufgeklappt (Unterordner & Archiv eingeklappt). Hier kannst du pro Postfach festlegen, welche Ordner beim Start aufgeklappt sein sollen.",
+			"By default only INBOX expands to level 2 (deeper subfolders & Archives start collapsed). Configure per mailbox which folders should start expanded.",
+		), t.TextMuted)
+		if len(s.folderAccLabels) > 1 {
+			field("set-fld-acc", a.tr("Postfach", "Mailbox"), func() {
+				ui.Select(c.Key("set-fld-accs"), &s.folderAccLabel, s.folderAccLabels).Grow(1)
+			})
+		}
+		accID := s.folderAccByLbl[s.folderAccLabel]
+		if pref, ok := s.folderPrefs[accID]; ok {
+			ui.Column(c.Key("set-fld-box-"+accID)).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
+					ui.Checkbox(c.Key("set-fld-cust-"+accID), &pref.custom, a.tr("Eigene Start-Ordner (Rest eingeklappt)", "Custom startup folders (collapse rest)"))
+					ui.Spacer(c)
+					if ui.Button(c.Key("set-fld-cap-"+accID), a.tr("Aktuelle Sidebar übernehmen", "Use current sidebar")).Padding(2, 8).Clicked() {
+						pref.custom = true
+						pref.expanded = make(map[string]bool)
+						for _, p := range a.currentExpandedFolderPaths(accID) {
+							pref.expanded[strings.ToLower(cleanFolderPath(p))] = true
+						}
+					}
+					if pref.custom {
+						if ui.Button(c.Key("set-fld-rst-"+accID), a.tr("Standard", "Reset")).Padding(2, 8).Clicked() {
+							pref.custom = false
+						}
+					}
+				})
+				if pref.custom {
+					rows := a.expandableFoldersForAccount(accID)
+					if len(rows) == 0 {
+						note(a.tr("Dieses Postfach hat keine Ordner mit Unterordnern.", "This mailbox has no folders with subfolders."), t.TextMuted)
+					} else {
+						ui.Divider(c)
+						ui.Scroll(c.Key("set-fld-scroll-" + accID)).MaxHeight(180).FillWidth().Children(func() {
+							ui.Column(c).FillWidth().Gap(4).Children(func() {
+								for _, row := range rows {
+									cp := cleanFolderPath(row.Folder.Path)
+									low := strings.ToLower(cp)
+									checked := pref.expanded[low]
+									lbl := row.Folder.Name
+									if lbl == "" {
+										lbl = cp
+									}
+									if row.Depth > 0 {
+										lbl = strings.Repeat("   ", row.Depth) + "↳ " + lbl
+									}
+									ui.Row(c.Key("set-fld-r-" + accID + "-" + low)).FillWidth().AlignItems(ui.Center).Children(func() {
+										if ui.Checkbox(c.Key("set-fld-c-"+accID+"-"+low), &checked, lbl).Changed() {
+											if checked {
+												pref.expanded[low] = true
+											} else {
+												delete(pref.expanded, low)
+											}
+										}
+									})
+								}
+							})
+						})
+					}
+				}
+			})
+		}
+	}
+
+	a.settingsSection(c, a.tr("Browser-Vorschau (Split-Panel)", "Browser Preview (Split Panel)"))
+	note(a.tr(
+		"Öffnet passende Links (z. B. Jira-/Confluence-Issues) direkt neben oder unter der Mail im eingebetteten Browser mit persistenter Login-Session.",
+		"Opens matching links (e.g. Jira/Confluence issues) directly beside or below the email in an embedded browser with persistent login session.",
+	), t.TextMuted)
+	ui.Checkbox(c.Key("set-lp-en"), &s.linkPreviewEnabled, a.tr("Browser-Vorschau aktivieren", "Enable Browser Preview"))
+	ui.Checkbox(c.Key("set-lp-auto"), &s.linkPreviewAutoLoad, a.tr("Bei Treffer einer Regel automatisch öffnen (nur aktive Regeln)", "Auto-open when a rule matches (enabled rules only)"))
+	field("set-lp-lay", a.tr("Standard-Layout", "Default layout"), func() {
+		ui.Segmented(c.Key("set-lp-lays"), &s.linkPreviewLayout, a.tr("Nebeneinander (Rechts)", "Side by side"), a.tr("Übereinander (Unten)", "Top & bottom"))
+	})
+	ui.Column(c.Key("set-lp-rules")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+		ui.Text(c, a.tr("Auto-Link-Regeln (Absender & URL-Muster)", "Auto-Link Rules (Sender & URL pattern)")).FontSize(11.5).Bold()
+		deleteIdx := -1
+		for i := range s.linkPreviewRules {
+			r := &s.linkPreviewRules[i]
+			ui.Row(c.Key(fmt.Sprintf("set-lpr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Checkbox(c.Key(fmt.Sprintf("set-lpr-en-%d", i)), &r.Enabled, r.Name)
+				ui.Spacer(c)
+				meta := r.URLPattern
+				if r.SenderPattern != "" {
+					meta = r.SenderPattern + " → " + r.URLPattern
+				}
+				ui.Text(c, meta).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				if ui.Button(c.Key(fmt.Sprintf("set-lpr-del-%d", i)), "✕").Padding(1, 6).Clicked() {
+					deleteIdx = i
+				}
+			})
+		}
+		if deleteIdx >= 0 {
+			s.linkPreviewRules = append(s.linkPreviewRules[:deleteIdx], s.linkPreviewRules[deleteIdx+1:]...)
+		}
+		ui.Divider(c)
+		ui.Row(c.Key("set-lp-add")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("set-lpr-nn"), &s.newRuleName).Placeholder(a.tr("Name (z. B. Firmen-Jira)", "Name (e.g. Corp Jira)")).Width(140)
+			ui.TextInput(c.Key("set-lpr-ns"), &s.newRuleSender).Placeholder(a.tr("Absender (optional)", "Sender (optional)")).Width(150)
+			ui.TextInput(c.Key("set-lpr-nu"), &s.newRuleURL).Placeholder(a.tr("URL-Muster (z. B. jira.firma.de/)", "URL pattern (e.g. jira.corp.com/)")).Grow(1)
+			if ui.Button(c.Key("set-lpr-addb"), a.tr("+ Regel", "+ Rule")).Padding(3, 8).Clicked() {
+				urlPat := strings.TrimSpace(s.newRuleURL)
+				if urlPat != "" {
+					name := strings.TrimSpace(s.newRuleName)
+					if name == "" {
+						name = urlPat
+					}
+					s.linkPreviewRules = append(s.linkPreviewRules, config.LinkPreviewRule{
+						Name:          name,
+						Enabled:       true,
+						SenderPattern: strings.TrimSpace(s.newRuleSender),
+						URLPattern:    urlPat,
+					})
+					s.newRuleName = ""
+					s.newRuleSender = ""
+					s.newRuleURL = ""
+				}
+			}
+		})
+	})
+
+	a.settingsSection(c, a.tr("Externe Bilder — Erlaubte Absender", "Remote Images — Allowed Senders"))
+	note(a.tr(
+		"Externe Bilder sind aus Datenschutzgründen standardmäßig blockiert. Für diese Absender werden Bilder automatisch geladen.",
+		"Remote images are blocked by default for privacy. Images from these senders load automatically.",
+	), t.TextMuted)
+	ui.Column(c.Key("set-img-allow")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+		if len(s.allowedImageSenders) == 0 {
+			ui.Text(c, a.tr("Noch keine Absender freigegeben.", "No senders allowed yet.")).FontSize(11.5).TextColor(t.TextMuted)
+		} else {
+			rmIdx := -1
+			for i, em := range s.allowedImageSenders {
+				ui.Row(c.Key(fmt.Sprintf("set-imgr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, em).FontSize(12).Grow(1).SingleLine()
+					if ui.Button(c.Key(fmt.Sprintf("set-imgd-%d", i)), "✕").Padding(1, 6).Clicked() {
+						rmIdx = i
+					}
+				})
+			}
+			if rmIdx >= 0 {
+				s.allowedImageSenders = append(s.allowedImageSenders[:rmIdx], s.allowedImageSenders[rmIdx+1:]...)
+			}
+		}
+		ui.Divider(c)
+		ui.Row(c.Key("set-img-add")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			in := ui.TextInput(c.Key("set-img-in"), &s.newImageSender).Placeholder(a.tr("absender@domain.de", "sender@domain.com")).Grow(1)
+			clicked := ui.Button(c.Key("set-img-addb"), a.tr("+ Hinzufügen", "+ Add")).Padding(3, 8).Clicked()
+			if (clicked || in.Submitted()) && strings.TrimSpace(s.newImageSender) != "" {
+				em := extractSenderEmail(s.newImageSender)
+				dup := false
+				for _, existing := range s.allowedImageSenders {
+					if strings.EqualFold(existing, em) {
+						dup = true
+						break
+					}
+				}
+				if em != "" && !dup {
+					s.allowedImageSenders = append(s.allowedImageSenders, em)
+				}
+				s.newImageSender = ""
+			}
+		})
+	})
 
 	a.settingsSection(c, a.tr("KI-Assistent", "AI assistant"))
 	if !a.cfg.Features.Assistant {
-		note(a.tr("Der KI-Assistent ist in den Einstellungen des Thunderbird-Add-ons ausgeschaltet.", "The AI assistant is switched off in the Thunderbird add-on's settings."), t.Warning)
+		note(a.tr("Der KI-Assistent ist in config.json ausgeschaltet.", "The AI assistant is switched off in config.json."), t.Warning)
 	}
 	field("set-ag-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1) })
+	agHint, agIsCLI := ai.CLIModelHints(s.agentBackend)
 	field("set-ag-m", a.tr("Modell", "Model"), func() {
-		ui.TextInput(c.Key("set-ag-mi"), &s.agentModel).Placeholder(a.tr("leer = Standard des Anbieters", "empty = provider default")).Grow(1)
+		ph := a.tr("leer = Standard des Anbieters", "empty = provider default")
+		if agIsCLI {
+			ph = a.tr(agHint.PlaceholderDE, agHint.PlaceholderEN)
+		}
+		ui.TextInput(c.Key("set-ag-mi"), &s.agentModel).Placeholder(ph).Grow(1)
 	})
+	if agIsCLI {
+		a.renderCLIModelHintChips(c, "set-ag-cli", &s.agentModel, agHint)
+	}
 	field("set-ag-e", "Endpoint", func() {
 		ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 	})
 
 	a.settingsSection(c, a.tr("Triage-Scan", "Triage scan"))
 	if !a.cfg.Features.Triage {
-		note(a.tr("Triage-Scans sind in den Einstellungen des Thunderbird-Add-ons ausgeschaltet.", "Triage scans are switched off in the Thunderbird add-on's settings."), t.Warning)
+		note(a.tr("Triage-Scans sind in config.json ausgeschaltet.", "Triage scans are switched off in config.json."), t.Warning)
 	}
 	ui.Checkbox(c.Key("set-new"), &s.scanOnNewMail, a.tr("Bei neuer Mail automatisch scannen", "Scan automatically when new mail arrives"))
 	ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
 	if s.classifyAI {
 		field("set-clf-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1) })
+		clfHint, clfIsCLI := ai.CLIModelHints(s.clfBackend)
 		field("set-clf-m", a.tr("Modell", "Model"), func() {
-			ui.TextInput(c.Key("set-clf-mi"), &s.clfModel).Placeholder(a.tr("leer = günstiges Standardmodell", "empty = cheap default model")).Grow(1)
+			ph := a.tr("leer = günstiges Standardmodell", "empty = cheap default model")
+			if clfIsCLI {
+				ph = a.tr(clfHint.PlaceholderDE, clfHint.PlaceholderEN)
+			}
+			ui.TextInput(c.Key("set-clf-mi"), &s.clfModel).Placeholder(ph).Grow(1)
 		})
+		if clfIsCLI {
+			a.renderCLIModelHintChips(c, "set-clf-cli", &s.clfModel, clfHint)
+		}
 		field("set-clf-e", "Endpoint", func() {
 			ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 		})
@@ -261,4 +599,6 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 			}
 		})
 	}
+
+	a.renderSettingsLANQRSection(c)
 }

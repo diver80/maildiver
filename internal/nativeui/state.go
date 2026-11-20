@@ -6,7 +6,7 @@ package nativeui
 // is read and written only from render callbacks, mygo event callbacks and closures passed to
 // emitUpdate (which mygo runs on the UI thread). Background goroutines never touch App fields:
 // they work on snapshots taken on the UI thread before they start, obtain the bridge client via
-// a.client() (mutex-guarded, returns bridgeclient.ErrOffline instead of nil) and publish results
+// a.client() (mutex-guarded, returns backend.ErrOffline instead of nil) and publish results
 // with emitUpdate. Methods documented "safe from any goroutine" post themselves to the UI thread;
 // all other exported methods must be called on the UI thread.
 
@@ -14,35 +14,45 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/mail"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/copilot"
-	"github.com/diver80/omathunder/internal/theme"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/copilot"
+	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/maildiver/internal/theme"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 const (
-	alertMailPrefix      = "omathunder-mail-"
-	alertMailBatchPrefix = "omathunder-mail-batch-"
-	alertCalPrefix       = "omathunder-cal-"
+	alertMailPrefix      = "maildiver-mail-"
+	alertMailBatchPrefix = "maildiver-mail-batch-"
+	alertCalPrefix       = "maildiver-cal-"
 )
 
 type Options struct {
-	DiscoveryPath string
-	StartHidden   bool
-	DisableTray   bool
-	ConfigLoader  func() (config.Config, error)
-	ConfigSaver   func(config.Config) error
-	Store         *triage.Store
-	AnyLLMOpts    []anyllm.Option
-	BridgeClient  *bridgeclient.Client // optional pre-wired client for testing
+	StartHidden  bool
+	DisableTray  bool
+	ConfigLoader func() (config.Config, error)
+	ConfigSaver  func(config.Config) error
+	Store        *triage.Store
+	AnyLLMOpts   []anyllm.Option
+	// Backend is the in-process access to the mail engine, the AI layer and the jobs.
+	Backend       *backend.Client
+	Direct        DirectController // account setup, Google/iCal, contacts, Thunderbird import
+	InitialMailto string           // optional mailto: URL passed on launch
 }
 
 type ChatEntry struct {
@@ -85,7 +95,7 @@ type ExtractedEvent struct {
 
 type ContactProposal struct {
 	Extracted        ai.ExtractedContact
-	Existing         *bridgeclient.ContactRecord
+	Existing         *backend.ContactRecord
 	Status           string   // "new", "enrich", "complete"
 	MissingFieldKeys []string // canonical field keys ("firstName", "lastName", ...)
 	MissingFields    []string // localized missing field labels for current UI language
@@ -109,7 +119,7 @@ type inspectorState struct {
 	inspectorContacts   []ContactProposal
 	inspectorError      string
 	inspectorSeq        uint64
-	addressBooks        []bridgeclient.AddressBook
+	addressBooks        []backend.AddressBook
 	contactsBookLabels  []string
 	contactsBookByLabel map[string]string
 	selectedContactBook string
@@ -117,19 +127,58 @@ type inspectorState struct {
 	contactsBusy        bool
 }
 
+// FilePickRequest describes a native OS open/save file dialog request.
+type FilePickRequest struct {
+	Mode        string // "open", "open-multi", "dir", "save"
+	Title       string
+	DefaultPath string
+	FilterName  string
+	Extensions  []string
+	ShowHidden  bool
+}
+
 // composeState is the compose modal.
 type composeState struct {
-	composeOpen      bool
-	composeReplyTo   string
-	composeReplyType string
-	composeTo        string
-	composeCC        string
-	composeSubject   string
-	composeBody      string
-	composeBusy      bool
-	composeConfirm   bool
-	composeNonce     string // per compose session; send idempotency key = nonce + content hash
-	composeSign      int    // 0: the identity's default in Thunderbird, 1: sign, 2: don't sign
+	composeOpen bool
+	// composeBaseline is the compose content as opened; closing with other content asks first
+	// (composeCloseAsk) instead of losing it.
+	composeBaseline          string
+	composeCloseAsk          bool
+	composeAccountID         string
+	composeAccountLabel      string
+	composeIdentityID        string
+	composeFromEmail         string
+	composeFromName          string
+	composeDraftID           string
+	composeReplyTo           string
+	composeReplyType         string
+	composeInReplyTo         string
+	composeReferences        string
+	composeTo                string
+	composeCC                string
+	composeBCC               string
+	composeSubject           string
+	composeBody              string
+	composeForwardHTML       string
+	composeForwardMsgID      string
+	composeForwardFrom       string
+	composeForwardDate       string
+	composeForwardSubj       string
+	composeForwardSep        string
+	composeKeepHTML          bool
+	composeAttachments       []string
+	composeSourceAttachments []backend.SourceAttachment
+	composeAttachInput       string
+	composeSuggestTo         []mailengine.RecipientSuggestion
+	composeSuggestCC         []mailengine.RecipientSuggestion
+	composeSuggestBCC        []mailengine.RecipientSuggestion
+	composeLastToQuery       string
+	composeLastCCQuery       string
+	composeLastBCCQuery      string
+	composeBusy              bool
+	composeConfirm           bool
+	composeNonce             string // per compose session; send idempotency key = nonce + content hash
+	composeSign              int    // 0: default, 1: sign, 2: don't sign
 	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
 	scanRunning bool
 	arch        archiveUI
@@ -137,13 +186,25 @@ type composeState struct {
 	// markReadSeq identifies the latest opening of a mail, so a delayed "mark read" from an
 	// earlier one is dropped.
 	markReadSeq int
+	// conversation is the open mail's conversation in the reading pane.
+	conversation conversationUI
+	// composeEncrypt: S/MIME encrypt outgoing mail.
+	composeEncrypt bool
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
 }
 
-// eventState is the new-event modal and the calendar picker data.
+// eventState is the create/edit event modal and the calendar picker data.
 type eventState struct {
+	// evDetailOpen/evDetail: read-only event details modal (from month/week chips).
+	evDetailOpen bool
+	evDetail     backend.CalendarEvent
+	// calExpanded: agenda rows expanded inline, keyed by calEventKey.
+	calExpanded     map[string]bool
 	eventOpen       bool
+	eventEditingID  string // non-empty when editing an existing event
+	eventEditCalID  string // calendar ID of the event being edited
+	eventEditingEv  backend.CalendarEvent
 	eventCalendar   string
 	eventCalLabels  []string
 	eventCalByLabel map[string]string
@@ -153,13 +214,16 @@ type eventState struct {
 	eventAllDay     bool
 	eventLocation   string
 	eventDesc       string
+	eventRecurrence int    // 0: none, 1: daily, 2: weekly, 3: monthly, 4: yearly
+	eventRecCount   string // optional COUNT (e.g. "10")
+	eventRecUntil   string // optional UNTIL (YYYY-MM-DD)
 	eventBusy       bool
 }
 
 // calDeleteState is the delete-confirmation dialog for calendar events.
 type calDeleteState struct {
 	calDelOpen  bool
-	calDelEvent bridgeclient.CalendarEvent
+	calDelEvent backend.CalendarEvent
 	calDelBusy  bool
 	calDelError string
 }
@@ -168,29 +232,32 @@ type App struct {
 	opts          Options
 	cfg           config.Config
 	store         *triage.Store
-	conn          *connManager
 	copilotRunner *copilot.Runner
 
 	// Hooks supplied by the desktop shell (nil in headless tests). All are called on the UI thread.
-	updateUI      func(func())
-	onTray        func()
-	onShowMain    func()
-	onHideFly     func()
-	onNotify      func(item AlertItem)
-	onLangChanged func()
+	updateUI           func(func())
+	onTray             func()
+	onShowMain         func()
+	onHideFly          func()
+	onNotify           func(item AlertItem)
+	onLangChanged      func()
+	onPickFile         func(req FilePickRequest, onDone func(paths []string))
+	onPrint            func(title, htmlDoc string)
+	detachedAuxWindows bool
+	onSyncAuxWindows   func()
+	composeWindowSeq   uint64
+	eventWindowSeq     uint64
 
 	// Connection & live status
-	bridgeOnline         bool
-	thunderbirdConnected bool
-	bridgeDisabled       bool // discovery failed and config says bridge.enabled=false (contract §9)
-	enablingBridge       bool
-	readOnly             bool
-	lastSync             time.Time
-	lastError            string
-	lastLoadWarning      string
-	loading              bool
-	refreshing           bool
-	refreshPending       bool
+	engineReady     bool
+	readOnly        bool
+	lastSync        time.Time
+	lastError       string
+	syncErrors      map[string]string // account ID → last sync error, until it syncs again
+	lastLoadWarning string
+	loading         bool
+	refreshing      bool
+	refreshPending  bool
 
 	// Theme & Language (DE/EN)
 	activePalette theme.Palette
@@ -204,37 +271,70 @@ type App struct {
 	themeCfg      atomic.Pointer[config.ThemeConfig]
 
 	// Navigation & filters
-	navID            string // "focus", "recent", "action", "calendar", or "folder:<id>"
-	secViewsOpen     bool
-	secFoldersOpen   bool
-	secAccountOpen   map[string]*bool // per-account folder sections (folders.go)
-	collapsedFolders map[string]bool  // folder tree: collapsed folders by account+path
-	searchQuery      string
-	selectedAccount  string // "" = All Accounts
-	accountLabels    []string
-	accountIDByLabel map[string]string
-	calDays          int // 7, 14, 30
-	showCopilot      bool
-	hideSidebar      bool
-	notifyEnabled    bool
-	sidebarSplit     float32
-	mailSplit        float32
-	copilotSplit     float32
+	navID              string // "focus", "recent", "action", "calendar", "contacts", or "folder:<id>"
+	secViewsOpen       bool
+	secFoldersOpen     bool
+	secAccountOpen     map[string]*bool // per-account folder sections (folders.go)
+	collapsedFolders   map[string]bool  // folder tree: collapsed folders by account+path
+	folderCollapseSeen map[string]bool  // folder keys whose startup collapse default was applied
+	searchQuery        string
+	lastSearchQuery    string
+	selectedAccount    string // "" = All Accounts
+	accountLabels      []string
+	accountIDByLabel   map[string]string
+	calDays            int             // 7, 14, 30 (Agenda mode)
+	calViewMode        int             // 0 = Month Grid, 1 = Week Grid, 2 = Agenda
+	calCursor          time.Time       // reference date for Month/Week navigation
+	calSearchQuery     string          // top-bar search query when viewing Calendar
+	lastCalSearch      string          // tracks empty <-> non-empty widened fetch transitions
+	hiddenCalendars    map[string]bool // calendar IDs toggled off in multi-select filter
+	hiddenCalsLoaded   bool            // whether hiddenCalendars was initialized from config.json
+	calFilterOpen      bool            // multi-select calendar popover state
+	showCopilot        bool
+	hideSidebar        bool
+	notifyEnabled      bool
+	sidebarSplit       float32
+	mailSplit          float32
+	copilotSplit       float32
 
 	// Mailbox & Calendar data
-	accounts      []bridgeclient.Account
-	folders       []bridgeclient.Folder
-	messages      []bridgeclient.MessageHeader
+	accounts      []backend.Account
+	folders       []backend.Folder
+	messages      []backend.MessageHeader
 	msgLoadSeq    uint64 // incremented per message-list load; stale responses are dropped
 	totalMessages int
-	focusUnread   int
-	selectedID    string
-	selectedMsg   *bridgeclient.MessageDetail
-	readerBody    readerBody // selectedMsg's body as Markdown (mailbody.go)
-	readerPlain   bool       // show the text version of HTML mails
+	// Paging: nextCursor continues the list (empty at its end); listKey names the view the list
+	// shows, so a reload of the same view keeps the pages already loaded.
+	nextCursor  string
+	loadingMore bool
+	listKey     string
+	focusUnread int
+	selectedID  string
+	selectedMsg *backend.MessageDetail
+	readerBody  readerBody // selectedMsg's body as Markdown (mailbody.go)
+	readerPlain bool       // show the text version of HTML mails
+
+	// Reader image state (mutex-guarded because markdown.Options.LoadImage runs on worker goroutines)
+	readerImgMu      sync.RWMutex
+	readerImgMsgID   string
+	readerImgAllowed map[string]bool
+	readerImgCache   map[string]ui.ImageSource
+
+	// Server-side IMAP search state
+	serverSearchBusy      bool
+	serverSearchDoneQuery string
+	serverSearchDoneKey   string
+	serverSearchCount     int
+
+	// Reversible action Undo state (⌘Z)
+	undo     *undoAction
+	undoBusy bool
+
+	// Pending mailto: URI received before UI finished startup
+	pendingMailto string
 	threadMsgs    []triage.MessageInput
-	calendars     []bridgeclient.Calendar
-	events        []bridgeclient.CalendarEvent
+	calendars     []backend.Calendar
+	events        []backend.CalendarEvent
 	triageState   triage.State
 	barSummary    triage.BarSummary
 
@@ -252,6 +352,9 @@ type App struct {
 	eventState
 	calDeleteState
 	movePickerState
+	direct   directUI
+	contacts contactsUI
+	preview  webPreviewState
 
 	// Keyboard: "press again to confirm" for key actions on several mails (keymap.go).
 	keyArmSig string
@@ -299,8 +402,7 @@ func NewApp(opts Options) *App {
 		opts:             opts,
 		cfg:              cfg,
 		store:            opts.Store,
-		conn:             newConnManager(opts.DiscoveryPath, opts.BridgeClient),
-		bridgeOnline:     opts.BridgeClient != nil,
+		engineReady:      opts.Backend != nil,
 		readOnly:         cfg.Mailbox.ReadOnly,
 		activePalette:    pal,
 		themeSource:      src,
@@ -317,6 +419,8 @@ func NewApp(opts Options) *App {
 		accountLabels:    []string{allAcc},
 		accountIDByLabel: map[string]string{allAcc: ""},
 		calDays:          14,
+		calViewMode:      0,
+		calCursor:        time.Now(),
 		showCopilot:      true,
 		notifyEnabled:    true,
 		sidebarSplit:     230,
@@ -324,6 +428,7 @@ func NewApp(opts Options) *App {
 		copilotSplit:     0,
 		helpTopic:        "all",
 		seenMails:        make(map[string]bool),
+		syncErrors:       make(map[string]string),
 		notifiedEvents:   make(map[string]bool),
 		msgReload:        &debouncer{delay: reloadDebounce, maxDelay: reloadMaxDelay},
 		calReload:        &debouncer{delay: reloadDebounce, maxDelay: reloadMaxDelay},
@@ -338,6 +443,9 @@ func NewApp(opts Options) *App {
 	a.themeCfg.Store(&tc)
 	a.quickRuleActionLabel = quickRuleActionLabelLang(a.quickRuleAction, resolvedLang)
 	a.initProvidersFromStatic()
+	if strings.TrimSpace(opts.InitialMailto) != "" {
+		a.pendingMailto = strings.TrimSpace(opts.InitialMailto)
+	}
 	a.copilotRunner = &copilot.Runner{
 		ConfigLoader: opts.ConfigLoader,
 		ClientFunc:   a.liveClient,
@@ -358,6 +466,85 @@ func (a *App) SetHooks(update func(func()), onTray func(), onShowMain func(), on
 // SetLanguageHook registers a callback (UI thread) run after the UI language changed, e.g. to
 // update the window title and the application menu.
 func (a *App) SetLanguageHook(fn func()) { a.onLangChanged = fn }
+
+// SetFilePickerHook registers the native OS file/folder dialog callback supplied by desktopShell.
+func (a *App) SetFilePickerHook(fn func(req FilePickRequest, onDone func(paths []string))) {
+	a.onPickFile = fn
+}
+
+// SetPrintHook registers the native print callback supplied by desktopShell.
+func (a *App) SetPrintHook(fn func(title, htmlDoc string)) {
+	a.onPrint = fn
+}
+
+// SetAuxWindowHook enables detached native desktop windows for Compose and Calendar Event
+// dialogs so users can keep reading mails and browsing the calendar alongside them.
+func (a *App) SetAuxWindowHook(fn func()) {
+	a.detachedAuxWindows = fn != nil
+	a.onSyncAuxWindows = fn
+}
+
+func (a *App) syncAuxWindows() {
+	if a.onSyncAuxWindows != nil {
+		a.onSyncAuxWindows()
+	}
+}
+
+// ComposeWindowTitle returns the localized title for the Compose dialog / window.
+func (a *App) ComposeWindowTitle() string {
+	switch a.composeReplyType {
+	case "reply":
+		return a.tr("Antwort verfassen", "Compose Reply")
+	case "replyAll":
+		return a.tr("Allen antworten", "Reply All")
+	case "forward":
+		return a.tr("Weiterleiten", "Forward Email")
+	case "draft":
+		return a.tr("Entwurf weiterbearbeiten", "Edit Draft")
+	default:
+		if a.composeReplyTo != "" {
+			return a.tr("Antwort verfassen", "Compose Reply")
+		}
+		return a.tr("Neue E-Mail", "New Email")
+	}
+}
+
+// EventWindowTitle returns the localized title for the Calendar Event create/edit window.
+func (a *App) EventWindowTitle() string {
+	if a.eventEditingID != "" {
+		return a.tr("Termin bearbeiten", "Edit Calendar Event")
+	}
+	return a.tr("Neuer Kalendereintrag", "New Calendar Event")
+}
+
+// TryCloseComposeWindow attempts to close Compose; if unsaved edits exist, it keeps Compose
+// open with the confirmation banner and returns false.
+func (a *App) TryCloseComposeWindow() bool {
+	if !a.composeOpen {
+		return true
+	}
+	if a.composeBaseline != "" && a.composeSnapshot() != a.composeBaseline {
+		a.composeCloseAsk = true
+		return false
+	}
+	a.closeCompose()
+	return true
+}
+
+// CloseEventDialog closes the Calendar Event create/edit modal or detached window.
+func (a *App) CloseEventDialog() {
+	a.eventOpen = false
+	a.syncAuxWindows()
+}
+
+// pickFile opens a native OS file dialog when a desktop shell is attached.
+func (a *App) pickFile(req FilePickRequest, onDone func(paths []string)) {
+	if a.onPickFile == nil {
+		a.toast(a.tr("Dateidialog im aktuellen Modus nicht verfügbar — bitte Pfad direkt eingeben.", "File dialog unavailable in current mode — please type path directly."), "info")
+		return
+	}
+	a.onPickFile(req, onDone)
+}
 
 // emitUpdate runs fn on the UI thread (asynchronously when a shell is attached). Safe from any
 // goroutine; this is the only way background work may change App state.
@@ -402,6 +589,17 @@ func (a *App) applyConfig(cfg config.Config) {
 	a.lang = resolveUILang(norm)
 	if a.lang != prevLang {
 		a.languageChanged()
+	}
+	if !a.hiddenCalsLoaded {
+		a.hiddenCalsLoaded = true
+		if len(cfg.App.HiddenCalendars) > 0 {
+			a.hiddenCalendars = make(map[string]bool, len(cfg.App.HiddenCalendars))
+			for _, id := range cfg.App.HiddenCalendars {
+				if id != "" {
+					a.hiddenCalendars[id] = true
+				}
+			}
+		}
 	}
 }
 
@@ -553,9 +751,65 @@ func (a *App) runThemeWatcher(ctx context.Context, every time.Duration) {
 
 // refreshSnapshot is the UI state a refresh needs, captured on the UI thread.
 type refreshSnapshot struct {
-	account string
-	calDays int
-	msgLoad messageLoad
+	account  string
+	calStart time.Time
+	calEnd   time.Time
+	msgLoad  messageLoad
+}
+
+// calendarFetchWindow returns the time range to load from the calendar engine.
+// It always covers both the currently visible Month/Week/Agenda window and today..today+calDays
+// so the tray widget and upcoming meeting reminders stay up to date even when browsing another month.
+func (a *App) calendarFetchWindow() (time.Time, time.Time) {
+	now := time.Now()
+	loc := now.Location()
+	calDays := a.calDays
+	if calDays <= 0 {
+		calDays = 14
+	}
+	baseStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	baseEnd := time.Date(now.Year(), now.Month(), now.Day()+calDays, 23, 59, 59, 0, loc)
+
+	cur := a.calCursor
+	if cur.IsZero() {
+		cur = now
+	}
+	var viewStart, viewEnd time.Time
+	switch a.calViewMode {
+	case 0: // Month grid (include leading Monday & trailing Sunday)
+		first := time.Date(cur.Year(), cur.Month(), 1, 0, 0, 0, 0, loc)
+		offset := (int(first.Weekday()) + 6) % 7 // Monday = 0
+		viewStart = first.AddDate(0, 0, -offset)
+		viewEnd = viewStart.AddDate(0, 0, 42).Add(-time.Second)
+	case 1: // Week grid (Monday..Sunday)
+		day := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, loc)
+		offset := (int(day.Weekday()) + 6) % 7
+		viewStart = day.AddDate(0, 0, -offset)
+		viewEnd = viewStart.AddDate(0, 0, 7).Add(-time.Second)
+	default: // Agenda
+		viewStart = baseStart
+		viewEnd = baseEnd
+	}
+	start := baseStart
+	if viewStart.Before(start) {
+		start = viewStart
+	}
+	end := baseEnd
+	if viewEnd.After(end) {
+		end = viewEnd
+	}
+	// When searching calendar events, widen the fetch range so past and upcoming matches are included.
+	if strings.TrimSpace(a.calSearchQuery) != "" {
+		searchStart := time.Date(now.Year(), now.Month(), now.Day()-60, 0, 0, 0, 0, loc)
+		searchEnd := time.Date(now.Year(), now.Month(), now.Day()+180, 23, 59, 59, 0, loc)
+		if searchStart.Before(start) {
+			start = searchStart
+		}
+		if searchEnd.After(end) {
+			end = searchEnd
+		}
+	}
+	return start, end
 }
 
 // RefreshAll reloads config, triage state, bridge health, accounts, folders, calendars,
@@ -572,11 +826,8 @@ func (a *App) startRefresh(ctx context.Context) {
 	}
 	a.refreshing = true
 	a.loading = true
-	calDays := a.calDays
-	if calDays <= 0 {
-		calDays = 14
-	}
-	snap := refreshSnapshot{account: a.selectedAccount, calDays: calDays, msgLoad: a.newMessageLoad()}
+	calStart, calEnd := a.calendarFetchWindow()
+	snap := refreshSnapshot{account: a.selectedAccount, calStart: calStart, calEnd: calEnd, msgLoad: a.newMessageLoad()}
 	go a.refreshBackground(ctx, snap)
 }
 
@@ -601,7 +852,11 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 	}
 
-	bc, health, connErr := a.conn.connect(ctx)
+	bc, connErr := a.client()
+	var health backend.HealthStatus
+	if connErr == nil {
+		health, connErr = bc.Health(ctx)
+	}
 	a.emitUpdate(func() {
 		if cfgErr == nil {
 			a.applyConfig(cfg)
@@ -611,21 +866,11 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 			a.barSummary = triage.ComputeBarSummary(st)
 		}
 		if connErr != nil {
-			a.bridgeOnline = false
-			a.thunderbirdConnected = false
-			a.bridgeDisabled = cfgErr == nil && !cfg.Bridge.Enabled
+			a.engineReady = false
 			a.lastError = a.errText(connErr)
 			return
 		}
-		if !a.conn.isCurrent(bc) {
-			// The connection dropped while this refresh ran; the event stream owns that state.
-			a.bridgeOnline = false
-			a.thunderbirdConnected = false
-			return
-		}
-		a.bridgeOnline = true
-		a.bridgeDisabled = false
-		a.thunderbirdConnected = health.ThunderbirdConnected
+		a.engineReady = health.Connected
 		a.readOnly = health.ReadOnly
 		a.lastError = ""
 	})
@@ -633,7 +878,7 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		a.emitUpdate(func() { a.finishRefresh(ctx) })
 		return
 	}
-	if !health.ThunderbirdConnected {
+	if !health.Connected {
 		a.emitUpdate(func() {
 			a.lastSync = time.Now()
 			a.finishRefresh(ctx)
@@ -642,10 +887,10 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 	}
 
 	type result struct {
-		accounts  []bridgeclient.Account
-		folders   []bridgeclient.Folder
-		calendars []bridgeclient.Calendar
-		events    []bridgeclient.CalendarEvent
+		accounts  []backend.Account
+		folders   []backend.Folder
+		calendars []backend.Calendar
+		events    []backend.CalendarEvent
 		errs      [4]error
 	}
 	var res result
@@ -662,14 +907,13 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 	load(1, func(c context.Context) (err error) { res.folders, err = bc.Folders(c, snap.account); return })
 	load(2, func(c context.Context) (err error) { res.calendars, err = bc.Calendars(c); return })
 	load(3, func(c context.Context) error {
-		now := time.Now()
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Format(time.RFC3339)
-		end := time.Date(now.Year(), now.Month(), now.Day()+snap.calDays, 23, 59, 59, 0, now.Location()).Format(time.RFC3339)
-		r, err := bc.CalendarEvents(c, start, end, nil, 100)
+		start := snap.calStart.Format(time.RFC3339)
+		end := snap.calEnd.Format(time.RFC3339)
+		r, err := bc.CalendarEvents(c, start, end, nil, 500)
 		if err == nil {
 			res.events = r.Events
 			if res.events == nil {
-				res.events = []bridgeclient.CalendarEvent{}
+				res.events = []backend.CalendarEvent{}
 			}
 		}
 		return err
@@ -679,9 +923,6 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 	}
 
 	a.emitUpdate(func() {
-		if !a.conn.isCurrent(bc) {
-			return
-		}
 		if res.errs[0] == nil && len(res.accounts) > 0 {
 			a.accounts = res.accounts
 			a.rebuildAccountLabels()
@@ -737,27 +978,46 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 type messageLoad struct {
 	seq       uint64
 	navID     string
-	filter    bridgeclient.MessagesFilter
+	key       string // the view, see App.listKey
+	filter    backend.MessagesFilter
 	actionIDs map[string]bool // triage action/waiting cards for the "action" view
 }
 
+// messagePage is how many mails one list request loads; scrolling near the end loads the next.
+const messagePage = 100
+
 // newMessageLoad snapshots the current view into a new load request (UI thread). Every call
-// supersedes all earlier ones: their responses are dropped.
+// supersedes all earlier ones: their responses are dropped. Reloading the view on screen keeps
+// as many mails as are loaded, so new mail does not cut the list back to its first page.
 func (a *App) newMessageLoad() messageLoad {
 	a.msgLoadSeq++
+	return a.viewLoad()
+}
+
+// viewLoad describes a load of the view on screen under the current load number (UI thread).
+func (a *App) viewLoad() messageLoad {
+	query := strings.TrimSpace(a.searchQuery)
+	key := a.navID + "\x00" + a.selectedAccount + "\x00" + query
+	limit := messagePage
+	if key == a.listKey {
+		limit = min(max(limit, len(a.messages)), 1000)
+	}
 	req := messageLoad{
 		seq:   a.msgLoadSeq,
 		navID: a.navID,
-		filter: bridgeclient.MessagesFilter{
+		key:   key,
+		filter: backend.MessagesFilter{
 			AccountID: a.selectedAccount,
-			Query:     strings.TrimSpace(a.searchQuery),
-			Days:      30,
-			Limit:     80,
+			Query:     query,
+			Limit:     limit,
 		},
 	}
 	switch {
 	case strings.HasPrefix(req.navID, "folder:"):
 		req.filter.FolderID = strings.TrimPrefix(req.navID, "folder:")
+	case req.navID == "recent" && query == "":
+		// "Recent mail" across all folders; searches and folders reach back to the first mail.
+		req.filter.Days = 30
 	case req.navID == "focus":
 		unread := true
 		req.filter.Unread = &unread
@@ -780,7 +1040,7 @@ func (a *App) LoadMessages(ctx context.Context) {
 
 // startMessageLoad starts a message-list load (UI thread).
 func (a *App) startMessageLoad(ctx context.Context) {
-	if !a.thunderbirdConnected {
+	if !a.engineReady {
 		return
 	}
 	bc, err := a.client()
@@ -791,7 +1051,7 @@ func (a *App) startMessageLoad(ctx context.Context) {
 	go a.loadMessagesBackground(ctx, bc, req)
 }
 
-func (a *App) loadMessagesBackground(ctx context.Context, bc *bridgeclient.Client, req messageLoad) {
+func (a *App) loadMessagesBackground(ctx context.Context, bc *backend.Client, req messageLoad) {
 	c, cancel := context.WithTimeout(ctx, 12*time.Second)
 	page, err := bc.Messages(c, req.filter)
 	cancel()
@@ -803,22 +1063,75 @@ func (a *App) loadMessagesBackground(ctx context.Context, bc *bridgeclient.Clien
 		})
 		return
 	}
-	msgs := page.Messages
-	if req.navID == "action" {
-		filtered := make([]bridgeclient.MessageHeader, 0, len(msgs))
-		for _, m := range msgs {
-			if req.actionIDs[m.ID] || m.Flagged {
-				filtered = append(filtered, m)
-			}
+	msgs := req.keep(page.Messages)
+	total, next := page.Total, page.NextCursor
+	a.emitUpdate(func() {
+		if a.applyMessageLoad(req, msgs, total) {
+			a.nextCursor, a.listKey, a.loadingMore = next, req.key, false
 		}
-		msgs = filtered
+	})
+}
+
+// keep filters a page for views the engine cannot filter (the action view).
+func (req messageLoad) keep(msgs []backend.MessageHeader) []backend.MessageHeader {
+	if req.navID != "action" {
+		return msgs
 	}
-	total := page.Total
-	a.emitUpdate(func() { a.applyMessageLoad(req, msgs, total) })
+	filtered := make([]backend.MessageHeader, 0, len(msgs))
+	for _, m := range msgs {
+		if req.actionIDs[m.ID] || m.Flagged {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+// loadMoreMessages appends the next page of the list on screen (UI thread). A newer load of the
+// list drops the page.
+func (a *App) loadMoreMessages(ctx context.Context) {
+	if a.nextCursor == "" || a.loadingMore || !a.engineReady {
+		return
+	}
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	req := a.viewLoad()
+	if req.key != a.listKey {
+		return
+	}
+	req.filter.Cursor, req.filter.Limit = a.nextCursor, messagePage
+	a.loadingMore = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 12*time.Second)
+		page, err := bc.Messages(c, req.filter)
+		cancel()
+		msgs := req.keep(page.Messages)
+		a.emitUpdate(func() {
+			if req.seq != a.msgLoadSeq {
+				return
+			}
+			a.loadingMore = false
+			if err != nil {
+				a.toast(a.errText(err), "error")
+				return
+			}
+			seen := make(map[string]bool, len(a.messages))
+			for _, m := range a.messages {
+				seen[m.ID] = true
+			}
+			for _, m := range msgs {
+				if !seen[m.ID] {
+					a.messages = append(a.messages, m)
+				}
+			}
+			a.nextCursor, a.totalMessages = page.NextCursor, page.Total
+		})
+	}()
 }
 
 // applyMessageLoad installs a load result unless a newer load was started (UI thread).
-func (a *App) applyMessageLoad(req messageLoad, msgs []bridgeclient.MessageHeader, total int) bool {
+func (a *App) applyMessageLoad(req messageLoad, msgs []backend.MessageHeader, total int) bool {
 	if req.seq != a.msgLoadSeq {
 		return false
 	}
@@ -843,7 +1156,7 @@ func (a *App) applyMessageLoad(req messageLoad, msgs []bridgeclient.MessageHeade
 // setMessages replaces the list (UI thread): the Shift-click anchor is reset and checked IDs
 // that are no longer listed are dropped, so range selection can never reach mails the user
 // did not see.
-func (a *App) setMessages(msgs []bridgeclient.MessageHeader) {
+func (a *App) setMessages(msgs []backend.MessageHeader) {
 	a.messages = msgs
 	a.lastCheckedIndex = -1
 	if len(a.checkedIDs) > 0 {
@@ -872,8 +1185,64 @@ func (a *App) setMessages(msgs []bridgeclient.MessageHeader) {
 func (a *App) setNav(nav string) {
 	if a.navID != nav {
 		a.navID = nav
+		a.serverSearchDoneKey = ""
+		a.serverSearchDoneQuery = ""
 	}
 	a.lastCheckedIndex = -1
+}
+
+func (a *App) serverSearchScopeKey(q string) string {
+	return a.navID + "|" + a.selectedAccount + "|" + strings.TrimSpace(q)
+}
+
+func isOutboundFolderName(name string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(name, "\\", "/"))))
+	switch base {
+	case "sent", "sent items", "sent messages", "gesendet", "gesendete", "gesendete objekte", "gesendete elemente",
+		"drafts", "entwürfe", "entwuerfe":
+		return true
+	}
+	return false
+}
+
+// isCurrentViewOutbound reports whether the active folder is Sent or Drafts,
+// where the message list should display recipients ("An: …") instead of the user's own From address.
+func (a *App) isCurrentViewOutbound() bool {
+	if !strings.HasPrefix(a.navID, "folder:") {
+		return false
+	}
+	fid := strings.TrimPrefix(a.navID, "folder:")
+	for _, f := range a.folders {
+		if f.ID == fid {
+			t := strings.ToLower(f.Type)
+			if t == "sent" || t == "drafts" {
+				return true
+			}
+			for _, su := range f.SpecialUse {
+				if strings.EqualFold(su, "sent") || strings.EqualFold(su, "drafts") {
+					return true
+				}
+			}
+			return isOutboundFolderName(f.Path) || isOutboundFolderName(f.Name)
+		}
+	}
+	return false
+}
+
+// isJunkMessage reports whether msg resides in a Junk/Spam folder.
+func (a *App) isJunkMessage(msg *backend.MessageDetail) bool {
+	if msg == nil {
+		return false
+	}
+	for _, f := range a.folders {
+		if f.ID == msg.FolderID {
+			if strings.EqualFold(f.Type, "junk") || slices.Contains(f.SpecialUse, "junk") {
+				return true
+			}
+		}
+	}
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(msg.Folder, "\\", "/"))))
+	return base == "junk" || base == "spam" || base == "junk e-mail" || base == "bulk mail"
 }
 
 // messageIDFor returns the RFC Message-ID of a listed/selected mail ("" if unknown).
@@ -906,18 +1275,21 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 	if id == "" {
 		return
 	}
+	sameMsgReload := !userOpened && a.selectedID == id
 	if a.selectedMsg != nil && a.selectedMsg.ID != id {
 		a.selectedMsg = nil
 	}
 	a.selectedID = id
-	a.inspectorSeq++
-	a.inspectorResult = ""
-	a.inspectorDraft = ""
-	a.inspectorEvent = nil
-	a.inspectorContacts = nil
-	a.inspectorError = ""
-	a.inspectorMode = ""
-	a.inspectorLoading = false
+	if !sameMsgReload {
+		a.inspectorSeq++
+		a.inspectorResult = ""
+		a.inspectorDraft = ""
+		a.inspectorEvent = nil
+		a.inspectorContacts = nil
+		a.inspectorError = ""
+		a.inspectorMode = ""
+		a.inspectorLoading = false
+	}
 	for i, m := range a.messages {
 		if m.ID == id {
 			a.mailList.selected = i
@@ -933,10 +1305,11 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 		c, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		// Opening a mail is an explicit action: encrypted mails are decrypted for the reading pane.
-		detail, err := bc.MessageWithOptions(c, id, bridgeclient.MessageOptions{Format: "both", Decrypt: true})
+		detail, err := bc.MessageWithOptions(c, id, backend.MessageOptions{Format: "both", Decrypt: true})
 		var body readerBody
 		if err == nil {
-			body = buildReaderBody(&detail) // off the UI thread: large HTML takes a moment
+			showRemote := a.readerRemoteImagesAllowed(id)
+			body = buildReaderBodyWithImages(&detail, showRemote) // off the UI thread: large HTML takes a moment
 		}
 		a.emitUpdate(func() {
 			if a.selectedID != id {
@@ -946,8 +1319,11 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 				a.inspectorError = a.errText(err)
 				return
 			}
+			a.resetReaderImages(id)
 			a.selectedMsg = &detail
 			a.readerBody = body
+			a.syncPreviewForMessage(a.selectedMsg)
+			a.loadConversation(ctx, id)
 			if userOpened {
 				a.scheduleMarkRead(ctx, id)
 			}
@@ -961,7 +1337,7 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 		return
 	}
 	lang := a.uiLang()
-	backend, model := a.agentBackend, a.agentModel
+	aiBackend, model := a.agentBackend, a.agentModel
 	selectedBook := a.selectedContactBook
 	a.inspectorSeq++
 	seq := a.inspectorSeq
@@ -986,9 +1362,14 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 		},
 	}
 	bc, _ := a.client()
+	// Summaries and replies see the whole conversation (reading order), not just the open mail.
+	convSize := 0
+	if mode == "summarize" || mode == "draft_reply" {
+		convSize = a.conversationSize(msg.ID)
+	}
 	go func() {
-		// The bridge allows ~110 s for an analysis; don't cut it short on the client.
-		c, cancel := context.WithTimeout(ctx, bridgeclient.AIRequestTimeout)
+		req.ThreadMessages = threadForAI(ctx, bc, msg.ID, convSize)
+		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
 		defer cancel()
 		var res ai.AnalyzeResponse
 		var err error
@@ -999,7 +1380,7 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 			if cerr != nil {
 				cfg = config.Default()
 			}
-			prov := ai.ProviderForBackend(cfg.AI, backend)
+			prov := ai.ProviderForBackend(cfg.AI, aiBackend)
 			if model != "" {
 				prov.Model = model
 			}
@@ -1018,12 +1399,12 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 		}
 
 		var contactProps []ContactProposal
-		var books []bridgeclient.AddressBook
+		var books []backend.AddressBook
 		var bookLabels []string
 		bookMap := make(map[string]string)
 		contactsSupported := true
 		if mode == "extract_contacts" {
-			var existing []bridgeclient.ContactRecord
+			var existing []backend.ContactRecord
 			if bc != nil {
 				if sr, sErr := bc.ContactsSearch(c, ""); sErr == nil {
 					contactsSupported = sr.Supported
@@ -1091,8 +1472,8 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 						a.inspectorResult = a.tr("Keine Kontaktdaten im E-Mail-Footer gefunden.", "No contact details found in email footer.")
 					} else {
 						a.inspectorResult = a.trf(
-							"%d Kontakt(e) im E-Mail-Footer erkannt und lokal mit dem Thunderbird-Adressbuch abgeglichen.",
-							"%d contact(s) detected in the email footer and matched locally against your Thunderbird address book.",
+							"%d Kontakt(e) im E-Mail-Footer erkannt und lokal mit deinem Adressbuch abgeglichen.",
+							"%d contact(s) detected in the email footer and matched locally against your address book.",
 							len(contactProps),
 						)
 					}
@@ -1102,13 +1483,13 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	}()
 }
 
-func buildContactProposals(extracted []ai.ExtractedContact, existing []bridgeclient.ContactRecord) []ContactProposal {
+func buildContactProposals(extracted []ai.ExtractedContact, existing []backend.ContactRecord) []ContactProposal {
 	return buildContactProposalsLang(extracted, existing, "de")
 }
 
-func buildContactProposalsLang(extracted []ai.ExtractedContact, existing []bridgeclient.ContactRecord, lang string) []ContactProposal {
-	byEmail := make(map[string]bridgeclient.ContactRecord, len(existing)*2)
-	byName := make(map[string]bridgeclient.ContactRecord, len(existing))
+func buildContactProposalsLang(extracted []ai.ExtractedContact, existing []backend.ContactRecord, lang string) []ContactProposal {
+	byEmail := make(map[string]backend.ContactRecord, len(existing)*2)
+	byName := make(map[string]backend.ContactRecord, len(existing))
 	for _, c := range existing {
 		if em := strings.ToLower(strings.TrimSpace(c.Email)); em != "" {
 			byEmail[em] = c
@@ -1124,7 +1505,7 @@ func buildContactProposalsLang(extracted []ai.ExtractedContact, existing []bridg
 	out := make([]ContactProposal, 0, len(extracted))
 	for _, ex := range extracted {
 		prop := ContactProposal{Extracted: ex, Status: "new"}
-		var match *bridgeclient.ContactRecord
+		var match *backend.ContactRecord
 		if em := strings.ToLower(strings.TrimSpace(ex.Email)); em != "" {
 			if found, ok := byEmail[em]; ok {
 				cp := found
@@ -1155,7 +1536,7 @@ func buildContactProposalsLang(extracted []ai.ExtractedContact, existing []bridg
 	return out
 }
 
-func missingContactFieldPairs(ex ai.ExtractedContact, cur bridgeclient.ContactRecord, lang string) (keys, labels []string) {
+func missingContactFieldPairs(ex ai.ExtractedContact, cur backend.ContactRecord, lang string) (keys, labels []string) {
 	check := func(newVal, curVal, key string) {
 		if strings.TrimSpace(newVal) != "" && strings.TrimSpace(curVal) == "" {
 			keys = append(keys, key)
@@ -1187,10 +1568,10 @@ func (a *App) ApplyContactProposal(ctx context.Context, idx int) {
 		return
 	}
 	bookID := a.contactsBookByLabel[a.selectedContactBook]
-	req := bridgeclient.ContactUpsertRequest{
+	req := backend.ContactUpsertRequest{
 		AddressBookID: bookID,
 		Mode:          "create",
-		Contact: bridgeclient.ContactRecord{
+		Contact: backend.ContactRecord{
 			DisplayName: prop.Extracted.DisplayName,
 			FirstName:   prop.Extracted.FirstName,
 			LastName:    prop.Extracted.LastName,
@@ -1231,10 +1612,11 @@ func (a *App) ApplyContactProposal(ctx context.Context, idx int) {
 					}
 				}
 			}
+			a.contacts.loaded = false
 			if req.Mode == "enrich" {
-				a.toast(a.tr("Kontaktdaten in Thunderbird vervollständigt", "Contact details updated in Thunderbird"), "success")
+				a.toast(a.tr("Kontaktdaten im Adressbuch vervollständigt", "Contact details updated in address book"), "success")
 			} else {
-				a.toast(a.tr("Kontakt in Thunderbird importiert", "Contact imported into Thunderbird"), "success")
+				a.toast(a.tr("Kontakt im Adressbuch gespeichert", "Contact saved to address book"), "success")
 			}
 		})
 	}()
@@ -1264,9 +1646,31 @@ func parseExtractedEvent(raw string) *ExtractedEvent {
 	return &ev
 }
 
-// SaveDraft saves a draft or (OpenWindow) opens a compose window in Thunderbird (UI thread).
-// Opening a compose window is user-visible and allowed in read-only mode (contract §5).
-func (a *App) SaveDraft(ctx context.Context, req bridgeclient.ComposeRequest, successMsg string) {
+// refreshFoldersBackground reloads sidebar folder metadata (including unread badges).
+func (a *App) refreshFoldersBackground(ctx context.Context) {
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	acc := a.selectedAccount
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		folders, err := bc.Folders(c, acc)
+		if err != nil || folders == nil {
+			return
+		}
+		a.emitUpdate(func() {
+			if a.selectedAccount == acc {
+				a.folders = folders
+			}
+		})
+	}()
+}
+
+// SaveDraft saves a draft in the Drafts folder (UI thread). When replacing an existing draft
+// (req.DraftMessageID != ""), the previous draft copy is deleted after the new one succeeds.
+func (a *App) SaveDraft(ctx context.Context, req backend.ComposeRequest, successMsg string) {
 	if a.composeBusy {
 		return
 	}
@@ -1276,12 +1680,25 @@ func (a *App) SaveDraft(ctx context.Context, req bridgeclient.ComposeRequest, su
 		return
 	}
 	if req.IdempotencyKey == "" {
-		req.IdempotencyKey = bridgeclient.NewIdempotencyKey()
+		req.IdempotencyKey = backend.NewIdempotencyKey()
 	}
+	fwdMsgID := a.composeForwardMsgID
+	fwdHTML := a.composeForwardHTML
+	keepHTML := a.composeKeepHTML
+	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
+	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
+	dc := a.opts.Direct
 	a.composeBusy = true
 	go func() {
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
+		if keepHTML && fwdHTML != "" && req.BodyHTML == "" {
+			var inlineImgs map[string]mailengine.InlineImage
+			if dc != nil && fwdMsgID != "" {
+				inlineImgs, _ = dc.ReadAllInlineImages(c, fwdMsgID)
+			}
+			req.BodyHTML = BuildForwardHTML(extractUserTopText(req.Body, fwdSep), fwdTitle, fwdFrom, fwdDate, fwdSubj, fwdHTML, inlineImgs)
+		}
 		raw, err := bc.ComposeDraft(c, req)
 		a.emitUpdate(func() {
 			a.composeBusy = false
@@ -1289,21 +1706,33 @@ func (a *App) SaveDraft(ctx context.Context, req bridgeclient.ComposeRequest, su
 				a.toast(a.tr("Fehler: ", "Error: ")+a.errText(err), "error")
 				return
 			}
-			a.composeOpen = false
-			if res := bridgeclient.ParseComposeResult(raw); res.Reason == "encrypted_reply" && !req.OpenWindow {
-				a.toast(a.tr("Antwort auf eine verschlüsselte Mail: in Thunderbird geöffnet statt still gespeichert, damit sie verschlüsselt bleibt",
-					"Reply to an encrypted email: opened in Thunderbird instead of saved silently, so it stays encrypted"), "success")
-				return
+			res := backend.ParseComposeResult(raw)
+			if req.DraftMessageID != "" && a.selectedID == req.DraftMessageID && res.DraftID != "" && res.DraftID != req.DraftMessageID {
+				a.selectedID = ""
+				a.selectedMsg = nil
+				a.syncPreviewForMessage(nil)
 			}
+			a.closeCompose()
 			a.toast(successMsg, "success")
+			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
 		})
 	}()
 }
 
-// SendCompose sends the compose modal content directly (UI thread). The idempotency key is
+func extractUserTopText(body, sep string) string {
+	if sep != "" {
+		if idx := strings.Index(body, sep); idx >= 0 {
+			return strings.TrimSpace(body[:idx])
+		}
+	}
+	return strings.TrimSpace(body)
+}
+
+// SendCompose sends the compose modal content directly via SMTP (UI thread). The idempotency key is
 // derived from the compose session and the content: a retry of the same content can never
 // send twice, while edited content gets a new key.
-func (a *App) SendCompose(ctx context.Context, req bridgeclient.ComposeRequest) {
+func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 	if a.composeBusy {
 		return
 	}
@@ -1313,63 +1742,75 @@ func (a *App) SendCompose(ctx context.Context, req bridgeclient.ComposeRequest) 
 		return
 	}
 	if a.composeNonce == "" {
-		a.composeNonce = bridgeclient.NewIdempotencyKey()
+		a.composeNonce = backend.NewIdempotencyKey()
 	}
-	req.IdempotencyKey = bridgeclient.ContentIdempotencyKey(a.composeNonce, "send",
-		strings.Join(req.To, ","), strings.Join(req.CC, ","), req.Subject, req.Body, req.ReplyToMessageID, req.ReplyType, req.Sign)
+	var srcAttKeys []string
+	for _, sa := range req.SourceAttachments {
+		srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
+	}
+	req.IdempotencyKey = backend.ContentIdempotencyKey(a.composeNonce, "send",
+		req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
+		strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
+		req.Subject, req.Body, req.ReplyToMessageID, req.ReplyType, req.Sign,
+		strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
+	fwdMsgID := a.composeForwardMsgID
+	fwdHTML := a.composeForwardHTML
+	keepHTML := a.composeKeepHTML
+	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
+	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
+	dc := a.opts.Direct
 	a.composeBusy = true
 	go func() {
-		// Signing may wait for a key password or smartcard PIN in Thunderbird.
-		c, cancel := context.WithTimeout(ctx, bridgeclient.ComposeSendTimeout)
+		c, cancel := context.WithTimeout(ctx, backend.ComposeSendTimeout)
 		defer cancel()
+		if keepHTML && fwdHTML != "" && req.BodyHTML == "" {
+			var inlineImgs map[string]mailengine.InlineImage
+			if dc != nil && fwdMsgID != "" {
+				inlineImgs, _ = dc.ReadAllInlineImages(c, fwdMsgID)
+			}
+			req.BodyHTML = BuildForwardHTML(extractUserTopText(req.Body, fwdSep), fwdTitle, fwdFrom, fwdDate, fwdSubj, fwdHTML, inlineImgs)
+		}
 		raw, err := bc.ComposeSend(c, req)
 		a.emitUpdate(func() {
 			a.composeBusy = false
 			if err != nil {
-				if !bridgeclient.IsOutcomeUnknown(err) {
-					// Definitive failure: a retry must really send again.
-					a.composeNonce = bridgeclient.NewIdempotencyKey()
+				if !backend.IsOutcomeUnknown(err) {
+					a.composeNonce = backend.NewIdempotencyKey()
 				}
 				a.toast(a.tr("Senden fehlgeschlagen: ", "Send failed: ")+a.errText(err), "error")
 				return
 			}
-			a.composeOpen = false
-			a.composeConfirm = false
-			a.toast(a.tr("Nachricht direkt über Thunderbird gesendet", "Message sent directly via Thunderbird")+
-				a.composeSecuritySuffix(bridgeclient.ParseComposeResult(raw).Security), "success")
-		})
-	}()
-}
-
-// OpenInThunderbird shows a mail in Thunderbird, e.g. to check its signature (UI thread).
-func (a *App) OpenInThunderbird(ctx context.Context, id string) {
-	bc, err := a.client()
-	if err != nil || id == "" {
-		a.toast(a.tr("Thunderbird ist nicht verbunden", "Thunderbird is not connected"), "error")
-		return
-	}
-	go func() {
-		c, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		err := bc.OpenMessage(c, id)
-		a.emitUpdate(func() {
-			if err != nil {
-				a.toast(a.tr("Fehler: ", "Error: ")+a.errText(err), "error")
+			if req.DraftMessageID != "" && a.selectedID == req.DraftMessageID {
+				a.selectedID = ""
+				a.selectedMsg = nil
+				a.syncPreviewForMessage(nil)
 			}
+			a.closeCompose()
+			a.composeConfirm = false
+			res := backend.ParseComposeResult(raw)
+			if req.DraftMessageID != "" {
+				a.startMessageLoad(ctx)
+				a.refreshFoldersBackground(ctx)
+			}
+			if res.SentCopyFailed {
+				a.toast(a.tr("E-Mail gesendet – aber nicht in „Gesendet“ abgelegt", "Email sent – but not stored in Sent"), "warning")
+				return
+			}
+			a.toast(a.tr("E-Mail gesendet", "Email sent")+a.composeSecuritySuffix(res.Security), "success")
 		})
 	}()
 }
 
 // PerformMessageAction applies one mail action (UI thread). The current Message-ID is sent as
 // expectedMessageId so a stale list can't hit a different mail.
-func (a *App) PerformMessageAction(ctx context.Context, id string, patch bridgeclient.MessageActionsRequest, toastMsg string) {
+func (a *App) PerformMessageAction(ctx context.Context, id string, patch backend.MessageActionsRequest, toastMsg string) {
 	a.performMessageAction(ctx, id, patch, toastMsg, "")
 }
 
 // performMessageAction is PerformMessageAction; openNext, when set, is opened after the mail
 // left the list (trash/move) while it was still the open one, so triage continues with its
 // neighbour.
-func (a *App) performMessageAction(ctx context.Context, id string, patch bridgeclient.MessageActionsRequest, toastMsg, openNext string) {
+func (a *App) performMessageAction(ctx context.Context, id string, patch backend.MessageActionsRequest, toastMsg, openNext string) {
 	if id == "" {
 		return
 	}
@@ -1385,10 +1826,29 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch bridgec
 	if patch.ExpectedMessageID == "" {
 		patch.ExpectedMessageID = a.messageIDFor(id)
 	}
+	// Capture metadata for Undo before mutation.
+	var prevAccountID, prevFolderPath, prevHeaderMsgID string
+	for _, m := range a.messages {
+		if m.ID == id {
+			prevAccountID, prevFolderPath, prevHeaderMsgID = m.AccountID, m.Folder, m.MessageID
+			break
+		}
+	}
+	if prevAccountID == "" && a.selectedMsg != nil && a.selectedMsg.ID == id {
+		prevAccountID, prevFolderPath, prevHeaderMsgID = a.selectedMsg.AccountID, a.selectedMsg.Folder, a.selectedMsg.MessageID
+	}
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 12*time.Second)
-		_, err := bc.MessageActions(c, id, patch)
+		raw, err := bc.MessageActions(c, id, patch)
 		cancel()
+		var movedTarget string
+		if err == nil && len(raw) > 0 {
+			var res struct {
+				MovedTargetPath string `json:"movedTargetPath"`
+			}
+			_ = json.Unmarshal(raw, &res)
+			movedTarget = res.MovedTargetPath
+		}
 		a.emitUpdate(func() {
 			if err != nil {
 				a.toast(a.tr("Aktion fehlgeschlagen: ", "Action failed: ")+a.errText(err), "error")
@@ -1400,10 +1860,44 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch bridgec
 				a.selectedMsg = nil
 				if openNext != "" {
 					a.SelectMessage(ctx, openNext)
+				} else {
+					a.syncPreviewForMessage(nil)
+				}
+			}
+			// Record reversible Undo action (never for permanent deletes).
+			switch {
+			case removed && movedTarget != "" && prevAccountID != "" && prevFolderPath != "" && prevHeaderMsgID != "":
+				a.undo = &undoAction{
+					Kind:      "move",
+					Label:     toastMsg,
+					CreatedAt: time.Now(),
+					MoveItems: []backend.UndoMoveItem{{
+						AccountID:      prevAccountID,
+						MessageID:      prevHeaderMsgID,
+						FromFolderPath: prevFolderPath,
+						ToFolderPath:   movedTarget,
+					}},
+				}
+			case !removed && patch.Read != nil:
+				a.undo = &undoAction{
+					Kind:        "read",
+					Label:       toastMsg,
+					CreatedAt:   time.Now(),
+					ToggleItems: []backend.BatchActionItem{{ID: id, ExpectedMessageID: prevHeaderMsgID}},
+					PrevValue:   !*patch.Read,
+				}
+			case !removed && patch.Flagged != nil:
+				a.undo = &undoAction{
+					Kind:        "flag",
+					Label:       toastMsg,
+					CreatedAt:   time.Now(),
+					ToggleItems: []backend.BatchActionItem{{ID: id, ExpectedMessageID: prevHeaderMsgID}},
+					PrevValue:   !*patch.Flagged,
 				}
 			}
 			a.toast(toastMsg, "success")
 			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
 			if !removed && a.selectedID == id {
 				a.reloadMessage(ctx, id)
 			}
@@ -1411,7 +1905,242 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch bridgec
 	}()
 }
 
-func (a *App) CreateCalendarEvent(ctx context.Context, req bridgeclient.CreateCalendarEventRequest) {
+// PerformUndo reverses the last reversible mail action (Archive, Move, Trash, Read, Star). UI thread.
+func (a *App) PerformUndo(ctx context.Context) {
+	if a.undo == nil || a.undoBusy {
+		return
+	}
+	if time.Since(a.undo.CreatedAt) > undoExpiry {
+		a.undo = nil
+		a.toast(a.tr("Rückgängig ist abgelaufen", "Undo expired"), "info")
+		return
+	}
+	if a.readOnly {
+		return
+	}
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	u := *a.undo
+	a.undo = nil
+	a.undoBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		var uerr error
+		var restoredCount int
+		var failedCount int
+		switch u.Kind {
+		case "move":
+			res, err := bc.UndoMove(c, backend.UndoMoveRequest{Items: u.MoveItems})
+			uerr = err
+			restoredCount = res.Restored
+		case "read":
+			v := u.PrevValue
+			res, err := bc.BatchMessageActions(c, backend.BatchActionsRequest{
+				Items:  u.ToggleItems,
+				Action: backend.MessageActionsRequest{Read: &v},
+			})
+			uerr = err
+			restoredCount = len(res.OKIDs)
+			failedCount = res.Failed
+			if uerr == nil && failedCount > 0 && res.FirstError != "" {
+				uerr = fmt.Errorf("%s", res.FirstError)
+			}
+		case "flag":
+			v := u.PrevValue
+			res, err := bc.BatchMessageActions(c, backend.BatchActionsRequest{
+				Items:  u.ToggleItems,
+				Action: backend.MessageActionsRequest{Flagged: &v},
+			})
+			uerr = err
+			restoredCount = len(res.OKIDs)
+			failedCount = res.Failed
+			if uerr == nil && failedCount > 0 && res.FirstError != "" {
+				uerr = fmt.Errorf("%s", res.FirstError)
+			}
+		}
+		a.emitUpdate(func() {
+			a.undoBusy = false
+			if uerr != nil {
+				a.toast(a.tr("Rückgängig fehlgeschlagen: ", "Undo failed: ")+a.errText(uerr), "error")
+				return
+			}
+			if restoredCount == 0 {
+				a.toast(a.tr("Nachricht zum Rückgängigmachen nicht mehr gefunden", "Message to undo was no longer found"), "info")
+				return
+			}
+			a.toast(a.tr("Rückgängig gemacht", "Undone"), "success")
+			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
+		})
+	}()
+}
+
+// MarkCurrentViewAllRead marks unread messages in the active folder (or only the visible unread
+// messages in Focus view, never silently wiping other folders across all time) as read.
+func (a *App) MarkCurrentViewAllRead(ctx context.Context) {
+	if a.readOnly {
+		a.toast(a.tr("Read-Only-Modus aktiv — Änderung blockiert", "Read-only mode active — change blocked"), "error")
+		return
+	}
+	if !strings.HasPrefix(a.navID, "folder:") {
+		// In Focus / cross-folder views, only mark the messages currently shown in this view
+		// so we never unexpectedly wipe unread flags in unrelated folders or older archives.
+		var ids []string
+		for _, m := range a.messages {
+			if m.Unread {
+				ids = append(ids, m.ID)
+			}
+		}
+		if len(ids) == 0 {
+			a.toast(a.tr("Keine ungelesenen Mails in dieser Ansicht", "No unread emails in this view"), "info")
+			return
+		}
+		readTrue := true
+		a.PerformBatchAction(ctx, ids, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
+		return
+	}
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	folderID := strings.TrimPrefix(a.navID, "folder:")
+	accID := a.selectedAccount
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		n, err := bc.MarkAllRead(c, accID, folderID)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.toast(a.tr("Fehler: ", "Error: ")+a.errText(err), "error")
+				return
+			}
+			a.toast(a.trf("%d Mail(s) als gelesen markiert", "Marked %d email(s) as read", n), "success")
+			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
+		})
+	}()
+}
+
+// SearchMessagesOnServer executes an IMAP server-side TEXT search (searching bodies on the server
+// that haven't been downloaded locally yet) and merges hits into the active message list.
+func (a *App) SearchMessagesOnServer(ctx context.Context) {
+	q := strings.TrimSpace(a.searchQuery)
+	if q == "" || a.serverSearchBusy || !a.engineReady {
+		return
+	}
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	folderID := ""
+	if strings.HasPrefix(a.navID, "folder:") {
+		folderID = strings.TrimPrefix(a.navID, "folder:")
+	}
+	accID := a.selectedAccount
+	scopeKey := a.serverSearchScopeKey(q)
+	seq := a.msgLoadSeq
+	a.serverSearchBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		page, err := bc.SearchServerMessages(c, backend.MessagesFilter{
+			AccountID: accID,
+			FolderID:  folderID,
+			Query:     q,
+			Limit:     100,
+		})
+		a.emitUpdate(func() {
+			a.serverSearchBusy = false
+			if seq != a.msgLoadSeq || a.serverSearchScopeKey(a.searchQuery) != scopeKey {
+				return
+			}
+			if err != nil {
+				a.toast(a.tr("Server-Suche fehlgeschlagen: ", "Server search failed: ")+a.errText(err), "error")
+				return
+			}
+			seen := make(map[string]bool, len(a.messages))
+			merged := make([]backend.MessageHeader, 0, len(a.messages)+len(page.Messages))
+			for _, m := range a.messages {
+				seen[m.ID] = true
+				merged = append(merged, m)
+			}
+			added := 0
+			for _, m := range page.Messages {
+				if !seen[m.ID] {
+					seen[m.ID] = true
+					merged = append(merged, m)
+					added++
+				}
+			}
+			if added > 0 {
+				sort.SliceStable(merged, func(i, j int) bool {
+					return parseMailDateUnix(merged[i].Date) > parseMailDateUnix(merged[j].Date)
+				})
+				a.setMessages(merged)
+				a.totalMessages = len(merged)
+			}
+			a.serverSearchDoneQuery = q
+			a.serverSearchDoneKey = scopeKey
+			a.serverSearchCount = len(page.Messages)
+			a.toast(a.trf("Server-Suche: %d Treffer (%d neu)", "Server search: %d matches (%d new)", len(page.Messages), added), "info")
+		})
+	}()
+}
+
+func parseMailDateUnix(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, time.RFC1123Z, time.RFC1123} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
+}
+
+// PrintSelectedMessage builds a clean print-ready HTML document for the currently open email
+// and invokes the desktop print hook (or falls back to opening the print page in the browser).
+func (a *App) PrintSelectedMessage(ctx context.Context) {
+	msg := a.selectedMsg
+	if msg == nil {
+		a.toast(a.tr("Keine Mail ausgewählt zum Drucken", "No email selected to print"), "info")
+		return
+	}
+	msgCopy := *msg
+	lang := a.uiLang()
+	allowRemote := a.readerRemoteImagesAllowed(msg.ID)
+	dc := a.opts.Direct
+	onPrint := a.onPrint
+	go func() {
+		var inlineImgs map[string]mailengine.InlineImage
+		if dc != nil && msgCopy.ID != "" {
+			c, cancel := context.WithTimeout(ctx, 10*time.Second)
+			inlineImgs, _ = dc.ReadAllInlineImages(c, msgCopy.ID)
+			cancel()
+		}
+		doc := BuildPrintHTML(&msgCopy, lang, inlineImgs, allowRemote, onPrint == nil)
+		title := msgCopy.Subject
+		if strings.TrimSpace(title) == "" {
+			title = "MailDiver"
+		}
+		a.emitUpdate(func() {
+			if a.onPrint != nil {
+				a.onPrint(title, doc)
+				return
+			}
+			if err := openPrintHTMLFallback(doc); err != nil {
+				a.toast(a.tr("Drucken fehlgeschlagen: ", "Print failed: ")+err.Error(), "error")
+			}
+		})
+	}()
+}
+
+func (a *App) CreateCalendarEvent(ctx context.Context, req backend.CreateCalendarEventRequest) {
 	if a.eventBusy {
 		return
 	}
@@ -1432,14 +2161,45 @@ func (a *App) CreateCalendarEvent(ctx context.Context, req bridgeclient.CreateCa
 				return
 			}
 			a.eventOpen = false
+			a.syncAuxWindows()
 			a.toast(a.trf("Termin „%s“ angelegt", "Created event \"%s\"", ev.Title), "success")
 			a.startRefresh(ctx)
 		})
 	}()
 }
 
+// UpdateCalendarEvent updates an existing calendar event via calendar.update.
+func (a *App) UpdateCalendarEvent(ctx context.Context, calendarID, eventID string, patch map[string]any) {
+	if a.eventBusy || strings.TrimSpace(eventID) == "" {
+		return
+	}
+	bc, err := a.client()
+	if err != nil || a.readOnly {
+		a.toast(a.tr("Read-Only oder Offline: Termin nicht aktualisiert", "Read-only or offline: event not updated"), "error")
+		return
+	}
+	a.eventBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		ev, err := bc.UpdateCalendarEvent(c, calendarID, eventID, patch)
+		a.emitUpdate(func() {
+			a.eventBusy = false
+			if err != nil {
+				a.toast(a.tr("Termin-Fehler: ", "Event error: ")+a.errText(err), "error")
+				return
+			}
+			a.eventOpen = false
+			a.eventEditingID = ""
+			a.syncAuxWindows()
+			a.toast(a.trf("Termin „%s“ aktualisiert", "Updated event \"%s\"", ev.Title), "success")
+			a.startRefresh(ctx)
+		})
+	}()
+}
+
 // RequestDeleteCalendarEvent opens the delete confirmation for ev (UI thread).
-func (a *App) RequestDeleteCalendarEvent(ev bridgeclient.CalendarEvent) {
+func (a *App) RequestDeleteCalendarEvent(ev backend.CalendarEvent) {
 	if a.readOnly || ev.ReadOnly || a.calDelBusy {
 		return
 	}
@@ -1449,7 +2209,7 @@ func (a *App) RequestDeleteCalendarEvent(ev bridgeclient.CalendarEvent) {
 }
 
 // ConfirmDeleteCalendarEvent deletes the event pending confirmation (UI thread). scope is
-// bridgeclient.ScopeOccurrence or ScopeSeries; for non-recurring events it is ignored.
+// backend.ScopeOccurrence or ScopeSeries; for non-recurring events it is ignored.
 func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 	if !a.calDelOpen || a.calDelBusy {
 		return
@@ -1462,7 +2222,7 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 	}
 	recurrenceID := ""
 	if ev.IsRecurring || ev.RecurrenceID != "" {
-		if scope == bridgeclient.ScopeOccurrence {
+		if scope == backend.ScopeOccurrence {
 			recurrenceID = ev.RecurrenceID
 		}
 	} else {
@@ -1487,43 +2247,682 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 	}()
 }
 
+func (a *App) defaultComposeAccountID(preferred string) string {
+	if preferred != "" {
+		for _, acc := range a.accounts {
+			if acc.ID == preferred {
+				return acc.ID
+			}
+		}
+	}
+	if a.selectedAccount != "" {
+		return a.selectedAccount
+	}
+	if len(a.accounts) > 0 {
+		return a.accounts[0].ID
+	}
+	return ""
+}
+
+func (a *App) composeAccountLabelFor(id string) string {
+	for _, acc := range a.accounts {
+		if acc.ID == id {
+			return a.accountDisplayName(acc.ID)
+		}
+	}
+	if len(a.accounts) > 0 {
+		return a.accountDisplayName(a.accounts[0].ID)
+	}
+	return ""
+}
+
+func (a *App) composeAccountSignature(accountID string) string {
+	for _, acc := range a.cfg.Direct.Accounts {
+		if acc.ID == accountID {
+			return strings.TrimSpace(acc.Signature)
+		}
+	}
+	if len(a.cfg.Direct.Accounts) > 0 && accountID == "" {
+		return strings.TrimSpace(a.cfg.Direct.Accounts[0].Signature)
+	}
+	return ""
+}
+
+// composeSignatureFor returns the alias-specific signature when configured, else the account signature.
+func (a *App) composeSignatureFor(accountID, email string) string {
+	em := strings.ToLower(strings.TrimSpace(email))
+	for _, acc := range a.cfg.Direct.Accounts {
+		if accountID != "" && acc.ID != accountID {
+			continue
+		}
+		if em != "" {
+			for _, al := range acc.Aliases {
+				if strings.EqualFold(strings.TrimSpace(al.Email), em) {
+					if sig := strings.TrimSpace(al.Signature); sig != "" {
+						return sig
+					}
+					break
+				}
+			}
+		}
+		if accountID != "" {
+			return strings.TrimSpace(acc.Signature)
+		}
+	}
+	return a.composeAccountSignature(accountID)
+}
+
+func (a *App) composeAccountEmail(accountID string) string {
+	for _, acc := range a.cfg.Direct.Accounts {
+		if acc.ID == accountID {
+			return strings.ToLower(strings.TrimSpace(acc.Email))
+		}
+	}
+	return ""
+}
+
+// stripSignatureDelim removes any leading RFC 3676 "--" separator line from a stored
+// signature so appending "-- \n" never produces a doubled "-- / --" block.
+func stripSignatureDelim(sig string) string {
+	s := strings.ReplaceAll(sig, "\r\n", "\n")
+	s = strings.TrimSpace(s)
+	for {
+		lines := strings.SplitN(s, "\n", 2)
+		if len(lines) == 0 || strings.TrimSpace(lines[0]) != "--" {
+			break
+		}
+		if len(lines) == 1 {
+			return ""
+		}
+		s = strings.TrimSpace(lines[1])
+	}
+	return s
+}
+
+func appendAccountSignature(body, sig string) string {
+	sig = stripSignatureDelim(sig)
+	if sig == "" {
+		return body
+	}
+	if strings.TrimSpace(body) == "" {
+		return "\n\n-- \n" + sig
+	}
+	if strings.Contains(body, sig) {
+		return body
+	}
+	return strings.TrimRight(body, "\r\n") + "\n\n-- \n" + sig
+}
+
+type composeIdentityChoice struct {
+	AccountID  string
+	IdentityID string
+	Email      string
+	Name       string
+	Label      string
+	Signature  string
+}
+
+func (a *App) composeIdentityChoices() []composeIdentityChoice {
+	sigByAcc := map[string]string{}
+	aliasSigByEmail := map[string]string{}
+	for _, acc := range a.cfg.Direct.Accounts {
+		sigByAcc[acc.ID] = strings.TrimSpace(acc.Signature)
+		for _, al := range acc.Aliases {
+			if s := strings.TrimSpace(al.Signature); s != "" {
+				aliasSigByEmail[acc.ID+"|"+strings.ToLower(strings.TrimSpace(al.Email))] = s
+			}
+		}
+	}
+	var choices []composeIdentityChoice
+	for _, acc := range a.accounts {
+		if len(acc.Identities) == 0 {
+			lbl := a.accountDisplayName(acc.ID)
+			choices = append(choices, composeIdentityChoice{
+				AccountID:  acc.ID,
+				IdentityID: acc.ID + "-id",
+				Label:      lbl,
+				Signature:  sigByAcc[acc.ID],
+			})
+			continue
+		}
+		multiID := len(acc.Identities) > 1
+		for i, id := range acc.Identities {
+			lbl := a.accountDisplayName(acc.ID)
+			if multiID || len(a.accounts) == 1 {
+				if id.Email != "" {
+					lbl = formatEmailAddress(id.Name, id.Email)
+				}
+			} else if i > 0 && id.Email != "" {
+				lbl = formatEmailAddress(id.Name, id.Email)
+			}
+			sig := sigByAcc[acc.ID]
+			if as, ok := aliasSigByEmail[acc.ID+"|"+strings.ToLower(strings.TrimSpace(id.Email))]; ok && as != "" {
+				sig = as
+			}
+			choices = append(choices, composeIdentityChoice{
+				AccountID:  acc.ID,
+				IdentityID: id.ID,
+				Email:      id.Email,
+				Name:       id.Name,
+				Label:      lbl,
+				Signature:  sig,
+			})
+		}
+	}
+	return choices
+}
+
+func (a *App) selectComposeIdentity(accountID, preferEmail string) {
+	choices := a.composeIdentityChoices()
+	if len(choices) == 0 {
+		a.composeAccountID = a.defaultComposeAccountID(accountID)
+		a.composeAccountLabel = a.composeAccountLabelFor(a.composeAccountID)
+		a.composeIdentityID = ""
+		a.composeFromEmail = ""
+		a.composeFromName = ""
+		return
+	}
+	targetAcc := a.defaultComposeAccountID(accountID)
+	wantEmail := strings.ToLower(strings.TrimSpace(preferEmail))
+	if wantEmail != "" {
+		for _, ch := range choices {
+			if (targetAcc == "" || ch.AccountID == targetAcc) && strings.EqualFold(ch.Email, wantEmail) {
+				a.composeAccountID = ch.AccountID
+				a.composeAccountLabel = ch.Label
+				a.composeIdentityID = ch.IdentityID
+				a.composeFromEmail = ch.Email
+				a.composeFromName = ch.Name
+				return
+			}
+		}
+	}
+	for _, ch := range choices {
+		if ch.AccountID == targetAcc {
+			a.composeAccountID = ch.AccountID
+			a.composeAccountLabel = ch.Label
+			a.composeIdentityID = ch.IdentityID
+			a.composeFromEmail = ch.Email
+			a.composeFromName = ch.Name
+			return
+		}
+	}
+	ch := choices[0]
+	a.composeAccountID = ch.AccountID
+	a.composeAccountLabel = ch.Label
+	a.composeIdentityID = ch.IdentityID
+	a.composeFromEmail = ch.Email
+	a.composeFromName = ch.Name
+}
+
+func (a *App) accountAllEmails(accountID string) map[string]bool {
+	out := map[string]bool{}
+	for _, acc := range a.cfg.Direct.Accounts {
+		if acc.ID == accountID {
+			if em := strings.ToLower(strings.TrimSpace(acc.Email)); em != "" {
+				out[em] = true
+			}
+			for _, al := range acc.Aliases {
+				if em := strings.ToLower(strings.TrimSpace(al.Email)); em != "" {
+					out[em] = true
+				}
+			}
+		}
+	}
+	for _, acc := range a.accounts {
+		if acc.ID == accountID {
+			for _, id := range acc.Identities {
+				if em := strings.ToLower(strings.TrimSpace(id.Email)); em != "" {
+					out[em] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// matchedRecipientAlias returns the first identity email of accountID found in to/cc.
+func (a *App) matchedRecipientAlias(accountID string, lists ...[]string) string {
+	own := a.accountAllEmails(accountID)
+	if len(own) == 0 {
+		return ""
+	}
+	for _, list := range lists {
+		for _, raw := range list {
+			addr := strings.ToLower(strings.TrimSpace(raw))
+			if parsed, err := mail.ParseAddress(raw); err == nil && parsed.Address != "" {
+				addr = strings.ToLower(strings.TrimSpace(parsed.Address))
+			}
+			if own[addr] {
+				return addr
+			}
+		}
+	}
+	return ""
+}
+
+func (a *App) initComposeCommon(accountID string) {
+	a.selectComposeIdentity(accountID, "")
+	a.composeDraftID = ""
+	a.composeInReplyTo = ""
+	a.composeReferences = ""
+	a.composeForwardHTML = ""
+	a.composeForwardMsgID = ""
+	a.composeForwardFrom = ""
+	a.composeForwardDate = ""
+	a.composeForwardSubj = ""
+	a.composeForwardSep = ""
+	a.composeKeepHTML = false
+	a.composeAttachments = nil
+	a.composeSourceAttachments = nil
+	a.composeAttachInput = ""
+	a.composeSuggestTo = nil
+	a.composeSuggestCC = nil
+	a.composeSuggestBCC = nil
+	a.composeLastToQuery = ""
+	a.composeLastCCQuery = ""
+	a.composeLastBCCQuery = ""
+	a.composeConfirm = false
+	a.composeNonce = backend.NewIdempotencyKey()
+	a.composeSign = 0
+	a.composeEncrypt = false
+	a.composeReplyEncrypted = false
+	a.composeBaseline, a.composeCloseAsk = "", false
+	a.composeOpen = true
+	a.composeWindowSeq++
+	a.syncAuxWindows()
+}
+
+// composeSnapshot is the compose content that would be lost on closing.
+func (a *App) composeSnapshot() string {
+	srcNames := make([]string, len(a.composeSourceAttachments))
+	for i, sa := range a.composeSourceAttachments {
+		srcNames[i] = sa.MessageID + ":" + sa.PartName + ":" + sa.Name
+	}
+	return strings.Join([]string{a.composeTo, a.composeCC, a.composeBCC, a.composeSubject, a.composeBody,
+		strings.Join(a.composeAttachments, "\x00"), strings.Join(srcNames, "\x00")}, "\x01")
+}
+
+// closeCompose closes the compose window on purpose (sent, saved, discarded).
+func (a *App) closeCompose() {
+	a.composeOpen, a.composeCloseAsk, a.composeBaseline = false, false, ""
+	a.composeDraftID = ""
+	a.composeInReplyTo = ""
+	a.composeReferences = ""
+	a.composeForwardHTML = ""
+	a.composeForwardMsgID = ""
+	a.composeKeepHTML = false
+	a.syncAuxWindows()
+}
+
+// guardComposeClose runs every frame (UI thread): the window was closed by Escape, a click beside
+// it or ✕ while it holds unsaved changes – it stays open and asks what to do with them.
+func (a *App) guardComposeClose() {
+	switch {
+	case a.composeOpen && a.composeBaseline == "":
+		a.composeBaseline = a.composeSnapshot()
+	case !a.composeOpen && a.composeBaseline != "":
+		if a.composeSnapshot() != a.composeBaseline {
+			a.composeOpen, a.composeCloseAsk = true, true
+			return
+		}
+		a.composeBaseline = ""
+	}
+}
+
 func (a *App) OpenComposeNew() {
+	a.initComposeCommon("")
 	a.composeReplyTo = ""
 	a.composeReplyType = ""
 	a.composeTo = ""
 	a.composeCC = ""
+	a.composeBCC = ""
 	a.composeSubject = ""
-	a.composeBody = ""
-	a.composeConfirm = false
-	a.composeNonce = bridgeclient.NewIdempotencyKey()
-	a.composeSign = 0
-	a.composeReplyEncrypted = false
-	a.composeOpen = true
+	a.composeBody = appendAccountSignature("", a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
 }
 
-func (a *App) OpenComposeReply(msg *bridgeclient.MessageDetail, body string) {
+// OpenComposeFromMailto opens the compose dialog prefilled from a mailto: URI (UI thread).
+func (a *App) OpenComposeFromMailto(rawURL string) {
+	f, ok := ParseMailtoURL(rawURL)
+	if !ok {
+		return
+	}
+	a.OpenComposeNew()
+	a.composeTo = f.To
+	a.composeCC = f.CC
+	a.composeBCC = f.BCC
+	a.composeSubject = f.Subject
+	if f.Body != "" {
+		a.composeBody = appendAccountSignature(f.Body, a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+	}
+}
+
+// OpenComposeFromDraft opens a saved draft message in the compose modal for editing & sending,
+// restoring BCC, threading headers, attachments, and tracking the original draft ID so saving replaces it and sending deletes it.
+func (a *App) OpenComposeFromDraft(msg *backend.MessageDetail) {
 	if msg == nil {
 		return
 	}
+	a.initComposeCommon(msg.AccountID)
+	if parsed, err := mail.ParseAddress(msg.From); err == nil && parsed.Address != "" {
+		a.selectComposeIdentity(msg.AccountID, parsed.Address)
+	}
+	a.composeDraftID = msg.ID
+	a.composeReplyTo = ""
+	a.composeReplyType = "draft"
+	if msg.Headers != nil {
+		a.composeInReplyTo = strings.TrimSpace(msg.Headers["in-reply-to"])
+		a.composeReferences = strings.TrimSpace(msg.Headers["references"])
+	}
+	a.composeTo = strings.Join(msg.To, ", ")
+	a.composeCC = strings.Join(msg.CC, ", ")
+	a.composeBCC = strings.Join(msg.BCC, ", ")
+	a.composeSubject = msg.Subject
+	for _, att := range msg.Attachments {
+		a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
+			MessageID: msg.ID,
+			PartName:  att.PartName,
+			Name:      att.Name,
+		})
+	}
+	body := msg.BodyText
+	if strings.TrimSpace(body) == "" && strings.TrimSpace(msg.BodyHtml) != "" {
+		body, _ = htmlMailMarkdown(msg.BodyHtml)
+	}
+	a.composeBody = body
+}
+
+// isDraftsMessage reports whether msg resides in a Drafts folder.
+func (a *App) isDraftsMessage(msg *backend.MessageDetail) bool {
+	if msg == nil {
+		return false
+	}
+	for _, f := range a.folders {
+		if f.ID == msg.FolderID {
+			if strings.EqualFold(f.Type, "drafts") || slices.Contains(f.SpecialUse, "drafts") {
+				return true
+			}
+			base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(f.Path, "\\", "/"))))
+			if base == "drafts" || base == "entwürfe" || base == "entwuerfe" {
+				return true
+			}
+			return false
+		}
+	}
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(msg.Folder, "\\", "/"))))
+	return base == "drafts" || base == "entwürfe" || base == "entwuerfe"
+}
+
+func (a *App) OpenComposeTo(to string) {
+	a.OpenComposeNew()
+	a.composeTo = strings.TrimSpace(to)
+}
+
+func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
+	if msg == nil {
+		return
+	}
+	a.initComposeCommon(msg.AccountID)
+	if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
+		a.selectComposeIdentity(msg.AccountID, alias)
+	}
 	a.composeReplyTo = msg.ID
 	a.composeReplyType = "reply"
-	a.composeTo = msg.From
+	a.composeTo = replyRecipient(msg)
 	a.composeCC = ""
+	a.composeBCC = ""
 	subj := msg.Subject
-	if !strings.HasPrefix(strings.ToLower(subj), "re:") {
+	if low := strings.ToLower(subj); !strings.HasPrefix(low, "re:") && !strings.HasPrefix(low, "aw:") {
 		subj = "Re: " + subj
 	}
 	a.composeSubject = subj
-	a.composeBody = body
-	a.composeConfirm = false
-	a.composeNonce = bridgeclient.NewIdempotencyKey()
-	a.composeSign = 0
+	a.composeBody = appendAccountSignature(body, a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)) + a.replyQuote(msg)
 	a.composeReplyEncrypted = msg.Security.Encrypted
-	a.composeOpen = true
 }
 
-// composeSecuritySuffix names what Thunderbird applied to a sent mail: " (signiert, verschlüsselt)".
-func (a *App) composeSecuritySuffix(sec *bridgeclient.ComposeSecurity) string {
+// maxQuoteRunes bounds the quoted original in a reply.
+const maxQuoteRunes = 20000
+
+// replyQuote is the original mail quoted below a reply ("Am … schrieb …:" and "> " lines).
+// Encrypted mails are not quoted: the reply would carry their text unencrypted.
+func (a *App) replyQuote(msg *backend.MessageDetail) string {
+	if msg.Security.Encrypted {
+		return ""
+	}
+	text := msg.BodyText
+	if strings.TrimSpace(text) == "" && strings.TrimSpace(msg.BodyHtml) != "" {
+		text, _ = htmlMailMarkdown(msg.BodyHtml)
+	}
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if text == "" {
+		return ""
+	}
+	if r := []rune(text); len(r) > maxQuoteRunes {
+		text = string(r[:maxQuoteRunes]) + "\n[…]"
+	}
+	var b strings.Builder
+	b.WriteString("\n\n")
+	b.WriteString(a.trf("Am %s schrieb %s:", "On %s, %s wrote:", formatDateTimeLang(msg.Date, a.uiLang()), msg.From))
+	b.WriteString("\n")
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, ">") {
+			b.WriteString(">" + line + "\n")
+		} else if line == "" {
+			b.WriteString(">\n")
+		} else {
+			b.WriteString("> " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// replyRecipient is where a reply goes: the Reply-To address when the mail names one (mailing
+// lists, shops, helpdesks), else its sender.
+func replyRecipient(msg *backend.MessageDetail) string {
+	if rt := strings.TrimSpace(msg.Headers["reply-to"]); rt != "" {
+		if list := splitEmailList(rt); len(list) > 0 {
+			return strings.Join(list, ", ")
+		}
+	}
+	return msg.From
+}
+
+func (a *App) OpenComposeReplyAll(msg *backend.MessageDetail, body string) {
+	if msg == nil {
+		return
+	}
+	a.OpenComposeReply(msg, body)
+	a.composeReplyType = "replyAll"
+
+	seen := a.accountAllEmails(a.composeAccountID)
+	extractAddr := func(raw string) string {
+		if addr, err := mail.ParseAddress(raw); err == nil {
+			return strings.ToLower(strings.TrimSpace(addr.Address))
+		}
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+	if fromAddr := extractAddr(msg.From); fromAddr != "" {
+		seen[fromAddr] = true
+	}
+	var cc []string
+	addCC := func(list []string) {
+		for _, raw := range list {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			key := extractAddr(raw)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			cc = append(cc, raw)
+		}
+	}
+	addCC(msg.To)
+	addCC(msg.CC)
+	a.composeCC = strings.Join(cc, ", ")
+}
+
+func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
+	if msg == nil {
+		return
+	}
+	a.initComposeCommon(msg.AccountID)
+	if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
+		a.selectComposeIdentity(msg.AccountID, alias)
+	}
+	a.composeReplyTo = msg.ID
+	a.composeReplyType = "forward"
+	a.composeTo = ""
+	a.composeCC = ""
+	a.composeBCC = ""
+	subj := msg.Subject
+	low := strings.ToLower(subj)
+	if !strings.HasPrefix(low, "fwd:") && !strings.HasPrefix(low, "wg:") {
+		subj = "Fwd: " + subj
+	}
+	a.composeSubject = subj
+	dateStr := formatDateTimeLang(msg.Date, a.uiLang())
+	sep := fmt.Sprintf("---------- %s ----------", a.tr("Weitergeleitete Nachricht", "Forwarded message"))
+	header := fmt.Sprintf("\n\n%s\n%s %s\n%s %s\n%s %s\n\n%s",
+		sep,
+		a.tr("Von:", "From:"), msg.From,
+		a.tr("Datum:", "Date:"), dateStr,
+		a.tr("Betreff:", "Subject:"), msg.Subject,
+		strings.TrimSpace(msg.BodyText),
+	)
+	sig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+	if sig != "" {
+		a.composeBody = "\n\n-- \n" + sig + header
+	} else {
+		a.composeBody = header
+	}
+	// Preserve original attachments when forwarding (user can remove individual ones in the compose modal).
+	for _, att := range msg.Attachments {
+		a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
+			MessageID: msg.ID,
+			PartName:  att.PartName,
+			Name:      att.Name,
+		})
+	}
+	// Preserve original HTML formatting as multipart/alternative unless the source mail was encrypted.
+	if strings.TrimSpace(msg.BodyHtml) != "" && !msg.Security.Encrypted {
+		a.composeForwardHTML = msg.BodyHtml
+		a.composeForwardMsgID = msg.ID
+		a.composeForwardFrom = msg.From
+		a.composeForwardDate = dateStr
+		a.composeForwardSubj = msg.Subject
+		a.composeForwardSep = sep
+		a.composeKeepHTML = true
+	}
+}
+
+func lastRecipientToken(raw string) string {
+	idx := strings.LastIndex(raw, ",")
+	if idx >= 0 {
+		return strings.TrimSpace(raw[idx+1:])
+	}
+	return strings.TrimSpace(raw)
+}
+
+func (a *App) refreshComposeSuggestions(field, raw string) {
+	dc := a.opts.Direct
+	if dc == nil {
+		return
+	}
+	tok := lastRecipientToken(raw)
+	switch field {
+	case "to":
+		if tok == a.composeLastToQuery {
+			return
+		}
+		a.composeLastToQuery = tok
+		if len(tok) < 2 {
+			a.composeSuggestTo = nil
+			return
+		}
+		a.composeSuggestTo = dc.SuggestRecipients(context.Background(), tok, 5)
+	case "cc":
+		if tok == a.composeLastCCQuery {
+			return
+		}
+		a.composeLastCCQuery = tok
+		if len(tok) < 2 {
+			a.composeSuggestCC = nil
+			return
+		}
+		a.composeSuggestCC = dc.SuggestRecipients(context.Background(), tok, 5)
+	case "bcc":
+		if tok == a.composeLastBCCQuery {
+			return
+		}
+		a.composeLastBCCQuery = tok
+		if len(tok) < 2 {
+			a.composeSuggestBCC = nil
+			return
+		}
+		a.composeSuggestBCC = dc.SuggestRecipients(context.Background(), tok, 5)
+	}
+}
+
+func (a *App) applyComposeSuggestion(field string, s mailengine.RecipientSuggestion) {
+	formatted := formatEmailAddress(s.DisplayName, s.Email)
+	replaceLast := func(cur string) string {
+		if idx := strings.LastIndex(cur, ","); idx >= 0 {
+			prefix := strings.TrimSpace(cur[:idx])
+			if prefix != "" {
+				return prefix + ", " + formatted + ", "
+			}
+		}
+		return formatted + ", "
+	}
+	switch field {
+	case "to":
+		a.composeTo = replaceLast(a.composeTo)
+		a.composeSuggestTo = nil
+		a.composeLastToQuery = ""
+	case "cc":
+		a.composeCC = replaceLast(a.composeCC)
+		a.composeSuggestCC = nil
+		a.composeLastCCQuery = ""
+	case "bcc":
+		a.composeBCC = replaceLast(a.composeBCC)
+		a.composeSuggestBCC = nil
+		a.composeLastBCCQuery = ""
+	}
+}
+
+func (a *App) addComposeAttachment(rawPath string) {
+	p := strings.TrimSpace(rawPath)
+	if p == "" {
+		return
+	}
+	for _, existing := range a.composeAttachments {
+		if existing == p {
+			a.composeAttachInput = ""
+			return
+		}
+	}
+	a.composeAttachments = append(a.composeAttachments, p)
+	a.composeAttachInput = ""
+}
+
+func (a *App) removeComposeAttachment(idx int) {
+	if idx < 0 || idx >= len(a.composeAttachments) {
+		return
+	}
+	a.composeAttachments = append(a.composeAttachments[:idx], a.composeAttachments[idx+1:]...)
+}
+
+func (a *App) removeComposeSourceAttachment(idx int) {
+	if idx < 0 || idx >= len(a.composeSourceAttachments) {
+		return
+	}
+	a.composeSourceAttachments = append(a.composeSourceAttachments[:idx], a.composeSourceAttachments[idx+1:]...)
+}
+
+// composeSecuritySuffix names security flags on a sent mail: " (signiert, verschlüsselt)".
+func (a *App) composeSecuritySuffix(sec *backend.ComposeSecurity) string {
 	if sec == nil {
 		return ""
 	}
@@ -1542,12 +2941,18 @@ func (a *App) composeSecuritySuffix(sec *bridgeclient.ComposeSecurity) string {
 
 func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 	now := time.Now().Add(time.Hour).Truncate(time.Hour)
+	a.eventEditingID = ""
+	a.eventEditCalID = ""
+	a.eventEditingEv = backend.CalendarEvent{}
 	a.eventTitle = ""
 	a.eventStart = now.Format("2006-01-02T15:04")
 	a.eventEnd = now.Add(time.Hour).Format("2006-01-02T15:04")
 	a.eventAllDay = false
 	a.eventLocation = ""
 	a.eventDesc = ""
+	a.eventRecurrence = 0
+	a.eventRecCount = ""
+	a.eventRecUntil = ""
 	if prefill != nil {
 		a.eventTitle = prefill.Title
 		if prefill.Start != "" {
@@ -1570,6 +2975,163 @@ func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 		a.eventCalendar = a.eventCalLabels[0]
 	}
 	a.eventOpen = true
+	a.eventWindowSeq++
+	a.syncAuxWindows()
+}
+
+// OpenNewEventOnDate opens the new-event modal pre-filled for a specific calendar day (09:00–10:00).
+func (a *App) OpenNewEventOnDate(day time.Time) {
+	a.OpenNewEventModal(nil)
+	start := time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, day.Location())
+	a.eventStart = start.Format("2006-01-02T15:04")
+	a.eventEnd = start.Add(time.Hour).Format("2006-01-02T15:04")
+}
+
+// OpenEditEventModal opens the event modal to edit an existing writable calendar event.
+func (a *App) OpenEditEventModal(ev backend.CalendarEvent) {
+	if ev.ReadOnly {
+		a.toast(a.tr("Dieser Kalender ist schreibgeschützt (Abo).", "This calendar is read-only (subscription)."), "info")
+		return
+	}
+	a.eventEditingID = ev.ID
+	a.eventEditCalID = ev.CalendarID
+	a.eventEditingEv = ev
+	a.eventTitle = ev.Title
+	a.eventStart = formatDateTimeInput(ev.Start)
+	a.eventEnd = formatDateTimeInput(ev.End)
+	a.eventAllDay = ev.AllDay
+	a.eventLocation = ev.Location
+	a.eventDesc = ev.Description
+	a.eventRecurrence, a.eventRecCount, a.eventRecUntil = parseEventRRule(ev.RecurrenceRule)
+	// Match calendar label
+	for lbl, id := range a.eventCalByLabel {
+		if id == ev.CalendarID {
+			a.eventCalendar = lbl
+			break
+		}
+	}
+	a.eventOpen = true
+	a.eventWindowSeq++
+	a.syncAuxWindows()
+}
+
+func formatDateTimeInput(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if t, err := parseEventTime(raw); err == nil {
+		return t.Local().Format("2006-01-02T15:04")
+	}
+	raw = strings.TrimSuffix(raw, "Z")
+	if len(raw) > 16 {
+		return raw[:16]
+	}
+	return raw
+}
+
+func buildEventRRule(recIdx int, countStr, untilStr string) string {
+	var freq string
+	switch recIdx {
+	case 1:
+		freq = "DAILY"
+	case 2:
+		freq = "WEEKLY"
+	case 3:
+		freq = "MONTHLY"
+	case 4:
+		freq = "YEARLY"
+	default:
+		return ""
+	}
+	parts := []string{"FREQ=" + freq}
+	if n, err := strconv.Atoi(strings.TrimSpace(countStr)); err == nil && n > 0 {
+		parts = append(parts, fmt.Sprintf("COUNT=%d", n))
+	} else if u := strings.TrimSpace(untilStr); u != "" {
+		if parsed, err := time.Parse("2006-01-02", u); err == nil {
+			parts = append(parts, "UNTIL="+parsed.Format("20060102")+"T235959Z")
+		}
+	}
+	return strings.Join(parts, ";")
+}
+
+func parseEventRRule(rrule string) (recIdx int, countStr, untilStr string) {
+	raw := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(rrule)), "RRULE:")
+	if raw == "" {
+		return 0, "", ""
+	}
+	for _, part := range strings.Split(raw, ";") {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "FREQ":
+			switch strings.TrimSpace(v) {
+			case "DAILY":
+				recIdx = 1
+			case "WEEKLY":
+				recIdx = 2
+			case "MONTHLY":
+				recIdx = 3
+			case "YEARLY":
+				recIdx = 4
+			}
+		case "COUNT":
+			countStr = strings.TrimSpace(v)
+		case "UNTIL":
+			v = strings.TrimSpace(v)
+			if len(v) >= 8 {
+				untilStr = v[:4] + "-" + v[4:6] + "-" + v[6:8]
+			}
+		}
+	}
+	return recIdx, countStr, untilStr
+}
+
+// SaveCalendarEvent creates a new event or updates an existing event from the modal fields.
+func (a *App) SaveCalendarEvent(ctx context.Context) {
+	if a.eventBusy {
+		return
+	}
+	title := strings.TrimSpace(a.eventTitle)
+	if title == "" {
+		a.toast(a.tr("Bitte einen Titel eingeben.", "Please enter a title."), "error")
+		return
+	}
+	start := normalizeDateTimeInput(a.eventStart)
+	end := normalizeDateTimeInput(a.eventEnd)
+	rrule := buildEventRRule(a.eventRecurrence, a.eventRecCount, a.eventRecUntil)
+
+	if a.eventEditingID != "" {
+		calID := a.eventEditCalID
+		if calID == "" {
+			calID = a.eventCalByLabel[a.eventCalendar]
+		}
+		patch := map[string]any{
+			"title":          title,
+			"start":          start,
+			"end":            end,
+			"allDay":         a.eventAllDay,
+			"location":       strings.TrimSpace(a.eventLocation),
+			"description":    strings.TrimSpace(a.eventDesc),
+			"rrule":          rrule,
+			"recurrenceRule": rrule,
+		}
+		a.UpdateCalendarEvent(ctx, calID, a.eventEditingID, patch)
+		return
+	}
+
+	a.CreateCalendarEvent(ctx, backend.CreateCalendarEventRequest{
+		CalendarID:     a.eventCalByLabel[a.eventCalendar],
+		Title:          title,
+		Start:          start,
+		End:            end,
+		AllDay:         a.eventAllDay,
+		Location:       strings.TrimSpace(a.eventLocation),
+		Description:    strings.TrimSpace(a.eventDesc),
+		RecurrenceRule: rrule,
+	})
 }
 
 // StartEventLoop starts the bridge event stream (live refresh + notifications), the meeting
@@ -1683,11 +3245,14 @@ func (a *App) unreadCount() int {
 	return n
 }
 
-func (a *App) todayEvents() []bridgeclient.CalendarEvent {
+func (a *App) todayEvents() []backend.CalendarEvent {
 	now := time.Now()
 	y, m, d := now.Date()
-	var out []bridgeclient.CalendarEvent
+	var out []backend.CalendarEvent
 	for _, ev := range a.events {
+		if a.isCalendarHidden(ev.CalendarID) {
+			continue
+		}
 		t, err := parseEventTime(ev.Start)
 		if err != nil {
 			continue
@@ -1703,7 +3268,7 @@ func (a *App) todayEvents() []bridgeclient.CalendarEvent {
 
 // TrayTitle returns the compact status string rendered beside the menu bar icon (UI thread).
 func (a *App) TrayTitle() string {
-	if !a.bridgeOnline || !a.thunderbirdConnected {
+	if !a.engineReady {
 		return "○"
 	}
 	unread := a.unreadCount()
@@ -1719,16 +3284,16 @@ func (a *App) TrayTitle() string {
 
 // TrayTooltip returns a rich status summary tooltip for the menu bar icon (UI thread).
 func (a *App) TrayTooltip() string {
-	if !a.bridgeOnline {
-		return a.tr("OmaThunder — Thunderbird Bridge offline", "OmaThunder — Thunderbird bridge offline")
+	if !a.engineReady {
+		return a.tr("MailDiver — Mail-Dienst offline", "MailDiver — Mail engine offline")
 	}
-	if !a.thunderbirdConnected {
-		return a.tr("OmaThunder — Warte auf Thunderbird-Erweiterung", "OmaThunder — Waiting for Thunderbird extension")
+	if !a.engineReady {
+		return a.tr("MailDiver — Verbinde Postfächer…", "MailDiver — Connecting mailboxes…")
 	}
 	today := a.todayEvents()
 	return a.trf(
-		"OmaThunder Live · %d ungelesen · %d Action · %d Termine heute",
-		"OmaThunder Live · %d unread · %d action · %d events today",
+		"MailDiver Live · %d ungelesen · %d Action · %d Termine heute",
+		"MailDiver Live · %d unread · %d action · %d events today",
 		a.unreadCount(), a.barSummary.ActionCount, len(today),
 	)
 }

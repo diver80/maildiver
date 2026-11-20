@@ -8,18 +8,17 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 func keymapApp(t *testing.T) (*App, *uiLoop, *testStack) {
 	t.Helper()
 	st := newTestStack(t)
-	app := st.newApp(true)
+	app := st.newApp()
 	loop := attachUILoop(app, nil)
-	app.thunderbirdConnected = true
-	app.bridgeOnline = true
+	app.engineReady = true
 	app.readOnly = false
-	app.setMessages([]bridgeclient.MessageHeader{
+	app.setMessages([]backend.MessageHeader{
 		{ID: "m1", MessageID: "m1@x", AccountID: "acc1", Folder: "INBOX", From: "Alice <alice@acme.de>", Subject: "Eins", Unread: true},
 		{ID: "m2", MessageID: "m2@x", AccountID: "acc1", Folder: "INBOX", From: "Bob <bob@acme.de>", Subject: "Zwei"},
 		{ID: "m3", MessageID: "m3@x", AccountID: "acc1", Folder: "INBOX", From: "Carol <carol@acme.de>", Subject: "Drei", Flagged: true},
@@ -68,7 +67,7 @@ func TestFooterHintsFollowContext(t *testing.T) {
 		t.Fatalf("modal hints = %q", got)
 	}
 	app.helpOpen = false
-	app.thunderbirdConnected = false
+	app.engineReady = false
 	if got := hintKeys(app.footerHints()); !strings.HasPrefix(got, "⌘R") {
 		t.Fatalf("offline hints = %q", got)
 	}
@@ -101,7 +100,7 @@ func TestSingleKeysDriveTheListHeadless(t *testing.T) {
 		tt.Frame()
 	}
 
-	if !tt.HasText("Auswählen") || !tt.HasText("Thunderbird verbunden") {
+	if !tt.HasText("Auswählen") || !tt.HasText("Verbunden (IMAP)") {
 		t.Fatalf("footer with status and list hints expected, texts=%v", tt.Texts())
 	}
 
@@ -190,7 +189,7 @@ func TestTrashKeyOpensNeighbourAndSeveralNeedSecondPress(t *testing.T) {
 
 	// One open mail: trashed at once, and its neighbour opens.
 	loop.drain()
-	app.setMessages([]bridgeclient.MessageHeader{
+	app.setMessages([]backend.MessageHeader{
 		{ID: "m1", MessageID: "m1@x", AccountID: "acc1", Subject: "Eins"},
 		{ID: "m2", MessageID: "m2@x", AccountID: "acc1", Subject: "Zwei"},
 	})
@@ -237,7 +236,7 @@ func TestReadAndStarKeysToggleOpenMail(t *testing.T) {
 }
 
 func moveFixture(app *App) {
-	app.folders = []bridgeclient.Folder{
+	app.folders = []backend.Folder{
 		{ID: "f1", AccountID: "acc1", Name: "INBOX", Path: "INBOX", Type: "inbox"},
 		{ID: "f2", AccountID: "acc1", Name: "Archiv", Path: "Archiv", Type: "archives"},
 		{ID: "f3", AccountID: "acc1", Name: "2026", Path: "Archiv/2026"},

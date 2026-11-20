@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 	quickRuleFilterTimeout  = 15 * time.Second
 )
 
-// quickRuleState holds multi-select and the Quick-Rule wizard (Thunderbird native filters).
+// quickRuleState holds multi-select and the Quick-Rule wizard (filter rules).
 type quickRuleState struct {
 	checkedIDs       map[string]bool
 	lastCheckedIndex int // Shift-click anchor; reset whenever the list is replaced
@@ -29,8 +29,8 @@ type quickRuleState struct {
 	quickRuleAccountIDs   []string          // accounts among the marked mails (selector when >1)
 	quickRuleAccountLabel string            // selected label in the account selector
 	quickRuleAccountByLbl map[string]string // selector label -> account id
-	quickRuleAllMarked    []bridgeclient.MessageHeader
-	quickRuleMarked       []bridgeclient.MessageHeader // marked mails of quickRuleAccount
+	quickRuleAllMarked    []backend.MessageHeader
+	quickRuleMarked       []backend.MessageHeader // marked mails of quickRuleAccount
 	quickRuleMarkedIDs    map[string]bool
 	quickRuleMatchAll     bool
 	quickRuleFromText     string
@@ -62,7 +62,7 @@ func quickRuleActionLabelLang(action, lang string) string {
 	}
 }
 
-// quickRuleActionLabelsLang lists the selectable actions. Thunderbird's immediate "delete" is
+// quickRuleActionLabelsLang lists the selectable actions. An immediate "delete" is
 // not offered: the bridge rejects it (contract §6) and Trash keeps mistakes recoverable.
 func quickRuleActionLabelsLang(lang string) []string {
 	out := make([]string, 0, len(quickRuleActions))
@@ -101,11 +101,11 @@ func (a *App) CheckedMessageIDs() []string {
 	return out
 }
 
-func (a *App) CheckedMessages() []bridgeclient.MessageHeader {
+func (a *App) CheckedMessages() []backend.MessageHeader {
 	if len(a.checkedIDs) == 0 {
 		return nil
 	}
-	out := make([]bridgeclient.MessageHeader, 0, len(a.checkedIDs))
+	out := make([]backend.MessageHeader, 0, len(a.checkedIDs))
 	for _, m := range a.messages {
 		if a.checkedIDs[m.ID] {
 			out = append(out, m)
@@ -170,34 +170,65 @@ func (a *App) ClearMailSelection() {
 }
 
 type actionTarget struct {
-	id        string
-	messageID string
+	id         string
+	messageID  string
+	accountID  string
+	folderPath string
 }
 
-// applyActionTargets runs patch on every target with its own timeout and expectedMessageId
-// (background goroutine). It returns the IDs that succeeded and the first error.
-func applyActionTargets(ctx context.Context, bc *bridgeclient.Client, targets []actionTarget, patch bridgeclient.MessageActionsRequest) (okIDs []string, failed int, firstErr error) {
+// applyActionTargets runs patch on every target using batched IMAP calls (one connection per account).
+// Falls back to per-message calls only when connected to a test stub that doesn't implement batchActions.
+func applyActionTargets(ctx context.Context, bc *backend.Client, targets []actionTarget, patch backend.MessageActionsRequest) (okIDs []string, failed int, firstErr error) {
+	okIDs, _, failed, firstErr = applyActionTargetsWithMoves(ctx, bc, targets, patch)
+	return okIDs, failed, firstErr
+}
+
+func applyActionTargetsWithMoves(ctx context.Context, bc *backend.Client, targets []actionTarget, patch backend.MessageActionsRequest) (okIDs []string, movedTargets map[string]string, failed int, firstErr error) {
+	if len(targets) == 0 {
+		return nil, nil, 0, nil
+	}
+	items := make([]backend.BatchActionItem, 0, len(targets))
+	for _, t := range targets {
+		items = append(items, backend.BatchActionItem{
+			ID:                t.id,
+			ExpectedMessageID: t.messageID,
+		})
+	}
+	c, cancel := context.WithTimeout(ctx, max(30*time.Second, time.Duration(len(targets))*2*time.Second))
+	res, err := bc.BatchMessageActions(c, backend.BatchActionsRequest{
+		Items:  items,
+		Action: patch,
+	})
+	cancel()
+	if err == nil && res.OK {
+		var ferr error
+		if res.FirstError != "" {
+			ferr = fmt.Errorf("%s", res.FirstError)
+		}
+		return res.OKIDs, res.MovedTargetPath, res.Failed, ferr
+	}
+	// Fallback for legacy/stub RPC implementations that return empty/unknown for batchActions.
 	for _, t := range targets {
 		p := patch
 		p.ExpectedMessageID = t.messageID
 		c, cancel := context.WithTimeout(ctx, quickRulePerMailTimeout)
-		_, err := bc.MessageActions(c, t.id, p)
+		_, perr := bc.MessageActions(c, t.id, p)
 		cancel()
-		if err != nil {
+		if perr != nil {
 			failed++
 			if firstErr == nil {
-				firstErr = err
+				firstErr = perr
 			}
 			continue
 		}
 		okIDs = append(okIDs, t.id)
 	}
-	return okIDs, failed, firstErr
+	return okIDs, nil, failed, firstErr
 }
 
 // PerformBatchAction applies a mail action (e.g. Trash or Mark Read) across multiple selected
-// IDs (UI thread).
-func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch bridgeclient.MessageActionsRequest, toastMsg string) {
+// IDs over batched IMAP connections (UI thread).
+func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backend.MessageActionsRequest, toastMsg string) {
 	if len(ids) == 0 {
 		return
 	}
@@ -210,13 +241,21 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch bridge
 		a.toast(a.tr("Sammelaktion fehlgeschlagen: ", "Bulk action failed: ")+a.errText(err), "error")
 		return
 	}
+	metaByID := make(map[string]actionTarget, len(ids))
+	for _, m := range a.messages {
+		metaByID[m.ID] = actionTarget{id: m.ID, messageID: m.MessageID, accountID: m.AccountID, folderPath: m.Folder}
+	}
 	targets := make([]actionTarget, 0, len(ids))
 	for _, id := range ids {
-		targets = append(targets, actionTarget{id: id, messageID: a.messageIDFor(id)})
+		if t, ok := metaByID[id]; ok {
+			targets = append(targets, t)
+		} else {
+			targets = append(targets, actionTarget{id: id, messageID: a.messageIDFor(id)})
+		}
 	}
 	removes := patch.RemovesFromFolder()
 	go func() {
-		okIDs, failed, firstErr := applyActionTargets(ctx, bc, targets, patch)
+		okIDs, movedTargets, failed, firstErr := applyActionTargetsWithMoves(ctx, bc, targets, patch)
 		a.emitUpdate(func() {
 			if removes {
 				for _, id := range okIDs {
@@ -224,9 +263,60 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch bridge
 					if a.selectedID == id {
 						a.selectedID = ""
 						a.selectedMsg = nil
+						a.syncPreviewForMessage(nil)
 					}
 				}
 				a.lastCheckedIndex = -1
+			}
+			if len(okIDs) > 0 {
+				switch {
+				case removes && len(movedTargets) > 0:
+					var undoMoves []backend.UndoMoveItem
+					for _, id := range okIDs {
+						toPath := movedTargets[id]
+						t := metaByID[id]
+						if toPath != "" && t.accountID != "" && t.folderPath != "" && t.messageID != "" {
+							undoMoves = append(undoMoves, backend.UndoMoveItem{
+								AccountID:      t.accountID,
+								MessageID:      t.messageID,
+								FromFolderPath: t.folderPath,
+								ToFolderPath:   toPath,
+							})
+						}
+					}
+					if len(undoMoves) > 0 {
+						a.undo = &undoAction{
+							Kind:      "move",
+							Label:     fmt.Sprintf("%s (%d)", toastMsg, len(undoMoves)),
+							CreatedAt: time.Now(),
+							MoveItems: undoMoves,
+						}
+					}
+				case !removes && patch.Read != nil:
+					items := make([]backend.BatchActionItem, 0, len(okIDs))
+					for _, id := range okIDs {
+						items = append(items, backend.BatchActionItem{ID: id, ExpectedMessageID: metaByID[id].messageID})
+					}
+					a.undo = &undoAction{
+						Kind:        "read",
+						Label:       fmt.Sprintf("%s (%d)", toastMsg, len(okIDs)),
+						CreatedAt:   time.Now(),
+						ToggleItems: items,
+						PrevValue:   !*patch.Read,
+					}
+				case !removes && patch.Flagged != nil:
+					items := make([]backend.BatchActionItem, 0, len(okIDs))
+					for _, id := range okIDs {
+						items = append(items, backend.BatchActionItem{ID: id, ExpectedMessageID: metaByID[id].messageID})
+					}
+					a.undo = &undoAction{
+						Kind:        "flag",
+						Label:       fmt.Sprintf("%s (%d)", toastMsg, len(okIDs)),
+						CreatedAt:   time.Now(),
+						ToggleItems: items,
+						PrevValue:   !*patch.Flagged,
+					}
+				}
 			}
 			switch {
 			case failed == 0:
@@ -238,6 +328,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch bridge
 					len(okIDs), len(targets), failed, a.errText(firstErr)), "warning")
 			}
 			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
 		})
 	}()
 }
@@ -249,12 +340,12 @@ func (a *App) OpenQuickRuleWizard() {
 	if len(msgs) == 0 && a.selectedID != "" {
 		for _, m := range a.messages {
 			if m.ID == a.selectedID {
-				msgs = []bridgeclient.MessageHeader{m}
+				msgs = []backend.MessageHeader{m}
 				break
 			}
 		}
 		if len(msgs) == 0 && a.selectedMsg != nil && a.selectedMsg.ID == a.selectedID {
-			msgs = []bridgeclient.MessageHeader{a.selectedMsg.MessageHeader}
+			msgs = []backend.MessageHeader{a.selectedMsg.MessageHeader}
 		}
 	}
 	a.OpenQuickRuleForMessages(msgs)
@@ -262,13 +353,13 @@ func (a *App) OpenQuickRuleWizard() {
 
 // OpenQuickRuleForMessages opens the Quick-Rule Wizard seeded from the provided messages (0 AI
 // tokens). Marked mails of several accounts are split: the user picks the account and only that
-// account's mails are used (a Thunderbird filter belongs to exactly one account).
-func (a *App) OpenQuickRuleForMessages(msgs []bridgeclient.MessageHeader) {
+// account's mails are used (a filter rule belongs to exactly one account).
+func (a *App) OpenQuickRuleForMessages(msgs []backend.MessageHeader) {
 	if len(msgs) == 0 {
 		a.toast(a.tr("Bitte zuerst mindestens eine Mail markieren oder auswählen.", "Please check or select at least one email first."), "warning")
 		return
 	}
-	a.quickRuleAllMarked = append([]bridgeclient.MessageHeader(nil), msgs...)
+	a.quickRuleAllMarked = append([]backend.MessageHeader(nil), msgs...)
 	counts := map[string]int{}
 	a.quickRuleAccountIDs = nil
 	for _, m := range msgs {
@@ -308,7 +399,7 @@ func (a *App) OpenQuickRuleForMessages(msgs []bridgeclient.MessageHeader) {
 // selectQuickRuleAccount restricts the wizard to one account and re-derives the draft from that
 // account's marked mails (UI thread).
 func (a *App) selectQuickRuleAccount(accID string) {
-	var marked []bridgeclient.MessageHeader
+	var marked []backend.MessageHeader
 	ids := map[string]bool{}
 	for _, m := range a.quickRuleAllMarked {
 		if m.AccountID == accID {
@@ -371,7 +462,7 @@ func (a *App) accountDisplayName(id string) string {
 	return a.tr("Standardkonto", "Default Account")
 }
 
-func messageHeaderToInput(m bridgeclient.MessageHeader) triage.MessageInput {
+func messageHeaderToInput(m backend.MessageHeader) triage.MessageInput {
 	return triage.MessageInput{
 		ID:        m.ID,
 		ThreadID:  m.ThreadID,
@@ -413,9 +504,9 @@ func (a *App) quickRuleAccountLabelText() string {
 	return a.accountDisplayName(a.quickRuleAccount)
 }
 
-// isInboxHeader reports whether m lives in its account's inbox (what a Thunderbird incoming
+// isInboxHeader reports whether m lives in its account's inbox (what an incoming
 // filter matches).
-func (a *App) isInboxHeader(m bridgeclient.MessageHeader) bool {
+func (a *App) isInboxHeader(m backend.MessageHeader) bool {
 	if m.InInbox {
 		return true
 	}
@@ -439,7 +530,7 @@ func (a *App) isInboxHeader(m bridgeclient.MessageHeader) bool {
 }
 
 // quickRuleCandidates are the marked mails of the chosen account plus the loaded inbox mails of
-// that account (the "+N weitere Treffer" a Thunderbird inbox filter would match).
+// that account (the "+N weitere Treffer" an inbox filter would match).
 func (a *App) quickRuleCandidates() []triage.MessageInput {
 	out := make([]triage.MessageInput, 0, len(a.quickRuleMarked)+len(a.messages))
 	seen := make(map[string]bool, len(a.quickRuleMarked)+len(a.messages))
@@ -529,7 +620,7 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 			}
 			cancel()
 		}
-		c, cancel := context.WithTimeout(ctx, bridgeclient.AIRequestTimeout)
+		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
 		resp, err := bc.AIAnalyze(c, ai.AnalyzeRequest{
 			Mode:           "suggest_filter",
 			Ephemeral:      true,
@@ -599,7 +690,7 @@ func (a *App) quickRuleSaveBlockReason(preview triage.QuickRulePreviewReport) st
 		return a.tr("Bitte mindestens eine Bedingung (Absender oder Betreff) angeben.", "Please enter at least one condition (sender or subject).")
 	}
 	if a.quickRuleAccount == "" {
-		return a.tr("Kein Thunderbird-Konto für diesen Filter ausgewählt.", "No Thunderbird account selected for this filter.")
+		return a.tr("Kein Konto für diese Regel ausgewählt.", "No account selected for this rule.")
 	}
 	if len(preview.MarkedHitIDs) == 0 {
 		return a.tr("Die Regel trifft keine der markierten Mails — bitte Absender/Betreff anpassen.", "The rule matches none of the selected emails — please adjust sender/subject.")
@@ -610,7 +701,7 @@ func (a *App) quickRuleSaveBlockReason(preview triage.QuickRulePreviewReport) st
 	return ""
 }
 
-// SaveAndApplyQuickRule saves the native Thunderbird filter and applies its action to the
+// SaveAndApplyQuickRule saves the MailDiver filter rule and applies its action to the
 // marked mails it actually matches (plus, opt-in, the preview hits) (UI thread). A destructive
 // rule with broad warnings needs a second, explicit click.
 func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
@@ -636,23 +727,23 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 		return
 	}
 
-	var actions []bridgeclient.FilterActionSpec
-	var msgPatch bridgeclient.MessageActionsRequest
+	var actions []backend.FilterActionSpec
+	var msgPatch backend.MessageActionsRequest
 	readTrue := true
 	switch a.normalizedQuickRuleAction() {
 	case "mark_read_trash":
-		actions = []bridgeclient.FilterActionSpec{{Type: "markRead"}, {Type: "moveToFolder", TargetFolderPath: "Trash"}}
-		msgPatch = bridgeclient.MessageActionsRequest{Read: &readTrue, Trash: true}
+		actions = []backend.FilterActionSpec{{Type: "markRead"}, {Type: "moveToFolder", TargetFolderPath: "Trash"}}
+		msgPatch = backend.MessageActionsRequest{Read: &readTrue, Trash: true}
 	case "mark_read":
-		actions = []bridgeclient.FilterActionSpec{{Type: "markRead"}}
-		msgPatch = bridgeclient.MessageActionsRequest{Read: &readTrue}
+		actions = []backend.FilterActionSpec{{Type: "markRead"}}
+		msgPatch = backend.MessageActionsRequest{Read: &readTrue}
 	case "move":
 		target := strings.TrimSpace(a.quickRuleFolderPath)
-		actions = []bridgeclient.FilterActionSpec{{Type: "moveToFolder", TargetFolderPath: target}}
-		msgPatch = bridgeclient.MessageActionsRequest{MoveToPath: target}
+		actions = []backend.FilterActionSpec{{Type: "moveToFolder", TargetFolderPath: target}}
+		msgPatch = backend.MessageActionsRequest{MoveToPath: target}
 	default:
-		actions = []bridgeclient.FilterActionSpec{{Type: "moveToFolder", TargetFolderPath: "Trash"}}
-		msgPatch = bridgeclient.MessageActionsRequest{Trash: true}
+		actions = []backend.FilterActionSpec{{Type: "moveToFolder", TargetFolderPath: "Trash"}}
+		msgPatch = backend.MessageActionsRequest{Trash: true}
 	}
 
 	// Only mails the rule really matches — never a fallback to all marked mails.
@@ -677,9 +768,9 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 
 	name := strings.TrimSpace(a.quickRuleName)
 	if name == "" {
-		name = a.tr("OmaThunder Quick-Regel", "OmaThunder Quick Rule")
+		name = a.tr("MailDiver Quick-Regel", "MailDiver Quick Rule")
 	}
-	req := bridgeclient.FilterUpsertRequest{
+	req := backend.FilterUpsertRequest{
 		Mode:       "create",
 		AccountID:  a.quickRuleAccount,
 		Name:       name,
@@ -698,7 +789,7 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 		if err != nil {
 			a.emitUpdate(func() {
 				a.quickRuleBusy = false
-				a.quickRuleError = a.tr("Filter nicht gespeichert: ", "Filter not saved: ") + a.errText(err)
+				a.quickRuleError = a.tr("Regel nicht gespeichert: ", "Rule not saved: ") + a.errText(err)
 			})
 			return
 		}
@@ -712,19 +803,20 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 				if removes && a.selectedID == id {
 					a.selectedID = ""
 					a.selectedMsg = nil
+					a.syncPreviewForMessage(nil)
 				}
 			}
 			a.lastCheckedIndex = -1
 			if failed == 0 {
 				a.toast(a.trf(
-					"TB-Filter „%s“ gespeichert & auf %d Mail(s) angewendet",
-					"TB filter “%s” saved & applied to %d email(s)",
+					"Regel „%s“ gespeichert & auf %d Mail(s) angewendet",
+					"Rule “%s” saved & applied to %d email(s)",
 					savedName, len(okIDs),
 				), "success")
 			} else {
 				a.toast(a.trf(
-					"TB-Filter „%s“ gespeichert · %d von %d angewendet, %d Fehler: %s",
-					"TB filter “%s” saved · %d of %d applied, %d failed: %s",
+					"Regel „%s“ gespeichert · %d von %d angewendet, %d Fehler: %s",
+					"Rule “%s” saved · %d of %d applied, %d failed: %s",
 					savedName, len(okIDs), len(targets), failed, a.errText(firstErr),
 				), "warning")
 			}
@@ -736,9 +828,9 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 // saveQuickRuleFilter creates the filter (mode "create", contract §6). If the create times out
 // with an unknown outcome, the filter list is checked for a newly created filter of that name
 // before a single retry, so a retry can never produce a duplicate.
-func saveQuickRuleFilter(ctx context.Context, bc *bridgeclient.Client, req bridgeclient.FilterUpsertRequest) (string, error) {
+func saveQuickRuleFilter(ctx context.Context, bc *backend.Client, req backend.FilterUpsertRequest) (string, error) {
 	before, beforeErr := listFilterNames(ctx, bc, req.AccountID)
-	upsert := func() (bridgeclient.FilterUpsertResponse, error) {
+	upsert := func() (backend.FilterUpsertResponse, error) {
 		c, cancel := context.WithTimeout(ctx, quickRuleFilterTimeout)
 		defer cancel()
 		return bc.FilterUpsert(c, req)
@@ -765,10 +857,10 @@ func saveQuickRuleFilter(ctx context.Context, bc *bridgeclient.Client, req bridg
 }
 
 func isUnknownOutcome(err error) bool {
-	return bridgeclient.IsOutcomeUnknown(err) || errors.Is(err, context.DeadlineExceeded)
+	return backend.IsOutcomeUnknown(err) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func listFilterNames(ctx context.Context, bc *bridgeclient.Client, accountID string) (map[string]bool, error) {
+func listFilterNames(ctx context.Context, bc *backend.Client, accountID string) (map[string]bool, error) {
 	c, cancel := context.WithTimeout(ctx, quickRuleFilterTimeout)
 	defer cancel()
 	fl, err := bc.FiltersList(c, accountID)
@@ -796,28 +888,7 @@ func findCreatedFilter(name string, before, after map[string]bool) string {
 	return ""
 }
 
-// OpenThunderbirdFilters opens Thunderbird's native Message Filters dialog so the user can
-// edit/manage all rules (UI thread).
-func (a *App) OpenThunderbirdFilters(ctx context.Context) {
-	bc, err := a.client()
-	if err != nil {
-		a.toast(a.errText(err), "error")
-		return
-	}
-	accID := a.quickRuleAccount
-	if accID == "" {
-		accID = a.selectedAccount
-	}
-	go func() {
-		c, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		opened, err := bc.FilterOpenDialog(c, accID)
-		a.emitUpdate(func() {
-			if err != nil {
-				a.toast(a.errText(err), "error")
-			} else if !opened {
-				a.toast(a.tr("Filter-Dialog bitte direkt in Thunderbird unter Extras → Filter öffnen.", "Please open Tools → Message Filters directly in Thunderbird."), "info")
-			}
-		})
-	}()
+// OpenFilterRules opens the Rules tab so the user can edit and manage all rules (UI thread).
+func (a *App) OpenFilterRules(ctx context.Context) {
+	a.OpenDirectModal(2)
 }

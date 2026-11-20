@@ -8,8 +8,8 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/jobs"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/jobs"
 )
 
 func enableTriage(st *testStack) {
@@ -50,7 +50,7 @@ func TestArchiveDialog(t *testing.T) {
 	enableTriage(st)
 	cfg, _ := st.box.load()
 	app.applyConfig(cfg)
-	app.accounts = []bridgeclient.Account{{ID: "acc1", Name: "Work"}, {ID: "acc2", Name: "Privat"}}
+	app.accounts = []backend.Account{{ID: "acc1", Name: "Work"}, {ID: "acc2", Name: "Privat"}}
 	go app.runEventStream(st.ctx)
 
 	app.OpenArchiveDialog(context.Background())

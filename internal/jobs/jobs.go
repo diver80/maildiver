@@ -1,8 +1,7 @@
-// Package jobs runs OmaThunder's automatic work inside the host process, which Thunderbird starts
-// and keeps running: triage scans (manually or when new mail arrives) and archive & cleanup runs.
-// Mail access goes through the add-on's host-only RPC methods ("host.*"), which the add-on checks
-// against the mailbox policy (triage accounts, read-only) – bridge clients cannot call them.
-// Encrypted mails are never decrypted for these jobs.
+// Package jobs runs MailDiver's automatic work in the app process: triage scans (manually or
+// when new mail arrives) and archive & cleanup runs. Mail access goes through the engine's job
+// methods ("host.*"), which check the mailbox policy (enabled accounts, read-only). Encrypted
+// mails are never decrypted for these jobs.
 package jobs
 
 import (
@@ -13,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
-// Caller sends a call to the Thunderbird add-on as the host itself (not as a bridge client).
+// Caller is the mail engine: the job methods ("host.*") read and change mails for the jobs.
 type Caller interface {
 	CallHost(ctx context.Context, method string, params any) (json.RawMessage, error)
 	Connected() bool
@@ -36,7 +35,7 @@ var (
 	ErrNoTriageAccounts  = errors.New("no_triage_accounts")
 	ErrAccountNotEnabled = errors.New("account_not_enabled")
 	ErrReadOnly          = errors.New("read_only")
-	ErrDisconnected      = errors.New("thunderbird_disconnected")
+	ErrDisconnected      = errors.New("engine_offline")
 )
 
 // newMailDelay coalesces a burst of new-mail notifications into one scan.

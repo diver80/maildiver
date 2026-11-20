@@ -1,0 +1,861 @@
+package mailengine
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/mail"
+	"net/netip"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/emersion/go-ical"
+	"github.com/teambition/rrule-go"
+
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+)
+
+// ParseICS parses RFC 5545 iCalendar VEVENT entries from r into StoredEvents.
+func ParseICS(calendarID, calendarName string, readOnly bool, r io.Reader) ([]StoredEvent, error) {
+	dec := ical.NewDecoder(r)
+	var out []StoredEvent
+	for {
+		cal, err := dec.Decode()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return out, fmt.Errorf("iCal parsen: %w", err)
+		}
+		for _, ev := range cal.Events() {
+			se, ok := icalEventToStored(calendarID, calendarName, readOnly, ev)
+			if ok {
+				out = append(out, se)
+			}
+		}
+	}
+	return out, nil
+}
+
+func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.Event) (StoredEvent, bool) {
+	uid, _ := ev.Props.Text(ical.PropUID)
+	summary, _ := ev.Props.Text(ical.PropSummary)
+	location, _ := ev.Props.Text(ical.PropLocation)
+	description, _ := ev.Props.Text(ical.PropDescription)
+	status, _ := ev.Props.Text(ical.PropStatus)
+	rruleProp := ev.Props.Get(ical.PropRecurrenceRule)
+	recIDProp := ev.Props.Get(ical.PropRecurrenceID)
+
+	startProp := ev.Props.Get(ical.PropDateTimeStart)
+	if startProp == nil {
+		return StoredEvent{}, false
+	}
+	startTime, allDay, err := parseICalPropTime(startProp)
+	if err != nil {
+		return StoredEvent{}, false
+	}
+
+	var endTime time.Time
+	if endProp := ev.Props.Get(ical.PropDateTimeEnd); endProp != nil {
+		if et, _, eerr := parseICalPropTime(endProp); eerr == nil {
+			endTime = et
+		}
+	}
+	if endTime.IsZero() {
+		if durProp := ev.Props.Get(ical.PropDuration); durProp != nil {
+			if d, derr := parseICalDuration(durProp.Value); derr == nil && d > 0 {
+				endTime = startTime.Add(d)
+			}
+		}
+	}
+	if endTime.IsZero() {
+		if allDay {
+			endTime = startTime.AddDate(0, 0, 1)
+		} else {
+			endTime = startTime.Add(time.Hour)
+		}
+	}
+
+	var exdates []string
+	for _, p := range ev.Props.Values("EXDATE") {
+		for _, raw := range strings.Split(p.Value, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			tmp := ical.Prop{Name: p.Name, Params: p.Params, Value: raw}
+			if t, _, terr := parseICalPropTime(&tmp); terr == nil {
+				exdates = append(exdates, t.UTC().Format(time.RFC3339))
+			}
+		}
+	}
+
+	rruleVal := ""
+	if rruleProp != nil {
+		rruleVal = strings.TrimSpace(rruleProp.Value)
+	}
+	recID := ""
+	if recIDProp != nil {
+		if t, _, terr := parseICalPropTime(recIDProp); terr == nil {
+			recID = t.UTC().Format(time.RFC3339)
+		} else {
+			recID = strings.TrimSpace(recIDProp.Value)
+		}
+	}
+	if uid == "" {
+		uid = fmt.Sprintf("ics-%d-%s", startTime.Unix(), strings.ReplaceAll(summary, " ", "_"))
+	}
+	id := calendarID + "::" + uid
+	if recID != "" {
+		id += "::" + recID
+	}
+
+	st := "confirmed"
+	if strings.EqualFold(status, "CANCELLED") {
+		st = "cancelled"
+	}
+
+	startISO := startTime.Format(time.RFC3339)
+	endISO := endTime.Format(time.RFC3339)
+	if allDay {
+		startISO = startTime.Format("2006-01-02")
+		endISO = endTime.Format("2006-01-02")
+	}
+
+	return StoredEvent{
+		ID:           id,
+		CalendarID:   calendarID,
+		CalendarName: calendarName,
+		ExternalID:   uid,
+		UID:          uid,
+		Title:        strings.TrimSpace(summary),
+		StartISO:     startISO,
+		EndISO:       endISO,
+		StartUnix:    startTime.Unix(),
+		EndUnix:      endTime.Unix(),
+		AllDay:       allDay,
+		Location:     strings.TrimSpace(location),
+		Description:  strings.TrimSpace(description),
+		RRule:        rruleVal,
+		ExDates:      exdates,
+		RecurrenceID: recID,
+		IsRecurring:  rruleVal != "" || recID != "",
+		ReadOnly:     readOnly,
+		Status:       st,
+	}, true
+}
+
+func parseICalPropTime(p *ical.Prop) (time.Time, bool, error) {
+	val := strings.TrimSpace(p.Value)
+	if val == "" {
+		return time.Time{}, false, fmt.Errorf("empty datetime")
+	}
+	loc := time.Local
+	if tzid := strings.TrimSpace(p.Params.Get(ical.ParamTimezoneID)); tzid != "" {
+		if loaded, err := loadTimezone(tzid); err == nil {
+			loc = loaded
+		}
+	}
+	// VALUE=DATE or YYYYMMDD => all-day event.
+	if strings.EqualFold(p.Params.Get(ical.ParamValue), "DATE") || len(val) == 8 {
+		t, err := time.ParseInLocation("20060102", val, loc)
+		if err == nil {
+			return t, true, nil
+		}
+	}
+	if strings.HasSuffix(val, "Z") {
+		if t, err := time.Parse("20060102T150405Z", val); err == nil {
+			return t.In(time.Local), false, nil
+		}
+	}
+	if t, err := time.ParseInLocation("20060102T150405", val, loc); err == nil {
+		return t, false, nil
+	}
+	if t, err := time.Parse(time.RFC3339, val); err == nil {
+		return t, false, nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", val, loc); err == nil {
+		return t, true, nil
+	}
+	return time.Time{}, false, fmt.Errorf("unsupported iCal time %q", val)
+}
+
+func loadTimezone(tzid string) (*time.Location, error) {
+	if loc, err := time.LoadLocation(tzid); err == nil {
+		return loc, nil
+	}
+	// Common Windows timezone aliases used by Outlook/Exchange invites.
+	windowsAliases := map[string]string{
+		"W. Europe Standard Time":      "Europe/Berlin",
+		"Central Europe Standard Time": "Europe/Berlin",
+		"Romance Standard Time":        "Europe/Paris",
+		"GMT Standard Time":            "Europe/London",
+		"UTC":                          "UTC",
+		"Eastern Standard Time":        "America/New_York",
+		"Pacific Standard Time":        "America/Los_Angeles",
+	}
+	if mapped, ok := windowsAliases[tzid]; ok {
+		return time.LoadLocation(mapped)
+	}
+	return time.Local, fmt.Errorf("unknown tz %q", tzid)
+}
+
+func parseICalDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if !strings.HasPrefix(s, "P") {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	s = s[1:]
+	var total time.Duration
+	inTime := false
+	num := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == 'T' {
+			inTime = true
+			continue
+		}
+		if ch >= '0' && ch <= '9' {
+			num = num*10 + int(ch-'0')
+			continue
+		}
+		switch ch {
+		case 'W':
+			total += time.Duration(num) * 7 * 24 * time.Hour
+		case 'D':
+			total += time.Duration(num) * 24 * time.Hour
+		case 'H':
+			total += time.Duration(num) * time.Hour
+		case 'M':
+			if inTime {
+				total += time.Duration(num) * time.Minute
+			}
+		case 'S':
+			total += time.Duration(num) * time.Second
+		}
+		num = 0
+	}
+	return total, nil
+}
+
+// ExpandEventsInWindow expands stored events (including RRULE + EXDATE series) inside [start, end].
+func ExpandEventsInWindow(events []StoredEvent, start, end time.Time, limit int) []backend.CalendarEvent {
+	// Collect RECURRENCE-ID overrides per (CalendarID, ExternalID/UID) so master RRULE expansion
+	// never duplicates rescheduled or cancelled occurrences.
+	overrideExDates := map[string][]time.Time{}
+	for _, ev := range events {
+		if ev.RecurrenceID != "" && ev.ExternalID != "" {
+			if t := parseFlexibleEventTime(ev.RecurrenceID, 0); !t.IsZero() {
+				k := ev.CalendarID + "\x00" + ev.ExternalID
+				overrideExDates[k] = append(overrideExDates[k], t)
+			}
+		}
+	}
+
+	type timedEvent struct {
+		ev backend.CalendarEvent
+		ts time.Time
+	}
+	var collected []timedEvent
+
+	inWindow := func(evStart, evEnd time.Time) bool {
+		if !end.IsZero() && evStart.After(end) {
+			return false
+		}
+		if !start.IsZero() && evEnd.Before(start) {
+			return false
+		}
+		return true
+	}
+
+	const maxOccurrencesPerEvent = 500
+	for _, ev := range events {
+		if strings.EqualFold(ev.Status, "cancelled") {
+			continue
+		}
+		dtStart := parseFlexibleEventTime(ev.StartISO, ev.StartUnix)
+		dtEnd := parseFlexibleEventTime(ev.EndISO, ev.EndUnix)
+		if dtEnd.IsZero() || dtEnd.Before(dtStart) {
+			if ev.AllDay {
+				dtEnd = dtStart.AddDate(0, 0, 1)
+			} else {
+				dtEnd = dtStart.Add(time.Hour)
+			}
+		}
+		if strings.TrimSpace(ev.RRule) == "" {
+			if !inWindow(dtStart, dtEnd) {
+				continue
+			}
+			collected = append(collected, timedEvent{ev: storedEventToBridge(ev), ts: dtStart})
+			continue
+		}
+
+		// Expand RRULE recurrence series within [start, end], defending against high-frequency DoS rules.
+		rruleUpper := strings.ToUpper(ev.RRule)
+		if strings.Contains(rruleUpper, "FREQ=SECONDLY") || strings.Contains(rruleUpper, "FREQ=MINUTELY") {
+			if inWindow(dtStart, dtEnd) {
+				collected = append(collected, timedEvent{ev: storedEventToBridge(ev), ts: dtStart})
+			}
+			continue
+		}
+
+		dur := dtEnd.Sub(dtStart)
+		if dur <= 0 {
+			if ev.AllDay {
+				dur = 24 * time.Hour
+			} else {
+				dur = time.Hour
+			}
+		}
+		allDaySpan := 1
+		if ev.AllDay {
+			days := int(dtEnd.Sub(dtStart).Hours()+12) / 24
+			if days >= 1 {
+				allDaySpan = days
+			}
+		}
+
+		opt, err := rrule.StrToROptionInLocation(ev.RRule, dtStart.Location())
+		if err != nil {
+			if inWindow(dtStart, dtEnd) {
+				collected = append(collected, timedEvent{ev: storedEventToBridge(ev), ts: dtStart})
+			}
+			continue
+		}
+		if opt.Freq == rrule.SECONDLY || opt.Freq == rrule.MINUTELY {
+			if inWindow(dtStart, dtEnd) {
+				collected = append(collected, timedEvent{ev: storedEventToBridge(ev), ts: dtStart})
+			}
+			continue
+		}
+		opt.Dtstart = dtStart
+		rule, err := rrule.NewRRule(*opt)
+		if err != nil {
+			if inWindow(dtStart, dtEnd) {
+				collected = append(collected, timedEvent{ev: storedEventToBridge(ev), ts: dtStart})
+			}
+			continue
+		}
+		var set rrule.Set
+		set.RRule(rule)
+		for _, ex := range ev.ExDates {
+			if t := parseFlexibleEventTime(ex, 0); !t.IsZero() {
+				set.ExDate(t.In(dtStart.Location()))
+			}
+		}
+		if ovs := overrideExDates[ev.CalendarID+"\x00"+ev.ExternalID]; len(ovs) > 0 {
+			for _, ov := range ovs {
+				set.ExDate(ov.In(dtStart.Location()))
+			}
+		}
+
+		winStart := start
+		if winStart.IsZero() {
+			winStart = time.Now().AddDate(0, -1, 0)
+		}
+		winEnd := end
+		if winEnd.IsZero() {
+			winEnd = winStart.AddDate(0, 3, 0)
+		}
+		if winEnd.After(winStart.AddDate(5, 0, 0)) {
+			winEnd = winStart.AddDate(5, 0, 0)
+		}
+		occ := set.Between(winStart.Add(-dur), winEnd, true)
+		emitted := 0
+		for _, o := range occ {
+			if emitted >= maxOccurrencesPerEvent {
+				break
+			}
+			var occEnd time.Time
+			if ev.AllDay {
+				// Calendar-day arithmetic stays immune to 23h/25h DST transition days.
+				occEnd = o.AddDate(0, 0, allDaySpan)
+			} else {
+				occEnd = o.Add(dur)
+			}
+			if occEnd.Before(winStart) || o.After(winEnd) {
+				continue
+			}
+			ce := storedEventToBridge(ev)
+			ce.IsRecurring = true
+			ce.RecurrenceID = o.UTC().Format(time.RFC3339)
+			if ev.AllDay {
+				ce.Start = o.Format("2006-01-02")
+				ce.End = occEnd.Format("2006-01-02")
+			} else {
+				ce.Start = o.Format(time.RFC3339)
+				ce.End = occEnd.Format(time.RFC3339)
+			}
+			collected = append(collected, timedEvent{ev: ce, ts: o})
+			emitted++
+		}
+	}
+
+	sort.Slice(collected, func(i, j int) bool {
+		if !collected[i].ts.Equal(collected[j].ts) {
+			return collected[i].ts.Before(collected[j].ts)
+		}
+		return collected[i].ev.ID < collected[j].ev.ID
+	})
+	if limit > 0 && len(collected) > limit {
+		collected = collected[:limit]
+	}
+	out := make([]backend.CalendarEvent, len(collected))
+	for i, item := range collected {
+		out[i] = item.ev
+	}
+	return out
+}
+
+func storedEventToBridge(ev StoredEvent) backend.CalendarEvent {
+	return backend.CalendarEvent{
+		ID:             ev.ID,
+		CalendarID:     ev.CalendarID,
+		Calendar:       ev.CalendarName,
+		Title:          ev.Title,
+		Start:          ev.StartISO,
+		End:            ev.EndISO,
+		AllDay:         ev.AllDay,
+		Location:       ev.Location,
+		Description:    ev.Description,
+		ReadOnly:       ev.ReadOnly,
+		RecurrenceID:   ev.RecurrenceID,
+		RecurrenceRule: ev.RRule,
+		IsRecurring:    ev.IsRecurring || ev.RRule != "",
+	}
+}
+
+func cleanMailto(val string) string {
+	v := strings.TrimSpace(val)
+	if len(v) >= 7 && strings.EqualFold(v[:7], "mailto:") {
+		v = strings.TrimSpace(v[7:])
+	}
+	if idx := strings.IndexByte(v, '?'); idx >= 0 {
+		v = strings.TrimSpace(v[:idx])
+	}
+	if v == "" || strings.ContainsAny(v, "\r\n\x00") {
+		return ""
+	}
+	if a, err := mail.ParseAddress(v); err == nil && a.Address != "" {
+		return strings.TrimSpace(a.Address)
+	}
+	return ""
+}
+
+func formatDisplayAttendee(cn, email string) string {
+	cn = strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(cn))
+	if cn != "" && !strings.EqualFold(cn, email) {
+		return cn + " <" + email + ">"
+	}
+	return email
+}
+
+// ParseICSInviteMeta extracts Organizer and Attendees from an RFC 5545 .ics invite.
+func ParseICSInviteMeta(rawICS string) (organizer string, attendees []string) {
+	dec := ical.NewDecoder(strings.NewReader(rawICS))
+	cal, err := dec.Decode()
+	if err != nil {
+		return "", nil
+	}
+	for _, ev := range cal.Events() {
+		if org := ev.Props.Get(ical.PropOrganizer); org != nil {
+			email := cleanMailto(org.Value)
+			cn := strings.TrimSpace(org.Params.Get(ical.ParamCommonName))
+			if email != "" {
+				organizer = formatDisplayAttendee(cn, email)
+			}
+		}
+		for _, att := range ev.Props.Values(ical.PropAttendee) {
+			email := cleanMailto(att.Value)
+			if email == "" {
+				continue
+			}
+			cn := strings.TrimSpace(att.Params.Get(ical.ParamCommonName))
+			attendees = append(attendees, formatDisplayAttendee(cn, email))
+		}
+		break
+	}
+	return organizer, attendees
+}
+
+// BuildICSRSVP creates an RFC 5546 iTIP METHOD:REPLY calendar payload for an incoming .ics invite.
+// status should be "accepted", "tentative", or "declined".
+func BuildICSRSVP(rawICS, attendeeEmail, attendeeName, status string) (replyICS, organizerEmail, summary string, err error) {
+	partstat := "ACCEPTED"
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "accepted", "accept":
+		partstat = "ACCEPTED"
+	case "tentative", "maybe":
+		partstat = "TENTATIVE"
+	case "declined", "decline":
+		partstat = "DECLINED"
+	default:
+		return "", "", "", fmt.Errorf("unbekannter RSVP-Status: %q", status)
+	}
+
+	dec := ical.NewDecoder(strings.NewReader(rawICS))
+	inCal, err := dec.Decode()
+	if err != nil {
+		return "", "", "", fmt.Errorf("iCal-Einladung konnte nicht gelesen werden: %w", err)
+	}
+	if m, _ := inCal.Props.Text(ical.PropMethod); m != "" && !strings.EqualFold(strings.TrimSpace(m), "REQUEST") {
+		return "", "", "", fmt.Errorf("iCal-Methode %q unterstützt keine RSVP-Antwort", m)
+	}
+	evs := inCal.Events()
+	if len(evs) == 0 {
+		return "", "", "", fmt.Errorf("keine VEVENT-Einladung enthalten")
+	}
+	src := evs[0]
+	uid, _ := src.Props.Text(ical.PropUID)
+	if strings.TrimSpace(uid) == "" {
+		return "", "", "", fmt.Errorf("iCal-Einladung enthält keine UID")
+	}
+	summary, _ = src.Props.Text(ical.PropSummary)
+
+	reply := ical.NewCalendar()
+	reply.Props.SetText(ical.PropVersion, "2.0")
+	reply.Props.SetText(ical.PropProductID, "-//MailDiver//Calendar//EN")
+	reply.Props.SetText(ical.PropMethod, "REPLY")
+
+	for _, ch := range inCal.Children {
+		if ch != nil && strings.EqualFold(ch.Name, ical.CompTimezone) {
+			reply.Children = append(reply.Children, ch)
+		}
+	}
+
+	ev := ical.NewEvent()
+	ev.Props.SetText(ical.PropUID, uid)
+	ev.Props.SetDateTime(ical.PropDateTimeStamp, time.Now().UTC())
+	if summary != "" {
+		ev.Props.SetText(ical.PropSummary, summary)
+	}
+	if p := src.Props.Get(ical.PropDateTimeStart); p != nil {
+		ev.Props.Set(p)
+	}
+	if p := src.Props.Get(ical.PropDateTimeEnd); p != nil {
+		ev.Props.Set(p)
+	}
+	if p := src.Props.Get(ical.PropDuration); p != nil {
+		ev.Props.Set(p)
+	}
+	if p := src.Props.Get(ical.PropRecurrenceID); p != nil {
+		ev.Props.Set(p)
+	}
+	if p := src.Props.Get(ical.PropSequence); p != nil {
+		ev.Props.Set(p)
+	}
+	if org := src.Props.Get(ical.PropOrganizer); org != nil {
+		ev.Props.Set(org)
+		organizerEmail = cleanMailto(org.Value)
+	}
+	if loc, _ := src.Props.Text(ical.PropLocation); loc != "" {
+		ev.Props.SetText(ical.PropLocation, loc)
+	}
+
+	attProp := ical.NewProp(ical.PropAttendee)
+	attProp.Value = "mailto:" + strings.TrimSpace(attendeeEmail)
+	if strings.TrimSpace(attendeeName) != "" {
+		attProp.Params.Set(ical.ParamCommonName, strings.TrimSpace(attendeeName))
+	}
+	attProp.Params.Set(ical.ParamParticipationStatus, partstat)
+	ev.Props.Add(attProp)
+
+	reply.Children = append(reply.Children, ev.Component)
+	var buf bytes.Buffer
+	if err := ical.NewEncoder(&buf).Encode(reply); err != nil {
+		return "", "", "", err
+	}
+	return buf.String(), organizerEmail, summary, nil
+}
+
+func parseFlexibleEventTime(iso string, fallbackUnix int64) time.Time {
+	iso = strings.TrimSpace(iso)
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, iso, time.Local); err == nil {
+			return t
+		}
+	}
+	if fallbackUnix > 0 {
+		return time.Unix(fallbackUnix, 0)
+	}
+	return time.Now()
+}
+
+// ExportEventsICS serializes one or more StoredEvents into an RFC 5545 .ics calendar document.
+func ExportEventsICS(calName string, events []StoredEvent) string {
+	cal := ical.NewCalendar()
+	cal.Props.SetText(ical.PropVersion, "2.0")
+	cal.Props.SetText(ical.PropProductID, "-//MailDiver//Calendar//EN")
+	if calName != "" {
+		cal.Props.SetText("X-WR-CALNAME", calName)
+	}
+	for _, e := range events {
+		ev := ical.NewEvent()
+		uid := e.UID
+		if uid == "" {
+			uid = e.ID + "@maildiver.local"
+		}
+		ev.Props.SetText(ical.PropUID, uid)
+		ev.Props.SetDateTime(ical.PropDateTimeStamp, time.Now().UTC())
+		ev.Props.SetText(ical.PropSummary, e.Title)
+		if e.Location != "" {
+			ev.Props.SetText(ical.PropLocation, e.Location)
+		}
+		if e.Description != "" {
+			ev.Props.SetText(ical.PropDescription, e.Description)
+		}
+		st := parseFlexibleEventTime(e.StartISO, e.StartUnix)
+		en := parseFlexibleEventTime(e.EndISO, e.EndUnix)
+		if e.AllDay {
+			ev.Props.SetDate(ical.PropDateTimeStart, st)
+			ev.Props.SetDate(ical.PropDateTimeEnd, en)
+		} else {
+			ev.Props.SetDateTime(ical.PropDateTimeStart, st.UTC())
+			ev.Props.SetDateTime(ical.PropDateTimeEnd, en.UTC())
+		}
+		if e.RRule != "" {
+			ev.Props.Set(&ical.Prop{Name: ical.PropRecurrenceRule, Value: e.RRule})
+		}
+		cal.Children = append(cal.Children, ev.Component)
+	}
+	var buf bytes.Buffer
+	_ = ical.NewEncoder(&buf).Encode(cal)
+	return buf.String()
+}
+
+// ImportICSBytes parses an .ics payload and upserts all events into calendarID.
+func (e *Engine) ImportICSBytes(ctx context.Context, calendarID string, data []byte) (int, error) {
+	if calendarID == "" {
+		calendarID = LocalCalendarID
+	}
+	cal, err := e.store.GetCalendar(ctx, calendarID)
+	if err != nil {
+		return 0, fmt.Errorf("Kalender %q nicht gefunden", calendarID)
+	}
+	events, err := ParseICS(cal.ID, cal.Name, cal.ReadOnly, bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	for _, ev := range events {
+		if err := e.store.UpsertEvent(ctx, ev); err != nil {
+			return 0, err
+		}
+	}
+	if len(events) > 0 {
+		e.emitCalendarChanged()
+	}
+	return len(events), nil
+}
+
+const maxICSFileBytes = 16 * 1024 * 1024
+
+func formatByteLimit(maxBytes int64) string {
+	if maxBytes >= 1024*1024 {
+		return fmt.Sprintf("%d MB", maxBytes/(1024*1024))
+	}
+	return fmt.Sprintf("%d KB", maxBytes/1024)
+}
+
+func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("keine reguläre Datei: %s", path)
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("Datei überschreitet Limit von %s", formatByteLimit(maxBytes))
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("Datei überschreitet Limit von %s", formatByteLimit(maxBytes))
+	}
+	return data, nil
+}
+
+var blockedFeedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // RFC 1122 "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // RFC 6598 CGNAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // RFC 6890 IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1
+	netip.MustParsePrefix("198.18.0.0/15"),   // RFC 2544 benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
+	netip.MustParsePrefix("240.0.0.0/4"),     // Reserved
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("64:ff9b::/96"),  // NAT64
+	netip.MustParsePrefix("100::/64"),      // Discard-Only
+	netip.MustParsePrefix("2001:db8::/32"), // Documentation
+}
+
+func isBlockedFeedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, pfx := range blockedFeedPrefixes {
+		if pfx.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func newSafeFeedHTTPClient(allowLoopback bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ipa := range ips {
+				if !allowLoopback && isBlockedFeedIP(ipa.IP) {
+					return nil, fmt.Errorf("iCal-Feed-Ziel blockiert (private/lokale IP %s)", ipa.IP.String())
+				}
+			}
+			for _, ipa := range ips {
+				conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ipa.IP.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				err = derr
+			}
+			return nil, err
+		},
+	}
+	return &http.Client{
+		Timeout:   25 * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("zu viele Weiterleitungen beim iCal-Feed")
+			}
+			scheme := strings.ToLower(req.URL.Scheme)
+			if scheme != "http" && scheme != "https" {
+				return fmt.Errorf("ungültiges Weiterleitungs-Schema: %s", req.URL.Scheme)
+			}
+			return nil
+		},
+	}
+}
+
+// ImportICSFile reads a local .ics file and imports all events into calendarID.
+func (e *Engine) ImportICSFile(ctx context.Context, calendarID, filePath string) (int, error) {
+	p := strings.TrimSpace(filePath)
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = home + p[1:]
+		}
+	}
+	data, err := readBoundedRegularFile(p, maxICSFileBytes)
+	if err != nil {
+		return 0, fmt.Errorf(".ics Datei nicht lesbar: %w", err)
+	}
+	return e.ImportICSBytes(ctx, calendarID, data)
+}
+
+// SyncICalFeed downloads (or reads locally) an iCal subscription feed and replaces its cached events.
+func (e *Engine) SyncICalFeed(ctx context.Context, feed config.ICalFeedConfig) (int, error) {
+	calID := "ical-" + feed.ID
+	color := feed.Color
+	if color == "" {
+		color = "#73daca"
+	}
+	if err := e.store.UpsertCalendar(ctx, StoredCalendar{
+		ID:         calID,
+		Name:       feed.Name,
+		Source:     "ical",
+		ReadOnly:   true,
+		Color:      color,
+		ExternalID: feed.URL,
+	}); err != nil {
+		return 0, err
+	}
+
+	rawURL := strings.TrimSpace(feed.URL)
+	low := strings.ToLower(rawURL)
+	var data []byte
+	var err error
+	switch {
+	case strings.HasPrefix(low, "http://"),
+		strings.HasPrefix(low, "https://"),
+		strings.HasPrefix(low, "webcal://"):
+		fetchURL := rawURL
+		if strings.HasPrefix(low, "webcal://") {
+			fetchURL = "https://" + fetchURL[len("webcal://"):]
+		}
+		parsedURL, perr := url.Parse(fetchURL)
+		if perr != nil || parsedURL.Hostname() == "" {
+			return 0, fmt.Errorf("ungültige iCal-Feed-URL")
+		}
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+		if rerr != nil {
+			return 0, rerr
+		}
+		req.Header.Set("User-Agent", "MailDiver/1.0")
+		client := newSafeFeedHTTPClient(e.allowLoopbackICal)
+		resp, derr := client.Do(req)
+		if derr != nil {
+			return 0, fmt.Errorf("iCal-Feed Abruf fehlgeschlagen: %w", derr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return 0, fmt.Errorf("iCal-Feed HTTP %d", resp.StatusCode)
+		}
+		data, err = io.ReadAll(io.LimitReader(resp.Body, maxICSFileBytes+1))
+		if err == nil && int64(len(data)) > maxICSFileBytes {
+			return 0, fmt.Errorf("iCal-Feed überschreitet Limit von 16 MB")
+		}
+	case strings.HasPrefix(low, "file://"):
+		u, uerr := url.Parse(rawURL)
+		if uerr != nil || u.Path == "" {
+			return 0, fmt.Errorf("ungültige file:// URL")
+		}
+		data, err = readBoundedRegularFile(u.Path, maxICSFileBytes)
+	default:
+		return 0, fmt.Errorf("nicht unterstütztes iCal-Feed-Schema (nur https://, http://, webcal://, file://)")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("iCal-Feed lesen: %w", err)
+	}
+
+	events, err := ParseICS(calID, feed.Name, true, bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	if err := e.store.ReplaceCalendarEvents(ctx, calID, events); err != nil {
+		return 0, err
+	}
+	_ = e.store.SetCalendarSyncToken(ctx, calID, "")
+	e.emitCalendarChanged()
+	return len(events), nil
+}

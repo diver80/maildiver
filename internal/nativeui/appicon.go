@@ -113,7 +113,7 @@ func RenderAppIconPNG(size int) []byte {
 
 	aa := math.Max(1.0, s/512.0)
 
-	// Palette (Tokyo Night rich gradient + OmaThunder indigo/blue + AI spark)
+	// Palette (Tokyo Night rich gradient + MailDiver indigo/blue + AI spark)
 	bgTop := color.NRGBA{R: 0x2d, G: 0x34, B: 0x54, A: 255}
 	bgMid := color.NRGBA{R: 0x1e, G: 0x22, B: 0x36, A: 255}
 	bgBot := color.NRGBA{R: 0x13, G: 0x16, B: 0x22, A: 255}

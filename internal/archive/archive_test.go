@@ -18,7 +18,7 @@ func TestExportInboxAndSortedFolders(t *testing.T) {
 	resInbox, err := Export(ExportRequest{
 		ArchiveDir:      root,
 		AccountID:       "acc1",
-		AccountName:     "mail@frankhess.de",
+		AccountName:     "user@example.org",
 		FolderPath:      "INBOX",
 		DateISO:         "2023-07-14T10:20:00Z",
 		Subject:         "Stromrechnung Juli: Q3/2023?",
@@ -32,7 +32,7 @@ func TestExportInboxAndSortedFolders(t *testing.T) {
 	if !resInbox.Verified || resInbox.SkippedDuplicate || resInbox.BytesWritten != int64(len(raw)) {
 		t.Fatalf("unexpected inbox export result: %+v", resInbox)
 	}
-	wantPrefix := filepath.Join("mail@frankhess.de", "Incoming", "2023", "07", "2023-07-14_")
+	wantPrefix := filepath.Join("user@example.org", "Incoming", "2023", "07", "2023-07-14_")
 	if !strings.HasPrefix(resInbox.RelativePath, wantPrefix) || !strings.HasSuffix(resInbox.RelativePath, ".eml") {
 		t.Fatalf("unexpected relative path: %s (want prefix %s)", resInbox.RelativePath, wantPrefix)
 	}
@@ -48,7 +48,7 @@ func TestExportInboxAndSortedFolders(t *testing.T) {
 	resSorted, err := Export(ExportRequest{
 		ArchiveDir:   root,
 		AccountID:    "acc1",
-		AccountName:  "mail@frankhess.de",
+		AccountName:  "user@example.org",
 		FolderPath:   "Rechnungen/Strom",
 		DateISO:      "2022-11-05T08:00:00Z",
 		Subject:      "Abschlag November",
@@ -58,7 +58,7 @@ func TestExportInboxAndSortedFolders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSorted := filepath.Join("mail@frankhess.de", "Rechnungen", "Strom", "2022", "11", "2022-11-05_Abschlag November_")
+	wantSorted := filepath.Join("user@example.org", "Rechnungen", "Strom", "2022", "11", "2022-11-05_Abschlag November_")
 	if !strings.HasPrefix(resSorted.RelativePath, wantSorted) {
 		t.Fatalf("unexpected sorted folder path: %s", resSorted.RelativePath)
 	}
@@ -126,7 +126,7 @@ func TestExportDeduplicationAndRecoveryIfDeleted(t *testing.T) {
 	req := ExportRequest{
 		ArchiveDir:      root,
 		AccountID:       "acc1",
-		AccountName:     "mail@frankhess.de",
+		AccountName:     "user@example.org",
 		FolderPath:      "INBOX",
 		DateISO:         "2023-03-04T09:00:00Z",
 		Subject:         "Dup",

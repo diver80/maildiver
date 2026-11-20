@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/diver80/omathunder/internal/archive"
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/archive"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 const (
 	ModeSimulate        = "simulate"
 	ModeExportOnly      = "export_only"
-	ModeExportAndLocal  = "export_and_local"  // then move into Local Folders/OmaThunder-Archiv/…
+	ModeExportAndLocal  = "export_and_local"  // then move into the local archive folder
 	ModeExportAndDelete = "export_and_delete" // then delete at the provider
 )
 

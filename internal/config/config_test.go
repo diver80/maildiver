@@ -51,7 +51,7 @@ func TestLegacyConfigGetsSafeDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, AppID, "config.json"))
-	if strings.Contains(string(data), `"rules"`) || strings.Contains(string(data), "kanban") {
+	if strings.Contains(string(data), "Spaces/Acme") || strings.Contains(string(data), `"autoMove"`) || strings.Contains(string(data), "kanban") {
 		t.Fatalf("saved config keeps board fields: %s", data)
 	}
 }
@@ -102,25 +102,88 @@ func TestMailboxPolicy(t *testing.T) {
 	}
 }
 
-func TestBridgeConfigDefaultsAndPatch(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	cfg := Default()
-	if cfg.Bridge.Enabled || cfg.Bridge.Port != 0 || cfg.Bridge.AllowSend || len(cfg.Bridge.AccountIDs) != 0 {
-		t.Fatalf("bridge must be off by default: %+v", cfg.Bridge)
+func TestLegacyOmaThunderConfigFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	legacyDir := filepath.Join(dir, LegacyAppID)
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	path, err := BridgeInfoPath()
-	if err != nil || filepath.Base(path) != "bridge.json" {
-		t.Fatalf("unexpected BridgeInfoPath: %q err=%v", path, err)
+	if err := os.WriteFile(filepath.Join(legacyDir, "config.json"), []byte(`{"language":"en","direct":{"accounts":[{"id":"acc-1","email":"test@example.com","imapHost":"imap.example.com","smtpHost":"smtp.example.com","enabled":true}]}}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	norm := Normalize(Config{Bridge: BridgeConfig{Enabled: true, Port: 70000}})
-	if norm.Bridge.Port != 0 {
-		t.Fatalf("out-of-range bridge port must reset to 0, got %d", norm.Bridge.Port)
-	}
-	patched, err := ApplyPatch(cfg, []byte(`{"bridge":{"enabled":true,"port":19876,"allowSend":true}}`))
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !patched.Bridge.Enabled || patched.Bridge.Port != 19876 || !patched.Bridge.AllowSend {
-		t.Fatalf("unexpected patched bridge config: %+v", patched.Bridge)
+	if cfg.Language != "en" || len(cfg.Direct.Accounts) != 1 || cfg.Direct.Accounts[0].Email != "test@example.com" {
+		t.Fatalf("expected legacy omathunder config fallback, got %+v", cfg)
+	}
+}
+
+func TestEmptyLinkPreviewRulesPersisted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := Default()
+	if len(cfg.App.LinkPreview.Rules) == 0 {
+		t.Fatal("default config should seed built-in link preview rules")
+	}
+	cfg.App.LinkPreview.Rules = []LinkPreviewRule{}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.App.LinkPreview.Rules == nil || len(loaded.App.LinkPreview.Rules) != 0 {
+		t.Fatalf("explicitly empty LinkPreview.Rules must not be re-seeded on Load, got %+v", loaded.App.LinkPreview.Rules)
+	}
+}
+
+func TestDirectDBPathUsesDataDirAndNormalizesAliases(t *testing.T) {
+	dataDir := t.TempDir()
+	stateDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	dbPath, err := DirectDBPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath, err := LegacyDirectDBPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbPath != filepath.Join(dataDir, AppID, "maildiver.db") {
+		t.Fatalf("DirectDBPath = %q, want under XDG_DATA_HOME", dbPath)
+	}
+	if legacyPath != filepath.Join(stateDir, AppID, "maildiver.db") {
+		t.Fatalf("LegacyDirectDBPath = %q, want under XDG_STATE_HOME", legacyPath)
+	}
+
+	cfg := Default()
+	cfg.Direct.Accounts = []DirectAccount{{
+		ID:       "acc-1",
+		Email:    "main@example.de",
+		IMAPHost: "imap.example.de",
+		SMTPHost: "smtp.example.de",
+		Aliases: []AccountAlias{
+			{Email: " MAIN@example.de ", DisplayName: "Dup Primary"},
+			{Email: " info@example.de ", DisplayName: " Info Team "},
+			{Email: "INFO@EXAMPLE.DE", DisplayName: "Dup Alias"},
+			{Email: "invalid-no-at", DisplayName: "Bad"},
+			{Email: "sales@example.de"},
+		},
+		Enabled: true,
+	}}
+	norm := Normalize(cfg)
+	aliases := norm.Direct.Accounts[0].Aliases
+	if len(aliases) != 2 {
+		t.Fatalf("expected 2 unique valid aliases, got %+v", aliases)
+	}
+	if aliases[0].Email != "info@example.de" || aliases[0].DisplayName != "Info Team" || aliases[1].Email != "sales@example.de" {
+		t.Fatalf("unexpected normalized aliases: %+v", aliases)
 	}
 }

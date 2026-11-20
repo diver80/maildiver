@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "id": "omathunder",
-  "name": "OmaThunder",
-  "version": "0.2.9",
+  "id": "maildiver",
+  "name": "MailDiver",
+  "version": "0.5.0",
   "author": "diver80",
   "license": "MIT",
-  "description": "Live Omarchy theme sync and multi-stage Gemini/Claude/Ollama AI triage companion for Thunderbird.",
+  "description": "Standalone native IMAP/SMTP mail, calendar, contacts and AI assistant desktop app.",
   "kinds": ["bar-widget"],
   "activation": "on-demand",
   "entryPoints": {
     "barWidget": "omarchy/BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "OmaThunder",
-    "description": "Shows Thunderbird emails that actually need action (filtered from newsletters) and pending AI proposals.",
+    "displayName": "MailDiver",
+    "description": "Shows emails that actually need action (filtered from newsletters) and pending AI proposals.",
     "category": "Communication",
-    "aliases": ["thunderbird", "mail", "email", "triage"],
+    "aliases": ["maildiver", "mail", "email", "triage"],
     "allowMultiple": false,
     "defaultSection": "right"
   }

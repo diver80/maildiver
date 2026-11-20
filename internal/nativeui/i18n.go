@@ -28,7 +28,7 @@ var (
 
 func detectSystemLang() string {
 	sysLangOnce.Do(func() {
-		for _, env := range []string{"OMATHUNDER_LANG", "LC_ALL", "LC_MESSAGES", "LANG"} {
+		for _, env := range []string{"MAILDIVER_LANG", "OMATHUNDER_LANG", "LC_ALL", "LC_MESSAGES", "LANG"} {
 			v := strings.ToLower(strings.TrimSpace(os.Getenv(env)))
 			if v == "" || v == "c" || strings.HasPrefix(v, "c.") || v == "posix" {
 				continue

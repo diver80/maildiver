@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 const indexFileName = ".omathunder-index.json"
@@ -235,6 +235,10 @@ func ensureWithinRoot(root, target string) error {
 }
 
 func verifyFileSHA256(path string, expected [32]byte) (int64, bool) {
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return 0, false
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, false

@@ -5,7 +5,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 // The settings dialog writes only its own fields; keys go to the key file and apply at once.
@@ -16,7 +16,6 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 	st.box.mu.Lock()
 	st.box.cfg.Mailbox.ReadOnly = false
 	st.box.cfg.Mailbox.TriageAccountIDs = []string{"acc1"}
-	st.box.cfg.Bridge.AllowSend = true
 	st.box.mu.Unlock()
 
 	app.OpenSettings()
@@ -57,8 +56,8 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 		t.Fatalf("saved config = %+v / %+v", cfg.AI, cfg.Mailbox)
 	}
 	// Permissions belong to the add-on and stay as they were.
-	if cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 1 || !cfg.Bridge.AllowSend {
-		t.Fatalf("permissions changed: %+v %+v", cfg.Mailbox, cfg.Bridge)
+	if cfg.Mailbox.ReadOnly || len(cfg.Mailbox.TriageAccountIDs) != 1 {
+		t.Fatalf("permissions changed: %+v", cfg.Mailbox)
 	}
 	if got := config.LookupAPIKey("ANTHROPIC_API_KEY"); got != "sk-ant-test" {
 		t.Fatalf("key = %q", got)

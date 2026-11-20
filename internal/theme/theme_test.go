@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 func TestPresetsCountAndValidity(t *testing.T) {

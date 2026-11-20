@@ -3,16 +3,14 @@ package copilot
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/diver80/omathunder/internal/bridge"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/native"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 // encryptedRPC serves one encrypted mail: its text only when the call asks for decryption.
@@ -41,27 +39,17 @@ func (e *encryptedRPC) Call(_ context.Context, method string, params any) (json.
 // the context snapshot.
 func TestCopilotDecryptsOnlyTheOpenMail(t *testing.T) {
 	tmp := t.TempDir()
-	discPath := filepath.Join(tmp, "bridge.json")
 	cfg := config.Default()
 	rpc := &encryptedRPC{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	br, err := bridge.Start(ctx, bridge.Options{
-		DiscoveryPath: discPath,
-		RPC:           rpc,
-		Events:        native.NewEventHub(),
-		Store:         triage.NewStoreAt(tmp),
-		ConfigLoader:  func() (config.Config, error) { return cfg, nil },
+	bc := backend.New(backend.Options{
+		Engine:     rpc,
+		Events:     events.NewHub(),
+		Store:      triage.NewStoreAt(tmp),
+		LoadConfig: func() (config.Config, error) { return cfg, nil },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer br.Close()
-	bc, _, err := bridgeclient.Discover(discPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &Runner{ConfigLoader: func() (config.Config, error) { return cfg, nil }, Bridge: bc}
+	r := &Runner{ConfigLoader: func() (config.Config, error) { return cfg, nil }, Backend: bc}
 
 	out := r.executeTool(ctx, &runState{bc: bc, cfg: cfg, lang: "de"}, "get_message", `{"id":"7"}`)
 	if strings.Contains(out.content, "GEHEIMER INHALT") || !strings.Contains(out.content, "encrypted email: content not available") {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 func TestExtractJSONWithBackticksInStrings(t *testing.T) {

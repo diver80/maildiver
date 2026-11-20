@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"net/mail"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,13 +17,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridge"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/copilot"
-	"github.com/diver80/omathunder/internal/jobs"
-	"github.com/diver80/omathunder/internal/native"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/copilot"
+	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/jobs"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 // --- shared test harness -------------------------------------------------------------
@@ -39,6 +38,7 @@ type countingRPC struct {
 	filters       []string
 	last          map[string]map[string]any // params of the latest call per method
 	getJSON       string                    // messages.get answer, when set
+	answers       map[string]string         // fixed answers per method
 }
 
 // lastParams returns the params of the latest call of method (nil: not called).
@@ -57,11 +57,15 @@ func (r *countingRPC) Call(_ context.Context, method string, params any) (json.R
 	r.mu.Lock()
 	msgs := r.msgsJSON
 	getJSON := r.getJSON
+	answer, hasAnswer := r.answers[method]
 	if r.last == nil {
 		r.last = map[string]map[string]any{}
 	}
 	r.last[method] = lastP
 	r.mu.Unlock()
+	if hasAnswer {
+		return json.RawMessage(answer), nil
+	}
 	switch method {
 	case "accounts.list":
 		return json.RawMessage(`{"accounts":[{"id":"acc1","name":"Work","type":"imap"},{"id":"acc2","name":"Privat","type":"imap"}]}`), nil
@@ -142,14 +146,13 @@ func (r *countingRPC) snapshot() ([]string, []map[string]any) {
 }
 
 type testStack struct {
-	t        *testing.T
-	discPath string
-	store    *triage.Store
-	box      *cfgBox
-	rpc      *countingRPC
-	hub      *native.EventHub
-	srv      *bridge.Server
-	ctx      context.Context
+	t     *testing.T
+	store *triage.Store
+	box   *cfgBox
+	rpc   *countingRPC
+	hub   *events.Hub
+	bc    *backend.Client
+	ctx   context.Context
 }
 
 func newTestStack(t *testing.T) *testStack {
@@ -179,7 +182,6 @@ func newTestStack(t *testing.T) *testStack {
 	cfg := config.Default()
 	cfg.Language = "de"
 	cfg.Mailbox.ReadOnly = false
-	cfg.Bridge.Enabled = true
 	cfg.Theme.Mode = "preset"
 	cfg.Theme.Preset = "tokyo-night"
 	cfg.AI.Agent = config.ProviderConfig{Backend: "openai", Model: "gpt-4o-mini", Endpoint: aiSrv.URL + "/v1"}
@@ -187,41 +189,27 @@ func newTestStack(t *testing.T) *testStack {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	st := &testStack{
-		t:        t,
-		discPath: filepath.Join(tmp, "bridge.json"),
-		store:    triage.NewStoreAt(tmp),
-		box:      newCfgBox(cfg),
-		rpc:      &countingRPC{},
-		ctx:      ctx,
+		t:     t,
+		store: triage.NewStoreAt(tmp),
+		box:   newCfgBox(cfg),
+		rpc:   &countingRPC{},
+		hub:   events.NewHub(),
+		ctx:   ctx,
 	}
-	st.startBridge()
+	st.bc = backend.New(backend.Options{
+		Engine:     st.rpc,
+		Events:     st.hub,
+		Store:      st.store,
+		Jobs:       jobs.New(ctx, st.rpc, st.hub, st.store, st.box.load),
+		LoadConfig: st.box.load,
+		Version:    "test",
+	})
 	return st
 }
 
-func (s *testStack) startBridge() {
-	s.t.Helper()
-	s.hub = native.NewEventHub()
-	srv, err := bridge.Start(s.ctx, bridge.Options{
-		Port: 0, DiscoveryPath: s.discPath, RPC: s.rpc, Events: s.hub, Store: s.store, ConfigLoader: s.box.load,
-		Jobs: jobs.New(s.ctx, s.rpc, s.hub, s.store, s.box.load),
-	})
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	s.srv = srv
-	s.t.Cleanup(func() { _ = srv.Close() })
-}
-
-func (s *testStack) newApp(fixed bool) *App {
-	opts := Options{DiscoveryPath: s.discPath, ConfigLoader: s.box.load, ConfigSaver: s.box.save, Store: s.store}
-	if fixed {
-		bc, _, err := bridgeclient.Discover(s.discPath)
-		if err != nil {
-			s.t.Fatal(err)
-		}
-		opts.BridgeClient = bc
-	}
-	return NewApp(opts)
+// newApp returns an app wired to the stack's backend.
+func (s *testStack) newApp() *App {
+	return NewApp(Options{ConfigLoader: s.box.load, ConfigSaver: s.box.save, Store: s.store, Backend: s.bc})
 }
 
 // uiLoop simulates mygo's single UI thread: closures posted via emitUpdate run here only.
@@ -269,7 +257,7 @@ func (l *uiLoop) waitUntil(t *testing.T, d time.Duration, cond func() bool) bool
 // invalidation run concurrently. Run with -race.
 func TestRenderWhileBackgroundWorkAndSSERun(t *testing.T) {
 	st := newTestStack(t)
-	app := st.newApp(false)
+	app := st.newApp()
 	var alerts atomic.Int32
 	loop := attachUILoop(app, func(AlertItem) { alerts.Add(1) })
 	ctx, cancel := context.WithCancel(st.ctx)
@@ -279,7 +267,7 @@ func TestRenderWhileBackgroundWorkAndSSERun(t *testing.T) {
 	fly := ui.NewTester(app.RenderStatusWidget, 400, 510)
 	app.StartEventLoop(ctx)
 	app.RefreshAll(ctx)
-	if !loop.waitUntil(t, 5*time.Second, func() bool { return app.bridgeOnline && app.thunderbirdConnected && len(app.messages) > 0 }) {
+	if !loop.waitUntil(t, 5*time.Second, func() bool { return app.engineReady && len(app.messages) > 0 }) {
 		t.Fatalf("app never came online (err=%q)", app.lastError)
 	}
 
@@ -322,11 +310,7 @@ func TestRenderWhileBackgroundWorkAndSSERun(t *testing.T) {
 				return
 			case <-time.After(7 * time.Millisecond):
 			}
-			if c := app.conn.current(); c != nil {
-				app.conn.invalidate(c)
-				time.Sleep(2 * time.Millisecond)
-				app.conn.set(c)
-			}
+			app.LoadMessages(ctx) // more work racing the briefing
 		}
 	}()
 
@@ -340,7 +324,7 @@ func TestRenderWhileBackgroundWorkAndSSERun(t *testing.T) {
 			app.ToggleMailChecked(0, i%2 == 0)
 			if i%7 == 0 {
 				readTrue := true
-				app.PerformBatchAction(ctx, app.CheckedMessageIDs(), bridgeclient.MessageActionsRequest{Read: &readTrue}, "ok")
+				app.PerformBatchAction(ctx, app.CheckedMessageIDs(), backend.MessageActionsRequest{Read: &readTrue}, "ok")
 			}
 			if i%11 == 0 {
 				app.SelectMessage(ctx, app.messages[0].ID)
@@ -386,118 +370,13 @@ func TestRenderWhileBackgroundWorkAndSSERun(t *testing.T) {
 
 // --- connection manager ------------------------------------------------------------------
 
-func TestConnectionManagerReconnectsAfterBridgeRestart(t *testing.T) {
-	st := newTestStack(t)
-	app := st.newApp(false)
-	loop := attachUILoop(app, nil)
-	ctx, cancel := context.WithCancel(st.ctx)
-	defer cancel()
-	app.StartEventLoop(ctx)
-	if !loop.waitUntil(t, 5*time.Second, func() bool { return app.bridgeOnline && app.thunderbirdConnected }) {
-		t.Fatalf("not online initially (err=%q)", app.lastError)
-	}
-	oldURL := app.conn.current().BaseURL()
-	oldToken := app.conn.current().Token()
-
-	_ = st.srv.Close() // Thunderbird/host quits: stream ends, bridge.json removed
-	if !loop.waitUntil(t, 5*time.Second, func() bool { return !app.bridgeOnline }) {
-		t.Fatal("expected offline after the bridge went away")
-	}
-	if _, err := app.client(); !errors.Is(err, bridgeclient.ErrOffline) {
-		t.Fatalf("expected typed offline error, got %v", err)
-	}
-
-	st.startBridge() // new port + token
-	if !loop.waitUntil(t, 10*time.Second, func() bool {
-		c := app.conn.current()
-		return app.bridgeOnline && app.thunderbirdConnected && c != nil && (c.BaseURL() != oldURL || c.Token() != oldToken)
-	}) {
-		t.Fatalf("expected reconnect with the new endpoint (err=%q)", app.lastError)
-	}
-	if c := app.conn.current(); c.Token() != st.srv.Token() {
-		t.Fatal("client not swapped to the new token")
-	}
-}
-
-func TestBridgeDisabledOffersEnable(t *testing.T) {
-	tmp := t.TempDir()
-	cfg := config.Default()
-	cfg.Language = "de"
-	cfg.Bridge.Enabled = false
-	cfg.Theme.Mode = "preset"
-	cfg.Theme.Preset = "tokyo-night"
-	box := newCfgBox(cfg)
-	app := NewApp(Options{DiscoveryPath: filepath.Join(tmp, "missing.json"), ConfigLoader: box.load, ConfigSaver: box.save, Store: triage.NewStoreAt(tmp)})
-	loop := attachUILoop(app, nil)
-	app.RefreshAll(context.Background())
-	if !loop.waitUntil(t, 3*time.Second, func() bool { return !app.loading && app.bridgeDisabled }) {
-		t.Fatal("expected bridgeDisabled after failed discovery with bridge.enabled=false")
-	}
-	tt := ui.NewTester(app.RenderMain, 1200, 800)
-	tt.Frame()
-	if !tt.HasText("Bridge aktivieren") {
-		t.Fatalf("expected enable-bridge button; texts=%v", tt.Texts())
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	app.EnableBridge(ctx)
-	if !loop.waitUntil(t, 2*time.Second, func() bool { c, _ := box.load(); return c.Bridge.Enabled }) {
-		t.Fatal("expected bridge.enabled=true saved")
-	}
-	if c, _ := box.load(); c.Language != "de" || c.Theme.Preset != "tokyo-night" {
-		t.Fatalf("enable must keep other config fields, got %+v", c)
-	}
-	cancel()
-}
-
-// --- SSE parsing --------------------------------------------------------------------------
-
-func TestReadBridgeSSEUnwrapsRealPayloads(t *testing.T) {
-	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }, ConfigSaver: func(config.Config) error { return nil }, Store: triage.NewStoreAt(t.TempDir())})
-	var alerts []AlertItem
-	loop := attachUILoop(app, func(al AlertItem) { alerts = append(alerts, al) })
-	app.seenMails["seed"] = true
-
-	// Exactly what internal/bridge writes: `connected` raw, everything else wrapped.
-	stream := "event: connected\ndata: {\"thunderbirdConnected\":true,\"version\":\"0.3.0\"}\n\n" +
-		": keepalive\n\n" +
-		"event: mail.new\ndata: {\"event\":\"mail.new\",\"data\":{\"accountId\":\"acc1\",\"folderId\":\"f1\",\"folder\":\"INBOX\",\"count\":2,\"messages\":[" +
-		"{\"id\":\"a\",\"messageId\":\"a@x\",\"subject\":\"Eins\",\"from\":\"Chef <chef@acme.de>\",\"accountId\":\"acc1\",\"unread\":true}," +
-		"{\"id\":\"b\",\"messageId\":\"b@x\",\"subject\":\"Zwei\",\"from\":\"Bob <bob@acme.de>\",\"accountId\":\"acc1\",\"unread\":true}]}," +
-		"\"timestamp\":\"2026-11-18T08:00:00Z\"}\n\n"
-	saw := app.readBridgeSSE(context.Background(), nil, strings.NewReader(stream))
-	loop.drain()
-	if !saw || !app.bridgeOnline || !app.thunderbirdConnected {
-		t.Fatalf("expected connected event to mark online: saw=%v online=%v tb=%v", saw, app.bridgeOnline, app.thunderbirdConnected)
-	}
-	if len(alerts) != 1 || !strings.HasPrefix(alerts[0].ID, alertMailBatchPrefix) || alerts[0].MessageID != "" {
-		t.Fatalf("expected one batch alert without a message id, got %+v", alerts)
-	}
-
-	// Clicking the batch alert must not select a bogus "batch-…" ID.
-	app.HandleNotificationClick(alerts[0].ID)
-	if app.selectedID != "" || app.navID != "focus" {
-		t.Fatalf("batch click selected %q nav=%q", app.selectedID, app.navID)
-	}
-	// Same IDs again: deduplicated.
-	app.handleBridgeEvent(context.Background(), nil, "mail.new", `{"event":"mail.new","data":{"count":1,"messages":[{"id":"a","subject":"Eins"}]},"timestamp":"x"}`)
-	loop.drain()
-	if len(alerts) != 1 {
-		t.Fatalf("expected duplicate mail.new to be ignored, got %d alerts", len(alerts))
-	}
-	if got := string(unwrapSSEData(`{"event":"theme_updated","timestamp":"x"}`)); got != "null" {
-		t.Fatalf("unexpected unwrap of payload-less event: %s", got)
-	}
-}
-
-// --- message list ------------------------------------------------------------------------
-
 func TestStaleMessageLoadIsDropped(t *testing.T) {
 	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }, ConfigSaver: func(config.Config) error { return nil }, Store: triage.NewStoreAt(t.TempDir())})
 	older := app.newMessageLoad()
 	app.navID = "recent"
 	newer := app.newMessageLoad()
-	fresh := []bridgeclient.MessageHeader{{ID: "new1"}, {ID: "new2"}}
-	stale := []bridgeclient.MessageHeader{{ID: "old1"}}
+	fresh := []backend.MessageHeader{{ID: "new1"}, {ID: "new2"}}
+	stale := []backend.MessageHeader{{ID: "old1"}}
 	if !app.applyMessageLoad(newer, fresh, 2) {
 		t.Fatal("newest load must apply")
 	}
@@ -511,10 +390,10 @@ func TestStaleMessageLoadIsDropped(t *testing.T) {
 
 func TestShiftAnchorResetOnListReplacement(t *testing.T) {
 	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }, ConfigSaver: func(config.Config) error { return nil }, Store: triage.NewStoreAt(t.TempDir())})
-	list := func(prefix string, n int) []bridgeclient.MessageHeader {
-		var out []bridgeclient.MessageHeader
+	list := func(prefix string, n int) []backend.MessageHeader {
+		var out []backend.MessageHeader
 		for i := 0; i < n; i++ {
-			out = append(out, bridgeclient.MessageHeader{ID: fmt.Sprintf("%s%d", prefix, i)})
+			out = append(out, backend.MessageHeader{ID: fmt.Sprintf("%s%d", prefix, i)})
 		}
 		return out
 	}
@@ -552,13 +431,12 @@ func TestShiftAnchorResetOnListReplacement(t *testing.T) {
 
 func TestQuickRuleNeverAppliesWithoutHitsAndScopesAccount(t *testing.T) {
 	st := newTestStack(t)
-	app := st.newApp(true)
+	app := st.newApp()
 	loop := attachUILoop(app, nil)
-	app.thunderbirdConnected = true
-	app.bridgeOnline = true
+	app.engineReady = true
 	app.readOnly = false
-	app.accounts = []bridgeclient.Account{{ID: "acc1", Name: "Work"}, {ID: "acc2", Name: "Privat"}}
-	app.setMessages([]bridgeclient.MessageHeader{
+	app.accounts = []backend.Account{{ID: "acc1", Name: "Work"}, {ID: "acc2", Name: "Privat"}}
+	app.setMessages([]backend.MessageHeader{
 		{ID: "w1", MessageID: "w1@x", AccountID: "acc1", Folder: "INBOX", InInbox: true, From: "News <news@shop.de>", Subject: "Angebot der Woche"},
 		{ID: "w2", MessageID: "w2@x", AccountID: "acc1", Folder: "INBOX", InInbox: true, From: "News <news@shop.de>", Subject: "Angebot Spezial"},
 		{ID: "w3", MessageID: "w3@x", AccountID: "acc1", Folder: "Archiv", From: "News <news@shop.de>", Subject: "Angebot alt"},
@@ -627,18 +505,15 @@ func TestQuickRuleFilterRetryNeverDuplicates(t *testing.T) {
 		t.Fatalf("unexpected match %q", got)
 	}
 
-	// The bridge reports outcome_unknown, but the extension did create the filter (the
-	// response got lost): the client must find it instead of creating a duplicate.
+	// The engine reports outcome_unknown, but the filter was created (the answer got lost):
+	// the client must find it instead of creating a duplicate.
 	st := newTestStack(t)
-	bc, _, err := bridgeclient.Discover(st.discPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bc := st.bc
 	st.rpc.mu.Lock()
 	st.rpc.filterErr = errors.New("outcome_unknown: timed out")
 	st.rpc.createOnError = true
 	st.rpc.mu.Unlock()
-	name, err := saveQuickRuleFilter(context.Background(), bc, bridgeclient.FilterUpsertRequest{Mode: "create", AccountID: "acc1", Name: "Regel"})
+	name, err := saveQuickRuleFilter(context.Background(), bc, backend.FilterUpsertRequest{Mode: "create", AccountID: "acc1", Name: "Regel"})
 	if err != nil || name != "Regel" {
 		t.Fatalf("expected verified create, got name=%q err=%v", name, err)
 	}
@@ -651,7 +526,7 @@ func TestQuickRuleFilterRetryNeverDuplicates(t *testing.T) {
 	st.rpc.createOnError = false
 	st.rpc.writes = nil
 	st.rpc.mu.Unlock()
-	_, err = saveQuickRuleFilter(context.Background(), bc, bridgeclient.FilterUpsertRequest{Mode: "create", AccountID: "acc1", Name: "Andere"})
+	_, err = saveQuickRuleFilter(context.Background(), bc, backend.FilterUpsertRequest{Mode: "create", AccountID: "acc1", Name: "Andere"})
 	if err == nil {
 		t.Fatal("expected the persisting error to be reported")
 	}
@@ -664,7 +539,7 @@ func TestQuickRuleFilterRetryNeverDuplicates(t *testing.T) {
 
 func TestCopilotProposalNeedsExplicitExecute(t *testing.T) {
 	st := newTestStack(t)
-	app := st.newApp(true)
+	app := st.newApp()
 	loop := attachUILoop(app, nil)
 	app.readOnly = false
 	app.chatEntries = []ChatEntry{{ID: "a-1", Role: "assistant", Streaming: true}}
@@ -709,20 +584,19 @@ func TestCopilotProposalNeedsExplicitExecute(t *testing.T) {
 
 func TestLocalizeErrorCodes(t *testing.T) {
 	cases := map[string]error{
-		"Read-Only-Modus aktiv":      &bridgeclient.APIError{Code: "read_only", Message: "read_only"},
-		"geändert":                   &bridgeclient.APIError{Code: "message_changed", Message: "message_changed: x"},
-		"Ergebnis unbekannt":         &bridgeclient.APIError{Code: "outcome_unknown", Message: "outcome_unknown"},
-		"Direktes Senden":            errors.New("send_disabled"),
-		"Thunderbird-Bridge offline": bridgeclient.ErrOffline,
-		"Mehrdeutig":                 errors.New("ambiguous: 2 copies"),
-		"Funktion deaktiviert: ai":   errors.New("feature_disabled:ai"),
+		"Read-Only-Modus aktiv":           &backend.APIError{Code: "read_only", Message: "read_only"},
+		"geändert":                        &backend.APIError{Code: "message_changed", Message: "message_changed: x"},
+		"Ergebnis unbekannt":              &backend.APIError{Code: "outcome_unknown", Message: "outcome_unknown"},
+		"Mail-Engine ist nicht verbunden": backend.ErrOffline,
+		"Mehrdeutig":                      errors.New("ambiguous: 2 copies"),
+		"Funktion deaktiviert: ai":        errors.New("feature_disabled:ai"),
 	}
 	for want, err := range cases {
 		if got := localizeError(err, "de"); !strings.Contains(got, want) {
 			t.Errorf("localizeError(%v) = %q, want it to contain %q", err, got, want)
 		}
 	}
-	if got := localizeError(&bridgeclient.APIError{Code: "account_not_enabled", Message: "account_not_enabled"}, "en"); !strings.Contains(got, "not enabled") {
+	if got := localizeError(&backend.APIError{Code: "account_not_enabled", Message: "account_not_enabled"}, "en"); !strings.Contains(got, "not enabled") {
 		t.Errorf("unexpected EN text %q", got)
 	}
 	if got := localizeError(errors.New("something else"), "en"); got != "something else" {
@@ -734,11 +608,11 @@ func TestLocalizeErrorCodes(t *testing.T) {
 
 func TestCalendarDeleteNeedsConfirmationAndScope(t *testing.T) {
 	st := newTestStack(t)
-	app := st.newApp(true)
+	app := st.newApp()
 	loop := attachUILoop(app, nil)
 	app.readOnly = false
-	app.bridgeOnline, app.thunderbirdConnected = true, true
-	ev := bridgeclient.CalendarEvent{ID: "e1", CalendarID: "c1", Title: "Weekly", Start: "2026-11-18T14:00:00Z", RecurrenceID: "20261118T140000Z", IsRecurring: true}
+	app.engineReady = true
+	ev := backend.CalendarEvent{ID: "e1", CalendarID: "c1", Title: "Weekly", Start: "2026-11-18T14:00:00Z", RecurrenceID: "20261118T140000Z", IsRecurring: true}
 	app.RequestDeleteCalendarEvent(ev)
 	tt := ui.NewTester(app.RenderMain, 1380, 860)
 	tt.Frame()
@@ -748,8 +622,8 @@ func TestCalendarDeleteNeedsConfirmationAndScope(t *testing.T) {
 	if writes, _ := st.rpc.snapshot(); len(writes) != 0 {
 		t.Fatal("opening the confirmation must not delete")
 	}
-	app.ConfirmDeleteCalendarEvent(context.Background(), bridgeclient.ScopeOccurrence)
-	app.ConfirmDeleteCalendarEvent(context.Background(), bridgeclient.ScopeOccurrence) // double click: busy
+	app.ConfirmDeleteCalendarEvent(context.Background(), backend.ScopeOccurrence)
+	app.ConfirmDeleteCalendarEvent(context.Background(), backend.ScopeOccurrence) // double click: busy
 	if !loop.waitUntil(t, 3*time.Second, func() bool { return !app.calDelBusy && !app.calDelOpen }) {
 		t.Fatalf("delete did not finish: %q", app.calDelError)
 	}
@@ -759,5 +633,94 @@ func TestCalendarDeleteNeedsConfirmationAndScope(t *testing.T) {
 	}
 	if params[0]["recurrenceId"] != "20261118T140000Z" || params[0]["scope"] != "occurrence" {
 		t.Fatalf("expected occurrence scope with recurrenceId, got %+v", params[0])
+	}
+}
+
+// Folders and searches reach back past 30 days; reloading the view on screen keeps the pages
+// already loaded.
+func TestMessageLoadPaging(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }, ConfigSaver: func(config.Config) error { return nil }, Store: triage.NewStoreAt(t.TempDir())})
+	app.navID = "recent"
+	if req := app.newMessageLoad(); req.filter.Days != 30 || req.filter.Limit != messagePage {
+		t.Fatalf("recent: %+v", req.filter)
+	}
+	app.searchQuery = "angebot"
+	if req := app.newMessageLoad(); req.filter.Days != 0 {
+		t.Fatalf("a search must not stop at 30 days: %+v", req.filter)
+	}
+	app.searchQuery = ""
+	app.navID = "folder:acc/INBOX"
+	req := app.newMessageLoad()
+	if req.filter.Days != 0 || req.filter.FolderID != "acc/INBOX" {
+		t.Fatalf("folder: %+v", req.filter)
+	}
+	var msgs []backend.MessageHeader
+	for i := 0; i < 150; i++ {
+		msgs = append(msgs, backend.MessageHeader{ID: fmt.Sprintf("m%d", i)})
+	}
+	if !app.applyMessageLoad(req, msgs, 400) {
+		t.Fatal("load must apply")
+	}
+	app.listKey, app.nextCursor = req.key, "150"
+	if again := app.newMessageLoad(); again.filter.Limit != 150 {
+		t.Fatalf("a reload of the same folder must keep 150 mails, limit=%d", again.filter.Limit)
+	}
+	app.navID = "folder:acc/Sent"
+	if other := app.newMessageLoad(); other.filter.Limit != messagePage {
+		t.Fatalf("another folder starts with one page, limit=%d", other.filter.Limit)
+	}
+}
+
+func TestSplitEmailListNamesWithCommas(t *testing.T) {
+	got := splitEmailList("Müller, Hans <h@x.de>; b@y.de, \"Weber, Alice\" <a@acme.de>")
+	if len(got) != 3 {
+		t.Fatalf("got %q", got)
+	}
+	for _, g := range got {
+		if _, err := mail.ParseAddress(g); err != nil {
+			t.Errorf("%q does not parse: %v", g, err)
+		}
+	}
+	if a, _ := mail.ParseAddress(got[0]); a == nil || a.Name != "Müller, Hans" || a.Address != "h@x.de" {
+		t.Fatalf("first = %q", got[0])
+	}
+	if got := splitEmailList("Hans Müller"); len(got) != 1 || got[0] != "Hans Müller" {
+		t.Fatalf("a name alone stays visible for the error: %q", got)
+	}
+}
+
+// Closing the compose window with unsent text keeps it open and asks; unchanged it just closes.
+func TestComposeCloseAsksWhenChanged(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }, ConfigSaver: func(config.Config) error { return nil }, Store: triage.NewStoreAt(t.TempDir())})
+	app.OpenComposeNew()
+	app.guardComposeClose()
+	app.composeOpen = false // Escape, unchanged
+	app.guardComposeClose()
+	if app.composeOpen || app.composeCloseAsk {
+		t.Fatal("an unchanged compose window closes")
+	}
+	app.OpenComposeNew()
+	app.guardComposeClose()
+	app.composeBody = "Hallo Hans,"
+	app.composeOpen = false // Escape with text
+	app.guardComposeClose()
+	if !app.composeOpen || !app.composeCloseAsk {
+		t.Fatal("closing with text must ask")
+	}
+	app.closeCompose() // Discard
+	app.guardComposeClose()
+	if app.composeOpen {
+		t.Fatal("discard closes")
+	}
+}
+
+func TestReplyGoesToReplyTo(t *testing.T) {
+	msg := &backend.MessageDetail{MessageHeader: backend.MessageHeader{From: "Shop <noreply@shop.de>"}, Headers: map[string]string{"reply-to": "Support <help@shop.de>"}}
+	if got := replyRecipient(msg); got != `"Support" <help@shop.de>` && got != "Support <help@shop.de>" {
+		t.Fatalf("reply to %q", got)
+	}
+	msg.Headers = nil
+	if got := replyRecipient(msg); got != msg.From {
+		t.Fatalf("without Reply-To: %q", got)
 	}
 }

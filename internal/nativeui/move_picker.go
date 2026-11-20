@@ -6,14 +6,14 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // "Move to…" picker (v) and archive (e)
 // -------------------------------------
 // The bridge only moves mails inside their own account (cross_account_move), so the picker lists
 // the folders of that one account and refuses a selection that spans several accounts. Archive
-// uses Thunderbird's own archive settings; Thunderbird decides the target folder.
+// uses the account's archive folder; the engine decides the target folder.
 
 type movePickerState struct {
 	moveOpen    bool
@@ -78,7 +78,7 @@ func (a *App) OpenMovePicker() {
 // moveFolderRows lists the target folders of the picker: the account's tree, or a flat list of
 // matches while a filter is typed.
 func (a *App) moveFolderRows() []folderRow {
-	var acc []bridgeclient.Folder
+	var acc []backend.Folder
 	for _, f := range a.folders {
 		if f.AccountID == a.moveAccount {
 			acc = append(acc, f)
@@ -119,7 +119,7 @@ func (a *App) moveSourceFolderID() string {
 }
 
 // MoveTo moves the picked mails into folder f and closes the picker (UI thread).
-func (a *App) MoveTo(ctx context.Context, f bridgeclient.Folder) {
+func (a *App) MoveTo(ctx context.Context, f backend.Folder) {
 	ids, batch := a.moveIDs, a.moveBatch
 	a.moveOpen = false
 	if len(ids) == 0 {
@@ -129,7 +129,7 @@ func (a *App) MoveTo(ctx context.Context, f bridgeclient.Folder) {
 	if name == "" {
 		name = cleanFolderPath(f.Path)
 	}
-	patch := bridgeclient.MessageActionsRequest{MoveToFolderID: f.ID}
+	patch := backend.MessageActionsRequest{MoveToFolderID: f.ID}
 	msg := a.tr("Verschoben nach ", "Moved to ") + name
 	if batch {
 		a.PerformBatchAction(ctx, ids, patch, msg)
@@ -143,7 +143,7 @@ func (a *App) archiveKey(ctx context.Context) {
 	if a.blockedReadOnly() {
 		return
 	}
-	archive := bridgeclient.MessageActionsRequest{Archive: true}
+	archive := backend.MessageActionsRequest{Archive: true}
 	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
 		a.PerformBatchAction(ctx, ids, archive, a.tr("Archiviert", "Archived"))
 		return

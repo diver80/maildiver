@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 // OmarchyColorsPath returns the live Omarchy colors.toml path on Linux.

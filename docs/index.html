@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MailDiver — Native Mail, Calendar, Contacts &amp; Flexible AI</title>
+  <meta name="description" content="Fast native Go email, calendar & contacts suite with local Ollama & cloud AI, Thunderbird 1-click import, security-first design, and cross-platform builds for macOS, Linux, Windows & Android. MIT License." />
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <style>
+    :root {
+      --bg: #0e0e11;
+      --surface: #16161b;
+      --surface-2: #1d1d24;
+      --border: #2a2a35;
+      --text: #f2f2f5;
+      --muted: #a1a1b0;
+      --accent: #e68e0d;
+      --accent-soft: rgba(230, 142, 13, 0.14);
+      --crimson: #9d1140;
+      --green: #22c55e;
+      --radius: 14px;
+      --max: 1120px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(900px 420px at 50% -120px, rgba(230, 142, 13, 0.14), transparent 70%),
+        radial-gradient(600px 340px at 85% 10%, rgba(157, 17, 64, 0.10), transparent 70%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { width: 100%; max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+    /* Top Nav */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      background: rgba(14, 14, 17, 0.84);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      height: 64px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: -0.02em;
+    }
+    .brand:hover { text-decoration: none; }
+    .brand img { width: 32px; height: 32px; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 14px;
+    }
+    .nav-links a { color: var(--muted); font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .lang-switch {
+      display: inline-flex;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .lang-switch button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 11px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .lang-switch button.active {
+      background: var(--accent);
+      color: #111116;
+    }
+
+    /* Hero */
+    .hero {
+      padding: 72px 0 48px;
+      text-align: center;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-soft);
+      border: 1px solid rgba(230, 142, 13, 0.35);
+      padding: 5px 14px;
+      border-radius: 999px;
+      margin-bottom: 20px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+    }
+    h1 {
+      margin: 0 auto 18px;
+      max-width: 820px;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      font-weight: 800;
+    }
+    .lead {
+      margin: 0 auto 30px;
+      max-width: 720px;
+      font-size: clamp(16px, 2vw, 19px);
+      color: var(--muted);
+    }
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 42px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 22px;
+      border-radius: 10px;
+      font-size: 14.5px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      transition: transform 0.12s, border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { text-decoration: none; border-color: #444456; background: var(--surface-2); transform: translateY(-1px); }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #121216;
+    }
+    .btn.primary:hover { background: #f39d1b; border-color: #f39d1b; color: #121216; }
+
+    .hero-shot {
+      position: relative;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.65);
+    }
+    .hero-shot img { width: 100%; display: block; }
+
+    /* Sections */
+    section { padding: 64px 0; }
+    .sec-head { text-align: center; max-width: 720px; margin: 0 auto 40px; }
+    .sec-head h2 {
+      margin: 0 0 10px;
+      font-size: clamp(26px, 3.5vw, 36px);
+      letter-spacing: -0.025em;
+    }
+    .sec-head p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+    /* Feature Grid */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 18px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card .icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 19px;
+      font-weight: 700;
+    }
+    .card h3 { margin: 4px 0 0; font-size: 17.5px; letter-spacing: -0.015em; }
+    .card p { margin: 0; font-size: 14px; color: var(--muted); }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 8px; }
+    .tag {
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: #d4d4df;
+    }
+
+    /* Screenshots Gallery */
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
+    }
+    .shot-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      cursor: zoom-in;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .shot-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .shot-card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; display: block; background: #0a0a0d; }
+    .shot-cap { padding: 14px 16px; }
+    .shot-cap strong { display: block; font-size: 14.5px; margin-bottom: 3px; }
+    .shot-cap span { font-size: 13px; color: var(--muted); }
+
+    /* Platforms & Quickstart */
+    .split {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      align-items: stretch;
+    }
+    pre {
+      margin: 0;
+      padding: 16px 18px;
+      background: #09090c;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #e4e4ec;
+    }
+    .status-banner {
+      background: linear-gradient(135deg, rgba(230, 142, 13, 0.12), rgba(157, 17, 64, 0.12));
+      border: 1px solid rgba(230, 142, 13, 0.32);
+      border-radius: 16px;
+      padding: 28px 30px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .status-banner h3 { margin: 0 0 6px; font-size: 20px; }
+    .status-banner p { margin: 0; color: var(--muted); max-width: 680px; font-size: 14.5px; }
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0 48px;
+      color: var(--muted);
+      font-size: 13.5px;
+    }
+    .foot-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    /* Lightbox */
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(8, 8, 12, 0.9);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      cursor: zoom-out;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img {
+      max-width: min(1320px, 96vw);
+      max-height: 90vh;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.8);
+    }
+
+    @media (max-width: 720px) {
+      .nav-links .hide-sm { display: none; }
+      .hero { padding-top: 46px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <a class="brand" href="#top">
+        <img src="icon.svg" alt="MailDiver" />
+        <span>MailDiver</span>
+      </a>
+      <div class="nav-links">
+        <a class="hide-sm" href="#features" data-i18n="nav.features">Features</a>
+        <a class="hide-sm" href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
+        <a class="hide-sm" href="#platforms" data-i18n="nav.platforms">Platforms</a>
+        <a class="hide-sm" href="https://github.com/diver80/maildiver" target="_blank" rel="noopener">GitHub</a>
+        <div class="lang-switch" role="group" aria-label="Language">
+          <button type="button" id="btn-en" class="active">EN</button>
+          <button type="button" id="btn-de">DE</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container">
+        <div class="pill">
+          <span class="dot"></span>
+          <span data-i18n="hero.badge">In active development · Daily-driven on macOS · MIT License</span>
+        </div>
+        <h1 data-i18n="hero.title">Native Email, Calendar &amp; Contacts — with Flexible Local &amp; Cloud AI</h1>
+        <p class="lead" data-i18n="hero.lead">
+          MailDiver is a fast, standalone desktop &amp; mobile suite written in Go and mygo. Zero Electron bloat, instant SQLite search, privacy-first security, 1-click Thunderbird import, and your choice of local Ollama or cloud AI (Claude, Gemini, OpenAI).
+        </p>
+        <div class="cta-row">
+          <a class="btn primary" href="https://github.com/diver80/maildiver/releases/latest" target="_blank" rel="noopener" data-i18n="hero.download">Download Latest Release</a>
+          <a class="btn" href="https://github.com/diver80/maildiver" target="_blank" rel="noopener" data-i18n="hero.source">View on GitHub</a>
+          <a class="btn" href="#screenshots" data-i18n="hero.screens">Explore Screenshots</a>
+        </div>
+        <div class="hero-shot">
+          <img src="screenshots/app-main.png" alt="MailDiver main desktop workspace" />
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="container">
+        <div class="sec-head">
+          <h2 data-i18n="feat.title">Built for speed, privacy, and real daily work</h2>
+          <p data-i18n="feat.sub">Everything lives in one native binary: direct IMAP/SMTP engine, local SQLite cache, calendar, contacts, and an opt-in AI copilot you stay in control of.</p>
+        </div>
+        <div class="grid-3">
+          <article class="card">
+            <div class="icon">✦</div>
+            <h3 data-i18n="f1.title">Flexible AI — Local &amp; Cloud</h3>
+            <p data-i18n="f1.desc">Run completely offline with Ollama, llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.</p>
+            <div class="tags">
+              <span class="tag">Ollama</span>
+              <span class="tag">Claude / Gemini</span>
+              <span class="tag">CLI Agents</span>
+              <span class="tag" data-i18n="f1.tag">0-Token Rules</span>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="icon">⚡</div>
+            <h3 data-i18n="f2.title">Native Performance</h3>
+            <p data-i18n="f2.desc">Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search across your entire mailbox history, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c), and detached compose &amp; event windows.</p>
+            <div class="tags">
+              <span class="tag">Go + mygo GPU</span>
+              <span class="tag">SQLite FTS5</span>
+              <span class="tag">IMAP IDLE</span>
+              <span class="tag">No Electron</span>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="icon">🔒</div>
+            <h3 data-i18n="f3.title">Security &amp; S/MIME / PGP</h3>
+            <p data-i18n="f3.desc">Full S/MIME support (.p12 import with OS Keychain keys, signature verification, decryption, signing &amp; AES-256 encryption), remote images blocked by default with per-sender allowlist, strict HTML sanitizer, pixel-bomb &amp; SSRF guards, TLS/STARTTLS-only transport, and risky attachment protection.</p>
+            <div class="tags">
+              <span class="tag">S/MIME</span>
+              <span class="tag">OS Keychain</span>
+              <span class="tag">TLS Only</span>
+              <span class="tag" data-i18n="f3.tag">Tracker Blocking</span>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="icon">📅</div>
+            <h3 data-i18n="f4.title">Complete Suite: Mail, Calendar &amp; Contacts</h3>
+            <p data-i18n="f4.desc">Multi-account IMAP/SMTP (incl. Gmail &amp; Microsoft 365 XOAUTH2) with newest-on-top conversations, offline outbox queue, inline .ics RSVP, Month/Week/Agenda calendar with Google Calendar &amp; CalDAV sync, 1-click Teams/Meet/Zoom links, and local + Google + CardDAV Contacts.</p>
+            <div class="tags">
+              <span class="tag">XOAUTH2</span>
+              <span class="tag">CalDAV / CardDAV</span>
+              <span class="tag" data-i18n="f4.t2">Calendar &amp; .ics</span>
+              <span class="tag" data-i18n="f4.t3">Contacts</span>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="icon">⇣</div>
+            <h3 data-i18n="f5.title">Effortless Setup, Thunderbird Import &amp; LAN QR</h3>
+            <p data-i18n="f5.desc">Switch in minutes: read-only Thunderbird importer brings over accounts, signatures, calendars, contacts &amp; filter rules automatically, plus one-shot AES-256-GCM LAN QR-code transfer to set up another desktop or Android phone in seconds.</p>
+            <div class="tags">
+              <span class="tag" data-i18n="f5.t1">Thunderbird Import</span>
+              <span class="tag">LAN QR Sync</span>
+              <span class="tag" data-i18n="f5.t3">Rule Editor</span>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="icon">❖</div>
+            <h3 data-i18n="f6.title">Cross-Platform: Desktop &amp; Android</h3>
+            <p data-i18n="f6.desc">Native builds for macOS (Apple Silicon &amp; Intel), Linux (x64 &amp; arm64 with live Omarchy theme sync), Windows (x64 &amp; arm64), and Android via mygo — sharing one single codebase and 22 built-in themes.</p>
+            <div class="tags">
+              <span class="tag">macOS</span>
+              <span class="tag">Linux</span>
+              <span class="tag">Windows</span>
+              <span class="tag">Android (mygo)</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshots">
+      <div class="container">
+        <div class="sec-head">
+          <h2 data-i18n="shots.title">Screenshots</h2>
+          <p data-i18n="shots.sub">Click any screenshot to inspect full size.</p>
+        </div>
+        <div class="gallery">
+          <figure class="shot-card" data-full="screenshots/app-conversation.png">
+            <img src="screenshots/app-conversation.png" alt="Conversations view" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s1.t">Newest-on-top Conversations &amp; Reading Pane</strong>
+              <span data-i18n="s1.d">Formatted HTML reader, tracker blocking, conversation folding, and AI copilot side-by-side.</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card" data-full="screenshots/app-calendar-light.png">
+            <img src="screenshots/app-calendar-light.png" alt="Calendar light theme" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s2.t">Integrated Calendar (Month / Week / Agenda)</strong>
+              <span data-i18n="s2.d">Multi-select calendar filter, Google Calendar OAuth2, .ics RSVP, and 1-click meeting join links.</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card" data-full="screenshots/app-quick-rule.png">
+            <img src="screenshots/app-quick-rule.png" alt="Quick rule wizard" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s3.t">Zero-Token Filter Rules &amp; Quick-Rule Wizard</strong>
+              <span data-i18n="s3.d">Turn repetitive notifications into deterministic local rules — plus a full rule editor.</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card" data-full="screenshots/app-settings.png">
+            <img src="screenshots/app-settings.png" alt="Settings view" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s4.t">Flexible AI, Privacy &amp; Folder Preferences</strong>
+              <span data-i18n="s4.d">Switch between Ollama, Claude, Gemini or CLI agents, manage allowed image senders and folder collapse per mailbox.</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card" data-full="screenshots/app-reading-pane.png">
+            <img src="screenshots/app-reading-pane.png" alt="Reading pane and AI actions" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s5.t">AI Summaries, Reply Drafts &amp; Event Extraction</strong>
+              <span data-i18n="s5.d">Context-aware AI over the full conversation thread, only triggered on demand.</span>
+            </figcaption>
+          </figure>
+          <figure class="shot-card" data-full="screenshots/app-archive.png">
+            <img src="screenshots/app-archive.png" alt="Verified EML archive" loading="lazy" />
+            <figcaption class="shot-cap">
+              <strong data-i18n="s6.t">SHA-256 Verified .eml Archive &amp; Cleanup</strong>
+              <span data-i18n="s6.d">Back up old mail locally with cryptographic verification before freeing server quota.</span>
+            </figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="platforms">
+      <div class="container">
+        <div class="sec-head">
+          <h2 data-i18n="plat.title">Install or Build from Source</h2>
+          <p data-i18n="plat.sub">Grab a prebuilt binary from GitHub Releases or compile directly with Go.</p>
+        </div>
+        <div class="split">
+          <div class="card">
+            <h3 data-i18n="plat.quick">Homebrew &amp; Quick Build</h3>
+            <pre><code># macOS (Universal App + CLI)
+brew install --cask diver80/tap/maildiver
+
+# Linux / CLI
+brew install diver80/tap/maildiver
+
+# Or build from source
+git clone https://github.com/diver80/maildiver.git
+cd maildiver && ./build.sh && ./install.sh</code></pre>
+            <p data-i18n="plat.android">Android builds use <code>./build.sh --android</code> (requires Android NDK). Prebuilt macOS Universal <code>.dmg</code> and desktop binaries are attached to every GitHub Release.</p>
+          </div>
+          <div class="card">
+            <h3 data-i18n="plat.road">Release Highlights &amp; Roadmap</h3>
+            <p data-i18n="plat.road1">✓ <strong>S/MIME:</strong> .p12/.pfx import (OS Keychain), verify, decrypt, sign &amp; AES-256 encrypt</p>
+            <p data-i18n="plat.road2">✓ <strong>OAuth2 &amp; DAV:</strong> Gmail &amp; Microsoft 365 XOAUTH2 + CalDAV / CardDAV sync</p>
+            <p data-i18n="plat.road3">✓ <strong>Mobility &amp; Compose:</strong> AES-256-GCM LAN QR setup transfer, offline outbox &amp; rich-text bar</p>
+            <p data-i18n="plat.road4">→ <strong>Next:</strong> Native OpenPGP (PGP/MIME) &amp; Android APK/Play releases</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="container">
+        <div class="status-banner">
+          <div>
+            <h3 data-i18n="open.title">Daily-driven on macOS · Testers &amp; Pull Requests Welcome!</h3>
+            <p data-i18n="open.desc">MailDiver is actively developed and used every day on macOS. Feedback, bug reports, platform tests on Linux/Windows/Android, and Pull Requests are warmly welcome. Released under the MIT License.</p>
+          </div>
+          <div class="cta-row" style="margin:0;">
+            <a class="btn primary" href="https://github.com/diver80/maildiver/issues" target="_blank" rel="noopener" data-i18n="open.issues">Report Issue / Feedback</a>
+            <a class="btn" href="https://github.com/diver80/maildiver/blob/main/LICENSE" target="_blank" rel="noopener" data-i18n="open.license">MIT License</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container foot-row">
+      <span>© 2026 MailDiver · <span data-i18n="foot.mit">MIT Licensed Open Source</span></span>
+      <div style="display:flex;gap:18px;">
+        <a href="https://github.com/diver80/maildiver" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/diver80/maildiver/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/diver80/maildiver/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener" data-i18n="foot.arch">Architecture</a>
+      </div>
+    </div>
+  </footer>
+
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <img id="lightbox-img" src="" alt="Screenshot preview" />
+  </div>
+
+  <script>
+    const i18n = {
+      en: {
+        "nav.features": "Features",
+        "nav.screenshots": "Screenshots",
+        "nav.platforms": "Platforms",
+        "hero.badge": "In active development · Daily-driven on macOS · MIT License",
+        "hero.title": "Native Email, Calendar & Contacts — with Flexible Local & Cloud AI",
+        "hero.lead": "MailDiver is a fast, standalone desktop & mobile suite written in Go and mygo. Zero Electron bloat, instant SQLite search, privacy-first security, 1-click Thunderbird import, and your choice of local Ollama or cloud AI (Claude, Gemini, OpenAI).",
+        "hero.download": "Download Latest Release",
+        "hero.source": "View on GitHub",
+        "hero.screens": "Explore Screenshots",
+        "feat.title": "Built for speed, privacy, and real daily work",
+        "feat.sub": "Everything lives in one native binary: direct IMAP/SMTP engine, local SQLite cache, calendar, contacts, and an opt-in AI copilot you stay in control of.",
+        "f1.title": "Flexible AI — Local & Cloud",
+        "f1.desc": "Run completely offline with Ollama, llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.",
+        "f1.tag": "0-Token Rules",
+        "f2.title": "Native Performance",
+        "f2.desc": "Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search across your entire mailbox history, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c), and detached compose & event windows.",
+        "f3.title": "Security & S/MIME / PGP",
+        "f3.desc": "Full S/MIME support (.p12 import with OS Keychain keys, signature verification, decryption, signing & AES-256 encryption), remote images blocked by default with per-sender allowlist, strict HTML sanitizer, pixel-bomb & SSRF guards, TLS/STARTTLS-only transport, and risky attachment protection.",
+        "f3.tag": "Tracker Blocking",
+        "f4.title": "Complete Suite: Mail, Calendar & Contacts",
+        "f4.desc": "Multi-account IMAP/SMTP (incl. Gmail & Microsoft 365 XOAUTH2) with newest-on-top conversations, offline outbox queue, inline .ics RSVP, Month/Week/Agenda calendar with Google Calendar & CalDAV sync, 1-click Teams/Meet/Zoom links, and local + Google + CardDAV Contacts.",
+        "f4.t1": "Email",
+        "f4.t2": "Calendar & .ics",
+        "f4.t3": "Contacts",
+        "f5.title": "Effortless Setup, Thunderbird Import & LAN QR",
+        "f5.desc": "Switch in minutes: read-only Thunderbird importer brings over accounts, signatures, calendars, contacts & filter rules automatically, plus one-shot AES-256-GCM LAN QR-code transfer to set up another desktop or Android phone in seconds.",
+        "f5.t1": "Thunderbird Import",
+        "f5.t2": "Read-Only Safe",
+        "f5.t3": "Rule Editor",
+        "f6.title": "Cross-Platform: Desktop & Android",
+        "f6.desc": "Native builds for macOS (Apple Silicon & Intel), Linux (x64 & arm64 with live Omarchy theme sync), Windows (x64 & arm64), and Android via mygo — sharing one single codebase and 22 built-in themes.",
+        "shots.title": "Screenshots",
+        "shots.sub": "Click any screenshot to inspect full size.",
+        "s1.t": "Newest-on-top Conversations & Reading Pane",
+        "s1.d": "Formatted HTML reader, tracker blocking, conversation folding, and AI copilot side-by-side.",
+        "s2.t": "Integrated Calendar (Month / Week / Agenda)",
+        "s2.d": "Multi-select calendar filter, Google Calendar OAuth2, .ics RSVP, and 1-click meeting join links.",
+        "s3.t": "Zero-Token Filter Rules & Quick-Rule Wizard",
+        "s3.d": "Turn repetitive notifications into deterministic local rules — plus a full rule editor.",
+        "s4.t": "Flexible AI, Privacy & Folder Preferences",
+        "s4.d": "Switch between Ollama, Claude, Gemini or CLI agents, manage allowed image senders and folder collapse per mailbox.",
+        "s5.t": "AI Summaries, Reply Drafts & Event Extraction",
+        "s5.d": "Context-aware AI over the full conversation thread, only triggered on demand.",
+        "s6.t": "SHA-256 Verified .eml Archive & Cleanup",
+        "s6.d": "Back up old mail locally with cryptographic verification before freeing server quota.",
+        "plat.title": "Install or Build from Source",
+        "plat.sub": "Grab a prebuilt binary from GitHub Releases or compile directly with Go.",
+        "plat.quick": "Homebrew & Quick Build",
+        "plat.android": "Android builds use ./build.sh --android (requires Android NDK). Prebuilt macOS Universal .dmg and desktop binaries are attached to every GitHub Release.",
+        "plat.road": "Release Highlights & Roadmap",
+        "plat.road1": "✓ S/MIME: .p12/.pfx import (OS Keychain), verify, decrypt, sign & AES-256 encrypt",
+        "plat.road2": "✓ OAuth2 & DAV: Gmail & Microsoft 365 XOAUTH2 + CalDAV / CardDAV sync",
+        "plat.road3": "✓ Mobility & Compose: AES-256-GCM LAN QR setup transfer, offline outbox & rich-text bar",
+        "plat.road4": "→ Next: Native OpenPGP (PGP/MIME) & Android APK/Play releases",
+        "open.title": "Daily-driven on macOS · Testers & Pull Requests Welcome!",
+        "open.desc": "MailDiver is actively developed and used every day on macOS. Feedback, bug reports, platform tests on Linux/Windows/Android, and Pull Requests are warmly welcome. Released under the MIT License.",
+        "open.issues": "Report Issue / Feedback",
+        "open.license": "MIT License",
+        "foot.mit": "MIT Licensed Open Source",
+        "foot.arch": "Architecture"
+      },
+      de: {
+        "nav.features": "Funktionen",
+        "nav.screenshots": "Screenshots",
+        "nav.platforms": "Plattformen",
+        "hero.badge": "Aktiv in Entwicklung · Täglich auf macOS im Einsatz · MIT-Lizenz",
+        "hero.title": "Nativer E-Mail-, Kalender- & Kontakt-Client — mit flexibler lokaler & Cloud-KI",
+        "hero.lead": "MailDiver ist eine schnelle, eigenständige Suite in Go und mygo. Ohne Electron-Ballast, mit sofortiger SQLite-Volltextsuche, Privacy-first-Sicherheit, 1-Klick-Thunderbird-Import sowie lokaler KI (Ollama) oder Cloud-Anbietern (Claude, Gemini, OpenAI).",
+        "hero.download": "Aktuelles Release laden",
+        "hero.source": "Auf GitHub ansehen",
+        "hero.screens": "Screenshots ansehen",
+        "feat.title": "Gebaut für Tempo, Sicherheit und den echten Arbeitsalltag",
+        "feat.sub": "Alles in einem nativen Programm: direkte IMAP/SMTP-Engine, lokaler SQLite-Cache, Kalender, Kontakte und ein optionaler KI-Copilot, bei dem du die volle Kontrolle behältst.",
+        "f1.title": "KI flexibel — Lokal & Cloud",
+        "f1.desc": "Komplett lokal mit Ollama, llama.cpp oder llamafile – oder flexibel mit Anthropic Claude, Google Gemini, OpenAI und CLI-Agenten (claude-cli, gemini-cli, opencode-cli). Lokale Filterregeln verbrauchen 0 Tokens, und der KI-Copilot schlägt Aktionen nur vor – nichts läuft ohne deinen Klick.",
+        "f1.tag": "0-Token-Regeln",
+        "f2.title": "Native Performance",
+        "f2.desc": "Kompiliertes Go-Backend und GPU-beschleunigte mygo-Oberfläche in einem Prozess. Sofortige lokale SQLite-FTS5-Volltextsuche über das gesamte Postfach, Echtzeit-IMAP-IDLE, Tastatur-Bedienung (j/k/r/e/v/c) und eigene Fenster für Verfassen & Termine.",
+        "f3.title": "Sicherheit & S/MIME / PGP",
+        "f3.desc": "Vollständiges S/MIME (.p12-Import mit Schlüsseln im OS-Schlüsselbund, Signaturprüfung, Entschlüsselung, Signieren & AES-256-Verschlüsselung), externe Bilder standardmäßig blockiert (mit Absender-Allowlist), strikter HTML-Sanitizer, Pixel-Bomb- & SSRF-Schutz, nur TLS/STARTTLS sowie Anhang-Schutz.",
+        "f3.tag": "Tracker-Schutz",
+        "f4.title": "Komplette Suite: E-Mail, Kalender & Kontakte",
+        "f4.desc": "Multi-Konto IMAP/SMTP (inkl. Gmail & Microsoft 365 XOAUTH2) mit Unterhaltungen (neueste oben), Offline-Postausgang, .ics-RSVP, Monats-/Wochen-/Agenda-Kalender mit Google Kalender & CalDAV, 1-Klick-Links zu Teams/Meet/Zoom sowie lokale, Google- & CardDAV-Kontakte.",
+        "f4.t1": "E-Mail",
+        "f4.t2": "Kalender & .ics",
+        "f4.t3": "Kontakte",
+        "f5.title": "Einfaches Setup, Thunderbird-Import & LAN-QR",
+        "f5.desc": "In Minuten startklar: Der rein lesende Thunderbird-Importer übernimmt Konten, Signaturen, Kalender, Kontakte & Filterregeln automatisch – und per einmaligem AES-256-GCM-QR-Code im WLAN ist jedes weitere Gerät oder Android-Handy sofort eingerichtet.",
+        "f5.t1": "Thunderbird-Import",
+        "f5.t2": "Nur lesend & sicher",
+        "f5.t3": "Regel-Editor",
+        "f6.title": "Plattformunabhängig: Desktop & Android",
+        "f6.desc": "Native Builds für macOS (Apple Silicon & Intel), Linux (x64 & arm64 inkl. Omarchy-Live-Theme), Windows (x64 & arm64) und Android über mygo – aus einer gemeinsamen Codebasis mit 22 eingebauten Designs.",
+        "shots.title": "Screenshots",
+        "shots.sub": "Klicke auf einen Screenshot für die Vollbild-Ansicht.",
+        "s1.t": "Unterhaltungen (neueste oben) & Lesebereich",
+        "s1.d": "Formatierte HTML-Ansicht, Tracker-Blocker, einklappbare Konversationen und KI-Copilot direkt daneben.",
+        "s2.t": "Integrierter Kalender (Monat / Woche / Agenda)",
+        "s2.d": "Mehrfach-Kalenderfilter, Google-Kalender-OAuth2, .ics-RSVP und direkte Meeting-Beitreten-Buttons.",
+        "s3.t": "0-Token-Filterregeln & Quick-Regel-Assistent",
+        "s3.d": "Wiederkehrende Benachrichtigungen als lokale Regeln abfangen – inkl. vollständigem Regel-Editor.",
+        "s4.t": "Flexible KI, Datenschutz & Ordner-Einstellungen",
+        "s4.d": "Wechsel zwischen Ollama, Claude, Gemini oder CLI-Agenten, Bild-Absender-Allowlist und Start-Ordner pro Postfach.",
+        "s5.t": "KI-Zusammenfassungen, Entwürfe & Terminerkennung",
+        "s5.d": "Kontextbewusste KI über die ganze Unterhaltung – nur auf ausdrücklichen Klick.",
+        "s6.t": "SHA-256-geprüftes .eml-Archiv & Aufräumen",
+        "s6.d": "Alte Mails lokal mit Prüfsummen sichern, bevor Speicherplatz auf dem Server freigegeben wird.",
+        "plat.title": "Installieren oder selbst bauen",
+        "plat.sub": "Lade ein fertiges Binary aus den GitHub Releases oder kompiliere direkt mit Go.",
+        "plat.quick": "Homebrew & Schnell-Build",
+        "plat.android": "Android-Builds laufen über ./build.sh --android (Android NDK benötigt). Ein fertiges macOS-Universal-.dmg und Desktop-Binaries hängen an jedem GitHub Release.",
+        "plat.road": "Release-Highlights & Roadmap",
+        "plat.road1": "✓ S/MIME: .p12/.pfx-Import (Schlüsselbund), Prüfen, Entschlüsseln, Signieren & AES-256-Verschlüsselung",
+        "plat.road2": "✓ OAuth2 & DAV: Gmail & Microsoft 365 XOAUTH2 + CalDAV / CardDAV Sync",
+        "plat.road3": "✓ Mobilität & Verfassen: AES-256-GCM LAN-QR-Code-Transfer, Offline-Postausgang & Rich-Text-Leiste",
+        "plat.road4": "→ Als Nächstes: Natives OpenPGP (PGP/MIME) & Android-APK-Releases",
+        "open.title": "Täglich auf macOS im Einsatz · Tester & Pull-Requests willkommen!",
+        "open.desc": "MailDiver ist aktiv in Entwicklung und bereits jeden Tag auf macOS im produktiven Einsatz. Feedback, Fehlerberichte, Tests auf Linux/Windows/Android und Pull-Requests sind herzlich willkommen! Veröffentlicht unter der MIT-Lizenz.",
+        "open.issues": "Issue / Feedback melden",
+        "open.license": "MIT-Lizenz",
+        "foot.mit": "Open Source unter MIT-Lizenz",
+        "foot.arch": "Architektur"
+      }
+    };
+
+    function applyLang(lang) {
+      const dict = i18n[lang] || i18n.en;
+      document.documentElement.lang = lang;
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (dict[key]) el.textContent = dict[key];
+      });
+      document.getElementById("btn-en").classList.toggle("active", lang === "en");
+      document.getElementById("btn-de").classList.toggle("active", lang === "de");
+      try { localStorage.setItem("maildiver_lang", lang); } catch (_) {}
+    }
+
+    document.getElementById("btn-en").addEventListener("click", () => applyLang("en"));
+    document.getElementById("btn-de").addEventListener("click", () => applyLang("de"));
+
+    const params = new URLSearchParams(location.search);
+    const paramLang = params.get("lang");
+    let saved = null;
+    try { saved = localStorage.getItem("maildiver_lang"); } catch (_) {}
+    const initLang = (paramLang === "de" || paramLang === "en")
+      ? paramLang
+      : (saved === "de" || saved === "en")
+        ? saved
+        : ((navigator.language || "").toLowerCase().startsWith("de") ? "de" : "en");
+    applyLang(initLang);
+
+    const lb = document.getElementById("lightbox");
+    const lbImg = document.getElementById("lightbox-img");
+    document.querySelectorAll(".shot-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        lbImg.src = card.getAttribute("data-full");
+        lb.classList.add("open");
+        lb.setAttribute("aria-hidden", "false");
+      });
+    });
+    lb.addEventListener("click", () => {
+      lb.classList.remove("open");
+      lb.setAttribute("aria-hidden", "true");
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        lb.classList.remove("open");
+        lb.setAttribute("aria-hidden", "true");
+      }
+    });
+  </script>
+</body>
+</html>

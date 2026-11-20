@@ -40,21 +40,15 @@ func (a *App) RenderStatusWidget(c *ui.Context) {
 			var dotClr ui.Color
 			var statusTxt string
 			switch {
-			case a.bridgeOnline && a.thunderbirdConnected:
+			case a.engineReady:
 				dotClr = t.Success
-				statusTxt = a.tr("Thunderbird verbunden", "Thunderbird Live")
-			case a.bridgeOnline:
-				dotClr = t.Warning
-				statusTxt = a.tr("Bridge aktiv · Warte auf Extension", "Bridge active · Waiting for extension")
-			case a.bridgeDisabled:
-				dotClr = t.Danger
-				statusTxt = a.tr("Bridge deaktiviert", "Bridge disabled")
+				statusTxt = a.tr("Verbunden (IMAP)", "Connected (IMAP)")
 			default:
 				dotClr = t.Danger
-				statusTxt = a.tr("Thunderbird nicht verbunden", "Thunderbird offline")
+				statusTxt = a.tr("Nicht verbunden", "Offline")
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-				ui.Text(c, "OmaThunder").FontSize(14).Bold().SingleLine()
+				ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					statusDot(c, dotClr, 7)
 					ui.Text(c, statusTxt).FontSize(11).TextColor(t.TextMuted).SingleLine()
@@ -66,7 +60,7 @@ func (a *App) RenderStatusWidget(c *ui.Context) {
 			if iconBtn(c.Key("tw-ref"), iconRefresh, a.tr("Aktualisieren", "Refresh"), ui.Color{}, false).Clicked() {
 				a.RefreshAll(context.Background())
 			}
-			if iconLabelBtn(c.Key("tw-open"), iconExternal, a.tr("Öffnen", "Open"), true, a.tr("Command Center öffnen", "Open Command Center")).Clicked() {
+			if iconLabelBtn(c.Key("tw-open"), iconExternal, a.tr("Öffnen", "Open"), true, a.tr("MailDiver öffnen", "Open MailDiver")).Clicked() {
 				openMainAt(a.navID)
 			}
 		})
@@ -123,8 +117,8 @@ func (a *App) RenderStatusWidget(c *ui.Context) {
 					})
 					if len(a.messages) == 0 {
 						msg := a.tr("Keine ungelesenen Mails geladen.", "No unread emails loaded.")
-						if !a.thunderbirdConnected {
-							msg = a.tr("Verbindet automatisch, sobald Thunderbird läuft.", "Connects automatically once Thunderbird is running.")
+						if !a.engineReady {
+							msg = a.tr("Mail-Engine verbindet sich…", "Mail engine connecting…")
 						}
 						ui.Text(c, msg).FontSize(12).TextColor(t.TextMuted)
 					} else {

@@ -10,9 +10,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/archive"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/jobs"
+	"github.com/diver80/maildiver/internal/archive"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/jobs"
 )
 
 // Triage scans and archive runs run in the host (internal/jobs); the app starts them through the
@@ -45,7 +45,22 @@ type archiveUI struct {
 
 var archiveModes = []string{jobs.ModeSimulate, jobs.ModeExportOnly, jobs.ModeExportAndLocal, jobs.ModeExportAndDelete}
 
+func (a *App) availableArchiveModes() []string {
+	if a.isDirectMode() {
+		// Standalone Direct mode has no Thunderbird Local Folders; hide ModeExportAndLocal.
+		return []string{jobs.ModeSimulate, jobs.ModeExportOnly, jobs.ModeExportAndDelete}
+	}
+	return archiveModes
+}
+
 func (a *App) archiveModeLabels() []string {
+	if a.isDirectMode() {
+		return []string{
+			a.tr("Simulieren", "Simulate"),
+			a.tr("Nur Backup (.eml)", "Backup only (.eml)"),
+			a.tr("Backup + beim Anbieter löschen", "Backup + delete at provider"),
+		}
+	}
 	return []string{
 		a.tr("Simulieren", "Simulate"),
 		a.tr("Nur Backup", "Backup only"),
@@ -54,11 +69,16 @@ func (a *App) archiveModeLabels() []string {
 	}
 }
 
+func (a *App) selectedArchiveMode() string {
+	modes := a.availableArchiveModes()
+	return modes[min(max(a.arch.mode, 0), len(modes)-1)]
+}
+
 // StartTriageScan starts a scan of all triage inboxes in the host (UI thread).
 func (a *App) StartTriageScan(ctx context.Context) {
 	bc, err := a.client()
 	if err != nil {
-		a.toast(a.tr("Thunderbird ist nicht verbunden", "Thunderbird is not connected"), "error")
+		a.toast(a.tr("Mail-Dienst ist nicht verbunden", "Mail engine is not connected"), "error")
 		return
 	}
 	a.scanRunning = true
@@ -214,14 +234,15 @@ func (a *App) archiveRequest() jobs.ArchiveRequest {
 		scope = "all"
 	}
 	onlyRead, excludeStarred := a.arch.onlyRead, a.arch.excludeStarred
+	mode := a.selectedArchiveMode()
 	return jobs.ArchiveRequest{
 		AccountID:      a.arch.accountByLabel[a.arch.account],
 		Scope:          scope,
 		OlderThanDays:  &days,
 		OnlyRead:       &onlyRead,
 		ExcludeStarred: &excludeStarred,
-		Mode:           archiveModes[min(max(a.arch.mode, 0), len(archiveModes)-1)],
-		SkipTrash:      a.arch.skipTrash && a.arch.mode == 3,
+		Mode:           mode,
+		SkipTrash:      a.arch.skipTrash && mode == jobs.ModeExportAndDelete,
 	}
 }
 
@@ -235,7 +256,7 @@ func (a *App) PreviewArchive(ctx context.Context) {
 	a.arch.previewBusy = true
 	a.arch.err = ""
 	go func() {
-		c, cancel := context.WithTimeout(ctx, bridgeclient.ArchivePreviewTimeout)
+		c, cancel := context.WithTimeout(ctx, backend.ArchivePreviewTimeout)
 		defer cancel()
 		p, err := bc.ArchivePreview(c, req)
 		a.emitUpdate(func() {
@@ -330,8 +351,8 @@ func (a *App) renderArchiveModal(c *ui.Context) {
 			ui.Text(c, stats).FontSize(11.5).TextColor(t.TextMuted)
 
 			if len(ar.accountLabels) == 0 {
-				ui.Text(c, a.tr("Kein Konto für OmaThunder freigegeben. Gib Konten in den Einstellungen des Thunderbird-Add-ons unter „Konten & Rechte“ frei.",
-					"No account is enabled for OmaThunder. Enable accounts in the Thunderbird add-on's settings under “Accounts & permissions”.")).FontSize(12).TextColor(t.Warning)
+				ui.Text(c, a.tr("Kein Konto eingerichtet. Füge zuerst unter „Konten & Regeln“ ein IMAP-Konto hinzu.",
+					"No account configured. Add an IMAP account under “Accounts & Rules” first.")).FontSize(12).TextColor(t.Warning)
 				return
 			}
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
@@ -352,13 +373,14 @@ func (a *App) renderArchiveModal(c *ui.Context) {
 					ar.mode = i
 				}
 			}
-			if ar.mode != 3 {
+			curMode := a.selectedArchiveMode()
+			if curMode != jobs.ModeExportAndDelete {
 				ar.confirm = false
 			}
-			if ar.mode == 3 {
+			if curMode == jobs.ModeExportAndDelete {
 				ui.Checkbox(c.Key("ar-skiptrash"), &ar.skipTrash, a.tr("Endgültig löschen statt in den Papierkorb", "Delete for good instead of moving to the trash"))
 			}
-			if ar.mode >= 2 && a.readOnly {
+			if (curMode == jobs.ModeExportAndLocal || curMode == jobs.ModeExportAndDelete) && a.readOnly {
 				ui.Text(c, a.tr("Read-Only ist aktiv: Nur Simulieren und Backup sind möglich.", "Read-only is on: only simulate and backup are possible.")).FontSize(11.5).TextColor(t.Warning)
 			}
 

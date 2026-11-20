@@ -11,7 +11,7 @@ import (
 
 // API keys live in a small shell file next to config.json ("env", mode 0600): the host's launcher
 // sources it, the app edits it (☰ → Settings), and LookupAPIKey reads it fresh, so a key saved in
-// the app works in the running host without restarting Thunderbird.
+// the app works at once, without a restart.
 
 // EnvFilePath is the env file holding API keys ("" when the config dir is unknown).
 func EnvFilePath() string {
@@ -69,11 +69,20 @@ var envCache struct {
 }
 
 // readEnvFile returns the file's keys, re-reading it only when it changed.
+// Falls back to the legacy omathunder env file if maildiver's env file does not exist yet.
 func readEnvFile() map[string]string {
 	path := EnvFilePath()
 	envCache.Lock()
 	defer envCache.Unlock()
 	st, err := os.Stat(path)
+	if (err != nil || path == "") && err != nil {
+		if legacyDir, lerr := LegacyConfigDir(); lerr == nil {
+			legacyPath := filepath.Join(legacyDir, "env")
+			if lst, lstatErr := os.Stat(legacyPath); lstatErr == nil {
+				path, st, err = legacyPath, lst, nil
+			}
+		}
+	}
 	if err != nil || path == "" {
 		envCache.path, envCache.values = path, map[string]string{}
 		return envCache.values
@@ -152,8 +161,16 @@ func SetEnvFileKeys(updates map[string]string) error {
 		}
 	}
 	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// First write after migrating from omathunder -> maildiver: seed from legacy env file so existing keys are preserved.
+		if legacyDir, lerr := LegacyConfigDir(); lerr == nil {
+			if ldata, rerr := os.ReadFile(filepath.Join(legacyDir, "env")); rerr == nil {
+				data = ldata
+			}
+		}
 	}
 	pending := map[string]string{}
 	for k, v := range updates {
@@ -190,19 +207,60 @@ func SetEnvFileKeys(updates map[string]string) error {
 			out = append(out, "export "+k+"="+shellQuote(v))
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	_ = os.Remove(tmp) // a stale tmp file must not keep a wider mode
 	body := strings.Join(out, "\n")
 	if body != "" {
 		body += "\n"
 	}
-	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(dir, ".env-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if _, err := tmpFile.Write([]byte(body)); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	// Invalidate cached env file and keep process environment synchronized for CLI child processes.
+	envCache.Lock()
+	envCache.values = nil
+	if envCache.fromEnv == nil {
+		envCache.fromEnv = map[string]bool{}
+	}
+	for k, v := range updates {
+		if v == "" {
+			if envCache.fromEnv[k] {
+				_ = os.Unsetenv(k)
+			}
+		} else {
+			_ = os.Setenv(k, v)
+			envCache.fromEnv[k] = true
+		}
+	}
+	envCache.Unlock()
+	return nil
 }
 
 // shellQuote quotes a value (without single quotes) for `export KEY=...` in a POSIX shell.

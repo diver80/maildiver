@@ -8,7 +8,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/omathunder/internal/copilot"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/copilot"
 )
 
 func (a *App) renderCopilotPane(c *ui.Context) {
@@ -30,6 +31,7 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 					}
 				}
 			})
+			cliHint, hasCLIHint := ai.CLIModelHints(a.agentBackend)
 			ui.Row(c).FillWidth().Gap(6).Children(func() {
 				if len(a.providerLabels) > 0 {
 					label := a.providerLabel
@@ -40,9 +42,16 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 				if len(a.modelChoices) > 0 {
 					ui.Select(c.Key("cp-model"), &a.agentModel, a.modelChoices).Grow(1).MinWidth(0)
 				} else {
-					ui.TextInput(c.Key("cp-model-in"), &a.agentModel).Placeholder(a.tr("Modell…", "Model…")).Grow(1).MinWidth(0)
+					ph := a.tr("Modell…", "Model…")
+					if hasCLIHint {
+						ph = a.tr(cliHint.PlaceholderDE, cliHint.PlaceholderEN)
+					}
+					ui.TextInput(c.Key("cp-model-in"), &a.agentModel).Placeholder(ph).Grow(1).MinWidth(0)
 				}
 			})
+			if hasCLIHint {
+				a.renderCLIModelHintChips(c, "cp-cli-m", &a.agentModel, cliHint)
+			}
 			if a.modelsError != "" {
 				ui.Text(c, a.tr("Modelle nicht ladbar: ", "Could not load models: ")+a.modelsError).FontSize(11).TextColor(t.Warning)
 			}
@@ -239,7 +248,7 @@ func (a *App) renderActionCard(c *ui.Context, id string, pa *pendingAction) {
 				ui.Column(c).FillWidth().Padding(8).Radius(6).Background(t.Background).Border(1, t.Border).Children(func() {
 					ui.Text(c, truncateText(d.Body, 700)).FontSize(11.5).Selectable()
 				})
-				ui.Text(c, a.tr("Wird als Entwurf in Thunderbird gespeichert — nicht gesendet.", "Saved as a draft in Thunderbird — not sent.")).FontSize(11).TextColor(t.TextMuted)
+				ui.Text(c, a.tr("Wird im Entwürfe-Ordner gespeichert — nicht gesendet.", "Saved to Drafts folder — not sent.")).FontSize(11).TextColor(t.TextMuted)
 			}
 		case copilot.ActionCalendarEvent:
 			if ev := act.Event; ev != nil {
@@ -295,7 +304,7 @@ func (a *App) renderActionCard(c *ui.Context, id string, pa *pendingAction) {
 				if ui.Button(c.Key("pa-discard-"+id), a.tr("Verwerfen", "Discard")).Clicked() {
 					a.DiscardCopilotAction(id)
 				}
-				exec := iconLabelBtn(c.Key("pa-exec-"+id), iconCheck, a.tr("Ausführen", "Execute"), true, a.tr("Aktion jetzt in Thunderbird ausführen", "Run this action in Thunderbird now"))
+				exec := iconLabelBtn(c.Key("pa-exec-"+id), iconCheck, a.tr("Ausführen", "Execute"), true, a.tr("Aktion jetzt ausführen", "Run this action now"))
 				if blocked != "" {
 					exec.Disabled(true)
 				}
@@ -304,5 +313,34 @@ func (a *App) renderActionCard(c *ui.Context, id string, pa *pendingAction) {
 				}
 			})
 		}
+	})
+}
+
+// renderCLIModelHintChips shows clickable model suggestions (aliases + full IDs) and a short
+// naming guide for CLI backends so users never have to guess valid --model / -m values.
+func (a *App) renderCLIModelHintChips(c *ui.Context, keyPrefix string, model *string, hint ai.CLIModelHint) {
+	t := c.Theme()
+	cur := strings.TrimSpace(*model)
+	ui.Column(c.Key(keyPrefix + "-box")).FillWidth().Gap(4).Children(func() {
+		ui.Row(c).FillWidth().Gap(4).Wrap().AlignItems(ui.Center).Children(func() {
+			defBtn := ui.Button(c.Key(keyPrefix+"-def"), a.tr("Standard", "Default")).Padding(2, 7)
+			if cur == "" {
+				defBtn.Background(withAlpha(t.Accent, 0.2)).Border(1, t.Accent)
+			}
+			if defBtn.Clicked() {
+				*model = ""
+			}
+			for _, m := range hint.Models {
+				mCopy := m
+				btn := ui.Button(c.Key(keyPrefix+"-"+mCopy), mCopy).Padding(2, 7)
+				if strings.EqualFold(cur, mCopy) {
+					btn.Background(withAlpha(t.Accent, 0.2)).Border(1, t.Accent)
+				}
+				if btn.Clicked() {
+					*model = mCopy
+				}
+			}
+		})
+		ui.Text(c, a.tr(hint.HintDE, hint.HintEN)).FontSize(10.5).TextColor(t.TextMuted)
 	})
 }

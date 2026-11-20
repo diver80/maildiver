@@ -6,10 +6,10 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/theme"
+	"github.com/diver80/maildiver/internal/theme"
 )
 
-// PaletteToUITheme maps an OmaThunder/Omarchy Palette directly into a native mygo/ui Theme.
+// PaletteToUITheme maps an Omarchy palette directly into a native mygo/ui Theme.
 func PaletteToUITheme(pal theme.Palette) *ui.Theme {
 	base := ui.DarkTheme()
 	if pal.IsLight {
@@ -46,9 +46,11 @@ func PaletteToUITheme(pal theme.Palette) *ui.Theme {
 	danger := hexColor(pal.Red, base.Danger)
 	warning := hexColor(pal.Yellow, base.Warning)
 	success := hexColor(pal.Green, base.Success)
-	selection := withAlpha(accent, 0.24)
-	if pal.Selection != "" {
-		selection = withAlpha(hexColor(pal.Selection, accent), 0.55)
+	// Use accent-tinted selection so dragged text highlights stay clearly visible
+	// across all themes (dark palettes often reuse a near-background gray for pal.Selection).
+	selection := withAlpha(accent, 0.38)
+	if pal.IsLight {
+		selection = withAlpha(accent, 0.26)
 	}
 
 	scrollbar := withAlpha(muted, 0.35)

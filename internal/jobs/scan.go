@@ -6,13 +6,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 const (
-	// collectTimeout covers reading the inboxes (one getFull per mail) in Thunderbird.
+	// collectTimeout covers reading the inboxes in the engine.
 	collectTimeout = 5 * time.Minute
 	// classifyTimeout bounds one model call, so a hanging CLI or API cannot block a scan forever.
 	classifyTimeout = 50 * time.Second
@@ -145,7 +145,7 @@ func (r *Runner) Scan(ctx context.Context, scanID, accountID, reason string) (Sc
 	if err := r.call(ctx, collectTimeout, "host.triage.collect", params, &col); err != nil {
 		return rep, err
 	}
-	// The settings may have changed while Thunderbird read the inboxes.
+	// The settings may have changed while the engine read the inboxes.
 	cfg = r.config()
 	if err := checkScan(cfg, accountID); err != nil {
 		return rep, err
@@ -207,7 +207,7 @@ func (r *Runner) classifyMessages(ctx context.Context, cfg config.Config, msgs [
 			results = append(results, base)
 			continue
 		}
-		// Reuse only by Message-ID: numeric IDs restart each Thunderbird session.
+		// Reuse only by Message-ID: a numeric ID can belong to another mail after a resync.
 		if p, ok := byThread[m.ThreadID]; ok && m.ThreadID != "" && p.Stage == "stage1-llm" && p.Subject == m.Subject {
 			p.MessageID, p.AccountID, p.Folder, p.FolderID = m.ID, m.AccountID, m.Folder, m.FolderID
 			results = append(results, p)

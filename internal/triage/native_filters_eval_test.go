@@ -5,7 +5,7 @@ import "testing"
 func TestEvalConditionThunderbirdAddressSemantics(t *testing.T) {
 	msg := MessageInput{
 		From:    "Jira Bot <noreply@acme.de>",
-		To:      []string{"Frank Hess <frank@example.org>", "team@example.org"},
+		To:      []string{"Max Muster <frank@example.org>", "team@example.org"},
 		Subject: "AW: Re[2]: Rechnung 4711",
 	}
 	cases := []struct {

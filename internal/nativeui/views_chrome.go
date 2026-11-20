@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -15,48 +16,89 @@ func (a *App) renderToolbar(c *ui.Context) {
 	ui.Row(c).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 			a.renderAppMenuButton(c)
-			ui.Text(c, "OmaThunder").FontSize(14).Bold().SingleLine()
+			ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
 		})
 
-		// Search (and the account filter) centered in the free space.
+		// Context-aware search & filter (Calendar search + multi-select calendars in Calendar view;
+		// Mail search + account filter otherwise).
 		ui.Row(c).Grow(1).MinWidth(0).Gap(8).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-			sf := ui.SearchField(c, &a.searchQuery).Placeholder(a.tr("Mails durchsuchen  ( / )", "Search mail  ( / )")).Grow(1).MinWidth(150).MaxWidth(560)
-			if a.focusSearch {
-				sf.Focus()
-				a.focusSearch = false
-			}
-			if sf.Submitted() {
-				if a.navID == "calendar" {
-					a.setNav("recent")
+			if a.navID == "calendar" {
+				sf := ui.SearchField(c.Key("tb-cal-search"), &a.calSearchQuery).Placeholder(a.tr("Termine durchsuchen  ( / )", "Search calendar  ( / )")).Grow(1).MinWidth(150).MaxWidth(560)
+				if a.focusSearch {
+					sf.Focus()
+					a.focusSearch = false
 				}
-				a.lastCheckedIndex = -1
-				a.LoadMessages(context.Background())
-			}
-			if len(a.accountLabels) > 1 {
-				accLabel := allAccountsLabelLang(a.uiLang())
-				for lbl, id := range a.accountIDByLabel {
-					if id == a.selectedAccount {
-						accLabel = lbl
-						break
-					}
-				}
-				if ui.Select(c.Key("tb-acc"), &accLabel, a.accountLabels).Width(150).Changed() {
-					a.selectedAccount = a.accountIDByLabel[accLabel]
-					a.lastCheckedIndex = -1
+				curQ := strings.TrimSpace(a.calSearchQuery)
+				if sf.Submitted() || (sf.Changed() && ((curQ != "" && a.lastCalSearch == "") || (curQ == "" && a.lastCalSearch != ""))) {
+					a.lastCalSearch = curQ
 					a.RefreshAll(context.Background())
+				}
+				if len(a.calendars) > 0 {
+					a.renderCalendarFilterButton(c)
+				}
+			} else {
+				sf := ui.SearchField(c.Key("tb-mail-search"), &a.searchQuery).Placeholder(a.tr("Mails durchsuchen  ( / )", "Search mail  ( / )")).Grow(1).MinWidth(150).MaxWidth(560)
+				if a.focusSearch {
+					sf.Focus()
+					a.focusSearch = false
+				}
+				if sf.Submitted() {
+					if a.navID == "contacts" {
+						a.setNav("recent")
+					}
+					a.lastSearchQuery = strings.TrimSpace(a.searchQuery)
+					a.lastCheckedIndex = -1
+					a.LoadMessages(context.Background())
+				} else if strings.TrimSpace(a.searchQuery) == "" && a.lastSearchQuery != "" {
+					// Automatically reload full view when the user clears the search box.
+					a.lastSearchQuery = ""
+					a.serverSearchDoneQuery = ""
+					a.serverSearchDoneKey = ""
+					a.lastCheckedIndex = -1
+					a.LoadMessages(context.Background())
+				}
+				if len(a.accountLabels) > 1 {
+					accLabel := allAccountsLabelLang(a.uiLang())
+					for lbl, id := range a.accountIDByLabel {
+						if id == a.selectedAccount {
+							accLabel = lbl
+							break
+						}
+					}
+					if ui.Select(c.Key("tb-acc"), &accLabel, a.accountLabels).Width(150).Changed() {
+						a.selectedAccount = a.accountIDByLabel[accLabel]
+						a.lastCheckedIndex = -1
+						a.RefreshAll(context.Background())
+					}
 				}
 			}
 		})
 
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 			if iconBtn(c.Key("tb-refresh"), iconRefresh, a.tr("Aktualisieren (⌘R)", "Refresh (⌘R)"), ui.Color{}, false).Clicked() {
-				a.RefreshAll(context.Background())
+				if a.isDirectMode() {
+					if a.navID == "calendar" {
+						a.syncDirectCalendarsNow(context.Background())
+					} else {
+						a.syncDirectAccountNow(context.Background(), a.selectedAccount)
+					}
+				} else {
+					a.RefreshAll(context.Background())
+				}
+			}
+			if a.isDirectMode() {
+				if iconLabelBtn(c.Key("tb-direct"), iconMail, a.tr("Konten", "Accounts"), false, a.tr("IMAP/SMTP-Konten, Google Kalender & .ics verwalten", "Manage IMAP/SMTP accounts, Google Calendar & .ics")).Clicked() {
+					a.OpenDirectModal(0)
+				}
 			}
 			if iconLabelBtn(c.Key("tb-compose"), iconCompose, a.tr("Verfassen", "Compose"), false, a.tr("Neue E-Mail (c / ⌘N)", "New email (c / ⌘N)")).Clicked() {
 				a.OpenComposeNew()
 			}
 			if iconLabelBtn(c.Key("tb-briefing"), iconSparkles, a.tr("Briefing", "Briefing"), true, a.tr("Tages-Briefing (KI · benötigt Tokens)", "Daily Briefing (AI · uses tokens)")).Clicked() {
 				a.OpenDayBriefing(context.Background())
+			}
+			if iconBtn(c.Key("tb-preview"), iconLink, a.tr("Auto-Web-Vorschau ein/aus", "Toggle auto web preview"), ui.Color{}, a.cfg.App.LinkPreview.Enabled).Clicked() {
+				a.ToggleWebPreviewAuto()
 			}
 			if iconBtn(c.Key("tb-copilot"), iconSidebar, a.tr("KI-Assistent ein/aus (⌘J)", "Toggle AI Assistant (⌘J)"), ui.Color{}, a.showCopilot).Clicked() {
 				a.showCopilot = !a.showCopilot
@@ -68,11 +110,20 @@ func (a *App) renderToolbar(c *ui.Context) {
 // renderAppMenuButton is the ☰ menu: view toggles, language, theme, alerts and help.
 func (a *App) renderAppMenuButton(c *ui.Context) {
 	iconBtn(c.Key("tb-menu"), iconMenu, a.tr("Menü", "Menu"), ui.Color{}, false).PopoverMenuButton(func(m *ui.Menu) {
+		if a.isDirectMode() {
+			if m.Item(a.tr("Konten & Kalender…", "Accounts & Calendars…")).Chosen() {
+				a.OpenDirectModal(0)
+			}
+			m.Separator()
+		}
 		if m.Item(a.tr("Seitenleiste", "Sidebar")).Checked(!a.hideSidebar).Chosen() {
 			a.hideSidebar = !a.hideSidebar
 		}
 		if m.Item(a.tr("KI-Assistent", "AI Assistant")).Checked(a.showCopilot).Shortcut(ui.Cmd, ui.KeyJ).Chosen() {
 			a.showCopilot = !a.showCopilot
+		}
+		if m.Item(a.tr("Web-Vorschau (automatisch)", "Web preview (auto)")).Checked(a.cfg.App.LinkPreview.Enabled).Chosen() {
+			a.ToggleWebPreviewAuto()
 		}
 		if m.Item(a.tr("Desktop-Meldungen", "Desktop alerts")).Checked(a.notifyEnabled).Chosen() {
 			a.notifyEnabled = !a.notifyEnabled
@@ -98,14 +149,14 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		if a.scanRunning {
 			scanLbl = a.tr("Triage-Scan läuft…", "Triage scan running…")
 		}
-		if m.Item(scanLbl).Disabled(!a.thunderbirdConnected || a.scanRunning || !a.cfg.Features.Triage).Chosen() {
+		if m.Item(scanLbl).Disabled(!a.engineReady || a.scanRunning || !a.cfg.Features.Triage).Chosen() {
 			a.StartTriageScan(context.Background())
 		}
-		if m.Item(a.tr("Archiv & Aufräumen…", "Archive & cleanup…")).Disabled(!a.thunderbirdConnected).Chosen() {
+		if m.Item(a.tr("Archiv & Aufräumen…", "Archive & cleanup…")).Disabled(!a.engineReady).Chosen() {
 			a.OpenArchiveDialog(context.Background())
 		}
-		if m.Item(a.tr("Thunderbird-Filter öffnen…", "Open Thunderbird filters…")).Disabled(!a.thunderbirdConnected).Chosen() {
-			a.OpenThunderbirdFilters(context.Background())
+		if m.Item(a.tr("Filterregeln verwalten…", "Manage filter rules…")).Disabled(!a.engineReady).Chosen() {
+			a.OpenFilterRules(context.Background())
 		}
 		m.Separator()
 		if m.Item(a.tr("Einstellungen…", "Settings…")).Shortcut(ui.Cmd, ui.KeyComma).Chosen() {
@@ -122,16 +173,25 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 
 // footerStatus returns the connection label and its dot color.
 func (a *App) footerStatus(t *ui.Theme) (string, ui.Color) {
-	switch {
-	case a.bridgeOnline && a.thunderbirdConnected:
-		return a.tr("Thunderbird verbunden", "Thunderbird live"), t.Success
-	case a.bridgeOnline:
-		return a.tr("Warte auf Extension", "Waiting for extension"), t.Warning
-	case a.bridgeDisabled:
-		return a.tr("Bridge deaktiviert", "Bridge disabled"), t.Danger
-	default:
-		return a.tr("Nicht verbunden", "Offline"), t.Danger
+	if a.engineReady {
+		return a.tr("Verbunden (IMAP)", "Connected (IMAP)"), t.Success
 	}
+	return a.tr("Nicht verbunden", "Offline"), t.Danger
+}
+
+// firstSyncError returns an account whose last sync failed and the error ("" if none), in a
+// stable order.
+func (a *App) firstSyncError() (string, string) {
+	best := ""
+	for id := range a.syncErrors {
+		if best == "" || id < best {
+			best = id
+		}
+	}
+	if best == "" {
+		return "", ""
+	}
+	return best, a.syncErrors[best]
 }
 
 // footerAccount names the account in focus: the open mail's, else the account filter's.
@@ -183,6 +243,15 @@ func (a *App) renderFooter(c *ui.Context) {
 			statusDot(c, dot, 7)
 			ui.Text(c, status).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
 		})
+		if acc, msg := a.firstSyncError(); acc != "" {
+			b := ui.Button(c.Key("ft-sync-error"), "").Padding(2, 6).Tooltip(msg).Label(msg)
+			b.Children(func() {
+				ui.Text(c, a.tr("Sync-Fehler: ", "Sync error: ")+a.accountDisplayName(acc)).FontSize(11.5).Bold().TextColor(t.Danger).SingleLine()
+			})
+			if b.Clicked() {
+				a.OpenDirectModal(0)
+			}
+		}
 		if a.readOnly {
 			pillBadge(c, a.tr("Nur lesen", "Read-only"), withAlpha(t.Warning, 0.20), t.Warning)
 		}

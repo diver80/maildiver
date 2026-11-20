@@ -1,46 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sauberes, vollständiges Entfernen von omathunder.
-# Lässt Thunderbird-Profile, Mails, Kalender und prefs.js zu 100 % unberührt.
+# Sauberes Entfernen von MailDiver (sowie eventueller alter OmaThunder-Reste).
 
-PREFIX="${OMATHUNDER_PREFIX:-$HOME/.local/bin}"
-BIN_PATH="$PREFIX/omathunder"
+PREFIX="${MAILDIVER_PREFIX:-$HOME/.local/bin}"
+APP_DIR="${MAILDIVER_APP_DIR:-$HOME/Applications}"
 
-echo "==> Entferne omathunder Native Messaging Hosts & lokalen State..."
-if [[ -x "$BIN_PATH" ]]; then
-  "$BIN_PATH" uninstall || true
-  rm -f "$BIN_PATH"
-  echo "  - Binary entfernt: $BIN_PATH"
-else
-  # Fallback falls Binary bereits gelöscht wurde (oder ein toter Symlink aus älteren Versionen ist)
-  rm -f "$BIN_PATH"
-  rm -f \
-    "$HOME/Library/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
-    "$HOME/Library/Application Support/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
-    "$HOME/Library/Thunderbird/NativeMessagingHosts/dev.omathunder.host.json" \
-    "$HOME/.mozilla/native-messaging-hosts/dev.omathunder.host.json" \
-    "$HOME/.thunderbird/native-messaging-hosts/dev.omathunder.host.json"
-  rm -rf \
-    "$HOME/Library/Application Support/omathunder" \
-    "$HOME/Library/Caches/omathunder" \
-    "$HOME/.config/omathunder" \
-    "$HOME/.local/state/omathunder"
-  echo "  - Fallback-Cleanup durchgeführt."
-fi
+echo "==> Entferne MailDiver..."
+rm -f "$PREFIX/maildiver" "$PREFIX/omathunder" "$PREFIX/omathunder-ui"
+rm -rf "$APP_DIR/MailDiver.app" "$APP_DIR/OmaThunder.app"
 
-UI_PATH="$PREFIX/omathunder-ui"
-if [[ -e "$UI_PATH" || -L "$UI_PATH" ]]; then
-  rm -f "$UI_PATH"
-  echo "  - App entfernt: $UI_PATH"
-fi
+rm -rf \
+  "$HOME/Library/Application Support/maildiver" \
+  "$HOME/Library/Caches/maildiver" \
+  "$HOME/.config/maildiver" \
+  "$HOME/.local/state/maildiver"
 
-APP_PATH="${OMATHUNDER_APP_DIR:-$HOME/Applications}/OmaThunder.app"
-if [[ -d "$APP_PATH" ]]; then
-  rm -rf "$APP_PATH"
-  echo "  - macOS App entfernt: $APP_PATH"
-fi
+# Eventuelle alte Thunderbird NativeMessaging-Reste mit aufräumen
+rm -f \
+  "$HOME/Library/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
+  "$HOME/Library/Application Support/Mozilla/NativeMessagingHosts/dev.omathunder.host.json" \
+  "$HOME/Library/Thunderbird/NativeMessagingHosts/dev.omathunder.host.json" \
+  "$HOME/.mozilla/native-messaging-hosts/dev.omathunder.host.json" \
+  "$HOME/.thunderbird/native-messaging-hosts/dev.omathunder.host.json"
 
-echo ""
-echo "omathunder wurde vollständig entfernt. Thunderbird ist davon unberührt."
-echo "(Falls du das Add-on in Thunderbird installiert hast, kannst du es dort im Add-on-Manager mit einem Klick entfernen.)"
+echo "MailDiver wurde entfernt."

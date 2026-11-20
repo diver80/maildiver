@@ -1,7 +1,6 @@
 package nativeui
 
 import (
-	"context"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -15,7 +14,7 @@ import (
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // Mail body
@@ -46,15 +45,21 @@ type readerBody struct {
 	Markdown      string // what the pane shows by default
 	Plain         string // the text version as Markdown
 	FromHTML      bool   // Markdown was made from the HTML part
-	BlockedImages int    // images left out (never loaded); tracking pixels are not counted
+	BlockedImages int    // remote images currently withheld; tracking pixels and cid: images are not counted
+	RemoteImages  int    // total non-pixel remote http(s) images in this mail
+	ShowRemote    bool   // whether Markdown was built with remote images enabled
 }
 
-func buildReaderBody(msg *bridgeclient.MessageDetail) readerBody {
-	b := readerBody{MsgID: msg.ID, Plain: plainMailMarkdown(msg.BodyText)}
+func buildReaderBody(msg *backend.MessageDetail) readerBody {
+	return buildReaderBodyWithImages(msg, false)
+}
+
+func buildReaderBodyWithImages(msg *backend.MessageDetail, showRemote bool) readerBody {
+	b := readerBody{MsgID: msg.ID, Plain: plainMailMarkdown(msg.BodyText), ShowRemote: showRemote}
 	b.Markdown = b.Plain
 	if h := msg.BodyHtml; strings.TrimSpace(h) != "" && len(h) <= maxBodyHTMLBytes {
-		if md, blocked := htmlMailMarkdown(h); strings.TrimSpace(md) != "" {
-			b.Markdown, b.FromHTML, b.BlockedImages = md, true, blocked
+		if md, blocked, remote := htmlMailMarkdownWithImages(h, showRemote); strings.TrimSpace(md) != "" {
+			b.Markdown, b.FromHTML, b.BlockedImages, b.RemoteImages = md, true, blocked, remote
 		}
 	}
 	return b
@@ -78,14 +83,16 @@ type mdWriter struct {
 	link    int // depth of links around
 	pre     int
 
-	listSeq   int // numbers the lists, so that two lists in a row stay apart
-	itemRoot  int // the outermost list of the item being written
-	lastRoot  int
-	lastItem  bool
-	lastQuote int
-	lastRule  bool
-	ruleAt    int // where the last rule's block starts in out
-	blocked   int
+	listSeq    int // numbers the lists, so that two lists in a row stay apart
+	itemRoot   int // the outermost list of the item being written
+	lastRoot   int
+	lastItem   bool
+	lastQuote  int
+	lastRule   bool
+	ruleAt     int // where the last rule's block starts in out
+	blocked    int
+	remoteImgs int
+	showRemote bool
 
 	// Where the last link ended: a link right after it (whitespace aside) gets " · " between
 	// them, so that "Manage Notifications Give feedback" stays two links.
@@ -516,16 +523,22 @@ func pixelImage(n *xhtml.Node) bool {
 	return false
 }
 
-// htmlMailMarkdown converts a mail's HTML and counts the images left out. HTML the parser refuses
-// (more than 512 nested elements) gives "", and the pane shows the text version.
+// htmlMailMarkdown converts a mail's HTML (with remote images blocked) and counts the remote
+// images left out. Embedded cid: and data:image/ images are always included.
 func htmlMailMarkdown(src string) (string, int) {
+	md, blocked, _ := htmlMailMarkdownWithImages(src, false)
+	return md, blocked
+}
+
+func htmlMailMarkdownWithImages(src string, showRemote bool) (string, int, int) {
 	root, err := xhtml.Parse(strings.NewReader(src))
 	if err != nil {
-		return "", 0
+		return "", 0, 0
 	}
 	m := newMDWriter(true)
+	m.showRemote = showRemote
 	m.node(root)
-	return m.result(), m.blocked
+	return m.result(), m.blocked, m.remoteImgs
 }
 
 func (m *mdWriter) children(n *xhtml.Node) {
@@ -647,21 +660,51 @@ func (m *mdWriter) anchor(n *xhtml.Node) {
 	m.writeLink(label, href, pending && hadText)
 }
 
+func (m *mdWriter) writeImage(alt, src string) {
+	b := m.cur()
+	m.spaceBefore()
+	b.WriteString("![" + escapeMarkdown(alt) + "](" + markdownDest(src) + ")")
+	m.lineText = true
+	m.space = true
+}
+
 func (m *mdWriter) image(n *xhtml.Node) {
+	src := strings.TrimSpace(attrVal(n, "src"))
+	alt := strings.TrimSpace(attrVal(n, "alt"))
+	low := strings.ToLower(src)
+	isEmbedded := strings.HasPrefix(low, "cid:") || strings.HasPrefix(low, "data:image/")
+	isRemote := strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://")
+
+	if isEmbedded && !pixelImage(n) {
+		if m.link > 0 && alt != "" {
+			m.text(alt)
+			return
+		}
+		m.writeImage(alt, src)
+		return
+	}
+
 	if m.link > 0 {
-		if alt := strings.TrimSpace(attrVal(n, "alt")); alt != "" {
+		if alt != "" {
 			m.text(alt)
 			return
 		}
 	}
 	// An image between words (an arrow in "old → new", an icon) keeps them apart.
 	m.space = true
-	if pixelImage(n) {
+	if pixelImage(n) || src == "" {
 		return
 	}
-	if src := strings.TrimSpace(attrVal(n, "src")); src != "" {
+	if isRemote {
+		m.remoteImgs++
+		if m.showRemote && isSafeWebURL(src) {
+			m.writeImage(alt, src)
+			return
+		}
 		m.blocked++
+		return
 	}
+	m.blocked++
 }
 
 func headingLevel(a atom.Atom) int {
@@ -909,15 +952,31 @@ func (a *App) bodyMarkdownOpts() *markdown.Options {
 		// Only what the converter writes: no math (\( \) would read as TeX), footnotes, tables
 		// or autolinks.
 		a.widgets.mdBody.Extensions = parser.ExtStrikethrough
+		a.widgets.mdBody.LoadImage = a.loadMailImage
+		a.widgets.mdBody.OnLink = func(u string) {
+			u = strings.TrimSpace(u)
+			if len(u) >= 7 && strings.EqualFold(u[:7], "mailto:") {
+				a.emitUpdate(func() {
+					a.OpenComposeFromMailto(u)
+				})
+				return
+			}
+			if isSafeWebURL(u) {
+				openExternalURL(u)
+			}
+		}
 	}
 	return &a.widgets.mdBody
 }
 
 // renderMailBody shows the open mail's body, formatted from its HTML or from its text version.
-func (a *App) renderMailBody(c *ui.Context, msg *bridgeclient.MessageDetail) {
+func (a *App) renderMailBody(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
-	if a.readerBody.MsgID != msg.ID {
-		a.readerBody = buildReaderBody(msg)
+	senderAllowed := a.senderRemoteImagesAllowed(msg.From)
+	showRemote := a.readerRemoteImagesAllowedForMsg(msg)
+	if a.readerBody.MsgID != msg.ID || a.readerBody.ShowRemote != showRemote {
+		a.resetReaderImages(msg.ID)
+		a.readerBody = buildReaderBodyWithImages(msg, showRemote)
 	}
 	body := &a.readerBody
 	md := body.Markdown
@@ -926,12 +985,41 @@ func (a *App) renderMailBody(c *ui.Context, msg *bridgeclient.MessageDetail) {
 		md = body.Plain
 	}
 	a.renderSecurityNote(c, msg)
-	if body.FromHTML || body.BlockedImages > 0 {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+	if body.FromHTML || body.BlockedImages > 0 || body.RemoteImages > 0 {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
 			if body.BlockedImages > 0 && !plain {
 				ui.Icon(c, iconImageOff).Size(13, 13).TextColor(t.TextMuted)
 				ui.Text(c, a.trf("%d Bilder nicht geladen", "%d images not loaded", body.BlockedImages)).FontSize(11.5).TextColor(t.TextMuted).
-					Tooltip(a.tr("OmaThunder lädt nie externe Inhalte — so erfährt kein Absender, dass du die Mail geöffnet hast.", "OmaThunder never loads remote content, so no sender learns that you opened the email."))
+					Tooltip(a.tr("Externe Bilder sind aus Datenschutzgründen blockiert, bis du sie für diese Mail erlaubst.", "Remote images are blocked for privacy until you allow them for this email."))
+				if iconLabelBtn(c.Key("img-show"), iconImage, a.tr("Bilder anzeigen", "Show Images"), false, a.tr("Externe Bilder für diese Mail laden", "Load remote images for this email")).Clicked() {
+					a.setReaderRemoteImagesAllowed(msg.ID, true)
+					a.readerBody = buildReaderBodyWithImages(msg, true)
+				}
+				if extractSenderEmail(msg.From) != "" {
+					if ui.Button(c.Key("img-allow-sender"), a.tr("Absender immer erlauben", "Always allow sender")).Padding(2, 7).Clicked() {
+						a.SetSenderRemoteImagesAllowed(msg.From, true)
+						a.setReaderRemoteImagesAllowed(msg.ID, true)
+						a.readerBody = buildReaderBodyWithImages(msg, true)
+						a.toast(a.trf("Bilder von %s werden ab jetzt immer geladen", "Remote images from %s will always load", extractSenderEmail(msg.From)), "success")
+					}
+				}
+			} else if body.ShowRemote && body.RemoteImages > 0 && !plain {
+				ui.Icon(c, iconImage).Size(13, 13).TextColor(t.Accent)
+				lbl := a.tr("Externe Bilder geladen", "Remote images shown")
+				if senderAllowed {
+					lbl = a.tr("Bilder erlaubt (Absender-Allowlist)", "Images allowed (sender allowlist)")
+				}
+				ui.Text(c, lbl).FontSize(11.5).TextColor(t.TextMuted)
+				if senderAllowed {
+					if ui.Button(c.Key("img-revoke-sender"), a.tr("Absender blockieren", "Block sender")).Padding(2, 7).Clicked() {
+						a.SetSenderRemoteImagesAllowed(msg.From, false)
+						a.setReaderRemoteImagesAllowed(msg.ID, false)
+						a.readerBody = buildReaderBodyWithImages(msg, false)
+					}
+				} else if ui.Button(c.Key("img-hide"), a.tr("Ausblenden", "Hide")).Padding(2, 7).Clicked() {
+					a.setReaderRemoteImagesAllowed(msg.ID, false)
+					a.readerBody = buildReaderBodyWithImages(msg, false)
+				}
 			}
 			ui.Spacer(c)
 			if body.FromHTML {
@@ -953,13 +1041,11 @@ func (a *App) renderMailBody(c *ui.Context, msg *bridgeclient.MessageDetail) {
 		ui.Text(c, a.tr("(Kein Textinhalt)", "(No text content)")).FontSize(13).TextColor(t.TextMuted)
 		return
 	}
-	markdown.View(c, md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
+	markdown.View(c.Key("mail-body-"+msg.ID), md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
 }
 
-// renderSecurityNote says that a mail is encrypted or signed. Encrypted and readable: AI actions
-// send the decrypted text. Not decrypted: the reason, and Thunderbird to open it in. Signed: the
-// signature is not checked here (Thunderbird's API cannot), Thunderbird shows whether it is valid.
-func (a *App) renderSecurityNote(c *ui.Context, msg *bridgeclient.MessageDetail) {
+// renderSecurityNote says that a mail is encrypted or signed.
+func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	sec := msg.Security
 	if !sec.Encrypted && !sec.Signed {
 		return
@@ -968,23 +1054,51 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *bridgeclient.MessageDetail)
 	var lines []string
 	if sec.Encrypted {
 		if sec.Readable() {
-			lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
-				"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
+			if sec.SMIME {
+				lines = append(lines, a.tr("S/MIME-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
+					"S/MIME encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
+			} else {
+				lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
+					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
+			}
 		} else {
-			lines = append(lines, a.tr("Verschlüsselt. Thunderbird konnte die Mail nicht entschlüsseln (kein Schlüssel, oder die Passwort-Abfrage wurde abgebrochen).",
-				"Encrypted. Thunderbird could not decrypt this email (no key, or the password prompt was cancelled)."))
+			msgErr := a.tr("Verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (S/MIME-Zertifikat unter Konten → S/MIME importieren).",
+				"Encrypted. MailDiver could not decrypt this email (import S/MIME certificate under Accounts → S/MIME).")
+			if sec.Error != "" {
+				msgErr += " (" + sec.Error + ")"
+			}
+			lines = append(lines, msgErr)
 		}
 	}
 	if sec.Signed {
-		lines = append(lines, a.tr("Signiert. Ob die Signatur gültig ist, prüft OmaThunder nicht – das zeigt Thunderbird.",
-			"Signed. OmaThunder does not check whether the signature is valid – Thunderbird shows that."))
+		switch {
+		case sec.SMIME && sec.SignatureValid && sec.SignatureTrusted:
+			who := sec.SignerEmail
+			if sec.SignerSubject != "" && !strings.EqualFold(sec.SignerSubject, who) {
+				who = sec.SignerSubject + " <" + who + ">"
+			}
+			lines = append(lines, a.trf("S/MIME-Signatur gültig & vertrauenswürdig (%s · Aussteller: %s)",
+				"S/MIME signature valid & trusted (%s · Issuer: %s)", who, sec.SignerIssuer))
+		case sec.SMIME && sec.SignatureValid:
+			lines = append(lines, a.trf("S/MIME-Signatur kryptografisch gültig (%s), Zertifikatskette nicht im System-Vertrauensspeicher.",
+				"S/MIME signature cryptographically valid (%s), certificate chain not in system trust store.", sec.SignerEmail))
+		case sec.SMIME && !sec.SignatureValid:
+			lines = append(lines, a.tr("WARNUNG: S/MIME-Signatur ungültig — Nachricht wurde möglicherweise verändert!",
+				"WARNING: S/MIME signature invalid — message may have been tampered with!"))
+		default:
+			lines = append(lines, a.tr("Signiert (PGP/S/MIME).", "Signed (PGP/S/MIME)."))
+		}
 	}
 	ui.Row(c.Key("sec-note")).FillWidth().AlignItems(ui.Center).Gap(8).Padding(6, 10).Radius(8).Border(1, t.Border).Children(func() {
 		switch {
+		case sec.SMIME && sec.Signed && !sec.SignatureValid:
+			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Danger)
 		case sec.Encrypted && !sec.Readable():
 			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Warning)
-		case sec.Encrypted:
+		case sec.Encrypted || (sec.SMIME && sec.SignatureValid && sec.SignatureTrusted):
 			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Success)
+		case sec.SMIME && sec.SignatureValid:
+			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Warning)
 		default:
 			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.TextMuted)
 		}
@@ -993,12 +1107,5 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *bridgeclient.MessageDetail)
 				ui.Text(c, line).FontSize(11.5).TextColor(t.TextMuted)
 			}
 		})
-		label := a.tr("In Thunderbird öffnen", "Open in Thunderbird")
-		if sec.Signed && sec.Readable() {
-			label = a.tr("In Thunderbird prüfen", "Check in Thunderbird")
-		}
-		if ui.Button(c.Key("sec-open"), label).Clicked() {
-			a.OpenInThunderbird(context.Background(), msg.ID)
-		}
 	})
 }

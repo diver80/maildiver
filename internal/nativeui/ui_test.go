@@ -16,13 +16,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/bridge"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/jobs"
-	"github.com/diver80/omathunder/internal/native"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/jobs"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 type stubBridgeRPC struct {
@@ -84,7 +83,6 @@ func (s *stubBridgeRPC) Call(_ context.Context, method string, params any) (json
 
 func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	tmp := t.TempDir()
-	discPath := filepath.Join(tmp, "bridge.json")
 	store := triage.NewStoreAt(tmp)
 
 	var aiCalls atomic.Int32
@@ -155,23 +153,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	// The bridge server and app goroutines read the config while the UI thread saves it.
 	box := newCfgBox(cfg)
 	rpc := &stubBridgeRPC{}
-	br, err := bridge.Start(ctx, bridge.Options{
-		Port:          0,
-		DiscoveryPath: discPath,
-		RPC:           rpc,
-		Events:        native.NewEventHub(),
-		Store:         store,
-		ConfigLoader:  box.load,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer br.Close()
-
-	bc, _, err := bridgeclient.Discover(discPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bc := backend.New(backend.Options{Engine: rpc, Events: events.NewHub(), Store: store, LoadConfig: box.load, Version: "test"})
 
 	// Simulate mygo's single UI thread event loop.
 	uiQueue := make(chan func(), 128)
@@ -200,11 +182,10 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 
 	var alerts []AlertItem
 	app := NewApp(Options{
-		DiscoveryPath: discPath,
-		ConfigLoader:  box.load,
-		ConfigSaver:   box.save,
-		Store:         store,
-		BridgeClient:  bc,
+		ConfigLoader: box.load,
+		ConfigSaver:  box.save,
+		Store:        store,
+		Backend:      bc,
 	})
 	app.SetHooks(
 		func(fn func()) { uiQueue <- fn },
@@ -226,8 +207,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	// 1. Load live Thunderbird data into native UI state.
 	app.RefreshAll(ctx)
 	waitUntil(func() bool { return !app.loading && !app.modelsLoading })
-	if !app.bridgeOnline || !app.thunderbirdConnected {
-		t.Fatalf("expected bridgeOnline & thunderbirdConnected, got online=%v tb=%v", app.bridgeOnline, app.thunderbirdConnected)
+	if !app.engineReady {
+		t.Fatalf("expected the engine to be ready")
 	}
 	if len(app.messages) != 2 || len(app.events) != 1 {
 		t.Fatalf("unexpected loaded counts: msgs=%d events=%d", len(app.messages), len(app.events))
@@ -243,8 +224,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	// 2. Render Main Window across Mail, Calendar, Light/Dark themes, and Modals using ui.NewTester.
 	tt := ui.NewTester(app.RenderMain, 1380, 860)
 	tt.Frame()
-	if _, ok := tt.Find("OmaThunder"); !ok {
-		t.Fatal("expected OmaThunder header in main view")
+	if _, ok := tt.Find("MailDiver"); !ok {
+		t.Fatal("expected MailDiver header in main view")
 	}
 	if _, ok := tt.Find("Angebot Q4"); !ok {
 		t.Fatal("expected message subject in main view")
@@ -287,22 +268,22 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatalf("expected tool execution badge rendered in AI Assistant pane; texts=%v", tt.Texts())
 	}
 
-	// 3b. Open Help Modal and verify Overview, Interactive TOC, TB Filter maintenance note, and AI transparency.
+	// 3b. Open Help Modal and verify Overview, Interactive TOC, Filter rules note, and AI transparency.
 	app.helpOpen = true
 	tt.Frame()
-	if !tt.HasText("Was OmaThunder macht · Überblick") || !tt.HasText("Inhalt:") || !tt.HasText("100% Lokal") || !tt.HasText("4. Quick-Regeln & Thunderbird-Filter (Pflege in TB)") || !tt.HasText("Extras → Filter") {
-		t.Fatalf("expected help modal overview, TOC, and TB rule maintenance sections rendered; texts=%v", tt.Texts())
+	if !tt.HasText("Was MailDiver macht · Überblick") || !tt.HasText("Inhalt:") || !tt.HasText("100% Lokal") || !tt.HasText("4. Quick-Regeln & Automatische Filter") || !tt.HasText("Filterregeln verwalten") {
+		t.Fatalf("expected help modal overview, TOC, and filter rule sections rendered; texts=%v", tt.Texts())
 	}
 	app.helpTopic = "rules"
 	tt.Frame()
-	if tt.HasText("1. 100% Lokal · Keine KI, 0 Tokens") || !tt.HasText("Filter in TB öffnen") {
+	if tt.HasText("1. 100% Lokal · Keine KI, 0 Tokens") || !tt.HasText("Filterregeln verwalten") {
 		t.Fatalf("expected help TOC filtering to show only rules chapter; texts=%v", tt.Texts())
 	}
 	app.helpTopic = "all"
 	assertNoLegacyCopilot(tt.Texts())
 	app.helpOpen = false
 
-	// 3c. Verify contact discovery cross-check against Thunderbird address book & enrich flow.
+	// 3c. Verify contact discovery cross-check against address book & enrich flow.
 	props := buildContactProposals([]ai.ExtractedContact{
 		{
 			DisplayName: "Alice Weber", FirstName: "Alice", LastName: "Weber",
@@ -312,7 +293,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 			DisplayName: "Bob Meyer", FirstName: "Bob", LastName: "Meyer",
 			Email: "bob@partner.io", Mobile: "+49 170 223344", Company: "Partner AG",
 		},
-	}, []bridgeclient.ContactRecord{
+	}, []backend.ContactRecord{
 		{ID: "ct1", DisplayName: "Alice Weber", Email: "alice@acme.de"},
 	})
 	if len(props) != 2 || props[0].Status != "enrich" || props[1].Status != "new" {
@@ -341,7 +322,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatal("expected calendar section in tray status widget")
 	}
 	assertNoLegacyCopilot(fly.Texts())
-	if !strings.Contains(app.TrayTitle(), "1") || !strings.Contains(app.TrayTooltip(), "OmaThunder Live") {
+	if !strings.Contains(app.TrayTitle(), "1") || !strings.Contains(app.TrayTooltip(), "MailDiver Live") {
 		t.Fatalf("unexpected tray strings: title=%q tip=%q", app.TrayTitle(), app.TrayTooltip())
 	}
 
@@ -365,8 +346,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 
 	app.helpOpen = true
 	tt.Frame()
-	if !tt.HasText("Help · Overview, TB Filters & AI Transparency") || !tt.HasText("What OmaThunder Does · Overview") || !tt.HasText("4. Quick Rules & Thunderbird Filters (Managed in TB)") || !tt.HasText("Tools → Message Filters") {
-		t.Fatalf("expected English help modal with overview, TOC, and TB rule maintenance; texts=%v", tt.Texts())
+	if !tt.HasText("Help · Overview, Filter Rules & AI Transparency") || !tt.HasText("What MailDiver Does · Overview") || !tt.HasText("4. Quick Rules & Automatic Filters") || !tt.HasText("Manage Filter Rules") {
+		t.Fatalf("expected English help modal with overview, TOC, and filter rules; texts=%v", tt.Texts())
 	}
 	assertNoLegacyCopilot(tt.Texts())
 	app.helpOpen = false
@@ -379,7 +360,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	}
 	assertNoLegacyCopilot(fly.Texts())
 
-	// 5b. Switch back to DE, multi-select emails, preview Quick-Rule, save to Thunderbird, and trash marked emails immediately.
+	// 5b. Switch back to DE, multi-select emails, preview Quick-Rule, save rule, and trash marked emails immediately.
 	app.SetLanguage("de")
 	app.ToggleMailChecked(0, false)
 	app.ToggleMailChecked(1, false)
@@ -389,8 +370,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	}
 	app.OpenQuickRuleWizard()
 	tt.Frame()
-	if !tt.HasText("Quick-Regel-Assistent · Thunderbird-Filter") || !tt.HasText("Live-Preview vor dem Speichern") || !tt.HasText("Markiert: 2/2") || !tt.HasText("Extras → Filter") {
-		t.Fatalf("expected quick-rule modal with live preview and TB maintenance note; texts=%v", tt.Texts())
+	if !tt.HasText("Quick-Regel-Assistent · Filterregel") || !tt.HasText("Live-Preview vor dem Speichern") || !tt.HasText("Markiert: 2/2") || !tt.HasText("Filterregeln verwalten") {
+		t.Fatalf("expected quick-rule modal with live preview and manage rules button; texts=%v", tt.Texts())
 	}
 	// alice@ + bob@acme.de derive "@acme.de" (whole domain) + trash: a broad destructive rule.
 	// The first click only arms the confirmation; nothing is written yet.
@@ -420,8 +401,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatalf("expected 1 filter create and 2 trashed messages, got upserts=%d trashed=%d mode=%v err=%q", gotUpserts, gotTrashed, mode, app.quickRuleError)
 	}
 
-	// 6. Simulate incoming mail SSE (real bridge wrapper payload) and verify alert creation + click navigation.
-	app.handleBridgeEvent(ctx, nil, "mail.new", `{"event":"mail.new","data":{"accountId":"acc1","folderId":"f1","folder":"INBOX","count":1,"messages":[{"id":"m99","messageId":"m99@acme.de","subject":"Dringend","from":"Chef <chef@acme.de>","accountId":"acc1","folderId":"f1","unread":true}]},"timestamp":"2026-11-18T08:00:00Z"}`)
+	// 6. Simulate an incoming mail event and verify alert creation + click navigation.
+	app.handleEngineEvent(ctx, "mail.new", json.RawMessage(`{"accountId":"acc1","folderId":"f1","folder":"INBOX","count":1,"messages":[{"id":"m99","messageId":"m99@acme.de","subject":"Dringend","from":"Chef <chef@acme.de>","accountId":"acc1","folderId":"f1","unread":true}]}`))
 	drainUI()
 	if len(alerts) != 1 || alerts[0].MessageID != "m99" {
 		t.Fatalf("expected 1 native alert for m99, got %+v", alerts)
@@ -476,18 +457,17 @@ func TestRenderScreens(t *testing.T) {
 	today := now.Format("2006-01-02")
 	tomorrow := now.AddDate(0, 0, 1).Format("2006-01-02")
 
-	app.bridgeOnline = true
-	app.thunderbirdConnected = true
+	app.engineReady = true
 	app.readOnly = false
 	app.providerLabel = "anthropic (api)"
 	app.agentBackend = "anthropic"
 	app.agentModel = "claude-sonnet-4-5"
 	app.modelChoices = []string{"claude-sonnet-4-5", "gemini-4-hydrogen", "gpt-4o-mini"}
-	app.accounts = []bridgeclient.Account{{ID: "acc1", Name: "Work (IMAP)"}, {ID: "acc2", Name: "Privat"}}
+	app.accounts = []backend.Account{{ID: "acc1", Name: "Work (IMAP)"}, {ID: "acc2", Name: "Privat"}}
 	app.lastSync = now.Add(-2 * time.Minute)
 	app.accountLabels = []string{"Alle Konten", "Work (IMAP)", "Privat"}
 	app.accountIDByLabel = map[string]string{"Alle Konten": "", "Work (IMAP)": "acc1", "Privat": "acc2"}
-	app.folders = []bridgeclient.Folder{
+	app.folders = []backend.Folder{
 		{ID: "f1", AccountID: "acc1", AccountName: "Work (IMAP)", Name: "Posteingang", Path: "INBOX", Type: "inbox"},
 		{ID: "f2", AccountID: "acc1", AccountName: "Work (IMAP)", Name: "Spaces", Path: "Spaces"},
 		{ID: "f2a", AccountID: "acc1", AccountName: "Work (IMAP)", Name: "ACME", Path: "Spaces/ACME"},
@@ -502,7 +482,7 @@ func TestRenderScreens(t *testing.T) {
 		{ID: "p3", AccountID: "acc2", AccountName: "Privat", Name: "Rom 2026", Path: "Reisen/Rom 2026"},
 	}
 	app.collapsedFolders = map[string]bool{"acc2\x00Reisen": true}
-	app.messages = []bridgeclient.MessageHeader{
+	app.messages = []backend.MessageHeader{
 		{
 			ID: "m1", AccountID: "acc1", Folder: "INBOX",
 			From: "Alice Weber <alice@acme.de>", To: []string{"frank@example.com"}, Subject: "Q4 Rollout & Budget-Freigabe bis Freitag",
@@ -536,10 +516,10 @@ func TestRenderScreens(t *testing.T) {
 		},
 	}
 	app.barSummary = triage.BarSummary{ActionCount: 2, WaitingCount: 1, InvoiceCount: 1}
-	app.selectedMsg = &bridgeclient.MessageDetail{
+	app.selectedMsg = &backend.MessageDetail{
 		MessageHeader: app.messages[0],
 		BodyText:      "Hallo Frank,\n\ndie finale Kalkulation f\u00fcr das Q4-Rollout liegt vor:\n- Lizenzen & Infrastruktur: 14.200 EUR\n- Migration & Workshop (2 Tage): 3.600 EUR\n\nK\u00f6nnen wir heute um 14:00 Uhr kurz abstimmen, ob das Budget so freigegeben werden kann?\n\nViele Gr\u00fc\u00dfe\nAlice",
-		Attachments: []bridgeclient.Attachment{
+		Attachments: []backend.Attachment{
 			{Name: "Q4-Kalkulation.pdf", Size: 248000, ContentType: "application/pdf"},
 		},
 	}
@@ -547,7 +527,7 @@ func TestRenderScreens(t *testing.T) {
 	app.inspectorResult = "**Kernaussage:** Alice bittet um Budget-Freigabe f\u00fcr das Q4-Rollout (**17.800 EUR** gesamt) und schl\u00e4gt ein kurzes Abstimmungsgespr\u00e4ch heute um **14:00 Uhr** vor.\n\n- **Frist:** Freitag\n- **N\u00e4chster Schritt:** Termin-Slot 14:00 pr\u00fcfen & Freigabe-Antwort entwerfen."
 	app.inspectorDraft = "Hallo Alice,\n\nvielen Dank f\u00fcr die \u00dcbersicht. 14:00 Uhr passt mir heute gut \u2014 lass uns das Q4-Budget dort final freigeben.\n\nViele Gr\u00fc\u00dfe\nFrank"
 
-	app.events = []bridgeclient.CalendarEvent{
+	app.events = []backend.CalendarEvent{
 		{ID: "e1", CalendarID: "c1", Calendar: "Arbeit", Title: "Daily Engineering Sync", Start: today + "T10:00:00+01:00", End: today + "T10:30:00+01:00", Location: "Meet"},
 		{ID: "e2", CalendarID: "c1", Calendar: "Arbeit", Title: "Q4 Rollout Budget-Abstimmung", Start: today + "T14:00:00+01:00", End: today + "T14:30:00+01:00", Location: "Zoom"},
 		{ID: "e3", CalendarID: "c1", Calendar: "Privat", Title: "Zahnarzt Termin", Start: today + "T17:15:00+01:00", End: today + "T18:00:00+01:00", Location: "Innenstadt"},
@@ -603,7 +583,7 @@ func TestRenderScreens(t *testing.T) {
 				Company: "ACME GmbH", JobTitle: "Head of Engineering", Website: "https://acme.de",
 				Address: "Musterstr. 12, 10115 Berlin",
 			},
-			Existing:         &bridgeclient.ContactRecord{ID: "ct1", DisplayName: "Alice Weber", Email: "alice@acme.de"},
+			Existing:         &backend.ContactRecord{ID: "ct1", DisplayName: "Alice Weber", Email: "alice@acme.de"},
 			Status:           "enrich",
 			MissingFieldKeys: []string{"phone", "mobile", "company", "job_title", "website", "address"},
 			MissingFields:    []string{"Telefon", "Mobil", "Firma", "Position", "Website", "Adresse"},
@@ -630,8 +610,8 @@ func TestRenderScreens(t *testing.T) {
 	app.helpOpen = false
 
 	// Screenshot 3b: Quick-Rule Wizard with Multi-Select & Live Preview
-	prevMsgs := append([]bridgeclient.MessageHeader(nil), app.messages...)
-	app.messages = append([]bridgeclient.MessageHeader{
+	prevMsgs := append([]backend.MessageHeader(nil), app.messages...)
+	app.messages = append([]backend.MessageHeader{
 		{
 			ID: "m-nl-1", AccountID: "acc1", Folder: "INBOX",
 			From: "Monitoring Bot <alerts@cloud-status.io>", Subject: "[Daily Digest] Nightly Build OK #412",
@@ -661,12 +641,35 @@ func TestRenderScreens(t *testing.T) {
 	saveShot("omathunder-move-dark.png", app.RenderMain, 1380, 860)
 	app.moveOpen = false
 
+	// Screenshot 3c1: the open mail inside its conversation (newest on top)
+	prevInspector, prevDraft := app.inspectorResult, app.inspectorDraft
+	app.inspectorResult, app.inspectorDraft, app.inspectorMode = "", "", ""
+	app.conversation = conversationUI{forID: "m1", open: map[string]*convItem{}, conv: &backend.Conversation{ThreadID: "th:q4", Messages: []backend.ConversationMessage{
+		{MessageHeader: backend.MessageHeader{ID: "c3", From: "Max Muster <frank@example.com>", Date: today + "T09:40:00+01:00", Folder: "Sent"}, Snippet: "Danke Alice, 14:00 passt. Ich bringe die Freigabe gleich mit."},
+		{MessageHeader: app.messages[0]},
+		{MessageHeader: backend.MessageHeader{ID: "c1", From: "Alice Weber <alice@acme.de>", Date: now.AddDate(0, 0, -2).Format("2006-01-02") + "T16:20:00+01:00"}, Snippet: "Hier die erste Schätzung für das Rollout – Lizenzen noch ohne Rabatt."},
+		{MessageHeader: backend.MessageHeader{ID: "c0", From: "Max Muster <frank@example.com>", Date: now.AddDate(0, 0, -3).Format("2006-01-02") + "T11:05:00+01:00", Folder: "Sent"}, Snippet: "Kannst du mir bis Ende der Woche eine Kalkulation für Q4 schicken?"},
+	}}}
+	saveShot("omathunder-conversation-dark.png", app.RenderMain, 1380, 1100)
+	app.conversation = conversationUI{}
+	app.inspectorResult, app.inspectorDraft, app.inspectorMode = prevInspector, prevDraft, "summarize"
+
+	// Screenshot 3c1b: a reply with the quoted original, closed by Escape: it asks instead of
+	// losing the text.
+	app.OpenComposeReply(&backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "Hallo Frank,\n\nkönnen wir heute um 14:00 kurz abstimmen?\n\nViele Grüße\nAlice"}, "Hallo Alice,\n\n14:00 passt.")
+	app.guardComposeClose()
+	app.composeBody = "Hallo Alice,\n\n14:00 passt, ich bringe die Freigabe mit." + strings.TrimPrefix(app.composeBody, "Hallo Alice,\n\n14:00 passt.")
+	app.composeOpen = false
+	app.guardComposeClose()
+	saveShot("omathunder-compose-ask-dark.png", app.RenderMain, 1380, 900)
+	app.closeCompose()
+
 	// Screenshot 3c2: settings and the archive dialog
 	app.OpenSettings()
 	saveShot("omathunder-settings-dark.png", app.RenderMain, 1380, 860)
 	app.settings.open = false
 	prevAccounts := app.accounts
-	app.accounts = []bridgeclient.Account{{ID: "acc1", Name: "Work"}}
+	app.accounts = []backend.Account{{ID: "acc1", Name: "Work"}}
 	app.cfg.Mailbox.TriageAccountIDs = []string{"acc1"}
 	app.OpenArchiveDialog(context.Background())
 	app.arch.preview = &jobs.ArchivePreview{TotalCount: 2, TotalMatched: 2, TotalBytes: 48000, ScannedFolders: 1, Candidates: []jobs.ArchiveCandidate{
@@ -680,8 +683,8 @@ func TestRenderScreens(t *testing.T) {
 	// Screenshot 3d: an HTML mail, formatted (links by title, remote images blocked)
 	prevDetail, prevMode, prevResult, prevDraft := app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft
 	app.inspectorMode, app.inspectorResult, app.inspectorDraft = "", "", ""
-	app.selectedMsg = &bridgeclient.MessageDetail{
-		MessageHeader: bridgeclient.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Frank <frank@example.com>"}, Subject: "Acme SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
+	app.selectedMsg = &backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Frank <frank@example.com>"}, Subject: "Acme SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
 		BodyText:      "Stay connected\n\nAcme SDK Release (2.0.0)\n[https://example.atlassian.net/wiki/spaces/GS/pages/1]",
 		BodyHtml: `<div style="display:none">Stay connected to people and their work &zwnj;&nbsp;&zwnj;</div>
 <table><tr><td><img src="https://cdn.example.net/logo.png" width="120" alt="Confluence"></td></tr><tr><td>

@@ -10,10 +10,10 @@ import (
 
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/omathunder/internal/ai"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/copilot"
+	"github.com/diver80/maildiver/internal/ai"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/copilot"
 )
 
 // Pending action states.
@@ -107,8 +107,14 @@ func (a *App) startModelLoad(ctx context.Context) {
 	}
 	a.modelsSeq++
 	seq := a.modelsSeq
-	a.modelsLoading = true
 	a.modelsError = ""
+	if ai.IsCLIBackend(backend) {
+		// CLI backends do not expose dynamic model listing; the UI shows curated hints/chips instead.
+		a.modelsLoading = false
+		a.modelChoices = nil
+		return
+	}
+	a.modelsLoading = true
 	bc, _ := a.client()
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -330,7 +336,7 @@ func (a *App) ExecuteCopilotAction(ctx context.Context, id string) {
 			p.Status = actionDone
 			switch action.Kind {
 			case copilot.ActionDraft:
-				p.Result = a.tr("Entwurf in Thunderbird gespeichert (nicht gesendet).", "Draft saved in Thunderbird (not sent).")
+				p.Result = a.tr("Entwurf im Postfach gespeichert (nicht gesendet).", "Draft saved to mailbox (not sent).")
 			case copilot.ActionCalendarEvent:
 				p.Result = a.trf("Termin „%s“ angelegt.", "Created event \"%s\".", res.Title)
 				a.startRefresh(ctx)
@@ -380,7 +386,7 @@ func (a *App) actionBlockedReason() string {
 		return a.tr("Read-Only-Modus aktiv: Ausführen ist gesperrt.", "Read-only mode active: execution is disabled.")
 	}
 	if _, err := a.client(); err != nil {
-		return localizeError(bridgeclient.ErrOffline, a.uiLang())
+		return localizeError(backend.ErrOffline, a.uiLang())
 	}
 	return ""
 }

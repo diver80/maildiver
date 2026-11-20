@@ -18,7 +18,7 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers/openai"
 	"github.com/mozilla-ai/any-llm-go/providers/zai"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 const (
@@ -144,6 +144,48 @@ func KnownBackend(name string) bool {
 func IsCLIBackend(name string) bool {
 	spec, ok := backendByID[CanonicalBackend(name)]
 	return ok && spec.Kind == kindCLI
+}
+
+// CLIModelHint provides curated model suggestions and naming guidance for local CLI backends
+// that do not expose a programmatic model-listing API.
+type CLIModelHint struct {
+	Models        []string // clickable aliases / model IDs (empty string = CLI default)
+	PlaceholderDE string
+	PlaceholderEN string
+	HintDE        string
+	HintEN        string
+}
+
+// CLIModelHints returns model suggestions and naming hints for a CLI backend.
+func CLIModelHints(backend string) (CLIModelHint, bool) {
+	switch CanonicalBackend(backend) {
+	case "claude-cli":
+		return CLIModelHint{
+			Models:        []string{"sonnet", "opus", "haiku", "claude-opus-4-6", "claude-sonnet-4-6"},
+			PlaceholderDE: "sonnet / opus / haiku (Standard)",
+			PlaceholderEN: "sonnet / opus / haiku (default)",
+			HintDE:        "Claude-CLI: Aliasse (sonnet, opus, haiku) nutzen immer die neueste Version, oder volle Modell-ID (z. B. claude-opus-4-6). Leer = CLI-Standard.",
+			HintEN:        "Claude CLI: aliases (sonnet, opus, haiku) always track the latest release, or enter a full model ID (e.g. claude-opus-4-6). Empty = CLI default.",
+		}, true
+	case "gemini-cli":
+		return CLIModelHint{
+			Models:        []string{"auto", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
+			PlaceholderDE: "gemini-2.5-pro / flash (Standard)",
+			PlaceholderEN: "gemini-2.5-pro / flash (default)",
+			HintDE:        "Gemini-CLI: z. B. auto, gemini-2.5-pro, gemini-2.5-flash oder Preview-ID eingeben. Leer = CLI-Standard.",
+			HintEN:        "Gemini CLI: e.g. auto, gemini-2.5-pro, gemini-2.5-flash, or any preview model ID. Empty = CLI default.",
+		}, true
+	case "opencode-cli":
+		return CLIModelHint{
+			Models:        []string{"anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6", "google/gemini-2.5-pro"},
+			PlaceholderDE: "provider/model (Standard)",
+			PlaceholderEN: "provider/model (default)",
+			HintDE:        "OpenCode-CLI: Format provider/model (alle lokalen Modelle per „opencode models“). Leer = CLI-Standard.",
+			HintEN:        "OpenCode CLI: provider/model format (run “opencode models” to list all). Empty = CLI default.",
+		}, true
+	default:
+		return CLIModelHint{}, false
+	}
 }
 
 // lookupBackend returns the spec for a backend name or a clear error; never a substitute backend.

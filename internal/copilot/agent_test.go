@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
-	"github.com/diver80/omathunder/internal/bridge"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/native"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 type stubBridgeRPC struct{}
@@ -31,7 +29,6 @@ func (stubBridgeRPC) Call(_ context.Context, method string, _ any) (json.RawMess
 
 func TestRunnerExecutesToolLoopAgainstLiveBridge(t *testing.T) {
 	tmp := t.TempDir()
-	discPath := filepath.Join(tmp, "bridge.json")
 	store := triage.NewStoreAt(tmp)
 
 	var aiCalls atomic.Int32
@@ -88,33 +85,22 @@ func TestRunnerExecutesToolLoopAgainstLiveBridge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	br, err := bridge.Start(ctx, bridge.Options{
-		Port:          0,
-		DiscoveryPath: discPath,
-		RPC:           stubBridgeRPC{},
-		Events:        native.NewEventHub(),
-		Store:         store,
-		ConfigLoader:  func() (config.Config, error) { return cfg, nil },
+	bc := backend.New(backend.Options{
+		Engine:     stubBridgeRPC{},
+		Events:     events.NewHub(),
+		Store:      store,
+		LoadConfig: func() (config.Config, error) { return cfg, nil },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer br.Close()
-
-	bc, _, err := bridgeclient.Discover(discPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	runner := &Runner{
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
-		Bridge:       bc,
+		Backend:      bc,
 		Store:        store,
 	}
 
 	var events []Event
 	var answer string
-	err = runner.Run(ctx, RunRequest{
+	err := runner.Run(ctx, RunRequest{
 		Messages: []Message{{Role: "user", Content: "Was ist ungelesen?"}},
 	}, func(ev Event) {
 		events = append(events, ev)
@@ -153,7 +139,7 @@ func TestBuildSystemPromptLocalization(t *testing.T) {
 	cfg := config.Default()
 
 	dePrompt := BuildSystemPrompt("de", cfg, true, "", "")
-	if !strings.Contains(dePrompt, "OmaThunder KI-Assistent") {
+	if !strings.Contains(dePrompt, "MailDiver KI-Assistent") {
 		t.Fatalf("expected German assistant title in DE prompt, got %q", dePrompt)
 	}
 	if strings.Contains(strings.ToLower(dePrompt), "co-pilot") {
@@ -161,13 +147,13 @@ func TestBuildSystemPromptLocalization(t *testing.T) {
 	}
 
 	enPrompt := BuildSystemPrompt("en", cfg, false, "acc1", "m1")
-	if !strings.Contains(enPrompt, "OmaThunder AI Assistant") {
+	if !strings.Contains(enPrompt, "MailDiver AI Assistant") {
 		t.Fatalf("expected English assistant title in EN prompt, got %q", enPrompt)
 	}
 	if strings.Contains(strings.ToLower(enPrompt), "co-pilot") {
 		t.Fatalf("unexpected legacy Co-Pilot label in EN prompt: %q", enPrompt)
 	}
-	if !strings.Contains(enPrompt, "Thunderbird bridge is offline") {
+	if !strings.Contains(enPrompt, "the mail engine is offline") {
 		t.Fatalf("expected English offline notice in EN prompt, got %q", enPrompt)
 	}
 }

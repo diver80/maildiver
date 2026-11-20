@@ -10,15 +10,15 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 	filters := []NativeFilter{
 		{
 			AccountID: "acc3",
-			Name:      "Inbox » REWE (Systemmails)",
+			Name:      "Inbox » Acme (Systemmails)",
 			Enabled:   true,
 			MatchAll:  true, // classic AND bug!
 			Conditions: []NativeCondition{
-				{Field: "subject", Op: "contains", Value: "Automated restore completed for Confluence in rewe", BooleanAnd: true},
-				{Field: "subject", Op: "contains", Value: "Automaterd restore started for Confluence in rewe", BooleanAnd: true},
+				{Field: "subject", Op: "contains", Value: "Automated restore completed for Confluence in acme", BooleanAnd: true},
+				{Field: "subject", Op: "contains", Value: "Automaterd restore started for Confluence in acme", BooleanAnd: true},
 			},
 			Actions: []NativeAction{
-				{Type: "moveToFolder", TargetFolderPath: "INBOX/REWE", TargetFolderExists: &existsTrue},
+				{Type: "moveToFolder", TargetFolderPath: "INBOX/Acme", TargetFolderExists: &existsTrue},
 				{Type: "markRead"},
 			},
 		},
@@ -28,8 +28,8 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 			Enabled:   true,
 			MatchAll:  true,
 			Conditions: []NativeCondition{
-				{Field: "subject", Op: "is", Value: "Your on-call rotation for axsteam_schedule is starting now", BooleanAnd: true},
-				{Field: "subject", Op: "contains", Value: "FEV-Confluence@fev.com", BooleanAnd: true},
+				{Field: "subject", Op: "is", Value: "Your on-call rotation for ops_schedule is starting now", BooleanAnd: true},
+				{Field: "subject", Op: "contains", Value: "confluence@example.com", BooleanAnd: true},
 			},
 			Actions: []NativeAction{{Type: "delete"}},
 		},
@@ -55,11 +55,11 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 		},
 	}
 
-	// Case 1: REWE mail matches 1 of 2 AND conditions -> and_partial_match + QuickFix set_or
+	// Case 1: Acme mail matches 1 of 2 AND conditions -> and_partial_match + QuickFix set_or
 	rep1 := DiagnoseFilters(MessageInput{
 		AccountID: "acc3",
-		Subject:   "Automated restore completed for Confluence in rewe",
-		From:      "noreply@rewe.de",
+		Subject:   "Automated restore completed for Confluence in acme",
+		From:      "noreply@acme.example",
 	}, filters)
 	if len(rep1.MatchedFilters) != 0 {
 		t.Fatalf("expected 0 matched filters, got %+v", rep1.MatchedFilters)
@@ -72,7 +72,7 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 	rep2 := DiagnoseFilters(MessageInput{
 		AccountID: "acc3",
 		Subject:   "Another alert",
-		From:      "FEV-Confluence@fev.com",
+		From:      "confluence@example.com",
 	}, filters)
 	if len(rep2.NearMisses) == 0 || rep2.NearMisses[0].ReasonCode != "wrong_field" {
 		t.Fatalf("expected wrong_field near miss, got %+v", rep2.NearMisses)
@@ -92,7 +92,7 @@ func TestDiagnoseFiltersRealWorldCases(t *testing.T) {
 	rep4 := DiagnoseFilters(MessageInput{
 		AccountID: "acc3",
 		Subject:   "[JIRA] Ticket updated",
-		From:      "jira@avono.de",
+		From:      "jira@example.org",
 		Headers:   map[string]string{"X-Mailer": "Atlassian Jira 9.12"},
 	}, filters)
 	if len(rep4.MatchedFilters) != 1 || rep4.MatchedFilters[0].FilterName != "Jira Mails" {

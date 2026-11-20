@@ -17,7 +17,7 @@ import (
 
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/omathunder/internal/config"
+	"github.com/diver80/maildiver/internal/config"
 )
 
 func TestSupportedProvidersComeFromRegistry(t *testing.T) {

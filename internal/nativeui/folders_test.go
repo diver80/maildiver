@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 func rowSummary(rows []folderRow) string {
@@ -25,11 +25,11 @@ func rowSummary(rows []folderRow) string {
 }
 
 func TestBuildFolderRowsNestsByPath(t *testing.T) {
-	f := func(id, path string) bridgeclient.Folder {
+	f := func(id, path string) backend.Folder {
 		name := path[strings.LastIndex(path, "/")+1:]
-		return bridgeclient.Folder{ID: id, AccountID: "a", Name: name, Path: path}
+		return backend.Folder{ID: id, AccountID: "a", Name: name, Path: path}
 	}
-	folders := []bridgeclient.Folder{
+	folders := []backend.Folder{
 		f("1", "INBOX"),
 		f("2", "Archiv/2021"), // child listed before its parent
 		f("3", "Archiv"),
@@ -59,7 +59,7 @@ func TestFolderTreeKeepsAccountsApart(t *testing.T) {
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
 		Store:        triage.NewStoreAt(t.TempDir()),
 	})
-	app.folders = []bridgeclient.Folder{
+	app.folders = []backend.Folder{
 		{ID: "w1", AccountID: "work", AccountName: "Work", Name: "INBOX", Path: "INBOX"},
 		{ID: "p1", AccountID: "home", AccountName: "Home", Name: "INBOX", Path: "INBOX"},
 		{ID: "w2", AccountID: "work", AccountName: "Work", Name: "Sub", Path: "INBOX/Sub"},
@@ -82,5 +82,101 @@ func TestFolderTreeKeepsAccountsApart(t *testing.T) {
 	app.toggleFolderCollapsed(groups[0].Rows[0].Key)
 	if got := rowSummary(app.groupFoldersByAccount()[0].Rows); got != "INBOX+ .Sub" {
 		t.Fatalf("after expand = %q", got)
+	}
+}
+
+func TestDefaultFolderCollapseDepthAndArchives(t *testing.T) {
+	cfg := config.Default()
+	app := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+	})
+	app.folders = []backend.Folder{
+		{ID: "1", AccountID: "acc", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "2", AccountID: "acc", Name: "atlassian", Path: "INBOX/atlassian"},
+		{ID: "3", AccountID: "acc", Name: "done", Path: "INBOX/atlassian/done"},
+		{ID: "4", AccountID: "acc", Name: "todo", Path: "INBOX/atlassian/todo"},
+		{ID: "5", AccountID: "acc", Name: "ops", Path: "INBOX/ops"},
+		{ID: "6", AccountID: "acc", Name: "done", Path: "INBOX/ops/done"},
+		{ID: "7", AccountID: "acc", Name: "Archives", Path: "Archives", Type: "archive"},
+		{ID: "8", AccountID: "acc", Name: "2024", Path: "Archives/2024"},
+		{ID: "9", AccountID: "acc", Name: "2025", Path: "Archives/2025"},
+		{ID: "10", AccountID: "acc", Name: "Sent", Path: "Sent", Type: "sent"},
+	}
+
+	// Startup: INBOX expanded (shows level 2 atlassian/ops), level 2 folders & Archives collapsed.
+	got := rowSummary(app.groupFoldersByAccount()[0].Rows)
+	want := "INBOX+ .atlassian> .ops> Archives> Sent"
+	if got != want {
+		t.Fatalf("default tree = %q, want %q", got, want)
+	}
+
+	// User expands "atlassian": must stay expanded on subsequent renders/reloads.
+	app.toggleFolderCollapsed("acc\x00INBOX/atlassian")
+	got = rowSummary(app.groupFoldersByAccount()[0].Rows)
+	want = "INBOX+ .atlassian+ ..done ..todo .ops> Archives> Sent"
+	if got != want {
+		t.Fatalf("after expanding atlassian = %q, want %q", got, want)
+	}
+}
+
+func TestCustomExpandedFoldersPerAccountAndPersistence(t *testing.T) {
+	cfg := config.Default()
+	cfg.App.ExpandedFolders = map[string][]string{
+		"acc1": {"INBOX/ops"}, // ancestor INBOX must auto-expand too; atlassian & Archives stay collapsed
+		"acc2": {},            // explicit empty list -> even INBOX starts collapsed
+	}
+	cfg.App.HiddenCalendars = []string{"cal-hidden"}
+
+	app := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+	})
+	app.applyConfig(cfg)
+	app.accounts = []backend.Account{
+		{ID: "acc1", Name: "Work"},
+		{ID: "acc2", Name: "Privat"},
+	}
+	app.folders = []backend.Folder{
+		{ID: "1", AccountID: "acc1", AccountName: "Work", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "2", AccountID: "acc1", AccountName: "Work", Name: "atlassian", Path: "INBOX/atlassian"},
+		{ID: "3", AccountID: "acc1", AccountName: "Work", Name: "done", Path: "INBOX/atlassian/done"},
+		{ID: "4", AccountID: "acc1", AccountName: "Work", Name: "ops", Path: "INBOX/ops"},
+		{ID: "5", AccountID: "acc1", AccountName: "Work", Name: "done", Path: "INBOX/ops/done"},
+		{ID: "6", AccountID: "acc1", AccountName: "Work", Name: "Archives", Path: "Archives", Type: "archive"},
+		{ID: "7", AccountID: "acc1", AccountName: "Work", Name: "2025", Path: "Archives/2025"},
+		{ID: "8", AccountID: "acc2", AccountName: "Privat", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "9", AccountID: "acc2", AccountName: "Privat", Name: "Reisen", Path: "INBOX/Reisen"},
+	}
+
+	groups := app.groupFoldersByAccount()
+	if got, want := rowSummary(groups[0].Rows), "INBOX+ .atlassian> .ops+ ..done Archives>"; got != want {
+		t.Fatalf("acc1 custom tree = %q, want %q", got, want)
+	}
+	if got, want := rowSummary(groups[1].Rows), "INBOX>"; got != want {
+		t.Fatalf("acc2 empty-custom tree = %q, want %q", got, want)
+	}
+	if !app.isCalendarHidden("cal-hidden") {
+		t.Fatal("expected HiddenCalendars from config.json to be restored by applyConfig")
+	}
+
+	// OpenSettings -> switch acc1 to expand Archives only -> SaveSettings applies immediately & persists.
+	app.OpenSettings()
+	pref := app.settings.folderPrefs["acc1"]
+	if pref == nil || !pref.custom {
+		t.Fatalf("expected acc1 custom pref loaded in Settings, got %+v", pref)
+	}
+	pref.expanded = map[string]bool{"archives": true}
+	if !app.SaveSettings() {
+		t.Fatalf("SaveSettings failed: %s", app.settings.err)
+	}
+	groups = app.groupFoldersByAccount()
+	if got, want := rowSummary(groups[0].Rows), "INBOX> Archives+ .2025"; got != want {
+		t.Fatalf("after SaveSettings acc1 tree = %q, want %q", got, want)
+	}
+	if len(cfg.App.ExpandedFolders["acc1"]) != 1 || cfg.App.ExpandedFolders["acc1"][0] != "Archives" {
+		t.Fatalf("expected persisted ExpandedFolders[acc1]=[Archives], got %+v", cfg.App.ExpandedFolders["acc1"])
 	}
 }

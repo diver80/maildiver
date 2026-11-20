@@ -4,26 +4,48 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION")}"
-EXT_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT_DIR/extension/manifest.json" | head -1)"
-if [[ "$EXT_VERSION" != "${VERSION%%-*}" ]]; then
-  echo "Version mismatch: VERSION=$VERSION, extension/manifest.json=$EXT_VERSION" >&2
-  exit 1
-fi
+MYGO_VERSION="v0.10.0"
+
+BUILD_PACKAGES=false
+BUILD_UNIVERSAL=false
+BUILD_ANDROID=false
+SKIP_TESTS=false
+
+usage() {
+  cat <<EOF
+MailDiver Multi-Platform Build Script (mygo ${MYGO_VERSION})
+
+Usage: ./build.sh [options]
+  --packages     Build platform installers/packages via mygo build
+                 (macOS .dmg, Linux .tar.gz/.deb/.rpm/PKGBUILD, Windows .exe)
+  --universal    Build macOS Universal binary (darwin/universal .app + .dmg)
+  --android      Build Android APK/AAB (android/arm64) via mygo build (requires Android NDK)
+  --skip-tests   Skip 'go test ./...'
+  -h, --help     Show this help
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --packages)   BUILD_PACKAGES=true ;;
+    --universal)  BUILD_UNIVERSAL=true ;;
+    --android)    BUILD_ANDROID=true ;;
+    --skip-tests) SKIP_TESTS=true ;;
+    -h|--help)    usage; exit 0 ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
-echo "==> Running Go unit tests..."
-(cd "$ROOT_DIR" && go test ./...)
-
-echo "==> Running extension unit tests..."
-JSC="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc"
-if command -v node >/dev/null 2>&1; then
-  (cd "$ROOT_DIR" && node tests/core.test.js)
-elif [[ -x "$JSC" ]]; then
-  (cd "$ROOT_DIR" && "$JSC" tests/core.test.js)
-else
-  echo "  (skipped: neither node nor jsc found)"
+if [[ "$SKIP_TESTS" != "true" ]]; then
+  echo "==> Running Go unit tests..."
+  (cd "$ROOT_DIR" && go test ./...)
 fi
 
 TARGETS=(
@@ -35,9 +57,7 @@ TARGETS=(
   "windows/arm64"
 )
 
-# Two programs: the small Native Messaging host + CLI (omathunder) and the native desktop app
-# (omathunder-ui; on macOS additionally bundled as OmaThunder.app). The host has no GUI dependencies.
-echo "==> Cross-compiling omathunder (host/CLI) and omathunder-ui (app) binaries ($VERSION)..."
+echo "==> Cross-compiling MailDiver ($VERSION) for Desktop platforms..."
 for target in "${TARGETS[@]}"; do
   GOOS="${target%/*}"
   GOARCH="${target#*/}"
@@ -45,18 +65,12 @@ for target in "${TARGETS[@]}"; do
   if [[ "$GOOS" == "windows" ]]; then
     EXE=".exe"
   fi
-  for prog in omathunder omathunder-ui; do
-    OUT_NAME="${prog}-${GOOS}-${GOARCH}${EXE}"
-    echo "  - building $OUT_NAME"
-    (cd "$ROOT_DIR" && CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-      go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
-      -o "$DIST_DIR/$OUT_NAME" "./cmd/${prog}")
-  done
+  OUT_NAME="maildiver-${GOOS}-${GOARCH}${EXE}"
+  echo "  - building $OUT_NAME"
+  (cd "$ROOT_DIR" && CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o "$DIST_DIR/$OUT_NAME" ./cmd/maildiver)
 done
-
-echo "==> Packaging Thunderbird WebExtension (.xpi)..."
-XPI_PATH="$DIST_DIR/omathunder-extension.xpi"
-(cd "$ROOT_DIR/extension" && zip -q -r "$XPI_PATH" . -x "*.DS_Store")
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   HOST_ARCH="$(uname -m)"
@@ -64,33 +78,89 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     x86_64|amd64) HOST_ARCH="amd64" ;;
     arm64|aarch64) HOST_ARCH="arm64" ;;
   esac
-  echo "==> Building macOS .app bundle (darwin/${HOST_ARCH})..."
-  # MYGO_LDFLAGS is appended after mygo's own -ldflags, so the app reports the real version.
+
+  MAC_PLATFORM="darwin/${HOST_ARCH}"
+  MAC_OUT_SUB="darwin-${HOST_ARCH}"
+  DMG_FLAG="-skip-dmg"
+  if [[ "$BUILD_UNIVERSAL" == "true" ]]; then
+    MAC_PLATFORM="darwin/universal"
+    MAC_OUT_SUB="darwin-universal"
+    DMG_FLAG=""
+  elif [[ "$BUILD_PACKAGES" == "true" ]]; then
+    DMG_FLAG=""
+  fi
+
+  echo "==> Building macOS .app bundle (${MAC_PLATFORM}) via mygo@${MYGO_VERSION}..."
   (cd "$ROOT_DIR" && MYGO_LDFLAGS="-X main.version=${VERSION}" \
-    go run github.com/egoist/mygo/cmd/mygo@v0.7.4 build -platform "darwin/${HOST_ARCH}" -skip-dmg -o "$DIST_DIR")
-  rm -rf "$DIST_DIR/OmaThunder.app"
-  cp -R "$DIST_DIR/darwin-${HOST_ARCH}/OmaThunder.app" "$DIST_DIR/OmaThunder.app"
-  rm -rf "$DIST_DIR/darwin-${HOST_ARCH}"
-  APP_VERSION="$("$DIST_DIR/OmaThunder.app/Contents/MacOS/OmaThunder" --version 2>/dev/null || true)"
-  if [[ "$APP_VERSION" != "omathunder-ui ${VERSION}" ]]; then
-    echo "OmaThunder.app reports '$APP_VERSION', expected 'omathunder-ui ${VERSION}'" >&2
+    go run "github.com/egoist/mygo/cmd/mygo@${MYGO_VERSION}" build \
+      -platform "${MAC_PLATFORM}" ${DMG_FLAG} -o "$DIST_DIR")
+
+  rm -rf "$DIST_DIR/MailDiver.app"
+  cp -R "$DIST_DIR/${MAC_OUT_SUB}/MailDiver.app" "$DIST_DIR/MailDiver.app"
+  if compgen -G "$DIST_DIR/${MAC_OUT_SUB}/*.dmg" >/dev/null 2>&1; then
+    mv "$DIST_DIR/${MAC_OUT_SUB}"/*.dmg "$DIST_DIR/"
+  fi
+  rm -rf "$DIST_DIR/${MAC_OUT_SUB}"
+
+  APP_VERSION="$("$DIST_DIR/MailDiver.app/Contents/MacOS/MailDiver" --version 2>/dev/null || true)"
+  if [[ "$APP_VERSION" != "maildiver ${VERSION}" ]]; then
+    echo "MailDiver.app reports '$APP_VERSION', expected 'maildiver ${VERSION}'" >&2
     exit 1
   fi
   # Release asset: a zipped bundle keeps symlinks, permissions and extended attributes intact.
-  (cd "$DIST_DIR" && ditto -c -k --keepParent OmaThunder.app "OmaThunder-darwin-${HOST_ARCH}.zip")
+  (cd "$DIST_DIR" && ditto -c -k --keepParent MailDiver.app "MailDiver-${MAC_OUT_SUB}.zip")
+fi
+
+if [[ "$BUILD_PACKAGES" == "true" ]]; then
+  echo "==> Building Linux (.tar.gz/.deb/.rpm/PKGBUILD) & Windows packages via mygo@${MYGO_VERSION}..."
+  (cd "$ROOT_DIR" && MYGO_LDFLAGS="-X main.version=${VERSION}" \
+    go run "github.com/egoist/mygo/cmd/mygo@${MYGO_VERSION}" build \
+      -platform "linux/amd64,linux/arm64,windows/amd64,windows/arm64" -skip-installer -o "$DIST_DIR/packages")
+fi
+
+if [[ "$BUILD_ANDROID" == "true" ]]; then
+  echo "==> Checking Android toolchain (mygo@${MYGO_VERSION} doctor)..."
+  DEFAULT_ANDROID_SDK="$HOME/Android/Sdk"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    DEFAULT_ANDROID_SDK="$HOME/Library/Android/sdk"
+  fi
+  ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$DEFAULT_ANDROID_SDK}}"
+  NDK_DIR="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+  if [[ -z "$NDK_DIR" && -d "$ANDROID_SDK/ndk" ]]; then
+    NDK_DIR="$(ls -1d "$ANDROID_SDK"/ndk/* 2>/dev/null | sort -V | tail -n 1 || true)"
+  fi
+  if [[ -z "$NDK_DIR" || ! -d "$NDK_DIR" ]]; then
+    echo "ERROR: Android NDK not found (SDK: ${ANDROID_SDK})." >&2
+    echo "Install it via Android Studio -> SDK Manager -> SDK Tools -> NDK (Side by side)," >&2
+    echo "or via: sdkmanager 'ndk;27.2.12479018' and export ANDROID_NDK_HOME." >&2
+    exit 1
+  fi
+  echo "==> Building Android (android/arm64) via mygo@${MYGO_VERSION}..."
+  (cd "$ROOT_DIR" && ANDROID_NDK_HOME="$NDK_DIR" MYGO_LDFLAGS="-X main.version=${VERSION}" \
+    go run "github.com/egoist/mygo/cmd/mygo@${MYGO_VERSION}" build \
+      -platform "android/arm64" -o "$DIST_DIR/android")
 fi
 
 echo "==> Writing SHA256 checksums..."
 shopt -s nullglob
 ASSETS=()
-for f in "$DIST_DIR"/omathunder-* "$DIST_DIR"/OmaThunder-*.zip; do
-  ASSETS+=("$(basename "$f")")
+for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip; do
+  [[ -f "$f" ]] && ASSETS+=("$(basename "$f")")
+done
+for sub in packages android; do
+  if [[ -d "$DIST_DIR/$sub" ]]; then
+    while IFS= read -r -d '' f; do
+      ASSETS+=("${f#"$DIST_DIR"/}")
+    done < <(find "$DIST_DIR/$sub" -type f -print0 | sort -z)
+  fi
 done
 shopt -u nullglob
-if command -v shasum >/dev/null 2>&1; then
-  (cd "$DIST_DIR" && shasum -a 256 "${ASSETS[@]}" > SHA256SUMS.txt)
-elif command -v sha256sum >/dev/null 2>&1; then
-  (cd "$DIST_DIR" && sha256sum "${ASSETS[@]}" > SHA256SUMS.txt)
+if [[ ${#ASSETS[@]} -gt 0 ]]; then
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$DIST_DIR" && shasum -a 256 "${ASSETS[@]}" > SHA256SUMS.txt)
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "$DIST_DIR" && sha256sum "${ASSETS[@]}" > SHA256SUMS.txt)
+  fi
 fi
 
 echo "==> Build complete:"

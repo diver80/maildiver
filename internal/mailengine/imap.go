@@ -1,0 +1,1583 @@
+package mailengine
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"net/mail"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-sasl"
+
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
+)
+
+func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, unilateral *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	addr := net.JoinHostPort(strings.TrimSpace(acc.IMAPHost), fmt.Sprintf("%d", acc.IMAPPort))
+	dialer := &net.Dialer{Timeout: 20 * time.Second}
+	if d, ok := ctx.Deadline(); ok {
+		dialer.Deadline = d
+	}
+	opts := &imapclient.Options{
+		Dialer:                dialer,
+		TLSConfig:             &tls.Config{ServerName: strings.TrimSpace(acc.IMAPHost), MinVersion: tls.VersionTLS12},
+		UnilateralDataHandler: unilateral,
+	}
+
+	var c *imapclient.Client
+	var err error
+	mode := strings.ToLower(strings.TrimSpace(acc.IMAPTLS))
+	switch {
+	case mode == "plain" && isLoopbackHost(acc.IMAPHost):
+		c, err = imapclient.DialInsecure(addr, opts)
+	case mode == "starttls":
+		c, err = imapclient.DialStartTLS(addr, opts)
+	default:
+		c, err = imapclient.DialTLS(addr, opts)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("IMAP Verbindung zu %s fehlgeschlagen: %w", addr, err)
+	}
+
+	// Authenticate: XOAUTH2 (Gmail/Microsoft 365) when configured, else SASL PLAIN with LOGIN fallback.
+	user := acc.EffectiveUsername()
+	caps := c.Caps()
+	var authErr error
+	if strings.EqualFold(strings.TrimSpace(acc.AuthType), "xoauth2") {
+		authErr = c.Authenticate(NewXOAUTH2Client(user, password))
+	} else {
+		if caps != nil && caps.Has(imap.AuthCap(sasl.Plain)) {
+			authErr = c.Authenticate(sasl.NewPlainClient("", user, password))
+		} else {
+			authErr = c.Login(user, password).Wait()
+		}
+		if authErr != nil {
+			// Retry with LOGIN if PLAIN failed on a quirky server (except if LOGIN was already tried).
+			if caps != nil && caps.Has(imap.AuthCap(sasl.Plain)) && !caps.Has(imap.CapLoginDisabled) {
+				if loginErr := c.Login(user, password).Wait(); loginErr == nil {
+					authErr = nil
+				}
+			}
+		}
+	}
+	if authErr != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("IMAP Anmeldung fehlgeschlagen (%s): %w", user, authErr)
+	}
+	return c, nil
+}
+
+func isLoopbackHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// TestIMAPConnection verifies connectivity and credentials without storing anything.
+func TestIMAPConnection(ctx context.Context, acc config.DirectAccount, password string) (folderCount int, err error) {
+	c, err := dialIMAP(ctx, acc, password, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer c.Close()
+	mboxes, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		return 0, fmt.Errorf("IMAP LIST fehlgeschlagen: %w", err)
+	}
+	return len(mboxes), nil
+}
+
+// SyncResult summarizes an incremental IMAP sync pass for one account.
+type SyncResult struct {
+	AccountID    string
+	Folders      int
+	NewMessages  []StoredMessage
+	UpdatedFlags int
+	RemovedUIDs  int
+	// BackfillPending: older mails on the server are still missing locally; the next full sync
+	// should come soon.
+	BackfillPending bool
+}
+
+func (e *Engine) syncAccountIMAP(ctx context.Context, acc config.DirectAccount, inboxOnly bool) (SyncResult, error) {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return SyncResult{AccountID: acc.ID}, fmt.Errorf("kein Passwort gespeichert für %s", acc.Email)
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return SyncResult{AccountID: acc.ID}, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+
+	res := SyncResult{AccountID: acc.ID}
+	folders, err := e.syncFoldersIMAP(ctx, c, acc)
+	if err != nil {
+		return res, err
+	}
+	res.Folders = len(folders)
+
+	// Prioritize INBOX first, then Sent/Drafts/other folders, skipping Trash/Junk if inboxOnly.
+	sort.SliceStable(folders, func(i, j int) bool {
+		return folderSyncPriority(folders[i]) < folderSyncPriority(folders[j])
+	})
+
+	for _, f := range folders {
+		if ctx.Err() != nil {
+			return res, ctx.Err()
+		}
+		if slices.Contains(f.SpecialUse, "noselect") || slices.Contains(f.SpecialUse, "nonexistent") {
+			continue
+		}
+		if inboxOnly && f.Type != "inbox" {
+			continue
+		}
+		fRes, err := e.syncSingleFolderIMAP(ctx, c, acc, f, !inboxOnly)
+		if err != nil {
+			// Don't fail the whole account if one auxiliary folder is unselectable.
+			if f.Type == "inbox" {
+				return res, err
+			}
+			continue
+		}
+		res.NewMessages = append(res.NewMessages, fRes.NewMessages...)
+		res.UpdatedFlags += fRes.UpdatedFlags
+		res.RemovedUIDs += fRes.RemovedUIDs
+		res.BackfillPending = res.BackfillPending || fRes.BackfillPending
+	}
+
+	// Prefetch newest INBOX bodies so clicking through unread mails is instant.
+	if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {
+		e.prefetchFolderBodies(ctx, c, acc, inbox, 20)
+	}
+
+	return res, nil
+}
+
+func folderSyncPriority(f StoredFolder) int {
+	switch f.Type {
+	case "inbox":
+		return 0
+	case "sent":
+		return 1
+	case "drafts":
+		return 2
+	case "archive":
+		return 3
+	case "trash":
+		return 8
+	case "junk":
+		return 9
+	default:
+		return 5
+	}
+}
+
+func (e *Engine) syncFoldersIMAP(ctx context.Context, c *imapclient.Client, acc config.DirectAccount) ([]StoredFolder, error) {
+	mboxes, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("IMAP LIST: %w", err)
+	}
+	existingList, _ := e.store.ListFolders(ctx, acc.ID)
+	existingByPath := map[string]StoredFolder{}
+	for _, f := range existingList {
+		existingByPath[f.Path] = f
+	}
+
+	var out []StoredFolder
+	for _, mb := range mboxes {
+		delim := "/"
+		if mb.Delim != 0 {
+			delim = string(mb.Delim)
+		}
+		fType, su := classifyFolderAttrs(mb.Mailbox, mb.Attrs)
+		name := mb.Mailbox
+		if delim != "" && strings.Contains(name, delim) {
+			parts := strings.Split(name, delim)
+			name = parts[len(parts)-1]
+		}
+		sf := StoredFolder{
+			ID:         FolderID(acc.ID, mb.Mailbox),
+			AccountID:  acc.ID,
+			Name:       name,
+			Path:       mb.Mailbox,
+			Delimiter:  delim,
+			Type:       fType,
+			SpecialUse: su,
+		}
+		if prev, ok := existingByPath[mb.Mailbox]; ok {
+			sf.UIDValidity = prev.UIDValidity
+			sf.UIDNext = prev.UIDNext
+			sf.LastSync = prev.LastSync
+		}
+		if err := e.store.UpsertFolder(ctx, sf); err != nil {
+			return nil, err
+		}
+		out = append(out, sf)
+	}
+	if len(out) > 0 {
+		keep := make(map[string]bool, len(out))
+		for _, f := range out {
+			keep[f.Path] = true
+		}
+		_ = e.store.DeleteMissingAccountFolders(ctx, acc.ID, keep)
+	}
+	return out, nil
+}
+
+func classifyFolderAttrs(path string, attrs []imap.MailboxAttr) (folderType string, specialUse []string) {
+	for _, a := range attrs {
+		switch a {
+		case imap.MailboxAttrNoSelect:
+			specialUse = append(specialUse, "noselect")
+		case imap.MailboxAttrNonExistent:
+			specialUse = append(specialUse, "nonexistent")
+		case imap.MailboxAttrSent:
+			folderType = "sent"
+			specialUse = append(specialUse, "sent")
+		case imap.MailboxAttrDrafts:
+			folderType = "drafts"
+			specialUse = append(specialUse, "drafts")
+		case imap.MailboxAttrTrash:
+			folderType = "trash"
+			specialUse = append(specialUse, "trash")
+		case imap.MailboxAttrJunk:
+			folderType = "junk"
+			specialUse = append(specialUse, "junk")
+		case imap.MailboxAttrArchive:
+			folderType = "archive"
+			specialUse = append(specialUse, "archive")
+		case imap.MailboxAttrAll:
+			specialUse = append(specialUse, "all")
+		}
+	}
+	low := strings.ToLower(strings.TrimSpace(path))
+	if low == "inbox" {
+		folderType = "inbox"
+		if !slices.Contains(specialUse, "inbox") {
+			specialUse = append(specialUse, "inbox")
+		}
+	}
+	if folderType == "" {
+		base := low
+		if idx := strings.LastIndexAny(base, "/."); idx >= 0 {
+			base = base[idx+1:]
+		}
+		switch base {
+		case "sent", "sent items", "sent messages", "gesendet", "gesendete objekte", "gesendete elemente":
+			folderType = "sent"
+		case "drafts", "entwürfe", "entwuerfe":
+			folderType = "drafts"
+		case "trash", "deleted", "deleted items", "deleted messages", "papierkorb", "gelöscht", "geloescht":
+			folderType = "trash"
+		case "junk", "spam", "junk-e-mail", "werbung":
+			folderType = "junk"
+		case "archive", "archiv", "all mail":
+			folderType = "archive"
+		}
+	}
+	return folderType, specialUse
+}
+
+// Sync window and backfill: every sync compares flags and deletions for the newest mails of a
+// folder (the window). Full syncs also fill in older mails, backfillBatch per folder and run,
+// newest first, and drop local copies of older mails the server no longer has – so a mailbox is
+// complete after a few runs without a long first sync.
+const (
+	defaultSyncWindow = 500
+	otherSyncWindow   = 200
+)
+
+var backfillBatch = 1000 // a variable for tests
+
+func (e *Engine) syncSingleFolderIMAP(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, full bool) (SyncResult, error) {
+	res := SyncResult{AccountID: acc.ID}
+	sel, err := c.Select(f.Path, nil).Wait()
+	if err != nil {
+		return res, fmt.Errorf("IMAP SELECT %q: %w", f.Path, err)
+	}
+
+	// If UIDVALIDITY changed, cached UIDs for this folder are invalid.
+	hadPriorSync := f.LastSync != ""
+	if f.UIDValidity != 0 && sel.UIDValidity != 0 && f.UIDValidity != sel.UIDValidity {
+		_ = e.store.ClearFolderMessages(ctx, f.ID)
+		hadPriorSync = false
+	}
+
+	cached, err := e.store.FolderUIDFlags(ctx, f.ID)
+	if err != nil {
+		return res, err
+	}
+
+	if sel.NumMessages == 0 {
+		if len(cached) > 0 {
+			_ = e.store.ClearFolderMessages(ctx, f.ID)
+			res.RemovedUIDs = len(cached)
+		}
+		_ = e.store.UpdateFolderSyncState(ctx, f.ID, sel.UIDValidity, uint32(sel.UIDNext))
+		return res, nil
+	}
+
+	limit := uint32(acc.SyncLimit)
+	if limit == 0 {
+		limit = defaultSyncWindow
+	}
+	if f.Type != "inbox" && limit > otherSyncWindow {
+		limit = otherSyncWindow
+	}
+	startSeq := uint32(1)
+	if sel.NumMessages > limit {
+		startSeq = sel.NumMessages - limit + 1
+	}
+	var seqSet imap.SeqSet
+	seqSet.AddRange(startSeq, sel.NumMessages)
+
+	// Step 1: Fast UID + Flags scan for the sync window.
+	scanMsgs, err := c.Fetch(seqSet, &imap.FetchOptions{
+		UID:   true,
+		Flags: true,
+	}).Collect()
+	if err != nil {
+		return res, fmt.Errorf("IMAP FETCH flags %q: %w", f.Path, err)
+	}
+
+	serverUIDs := make(map[uint32]bool, len(scanMsgs))
+	var newUIDs []imap.UID
+	var minWindowUID uint32
+
+	for _, sm := range scanMsgs {
+		uid := uint32(sm.UID)
+		if uid == 0 {
+			continue
+		}
+		serverUIDs[uid] = true
+		if minWindowUID == 0 || uid < minWindowUID {
+			minWindowUID = uid
+		}
+		read, flagged := parseIMAPFlags(sm.Flags)
+		if prev, ok := cached[uid]; ok {
+			if prev[0] != read || prev[1] != flagged {
+				_ = e.store.UpdateMessageFlagsByUID(ctx, f.ID, uid, read, flagged)
+				res.UpdatedFlags++
+			}
+		} else {
+			newUIDs = append(newUIDs, sm.UID)
+		}
+	}
+
+	// Remove expunged UIDs that should have been in the fetched window.
+	var toDelete []uint32
+	for cachedUID := range cached {
+		if !serverUIDs[cachedUID] && (startSeq == 1 || cachedUID >= minWindowUID) {
+			toDelete = append(toDelete, cachedUID)
+		}
+	}
+	if len(toDelete) > 0 {
+		_ = e.store.DeleteFolderUIDs(ctx, f.ID, toDelete)
+		res.RemovedUIDs = len(toDelete)
+	}
+
+	// Step 2: Fetch envelopes & threading headers for new UIDs. Only mails above the last known
+	// UIDNEXT are new: a mail that slid into the window after a deletion is an old one.
+	filterSource := isFilterSourceFolder(f)
+	var newFilterMsgs []StoredMessage
+	if len(newUIDs) > 0 {
+		sort.Slice(newUIDs, func(i, j int) bool { return newUIDs[i] > newUIDs[j] })
+		err := e.fetchEnvelopesIMAP(ctx, c, acc, f, newUIDs, 50, func(sm StoredMessage) {
+			if hadPriorSync && (f.UIDNext == 0 || sm.UID >= f.UIDNext) {
+				if f.Type == "inbox" {
+					res.NewMessages = append(res.NewMessages, sm)
+				}
+				if filterSource {
+					newFilterMsgs = append(newFilterMsgs, sm)
+				}
+			}
+		})
+		if err != nil {
+			return res, err
+		}
+	}
+
+	// Step 3 (full syncs): older mails below the window.
+	if full && startSeq > 1 && minWindowUID > 1 && f.Type != "trash" && f.Type != "junk" {
+		pending, removed, err := e.backfillOlderIMAP(ctx, c, acc, f, minWindowUID, cached)
+		if err != nil && ctx.Err() != nil {
+			return res, err
+		}
+		res.BackfillPending = pending
+		res.RemovedUIDs += removed
+	}
+
+	_ = e.store.UpdateFolderSyncState(ctx, f.ID, sel.UIDValidity, uint32(sel.UIDNext))
+
+	// Execute enabled local MailDiver filters on newly arrived INBOX and active INBOX/* subfolder messages.
+	if filterSource && len(newFilterMsgs) > 0 {
+		remaining := e.applyLocalFiltersOnNewMessages(ctx, c, acc, f, newFilterMsgs)
+		if f.Type == "inbox" {
+			res.NewMessages = remaining
+		}
+	}
+	return res, nil
+}
+
+// fetchEnvelopesIMAP fetches envelopes and threading headers for uids (in chunks) and stores
+// them; stored is called for each stored mail.
+func (e *Engine) fetchEnvelopesIMAP(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, uids []imap.UID, chunk int, stored func(StoredMessage)) error {
+	hdrSection := &imap.FetchItemBodySection{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: []string{"Message-ID", "In-Reply-To", "References", "List-Id", "List-Unsubscribe"},
+		Peek:         true,
+	}
+	for i := 0; i < len(uids); i += chunk {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		end := min(i+chunk, len(uids))
+		var uidSet imap.UIDSet
+		for _, u := range uids[i:end] {
+			uidSet.AddNum(u)
+		}
+		fetched, err := c.Fetch(uidSet, &imap.FetchOptions{
+			UID:          true,
+			Flags:        true,
+			Envelope:     true,
+			InternalDate: true,
+			RFC822Size:   true,
+			BodySection:  []*imap.FetchItemBodySection{hdrSection},
+		}).Collect()
+		if err != nil {
+			return fmt.Errorf("IMAP FETCH headers %q: %w", f.Path, err)
+		}
+		for _, fm := range fetched {
+			sm := fetchBufferToStoredMessage(acc.ID, f, fm, hdrSection)
+			if err := e.store.UpsertMessage(ctx, sm); err != nil {
+				continue
+			}
+			if stored != nil {
+				stored(sm)
+			}
+		}
+	}
+	return nil
+}
+
+// backfillOlderIMAP handles the mails below the sync window (UIDs < below): local copies the
+// server no longer has are removed, and up to backfillBatch of the newest missing ones are
+// fetched. It reports whether older mails are still missing and how many copies it removed.
+func (e *Engine) backfillOlderIMAP(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, below uint32, cached map[uint32][3]bool) (bool, int, error) {
+	var older imap.UIDSet
+	older.AddRange(1, imap.UID(below-1))
+	data, err := c.UIDSearch(&imap.SearchCriteria{UID: []imap.UIDSet{older}}, nil).Wait()
+	if err != nil {
+		return false, 0, fmt.Errorf("IMAP UID SEARCH %q: %w", f.Path, err)
+	}
+	server := data.AllUIDs()
+	onServer := make(map[uint32]bool, len(server))
+	var missing []imap.UID
+	for _, u := range server {
+		onServer[uint32(u)] = true
+		if _, ok := cached[uint32(u)]; !ok {
+			missing = append(missing, u)
+		}
+	}
+	var gone []uint32
+	for uid := range cached {
+		if uid < below && !onServer[uid] {
+			gone = append(gone, uid)
+		}
+	}
+	if len(gone) > 0 {
+		_ = e.store.DeleteFolderUIDs(ctx, f.ID, gone)
+	}
+	if len(missing) == 0 {
+		return false, len(gone), nil
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i] > missing[j] })
+	pending := len(missing) > backfillBatch
+	if pending {
+		missing = missing[:backfillBatch]
+	}
+	if err := e.fetchEnvelopesIMAP(ctx, c, acc, f, missing, 200, nil); err != nil {
+		return true, len(gone), err
+	}
+	return pending, len(gone), nil
+}
+
+func (e *Engine) prefetchFolderBodies(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, limit int) {
+	uids, err := e.store.UnfetchedRecentUIDs(ctx, f.ID, limit)
+	if err != nil || len(uids) == 0 {
+		return
+	}
+	if _, err := c.Select(f.Path, nil).Wait(); err != nil {
+		return
+	}
+	bodySec := &imap.FetchItemBodySection{Peek: true}
+	for i := 0; i < len(uids); i += 10 {
+		if ctx.Err() != nil {
+			return
+		}
+		end := min(i+10, len(uids))
+		var uidSet imap.UIDSet
+		for _, u := range uids[i:end] {
+			uidSet.AddNum(imap.UID(u))
+		}
+		fetched, err := c.Fetch(uidSet, &imap.FetchOptions{
+			UID:         true,
+			Flags:       true,
+			BodySection: []*imap.FetchItemBodySection{bodySec},
+		}).Collect()
+		if err != nil {
+			return
+		}
+		for _, fm := range fetched {
+			raw := fm.FindBodySection(bodySec)
+			if len(raw) == 0 {
+				continue
+			}
+			id := MessageStoreID(acc.ID, f.Path, uint32(fm.UID))
+			existing, err := e.store.GetMessage(ctx, id)
+			if err != nil {
+				continue
+			}
+			mergeParsedIntoStored(&existing, raw)
+			_ = e.store.UpsertMessage(ctx, existing)
+		}
+	}
+}
+
+func (e *Engine) fetchMessageBodyIMAP(ctx context.Context, acc config.DirectAccount, m StoredMessage) (StoredMessage, error) {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return m, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return m, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	if _, err := c.Select(m.FolderPath, nil).Wait(); err != nil {
+		return m, fmt.Errorf("IMAP SELECT %q: %w", m.FolderPath, err)
+	}
+	bodySec := &imap.FetchItemBodySection{Peek: true}
+	var uidSet imap.UIDSet
+	uidSet.AddNum(imap.UID(m.UID))
+	fetched, err := c.Fetch(uidSet, &imap.FetchOptions{
+		UID:         true,
+		Flags:       true,
+		BodySection: []*imap.FetchItemBodySection{bodySec},
+	}).Collect()
+	if err != nil || len(fetched) == 0 {
+		if err == nil {
+			err = fmt.Errorf("not_found: UID %d not found in %q", m.UID, m.FolderPath)
+		}
+		return m, err
+	}
+	raw := fetched[0].FindBodySection(bodySec)
+	mergeParsedIntoStored(&m, raw)
+	_ = e.store.UpsertMessage(ctx, m)
+	return m, nil
+}
+
+func mergeParsedIntoStored(m *StoredMessage, raw []byte) {
+	parsed, err := ParseRawMessage(raw)
+	if err != nil {
+		m.BodyText = strings.TrimSpace(string(raw))
+		m.BodyFetched = true
+		m.RawEML = raw
+		return
+	}
+	if parsed.Subject != "" && m.Subject == "" {
+		m.Subject = parsed.Subject
+	}
+	if parsed.From != "" && m.From == "" {
+		m.From = parsed.From
+	}
+	if len(parsed.To) > 0 && len(m.To) == 0 {
+		m.To = parsed.To
+	}
+	if len(parsed.CC) > 0 && len(m.CC) == 0 {
+		m.CC = parsed.CC
+	}
+	if parsed.MessageID != "" && m.MessageID == "" {
+		m.MessageID = parsed.MessageID
+	}
+	if parsed.InReplyTo != "" && m.InReplyTo == "" {
+		m.InReplyTo = parsed.InReplyTo
+	}
+	if parsed.References != "" && m.References == "" {
+		m.References = parsed.References
+	}
+	m.BodyText = parsed.BodyText
+	m.BodyHTML = parsed.BodyHTML
+	m.Attachments = parsed.Attachments
+	m.Headers = parsed.Headers
+	m.RawEML = raw
+	m.BodyFetched = true
+	if parsed.ICSBody != "" {
+		m.HasICS = true
+		m.ICSBody = parsed.ICSBody
+	}
+}
+
+const imapUIDChunkSize = 500
+
+func chunkUIDs(uids []imap.UID, size int) []imap.UIDSet {
+	if size <= 0 {
+		size = imapUIDChunkSize
+	}
+	valid := make([]imap.UID, 0, len(uids))
+	for _, u := range uids {
+		if u > 0 {
+			valid = append(valid, u)
+		}
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+	var chunks []imap.UIDSet
+	for i := 0; i < len(valid); i += size {
+		end := min(i+size, len(valid))
+		var set imap.UIDSet
+		for _, u := range valid[i:end] {
+			set.AddNum(u)
+		}
+		chunks = append(chunks, set)
+	}
+	return chunks
+}
+
+func uidExpungeIMAP(c *imapclient.Client, uidSet imap.UIDSet) error {
+	caps := c.Caps()
+	if caps != nil && (caps.Has(imap.CapUIDPlus) || caps.Has(imap.CapIMAP4rev2)) {
+		if err := c.UIDExpunge(uidSet).Close(); err != nil {
+			return fmt.Errorf("IMAP UID EXPUNGE: %w", err)
+		}
+		return nil
+	}
+	if err := c.Expunge().Close(); err != nil {
+		return fmt.Errorf("IMAP EXPUNGE: %w", err)
+	}
+	return nil
+}
+
+func moveMessagesIMAP(c *imapclient.Client, uidSet imap.UIDSet, targetPath string) error {
+	caps := c.Caps()
+	if caps != nil && (caps.Has(imap.CapMove) || caps.Has(imap.CapIMAP4rev2)) {
+		if _, err := c.Move(uidSet, targetPath).Wait(); err != nil {
+			return fmt.Errorf("IMAP MOVE nach %q: %w", targetPath, err)
+		}
+		return nil
+	}
+	if _, err := c.Copy(uidSet, targetPath).Wait(); err != nil {
+		return fmt.Errorf("IMAP COPY nach %q: %w", targetPath, err)
+	}
+	if err := c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		return fmt.Errorf("IMAP STORE \\Deleted: %w", err)
+	}
+	return uidExpungeIMAP(c, uidSet)
+}
+
+func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expectedUIDValidity uint32, uids []imap.UID, read, flagged *bool, moveTargetPath string, permanentDelete bool) error {
+	chunks := chunkUIDs(uids, imapUIDChunkSize)
+	if len(chunks) == 0 {
+		return nil
+	}
+	sel, err := c.Select(folderPath, nil).Wait()
+	if err != nil {
+		return fmt.Errorf("IMAP SELECT %q: %w", folderPath, err)
+	}
+	if expectedUIDValidity > 0 && sel.UIDValidity > 0 && sel.UIDValidity != expectedUIDValidity {
+		return fmt.Errorf("UIDVALIDITY für %q hat sich geändert (lokal %d, Server %d) – bitte zuerst synchronisieren", folderPath, expectedUIDValidity, sel.UIDValidity)
+	}
+	for _, uidSet := range chunks {
+		if read != nil {
+			op := imap.StoreFlagsAdd
+			if !*read {
+				op = imap.StoreFlagsDel
+			}
+			if err := c.Store(uidSet, &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close(); err != nil {
+				return fmt.Errorf("IMAP STORE \\Seen: %w", err)
+			}
+		}
+		if flagged != nil {
+			op := imap.StoreFlagsAdd
+			if !*flagged {
+				op = imap.StoreFlagsDel
+			}
+			if err := c.Store(uidSet, &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close(); err != nil {
+				return fmt.Errorf("IMAP STORE \\Flagged: %w", err)
+			}
+		}
+		if moveTargetPath != "" && !strings.EqualFold(moveTargetPath, folderPath) {
+			if err := moveMessagesIMAP(c, uidSet, moveTargetPath); err != nil {
+				return err
+			}
+		} else if permanentDelete {
+			if err := c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+				return fmt.Errorf("IMAP STORE \\Deleted: %w", err)
+			}
+			if err := uidExpungeIMAP(c, uidSet); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) applyMessageActionIMAP(ctx context.Context, acc config.DirectAccount, m StoredMessage, read, flagged *bool, moveTargetPath string, permanentDelete bool) error {
+	if m.UID == 0 {
+		return nil
+	}
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	var expectedValidity uint32
+	if f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, m.FolderPath); ok {
+		expectedValidity = f.UIDValidity
+	}
+	return applyFlagsAndMoveOnClient(c, m.FolderPath, expectedValidity, []imap.UID{imap.UID(m.UID)}, read, flagged, moveTargetPath, permanentDelete)
+}
+
+type folderBatchOp struct {
+	FolderPath      string
+	Messages        []StoredMessage
+	Read            *bool
+	Flagged         *bool
+	MoveTargetPath  string
+	PermanentDelete bool
+}
+
+// applyBatchActionsIMAP executes multiple folder batches for one account over a single IMAP connection.
+// Returns the per-batch error (nil on success).
+func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAccount, ops []folderBatchOp) []error {
+	errs := make([]error, len(ops))
+	if len(ops) == 0 {
+		return errs
+	}
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	validityByPath := map[string]uint32{}
+	for i, op := range ops {
+		if len(op.Messages) == 0 {
+			continue
+		}
+		uids := make([]imap.UID, 0, len(op.Messages))
+		for _, m := range op.Messages {
+			if m.UID > 0 {
+				uids = append(uids, imap.UID(m.UID))
+			}
+		}
+		if len(uids) == 0 {
+			continue
+		}
+		expVal, ok := validityByPath[op.FolderPath]
+		if !ok {
+			if f, fok := e.store.FindFolderByIDOrPath(ctx, acc.ID, op.FolderPath); fok {
+				expVal = f.UIDValidity
+			}
+			validityByPath[op.FolderPath] = expVal
+		}
+		errs[i] = applyFlagsAndMoveOnClient(c, op.FolderPath, expVal, uids, op.Read, op.Flagged, op.MoveTargetPath, op.PermanentDelete)
+	}
+	return errs
+}
+
+// markFoldersReadIMAP marks all \Unseen messages in the given folders as \Seen over a single IMAP connection.
+// Returns the folder paths that succeeded on IMAP, the number of marked messages, and the first error (if any).
+func (e *Engine) markFoldersReadIMAP(ctx context.Context, acc config.DirectAccount, folderPaths []string) ([]string, int, error) {
+	if len(folderPaths) == 0 {
+		return nil, 0, nil
+	}
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return nil, 0, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	var succeeded []string
+	var firstErr error
+	total := 0
+	for _, fp := range folderPaths {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return succeeded, total, firstErr
+		}
+		if _, err := c.Select(fp, nil).Wait(); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("IMAP SELECT %q: %w", fp, err)
+			}
+			continue
+		}
+		data, err := c.UIDSearch(&imap.SearchCriteria{NotFlag: []imap.Flag{imap.FlagSeen}}, nil).Wait()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("IMAP UID SEARCH %q: %w", fp, err)
+			}
+			continue
+		}
+		uids := data.AllUIDs()
+		folderFailed := false
+		for _, uidSet := range chunkUIDs(uids, imapUIDChunkSize) {
+			if err := c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close(); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("IMAP STORE \\Seen %q: %w", fp, err)
+				}
+				folderFailed = true
+				break
+			}
+		}
+		if !folderFailed {
+			succeeded = append(succeeded, fp)
+			total += len(uids)
+		}
+	}
+	return succeeded, total, firstErr
+}
+
+// searchServerIMAP runs IMAP UID SEARCH TEXT across the specified folders of acc over a single connection,
+// returning matching StoredMessages (and fetching/storing any envelopes not yet in SQLite).
+func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount, folders []StoredFolder, query string, limit int) ([]StoredMessage, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len(folders) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return nil, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+
+	var results []StoredMessage
+	var firstErr error
+	for _, f := range folders {
+		if ctx.Err() != nil || len(results) >= limit {
+			break
+		}
+		if slices.Contains(f.SpecialUse, "noselect") || slices.Contains(f.SpecialUse, "nonexistent") {
+			continue
+		}
+		sel, err := c.Select(f.Path, nil).Wait()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("IMAP SELECT %q: %w", f.Path, err)
+			}
+			continue
+		}
+		validityChanged := f.UIDValidity > 0 && sel.UIDValidity > 0 && sel.UIDValidity != f.UIDValidity
+		// IMAP TEXT searches headers + full body on the server.
+		data, err := c.UIDSearch(&imap.SearchCriteria{Text: []string{query}}, nil).Wait()
+		if err != nil {
+			// Some IMAP servers reject UTF-8/TEXT with BADCHARSET; retry with Subject header search.
+			data, err = c.UIDSearch(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: query}},
+			}, nil).Wait()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("IMAP SEARCH %q: %w", f.Path, err)
+				}
+				continue
+			}
+		}
+		uids := data.AllUIDs()
+		if len(uids) == 0 {
+			continue
+		}
+		// Newest UIDs first.
+		sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
+		rem := limit - len(results)
+		if len(uids) > rem {
+			uids = uids[:rem]
+		}
+		var missing []imap.UID
+		for _, u := range uids {
+			if validityChanged {
+				missing = append(missing, u)
+				continue
+			}
+			id := MessageStoreID(acc.ID, f.Path, uint32(u))
+			if sm, gerr := e.store.GetMessage(ctx, id); gerr == nil {
+				results = append(results, sm)
+			} else {
+				missing = append(missing, u)
+			}
+		}
+		if len(missing) > 0 {
+			if ferr := e.fetchEnvelopesIMAP(ctx, c, acc, f, missing, 50, func(sm StoredMessage) {
+				results = append(results, sm)
+			}); ferr != nil && firstErr == nil {
+				firstErr = ferr
+			}
+		}
+	}
+	if len(results) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
+}
+
+// undoMoveIMAP restores messages from ToFolderPath back to FromFolderPath on a single IMAP connection,
+// matching them by RFC Message-ID header.
+func (e *Engine) undoMoveIMAP(ctx context.Context, acc config.DirectAccount, items []backend.UndoMoveItem) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return 0, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+
+	type pairKey struct{ to, from string }
+	grouped := map[pairKey][]string{}
+	var order []pairKey
+	for _, it := range items {
+		to := strings.TrimSpace(it.ToFolderPath)
+		from := strings.TrimSpace(it.FromFolderPath)
+		mid := cleanMsgID(it.MessageID)
+		if to == "" || from == "" || mid == "" || strings.EqualFold(to, from) {
+			continue
+		}
+		k := pairKey{to: to, from: from}
+		if _, ok := grouped[k]; !ok {
+			order = append(order, k)
+		}
+		grouped[k] = append(grouped[k], mid)
+	}
+
+	restored := 0
+	var firstErr error
+	for _, k := range order {
+		if ctx.Err() != nil {
+			return restored, ctx.Err()
+		}
+		if _, err := c.Select(k.to, nil).Wait(); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("IMAP SELECT %q: %w", k.to, err)
+			}
+			continue
+		}
+		var matchedUIDs []imap.UID
+		seenUID := map[imap.UID]bool{}
+		for _, mid := range grouped[k] {
+			// Match exact angle-bracketed Message-ID first to avoid substring collisions.
+			data, err := c.UIDSearch(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + mid + ">"}},
+			}, nil).Wait()
+			var uids []imap.UID
+			if err == nil {
+				uids = data.AllUIDs()
+			}
+			if len(uids) == 0 {
+				data2, err2 := c.UIDSearch(&imap.SearchCriteria{
+					Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: mid}},
+				}, nil).Wait()
+				if err2 != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("IMAP UID SEARCH %q: %w", k.to, err2)
+					}
+					continue
+				}
+				uids = data2.AllUIDs()
+			}
+			if len(uids) == 0 {
+				continue
+			}
+			// Pick the newest (highest) UID in the target folder so duplicate copies aren't moved twice.
+			newest := uids[0]
+			for _, u := range uids[1:] {
+				if u > newest {
+					newest = u
+				}
+			}
+			if newest > 0 && !seenUID[newest] {
+				seenUID[newest] = true
+				matchedUIDs = append(matchedUIDs, newest)
+			}
+		}
+		if len(matchedUIDs) == 0 {
+			continue
+		}
+		for _, uidSet := range chunkUIDs(matchedUIDs, imapUIDChunkSize) {
+			if err := moveMessagesIMAP(c, uidSet, k.from); err != nil {
+				return restored, err
+			}
+		}
+		restored += len(matchedUIDs)
+	}
+	if restored == 0 && firstErr != nil {
+		return 0, firstErr
+	}
+	return restored, nil
+}
+
+// syncSpecificFoldersIMAP quickly re-syncs only the given folder paths of acc on one IMAP connection.
+func (e *Engine) syncSpecificFoldersIMAP(ctx context.Context, acc config.DirectAccount, folderPaths []string) error {
+	if len(folderPaths) == 0 {
+		return nil
+	}
+	lk := e.accountSyncLock(acc.ID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	seen := map[string]bool{}
+	for _, fp := range folderPaths {
+		key := strings.ToLower(strings.TrimSpace(fp))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, fp)
+		if !ok {
+			continue
+		}
+		_, _ = e.syncSingleFolderIMAP(ctx, c, acc, f, false)
+	}
+	e.emitMailSync(acc.ID)
+	return nil
+}
+
+func (e *Engine) appendMessageIMAP(ctx context.Context, acc config.DirectAccount, folderPath string, raw []byte, flags []imap.Flag, searchMsgID string) (uint32, error) {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return 0, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	cmd := c.Append(folderPath, int64(len(raw)), &imap.AppendOptions{
+		Flags: flags,
+		Time:  time.Now(),
+	})
+	if _, err := cmd.Write(raw); err != nil {
+		return 0, fmt.Errorf("IMAP APPEND write: %w", err)
+	}
+	if err := cmd.Close(); err != nil {
+		return 0, fmt.Errorf("IMAP APPEND close: %w", err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		return 0, fmt.Errorf("IMAP APPEND %q: %w", folderPath, err)
+	}
+	if data != nil && data.UID > 0 {
+		return uint32(data.UID), nil
+	}
+	// Fallback for IMAP servers without UIDPLUS: resolve the appended UID via Message-ID header.
+	mid := cleanMsgID(searchMsgID)
+	if mid != "" {
+		if _, serr := c.Select(folderPath, nil).Wait(); serr == nil {
+			if sdata, serr := c.UIDSearch(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + mid + ">"}},
+			}, nil).Wait(); serr == nil {
+				uids := sdata.AllUIDs()
+				if len(uids) == 0 {
+					if sdata2, serr2 := c.UIDSearch(&imap.SearchCriteria{
+						Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: mid}},
+					}, nil).Wait(); serr2 == nil {
+						uids = sdata2.AllUIDs()
+					}
+				}
+				var newest imap.UID
+				for _, u := range uids {
+					if u > newest {
+						newest = u
+					}
+				}
+				if newest > 0 {
+					return uint32(newest), nil
+				}
+			}
+		}
+	}
+	return 0, nil
+}
+
+func (e *Engine) createFolderIMAP(ctx context.Context, acc config.DirectAccount, folderPath string) error {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	if err := c.Create(folderPath, nil).Wait(); err != nil {
+		return fmt.Errorf("IMAP CREATE %q: %w", folderPath, err)
+	}
+	return nil
+}
+
+func (e *Engine) emptyFolderIMAP(ctx context.Context, acc config.DirectAccount, folderPath string) (int, error) {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return 0, err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	sel, err := c.Select(folderPath, nil).Wait()
+	if err != nil {
+		return 0, fmt.Errorf("IMAP SELECT %q: %w", folderPath, err)
+	}
+	if sel.NumMessages == 0 {
+		return 0, nil
+	}
+	var seqSet imap.SeqSet
+	seqSet.AddRange(1, sel.NumMessages)
+	if err := c.Store(seqSet, &imap.StoreFlags{
+		Op:     imap.StoreFlagsAdd,
+		Silent: true,
+		Flags:  []imap.Flag{imap.FlagDeleted},
+	}, nil).Close(); err != nil {
+		return 0, fmt.Errorf("IMAP STORE \\Deleted: %w", err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		return 0, fmt.Errorf("IMAP EXPUNGE: %w", err)
+	}
+	return int(sel.NumMessages), nil
+}
+
+// isFilterSourceFolder reports whether local MailDiver filter rules should inspect messages
+// in f: INBOX itself plus active INBOX/* subfolders (excluding terminal folders like */done,
+// archive, trash, junk, sent, or drafts).
+func isFilterSourceFolder(f StoredFolder) bool {
+	if slices.Contains(f.SpecialUse, "noselect") || slices.Contains(f.SpecialUse, "nonexistent") {
+		return false
+	}
+	switch strings.ToLower(f.Type) {
+	case "inbox":
+		return true
+	case "trash", "junk", "sent", "drafts", "archive":
+		return false
+	}
+	norm := strings.ToLower(strings.Trim(strings.ReplaceAll(f.Path, "\\", "/"), "/"))
+	if norm == "inbox" {
+		return true
+	}
+	if !strings.HasPrefix(norm, "inbox/") {
+		return false
+	}
+	parts := strings.Split(norm, "/")
+	for _, seg := range parts[1:] {
+		switch seg {
+		case "done", "erledigt", "archive", "archiv", "archives", "trash", "papierkorb", "junk", "spam", "sent", "drafts":
+			return false
+		}
+	}
+	return true
+}
+
+// applyLocalFiltersOnNewMessages evaluates enabled MailDiver filter rules directly on newly
+// arrived INBOX / INBOX/* messages (using the active IMAP connection) and returns remaining messages.
+func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, folder StoredFolder, msgs []StoredMessage) []StoredMessage {
+	filters, err := e.store.ListFilters(ctx, acc.ID)
+	if err != nil || len(filters) == 0 {
+		return msgs
+	}
+	var remaining []StoredMessage
+	for _, m := range msgs {
+		removed := false
+		for _, flt := range filters {
+			if !flt.Enabled || len(flt.Conditions) == 0 {
+				continue
+			}
+			if !matchFilterAgainstMessage(flt, m) {
+				continue
+			}
+			var uidSet imap.UIDSet
+			uidSet.AddNum(imap.UID(m.UID))
+			stop := false
+			for _, act := range flt.Actions {
+				switch act.Type {
+				case "markRead":
+					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
+					t := true
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, &t, nil, nil, nil)
+					m.Read = true
+				case "addStar":
+					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close()
+					t := true
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, nil, &t, nil, nil)
+					m.Flagged = true
+				case "moveToFolder":
+					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
+					if target != "" && !strings.EqualFold(target, folder.Path) {
+						if err := moveMessagesIMAP(c, uidSet, target); err == nil {
+							_ = e.store.DeleteMessage(ctx, m.ID)
+							removed = true
+							stop = true
+						}
+					}
+				case "delete":
+					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close()
+					_ = uidExpungeIMAP(c, uidSet)
+					_ = e.store.DeleteMessage(ctx, m.ID)
+					removed = true
+					stop = true
+				case "stopExecution":
+					stop = true
+				}
+				if stop || removed {
+					break
+				}
+			}
+			if stop || removed {
+				break
+			}
+		}
+		if !removed {
+			remaining = append(remaining, m)
+		}
+	}
+	return remaining
+}
+
+func matchFilterAgainstMessage(flt StoredFilter, m StoredMessage) bool {
+	in := triage.MessageInput{
+		ID:        m.ID,
+		AccountID: m.AccountID,
+		Folder:    m.FolderPath,
+		Subject:   m.Subject,
+		From:      m.From,
+		To:        m.To,
+		Date:      m.DateISO,
+		Unread:    !m.Read,
+	}
+	rep := triage.EvaluateQuickRulePreview(flt.Conditions, flt.MatchAll, map[string]bool{m.ID: true}, []triage.MessageInput{in}, "")
+	return rep.MarkedMatched > 0
+}
+
+func parseIMAPFlags(flags []imap.Flag) (read, flagged bool) {
+	for _, fl := range flags {
+		switch fl {
+		case imap.FlagSeen:
+			read = true
+		case imap.FlagFlagged:
+			flagged = true
+		}
+	}
+	return read, flagged
+}
+
+func fetchBufferToStoredMessage(accountID string, f StoredFolder, fm *imapclient.FetchMessageBuffer, hdrSec *imap.FetchItemBodySection) StoredMessage {
+	read, flagged := parseIMAPFlags(fm.Flags)
+	sm := StoredMessage{
+		ID:         MessageStoreID(accountID, f.Path, uint32(fm.UID)),
+		AccountID:  accountID,
+		FolderID:   f.ID,
+		FolderPath: f.Path,
+		UID:        uint32(fm.UID),
+		Read:       read,
+		Flagged:    flagged,
+		Size:       fm.RFC822Size,
+		Headers:    map[string]string{},
+	}
+	dt := fm.InternalDate
+	if fm.Envelope != nil {
+		sm.Subject = decodeHeader(fm.Envelope.Subject)
+		sm.From = formatIMAPAddresses(fm.Envelope.From)
+		sm.To = formatIMAPAddressSlice(fm.Envelope.To)
+		sm.CC = formatIMAPAddressSlice(fm.Envelope.Cc)
+		sm.MessageID = cleanMsgID(fm.Envelope.MessageID)
+		if len(fm.Envelope.InReplyTo) > 0 {
+			sm.InReplyTo = cleanMsgID(fm.Envelope.InReplyTo[0])
+		}
+		if !fm.Envelope.Date.IsZero() {
+			dt = fm.Envelope.Date
+		}
+	}
+	if dt.IsZero() {
+		dt = time.Now().UTC()
+	}
+	sm.DateISO = dt.UTC().Format(time.RFC3339)
+	sm.DateUnix = dt.Unix()
+
+	if hdrSec != nil {
+		if rawHdr := fm.FindBodySection(hdrSec); len(rawHdr) > 0 {
+			if msg, err := mail.ReadMessage(bytes.NewReader(append(rawHdr, '\r', '\n'))); err == nil {
+				if sm.MessageID == "" {
+					sm.MessageID = cleanMsgID(msg.Header.Get("Message-ID"))
+				}
+				if sm.InReplyTo == "" {
+					sm.InReplyTo = cleanMsgID(msg.Header.Get("In-Reply-To"))
+				}
+				if refs := strings.TrimSpace(msg.Header.Get("References")); refs != "" {
+					sm.References = refs
+				}
+				for _, k := range []string{"List-Id", "List-Unsubscribe"} {
+					if v := strings.TrimSpace(msg.Header.Get(k)); v != "" {
+						sm.Headers[strings.ToLower(k)] = v
+					}
+				}
+			}
+		}
+	}
+	return sm
+}
+
+func formatIMAPAddresses(addrs []imap.Address) string {
+	list := formatIMAPAddressSlice(addrs)
+	return strings.Join(list, ", ")
+}
+
+func formatIMAPAddressSlice(addrs []imap.Address) []string {
+	if len(addrs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		email := a.Addr()
+		name := decodeHeader(strings.TrimSpace(a.Name))
+		if name != "" && email != "" {
+			out = append(out, fmt.Sprintf("%s <%s>", name, email))
+		} else if email != "" {
+			out = append(out, email)
+		} else if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// runIMAPIdleLoop maintains a real-time IMAP IDLE connection on INBOX for instant push sync.
+func (e *Engine) runIMAPIdleLoop(ctx context.Context, acc config.DirectAccount) {
+	backoff := 2 * time.Second
+	for ctx.Err() == nil {
+		// Perform an initial sync (or recovery sync after reconnect).
+		res, err := e.SyncAccount(ctx, acc.ID, false)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = min(backoff*2, 60*time.Second)
+			continue
+		}
+		backoff = 2 * time.Second
+
+		// Start IDLE watcher on INBOX.
+		if err := e.idleOnce(ctx, acc, res.BackfillPending); err != nil && ctx.Err() == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = min(backoff*2, 60*time.Second)
+		}
+	}
+}
+
+// fullSyncEvery is how often all folders are synced while INBOX is watched; backfillSyncEvery
+// replaces it while older mails are still being fetched.
+const (
+	fullSyncEvery     = 15 * time.Minute
+	backfillSyncEvery = 30 * time.Second
+	pollEvery         = 45 * time.Second
+)
+
+func nextFullSync(backfillPending bool) time.Duration {
+	if backfillPending {
+		return backfillSyncEvery
+	}
+	return fullSyncEvery
+}
+
+func (e *Engine) idleOnce(ctx context.Context, acc config.DirectAccount, backfillPending bool) error {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	notifyCh := make(chan struct{}, 1)
+	trigger := func() {
+		select {
+		case notifyCh <- struct{}{}:
+		default:
+		}
+	}
+	c, err := dialIMAP(ctx, acc, pass, &imapclient.UnilateralDataHandler{
+		Mailbox: func(_ *imapclient.UnilateralDataMailbox) { trigger() },
+		Expunge: func(_ uint32) { trigger() },
+		// Flag changes from other devices (read, starred).
+		Fetch: func(msg *imapclient.FetchMessageData) {
+			_, _ = msg.Collect()
+			trigger()
+		},
+	})
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	inboxPath := "INBOX"
+	if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {
+		inboxPath = inbox.Path
+	}
+	if _, err := c.Select(inboxPath, nil).Wait(); err != nil {
+		return err
+	}
+	e.setAccountState(acc.ID, "idle", "")
+
+	// If server doesn't advertise IDLE, fall back to polling INBOX every 45 s and all folders
+	// as often as with IDLE.
+	caps := c.Caps()
+	if caps != nil && !caps.Has(imap.CapIdle) && !caps.Has(imap.CapIMAP4rev2) {
+		_ = c.Close()
+		ticker := time.NewTicker(pollEvery)
+		defer ticker.Stop()
+		lastFull := time.Now()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				full := time.Since(lastFull) >= nextFullSync(backfillPending)
+				res, err := e.SyncAccount(ctx, acc.ID, !full)
+				if full && err == nil {
+					lastFull = time.Now()
+					backfillPending = res.BackfillPending
+				}
+			}
+		}
+	}
+
+	// The caller has just run a full sync. Count from there, so frequent IDLE wake-ups don't
+	// keep pushing the next full sync away.
+	lastFull := time.Now()
+	for ctx.Err() == nil {
+		idleCmd, err := c.Idle()
+		if err != nil {
+			return err
+		}
+		doneCh := make(chan error, 1)
+		go func() {
+			doneCh <- idleCmd.Wait()
+		}()
+
+		// Sync all folders regularly even if IDLE stays quiet (sooner while backfilling).
+		refreshTimer := time.NewTimer(max(0, nextFullSync(backfillPending)-time.Since(lastFull)))
+		select {
+		case <-ctx.Done():
+			refreshTimer.Stop()
+			_ = idleCmd.Close()
+			_ = c.Close()
+			<-doneCh
+			return ctx.Err()
+		case <-notifyCh:
+			refreshTimer.Stop()
+			_ = idleCmd.Close()
+			if werr := <-doneCh; werr != nil {
+				return werr
+			}
+			_, _ = e.SyncAccount(ctx, acc.ID, true)
+		case <-refreshTimer.C:
+			_ = idleCmd.Close()
+			if werr := <-doneCh; werr != nil {
+				return werr
+			}
+			if res, err := e.SyncAccount(ctx, acc.ID, false); err == nil {
+				backfillPending = res.BackfillPending
+			}
+			lastFull = time.Now()
+		case werr := <-doneCh:
+			refreshTimer.Stop()
+			return werr
+		}
+	}
+	return ctx.Err()
+}

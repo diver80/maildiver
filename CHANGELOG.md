@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0 (2026-11-20)
+
+### Umbau: MailDiver – eigenständig, ohne Thunderbird
+OmaThunder heißt jetzt **MailDiver** und ist ein eigener Mail-Client: Er spricht IMAP und SMTP direkt und hält eine lokale SQLite-Kopie mit Volltextsuche. Thunderbird wird nicht mehr gebraucht.
+- **Entfernt:** Thunderbird-Add-on, Native-Messaging-Host, lokale HTTP-Bridge (`bridge.json`, Token, SSE) und `docs/BRIDGE.md`. Mail-Engine, KI und Oberfläche laufen in einem Prozess (`maildiver` / `MailDiver.app`) und reden direkt miteinander – schneller und deutlich weniger Code.
+- **Konten:** IMAP/SMTP nur über TLS oder erzwungenes STARTTLS, Anmeldung per SASL PLAIN (Umlaute im Passwort funktionieren) mit Rückfall auf LOGIN. Passwörter liegen im macOS-Schlüsselbund bzw. unter Linux in einer nur für dich lesbaren Datei. Neue Mails kommen per IMAP IDLE sofort an, ohne IDLE alle 45 Sekunden.
+- **Thunderbird-Import** liest ein Profil nur lesend und übernimmt Konten, Signaturen, Kalender, Kontakte und Filterregeln (ohne Passwörter).
+- **Konfiguration:** `bridge.*` entfällt; ältere Dateien laden weiter. Einstellungen liegen unter `~/Library/Application Support/maildiver` bzw. `~/.config/maildiver`.
+
+### Neu
+- **Unterhaltungen, neueste Mail oben:** Eine Mail öffnet sich in ihrer Unterhaltung – neuere Mails darüber, ältere darunter, zugeklappt auf Absender, Datum und Textanfang, bis du sie anklickst. Listenzeilen zeigen, wie viele Mails ihre Unterhaltung hat. Gruppiert wird über `References`/`In-Reply-To`, auch wenn Antworten vor der Mail ankommen, auf die sie antworten; deine gesendeten Antworten gehören dazu, Kopien im Papierkorb nicht. Bestehende Mails werden beim ersten Start einmal neu gruppiert.
+- **KI sieht die ganze Unterhaltung:** *Zusammenfassen* und *Entwurf* bekommen bis zu 20 Mails der Unterhaltung in Lesereihenfolge statt nur der geöffneten Mail.
+- **Eigene Desktop-Fenster für Verfassen & Termine:** *Neue E-Mail / Antworten / Weiterleiten* und *Neuer Termin / Termin bearbeiten* öffnen sich auf dem Desktop als eigene native Fenster mit gemerkter Position/Größe, damit das Hauptfenster beim Schreiben weiter lesbar bleibt.
+- **Kalender-Verbesserungen:** Kontextbezogene Kalendersuche, Mehrfach-Kalenderfilter (persistent), Google-Kalender-OAuth2-PKCE inkl. Cloud-Console-Hilfslinks, aufklappbare Agenda-Termine mit voller Beschreibung & direkten 1-Klick-Beitreten-Buttons (Teams, Meet, Zoom, Webex, Jitsi) sowie Detail-Modal in Monats-/Wochenansicht.
+- **Datenschutz & Komfort:** Dauerhafte Absender-Allowlist für externe Bilder (pro Absender im Lesebereich & in den Einstellungen), vollständiger Regel-Editor für bestehende und neue Filterregeln (inkl. 1-Klick-Vorlagen), Start-Ordner-Collapse pro Postfach, globaler Web-Vorschau-Schalter (standardmäßig aus), moderne `multipart/alternative`-HTML-Signaturen mit Rich-Text-Formatierungsleiste (`B`, `I`, `</>`, Liste) sowie klar sichtbare Text-Selektion in allen Themes.
+- **S/MIME (Signieren, Prüfen, Verschlüsseln & Entschlüsseln):** `.p12`/`.pfx`-Import (private Schlüssel ausschließlich im OS-Schlüsselbund), Empfänger-Zertifikatsverwaltung (`.cer`/`.pem`/`.crt`), automatische Signaturprüfung & Entschlüsselung beim Lesen sowie Signieren & AES-256-CBC-Verschlüsselung beim Senden.
+- **Gmail & Microsoft 365 XOAUTH2 + CalDAV / CardDAV:** SASL `XOAUTH2` für IMAP & SMTP mit Browser-PKCE-Flow und automatischem Token-Refresh; CalDAV-Kalender- und CardDAV-Kontakt-Sync (z. B. Nextcloud, Fastmail, Radicale).
+- **Offline-Postausgang & verschlüsselter LAN-QR-Code-Transfer:** Bei Netzwerkausfall werden gesendete Mails in einer lokalen SQLite-Outbox gepuffert und alle 45 s automatisch erneut zugestellt. In den Einstellungen überträgt ein einmaliger, 3 Minuten gültiger AES-256-GCM-QR-Code Konten, Zugangsdaten & Einstellungen direkt im WLAN auf ein weiteres Gerät oder Android.
+- **Archiv & Triage-Scan gehärtet:** Archiv-Kandidatensuche nutzt direkte SQL-Datums- und Statusfilter (findet alte Mails auch bei >1.000 Mails im Ordner, ignoriert Mails ohne Datum, schützt vor Symlinks); Triage-Scan sammelt ungelesene Mails zuerst, übergibt `List-Unsubscribe`-Header für 0-Token-Stage-0-Erkennung und hält verschlüsselte S/MIME/PGP-Inhalte strikt von KI-Aufrufen fern.
+- **Projektseite (EN & DE):** Zweisprachige GitHub-Pages-Seite unter `docs/index.html`.
+
+### Alltagstauglich
+- **Alle Mails erreichbar:** Ordner und Suche reichen bis zur ersten Mail zurück, nicht mehr nur 30 Tage. Die Liste lädt beim Scrollen jeweils 100 weitere Mails nach, und neue Mail setzt sie nicht auf die erste Seite zurück.
+- **Ganzes Postfach statt der neuesten 250:** MailDiver holt ältere Mails im Hintergrund nach, 1000 pro Ordner und Durchgang, bis das Postfach vollständig ist; auf dem Server gelöschte ältere Mails verschwinden auch lokal. Flags werden für die neuesten 500 Mails bei jedem Abgleich verglichen.
+- **Änderungen von anderen Geräten sofort:** gelesen/Stern vom Handy kommen per IDLE an statt nach bis zu 15 Minuten. Server ohne IDLE gleichen alle Ordner regelmäßig ab, nicht nur den Posteingang.
+- **„Neue Mail“ nur für neue Mails:** alte Mails, die nach einem Löschen ins Abgleichsfenster rutschen, lösen keine Meldung und keine Filter mehr aus.
+- **Nichts geht beim Schreiben verloren:** Esc, ein Klick neben das Fenster oder ✕ schließen eine geänderte Mail nicht mehr, sondern fragen: *Als Entwurf speichern*, *Verwerfen* oder *Weiter schreiben*.
+- **Absendername:** Neues Feld *Dein Name* im Konto – er steht als Absender in deinen Mails. Das bisherige Feld heißt jetzt *Kontoname*.
+- **Antworten** zitieren die Originalmail („Am … schrieb …:“) unter deinem Text, gehen an die `Reply-To`-Adresse, falls die Mail eine nennt, und machen aus „AW:“ kein „Re: AW:“.
+- **Empfänger wie „Müller, Hans <h@x.de>“** (Komma im Namen, ohne Anführungszeichen) werden richtig erkannt; eine ungültige Adresse verhindert das Senden mit Hinweis, statt still wegzufallen.
+- **Löschen:** Mails im Papierkorb werden nur nach einem zweiten Druck endgültig gelöscht, und die Meldung sagt „Endgültig gelöscht“. Ohne bekannten Papierkorb wird nichts mehr endgültig gelöscht. Fehlt ein Archiv-Ordner, legt das erste Archivieren ihn an.
+- **Fehler sichtbar:** Ein Abgleich-Fehler (falsches Passwort, TLS) steht in der Statusleiste („Sync-Fehler: Konto“, Klick öffnet die Konten); kann die gesendete Mail nicht in *Gesendet* abgelegt werden, sagt die Meldung das.
+- **Entwürfe vollständig:** Erneutes Speichern ersetzt den bisherigen Entwurf statt Kopien anzuhäufen; nach dem Senden wird der Entwurf automatisch entfernt; beim Wiederöffnen bleiben BCC und Anhänge erhalten.
+- **Weiterleiten mit Anhängen & HTML:** Original-Anhänge werden beim Weiterleiten automatisch übernommen (einzeln abwählbar); bei HTML-Mails bleibt optional die Original-Formatierung als `multipart/alternative` (Text + HTML) erhalten.
+- **Bilder im Lesebereich:** Eingebettete Bilder (`cid:` / `data:image/`) erscheinen direkt und ohne Netzwerkanfrage; für externe Bilder gibt es pro Mail den Schalter *Bilder anzeigen* / *Ausblenden* (standardmäßig blockiert).
+- **Suche auf dem IMAP-Server:** Über *Auf Server suchen* durchsucht MailDiver per IMAP `SEARCH TEXT` auch ältere Mails, deren Text noch nicht lokal geladen ist.
+- **Schnelle Sammelaktionen & Rückgängig (`⌘Z`):** Mehrere Mails (Löschen, Archivieren, Verschieben, Gelesen, Stern, Filterlauf) werden pro Konto über eine einzige IMAP-Verbindung gebündelt; rückgängig machbare Aktionen lassen sich per Leiste oder `⌘Z` direkt zurücknehmen.
+- **Komfort:** Ungelesen-Zähler pro Ordner in der Seitenleiste, *Alle als gelesen markieren*, `⌘↩` zum Senden im Verfassen-Dialog, *Mail drucken* (`⌘P`), `mailto:`-Links direkt in MailDiver öffnen (inkl. macOS URL-Handler) sowie Absender-Aliase pro Konto.
+- **Sicherer Datenbank-Speicherort:** `maildiver.db` (inkl. lokalem Kalender, Kontakten & Filtern) liegt jetzt im persistenten Datenordner (`~/Library/Application Support/maildiver` unter macOS bzw. `~/.local/share/maildiver` unter Linux) statt im Caches-Ordner; vorhandene Datenbanken werden beim Start automatisch migriert.
+
+### Schneller
+- Mail-Listen laden nur noch Kopfzeilen; Texte werden erst beim Öffnen gelesen.
+
+### Sicherheit
+- „Nur lesen“ wird jetzt auch unterhalb der Oberfläche durchgesetzt: Mail-Aktionen, Entwürfe, Senden und Filterregeln werden abgelehnt, auch wenn sie vom Copilot oder einem Job kommen.
+
 ## 0.3.1 (2026-11-18)
 
 ### Fixes

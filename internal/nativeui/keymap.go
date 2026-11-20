@@ -18,7 +18,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // keyHint is one entry of the footer's shortcut legend.
@@ -36,6 +36,7 @@ const (
 	keyCtxMessage                     // a mail is open in the reading pane
 	keyCtxSelection                   // mails are checked in the list
 	keyCtxCalendar
+	keyCtxContacts
 	keyCtxOffline
 	keyCtxModal
 )
@@ -47,17 +48,22 @@ const batchKeyConfirmWindow = 4 * time.Second
 const readerScrollStep = 180
 
 func (a *App) modalOpen() bool {
-	return a.composeOpen || a.eventOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open || a.settings.open
+	if !a.detachedAuxWindows && (a.composeOpen || a.eventOpen) {
+		return true
+	}
+	return a.evDetailOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open || a.settings.open || a.direct.open
 }
 
 func (a *App) currentKeyContext() keyContext {
 	switch {
 	case a.modalOpen():
 		return keyCtxModal
-	case !a.bridgeOnline || !a.thunderbirdConnected:
+	case !a.engineReady:
 		return keyCtxOffline
 	case a.navID == "calendar":
 		return keyCtxCalendar
+	case a.navID == "contacts":
+		return keyCtxContacts
 	case len(a.checkedIDs) > 0:
 		return keyCtxSelection
 	case a.selectedID != "":
@@ -86,6 +92,8 @@ func (a *App) footerHints() []keyHint {
 			out = append(out, h("n", "Neuer Termin", "new event"))
 		}
 		out = append(out, h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
+	case keyCtxContacts:
+		out = append(out, h("n", "Neuer Kontakt", "new contact"), h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
 	case keyCtxSelection:
 		out = append(out, h("x", "Markieren", "check"), h("shift+x", "Bereich", "range"))
 		if !ro {
@@ -143,6 +151,12 @@ func (a *App) handleShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd, ui.KeyComma) && !a.modalOpen() {
 		a.OpenSettings()
 	}
+	if c.Shortcut(ui.Cmd, ui.KeyZ) && !a.modalOpen() && a.undo != nil {
+		a.PerformUndo(ctx)
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyP) && !a.modalOpen() && a.selectedMsg != nil {
+		a.PrintSelectedMessage(ctx)
+	}
 	// Both calls register every frame; "/" needs Shift on German layouts.
 	helpPlain := c.Shortcut(ui.Cmd, ui.KeySlash)
 	helpShift := c.Shortcut(ui.Cmd|ui.Shift, ui.KeySlash)
@@ -166,6 +180,11 @@ func (a *App) handleShortcuts(c *ui.Context) {
 	case keyCtxCalendar:
 		if c.Shortcut(0, ui.KeyN) && !a.readOnly {
 			a.OpenNewEventModal(nil)
+		}
+		return
+	case keyCtxContacts:
+		if c.Shortcut(0, ui.KeyN) && a.isDirectMode() {
+			a.startNewContact()
 		}
 		return
 	case keyCtxList, keyCtxMessage, keyCtxSelection:
@@ -247,7 +266,7 @@ func (a *App) currentIndex() int {
 }
 
 // currentHeader returns the list header of the open mail (nil if it is not listed).
-func (a *App) currentHeader() *bridgeclient.MessageHeader {
+func (a *App) currentHeader() *backend.MessageHeader {
 	if a.selectedID == "" {
 		return nil
 	}
@@ -315,7 +334,7 @@ func (a *App) starKey(ctx context.Context) {
 	}
 	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
 		on := true
-		a.PerformBatchAction(ctx, ids, bridgeclient.MessageActionsRequest{Flagged: &on}, a.tr("Mit Stern markiert", "Starred"))
+		a.PerformBatchAction(ctx, ids, backend.MessageActionsRequest{Flagged: &on}, a.tr("Mit Stern markiert", "Starred"))
 		return
 	}
 	h := a.currentHeader()
@@ -323,7 +342,7 @@ func (a *App) starKey(ctx context.Context) {
 		return
 	}
 	target := !h.Flagged
-	a.PerformMessageAction(ctx, h.ID, bridgeclient.MessageActionsRequest{Flagged: &target}, a.tr("Markierung aktualisiert", "Star updated"))
+	a.PerformMessageAction(ctx, h.ID, backend.MessageActionsRequest{Flagged: &target}, a.tr("Markierung aktualisiert", "Star updated"))
 }
 
 // readKey marks all checked mails read, or toggles read/unread on the open mail.
@@ -333,7 +352,7 @@ func (a *App) readKey(ctx context.Context) {
 	}
 	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
 		on := true
-		a.PerformBatchAction(ctx, ids, bridgeclient.MessageActionsRequest{Read: &on}, a.tr("Als gelesen markiert", "Marked as read"))
+		a.PerformBatchAction(ctx, ids, backend.MessageActionsRequest{Read: &on}, a.tr("Als gelesen markiert", "Marked as read"))
 		return
 	}
 	h := a.currentHeader()
@@ -341,28 +360,80 @@ func (a *App) readKey(ctx context.Context) {
 		return
 	}
 	target := h.Unread
-	a.PerformMessageAction(ctx, h.ID, bridgeclient.MessageActionsRequest{Read: &target}, a.tr("Lesestatus aktualisiert", "Read status updated"))
+	a.PerformMessageAction(ctx, h.ID, backend.MessageActionsRequest{Read: &target}, a.tr("Lesestatus aktualisiert", "Read status updated"))
 }
 
 // trashKey moves the open mail to the trash and opens its neighbour. Several checked mails need
 // a second "d" within batchKeyConfirmWindow, so one stray key never empties a whole selection.
 func (a *App) trashKey(ctx context.Context) {
+	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
+		a.trashMails(ctx, ids, "")
+		return
+	}
+	if a.selectedID != "" {
+		a.trashMails(ctx, nil, a.selectedID)
+	}
+}
+
+// trashMails moves the checked mails (ids) or the open one (single) to the trash. Several mails,
+// and mails already in the trash – those are deleted for good – need a second press.
+func (a *App) trashMails(ctx context.Context, ids []string, single string) {
 	if a.blockedReadOnly() {
 		return
 	}
-	trash := bridgeclient.MessageActionsRequest{Trash: true}
-	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
-		if len(ids) > 1 && !a.confirmKey("trash", ids) {
-			a.toast(a.trf("Nochmal d drücken, um %d Mails in den Papierkorb zu verschieben", "Press d again to move %d emails to Trash", len(ids)), "warning")
-			return
+	all := ids
+	if single != "" {
+		all = []string{single}
+	}
+	permanent := false
+	for _, id := range all {
+		if a.isTrashFolder(a.listedFolderID(id)) {
+			permanent = true
 		}
-		a.PerformBatchAction(ctx, ids, trash, a.tr("In Papierkorb verschoben", "Moved to Trash"))
+	}
+	if (len(all) > 1 || permanent) && !a.confirmKey("trash", all) {
+		if permanent {
+			a.toast(a.trf("Nochmal drücken, um %d Mail(s) endgültig zu löschen", "Press again to delete %d email(s) for good", len(all)), "warning")
+		} else {
+			a.toast(a.trf("Nochmal drücken, um %d Mails in den Papierkorb zu verschieben", "Press again to move %d emails to Trash", len(all)), "warning")
+		}
 		return
 	}
-	if a.selectedID == "" {
+	done := a.tr("In Papierkorb verschoben", "Moved to Trash")
+	if permanent {
+		done = a.tr("Endgültig gelöscht", "Deleted for good")
+	}
+	trash := backend.MessageActionsRequest{Trash: true}
+	if single == "" {
+		a.PerformBatchAction(ctx, ids, trash, done)
 		return
 	}
-	a.performMessageAction(ctx, a.selectedID, trash, a.tr("In Papierkorb verschoben", "Moved to Trash"), a.neighborAfterRemoval(a.selectedID))
+	a.performMessageAction(ctx, single, trash, done, a.neighborAfterRemoval(single))
+}
+
+// listedFolderID is the folder of a listed mail ("" if it is not listed).
+func (a *App) listedFolderID(id string) string {
+	for _, m := range a.messages {
+		if m.ID == id {
+			return m.FolderID
+		}
+	}
+	if a.selectedMsg != nil && a.selectedMsg.ID == id {
+		return a.selectedMsg.FolderID
+	}
+	return ""
+}
+
+func (a *App) isTrashFolder(folderID string) bool {
+	if folderID == "" {
+		return false
+	}
+	for _, f := range a.folders {
+		if f.ID == folderID {
+			return strings.EqualFold(f.Type, "trash")
+		}
+	}
+	return false
 }
 
 // confirmKey implements "press again to confirm" for key actions on several mails: the first
@@ -409,6 +480,7 @@ func (a *App) escapeKey() {
 		a.inspectorSeq++
 		a.inspectorLoading = false
 		a.inspectorError = ""
+		a.syncPreviewForMessage(nil)
 	}
 }
 
@@ -422,7 +494,7 @@ func (a *App) shortcutHelpRows() []keyHint {
 		h("s", "Stern setzen/entfernen (markierte: Stern setzen)", "Toggle star (checked: add star)"),
 		h("u", "Gelesen/ungelesen (markierte: gelesen)", "Read/unread (checked: mark read)"),
 		h("d", "In den Papierkorb, öffnet die nächste Mail · mehrere markierte: d zweimal", "Move to Trash and open the next email · several checked: press d twice"),
-		h("e", "Archivieren (Thunderbird-Archiv), öffnet die nächste Mail", "Archive (Thunderbird archive) and open the next email"),
+		h("e", "Archivieren, öffnet die nächste Mail", "Archive and open the next email"),
 		h("v", "Verschieben nach… (Ordner desselben Kontos)", "Move to… (folders of the same account)"),
 		h("r", "Antworten", "Reply"),
 		h("q", "Quick-Regel aus Auswahl", "Quick rule from selection"),
@@ -431,8 +503,10 @@ func (a *App) shortcutHelpRows() []keyHint {
 		h("c  ·  ⌘N", "Neue E-Mail", "New email"),
 		h("n", "Neuer Termin (Kalender)", "New event (calendar)"),
 		h("⌘R", "Aktualisieren", "Refresh"),
+		h("⌘Z", "Letzte Aktion rückgängig machen", "Undo last mail action"),
+		h("⌘P", "Geöffnete Mail drucken", "Print open email"),
 		h("⌘J", "KI-Assistent ein/aus", "Toggle AI Assistant"),
-		h("⌘↩", "Chat-Nachricht senden", "Send chat message"),
+		h("⌘↩", "E-Mail / Chat-Nachricht senden", "Send email / chat message"),
 		h("h  ·  ⌘/", "Hilfe / diese Übersicht", "Help / this overview"),
 		h("⌘/shift-Klick", "Mehrfachauswahl in der Liste", "Multi-select in the list"),
 	}

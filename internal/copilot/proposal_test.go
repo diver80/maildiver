@@ -6,18 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
-	"github.com/diver80/omathunder/internal/bridge"
-	"github.com/diver80/omathunder/internal/bridgeclient"
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/native"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 // recordingRPC records every write RPC so tests can prove nothing was executed.
@@ -83,7 +81,6 @@ func toolCall(id, name string, args any) map[string]any {
 func startStack(t *testing.T, rounds []chatRound) (*Runner, *recordingRPC, *[][]map[string]any) {
 	t.Helper()
 	tmp := t.TempDir()
-	discPath := filepath.Join(tmp, "bridge.json")
 	store := triage.NewStoreAt(tmp)
 
 	var mu sync.Mutex
@@ -125,22 +122,14 @@ func startStack(t *testing.T, rounds []chatRound) (*Runner, *recordingRPC, *[][]
 	cfg.Mailbox.ReadOnly = false
 	cfg.AI.Agent = config.ProviderConfig{Backend: "openai", Model: "gpt-4o-mini", Endpoint: aiSrv.URL + "/v1"}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	rpc := &recordingRPC{}
-	br, err := bridge.Start(ctx, bridge.Options{
-		Port: 0, DiscoveryPath: discPath, RPC: rpc, Events: native.NewEventHub(), Store: store,
-		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+	bc := backend.New(backend.Options{
+		Engine:     rpc,
+		Events:     events.NewHub(),
+		Store:      store,
+		LoadConfig: func() (config.Config, error) { return cfg, nil },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { br.Close() })
-	bc, _, err := bridgeclient.Discover(discPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Runner{ConfigLoader: func() (config.Config, error) { return cfg, nil }, Bridge: bc, Store: store}, rpc, &requests
+	return &Runner{ConfigLoader: func() (config.Config, error) { return cfg, nil }, Backend: bc, Store: store}, rpc, &requests
 }
 
 func TestCopilotWriteToolsOnlyProposeUntilConfirmed(t *testing.T) {
@@ -217,11 +206,11 @@ func TestCopilotWriteToolsOnlyProposeUntilConfirmed(t *testing.T) {
 	}
 
 	// Only an explicit ExecuteAction (user click) writes — with whitelisted fields only.
-	res, err := ExecuteAction(context.Background(), runner.Bridge, *draft, ExecuteOptions{})
+	res, err := ExecuteAction(context.Background(), runner.Backend, *draft, ExecuteOptions{})
 	if err != nil || res.Applied != 1 {
 		t.Fatalf("ExecuteAction draft: %+v %v", res, err)
 	}
-	if _, err := ExecuteAction(context.Background(), runner.Bridge, *proposals[1], ExecuteOptions{}); err != nil {
+	if _, err := ExecuteAction(context.Background(), runner.Backend, *proposals[1], ExecuteOptions{}); err != nil {
 		t.Fatalf("ExecuteAction mark read: %v", err)
 	}
 	writes, params := rpc.snapshot()

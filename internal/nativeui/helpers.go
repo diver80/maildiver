@@ -1,13 +1,15 @@
 package nativeui
 
 import (
+	"context"
+	"net/mail"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/omathunder/internal/theme"
+	"github.com/diver80/maildiver/internal/theme"
 )
 
 type uiThemeState struct {
@@ -28,15 +30,18 @@ type listStateHolder struct {
 }
 
 type uiWidgetsState struct {
-	chatScroll      ui.ScrollState
-	inspectorScroll ui.ScrollState
-	calScroll       ui.ScrollState
-	flyoutScroll    ui.ScrollState
-	helpScroll      ui.ScrollState
-	quickRuleScroll ui.ScrollState
-	mdInspector     markdown.Options
-	mdBody          markdown.Options
-	mdChat          map[string]*markdown.Options
+	chatScroll           ui.ScrollState
+	inspectorScroll      ui.ScrollState
+	calScroll            ui.ScrollState
+	flyoutScroll         ui.ScrollState
+	helpScroll           ui.ScrollState
+	quickRuleScroll      ui.ScrollState
+	directScroll         ui.ScrollState
+	contactsListScroll   ui.ScrollState
+	contactsDetailScroll ui.ScrollState
+	mdInspector          markdown.Options
+	mdBody               markdown.Options
+	mdChat               map[string]*markdown.Options
 }
 
 func (a *App) chatMarkdownOpts(id string, streaming bool) *markdown.Options {
@@ -70,6 +75,9 @@ func (a *App) ensureListState() *ui.ListState {
 		}
 		return row
 	}
+	// Scrolling (or j/k) near the end of the loaded mails loads the next page.
+	ls.NearEnd = 15
+	ls.EndReached = func(int) { a.loadMoreMessages(context.Background()) }
 	return ls
 }
 
@@ -161,15 +169,75 @@ func markdownOptions(streaming bool) *markdown.Options {
 	return opts
 }
 
+// formatEmailAddress formats a display name + email cleanly, quoting names that contain commas or RFC 5322 specials.
+func formatEmailAddress(name, email string) string {
+	email = strings.TrimSpace(email)
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, email) || strings.Contains(name, "<") {
+		return email
+	}
+	if strings.ContainsAny(name, ",;\"<>\\()") {
+		return (&mail.Address{Name: name, Address: email}).String()
+	}
+	return name + " <" + email + ">"
+}
+
 func splitEmailList(raw string) []string {
-	parts := strings.Split(raw, ",")
-	var out []string
-	for _, p := range parts {
-		if s := strings.TrimSpace(p); s != "" {
-			out = append(out, s)
+	trimmed := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(raw), ",;"))
+	if trimmed == "" {
+		return nil
+	}
+	if addrs, err := mail.ParseAddressList(trimmed); err == nil && len(addrs) > 0 {
+		out := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if a.Name == "" {
+				out = append(out, a.Address)
+			} else {
+				out = append(out, a.String())
+			}
 		}
+		return out
+	}
+	// Not RFC 5322 – typically a name with a comma and without quotes ("Müller, Hans <h@x.de>")
+	// or ";" between addresses. A part without "@" belongs to the next one; each entry is then
+	// written so the engine can parse it (quoted, encoded name).
+	var out []string
+	pending := ""
+	for _, p := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' }) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if pending != "" {
+			p, pending = pending+", "+p, ""
+		}
+		if !strings.Contains(p, "@") {
+			pending = p
+			continue
+		}
+		out = append(out, normalizeRecipient(p))
+	}
+	if pending != "" {
+		out = append(out, pending) // sending names it as no address
 	}
 	return out
+}
+
+// normalizeRecipient writes "Name <a@b>" with an unquoted name in RFC 5322 form.
+func normalizeRecipient(s string) string {
+	if a, err := mail.ParseAddress(s); err == nil {
+		if a.Name == "" {
+			return a.Address
+		}
+		return a.String()
+	}
+	if i := strings.LastIndex(s, "<"); i > 0 && strings.HasSuffix(s, ">") {
+		name := strings.Trim(strings.TrimSpace(s[:i]), `"`)
+		if addr, err := mail.ParseAddress(strings.TrimSpace(s[i+1 : len(s)-1])); err == nil {
+			return (&mail.Address{Name: name, Address: addr.Address}).String()
+		}
+	}
+	return s
 }
 
 func normalizeDateTimeInput(raw string) string {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/diver80/omathunder/internal/bridgeclient"
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // errorCode classifies err into a contract error code (§2) or a client-side code.
@@ -13,10 +13,10 @@ func errorCode(err error) (code, detail string) {
 	if err == nil {
 		return "", ""
 	}
-	if errors.Is(err, bridgeclient.ErrOffline) {
-		return "bridge_offline", ""
+	if errors.Is(err, backend.ErrOffline) {
+		return "engine_offline", ""
 	}
-	var apiErr *bridgeclient.APIError
+	var apiErr *backend.APIError
 	if errors.As(err, &apiErr) && apiErr.Code != "" {
 		return apiErr.Code, apiErr.Detail
 	}
@@ -27,15 +27,13 @@ func errorCode(err error) (code, detail string) {
 		return "canceled", ""
 	}
 	msg := err.Error()
-	if c, d := bridgeclient.ParseErrorCode(msg); c != "" {
+	if c, d := backend.ParseErrorCode(msg); c != "" {
 		return c, d
 	}
 	low := strings.ToLower(msg)
 	switch {
-	case strings.Contains(low, "thunderbird") && (strings.Contains(low, "disconnected") || strings.Contains(low, "not connected")):
-		return "thunderbird_disconnected", ""
-	case strings.Contains(low, "connection refused") || strings.Contains(low, "no such file") || strings.Contains(low, "bridge discovery"):
-		return "bridge_offline", ""
+	case strings.Contains(low, "engine_offline") || strings.Contains(low, "thunderbird_disconnected") || strings.Contains(low, "engine unavailable"):
+		return "engine_offline", ""
 	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "timeout"):
 		return "timeout", ""
 	}
@@ -53,11 +51,7 @@ func localizeError(err error, lang string) string {
 	case "read_only":
 		base = trLang(lang, "Read-Only-Modus aktiv — Schreibzugriff blockiert", "Read-only mode active — write access blocked")
 	case "account_not_enabled":
-		base = trLang(lang, "Konto ist nicht für Änderungen freigegeben (Triage-/Bridge-Konten prüfen)", "Account is not enabled for changes (check triage/bridge accounts)")
-	case "account_not_readable":
-		base = trLang(lang, "Konto ist für die Bridge nicht freigegeben", "Account is not readable via the bridge")
-	case "send_disabled":
-		base = trLang(lang, "Direktes Senden ist deaktiviert (bridge.allowSend)", "Direct sending is disabled (bridge.allowSend)")
+		base = trLang(lang, "Konto ist nicht für Änderungen freigegeben", "Account is not enabled for changes")
 	case "feature_disabled":
 		base = trLang(lang, "Funktion deaktiviert", "Feature disabled")
 	case "cross_account_move":
@@ -73,13 +67,10 @@ func localizeError(err error, lang string) string {
 	case "conflict":
 		base = trLang(lang, "Konflikt — bitte erneut versuchen", "Conflict — please try again")
 	case "outcome_unknown":
-		base = trLang(lang, "Zeitüberschreitung — Ergebnis unbekannt, bitte in Thunderbird prüfen", "Timed out — outcome unknown, please check in Thunderbird")
+		base = trLang(lang, "Zeitüberschreitung — Ergebnis unbekannt, bitte im Postfach prüfen", "Timed out — outcome unknown, please check your mailbox")
 		detail = ""
-	case "bridge_offline":
-		base = trLang(lang, "Thunderbird-Bridge offline", "Thunderbird bridge offline")
-		detail = ""
-	case "thunderbird_disconnected":
-		base = trLang(lang, "Thunderbird ist nicht verbunden", "Thunderbird is not connected")
+	case "engine_offline":
+		base = trLang(lang, "Mail-Engine ist nicht verbunden", "Mail engine is not connected")
 		detail = ""
 	case "timeout":
 		base = trLang(lang, "Zeitüberschreitung", "Timed out")

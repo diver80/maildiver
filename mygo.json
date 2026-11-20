@@ -1,16 +1,22 @@
 {
-  "name": "OmaThunder",
-  "slug": "omathunder",
-  "identifier": "dev.omathunder.ui",
-  "version": "0.3.1",
+  "name": "MailDiver",
+  "slug": "maildiver",
+  "identifier": "dev.maildiver.app",
+  "version": "0.5.0",
   "icon": "resources/icon.png",
-  "main": "./cmd/omathunder-ui",
+  "main": "./cmd/maildiver",
   "out": "dist",
   "macos": {
     "minimumSystemVersion": "12.0",
     "infoPlist": {
       "LSApplicationCategoryType": "public.app-category.productivity",
-      "NSUserNotificationAlertStyle": "banner"
+      "NSUserNotificationAlertStyle": "banner",
+      "CFBundleURLTypes": [
+        {
+          "CFBundleURLName": "Email Address",
+          "CFBundleURLSchemes": ["mailto"]
+        }
+      ]
     }
   },
   "linux": {
@@ -18,6 +24,18 @@
     "categories": [
       "Office",
       "Email"
+    ],
+    "formats": [
+      "deb",
+      "rpm",
+      "pkgbuild"
+    ]
+  },
+  "android": {
+    "minSdk": 26,
+    "permissions": [
+      "android.permission.INTERNET",
+      "android.permission.POST_NOTIFICATIONS"
     ]
   }
 }

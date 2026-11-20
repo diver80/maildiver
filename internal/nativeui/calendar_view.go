@@ -1,0 +1,891 @@
+package nativeui
+
+import (
+	"context"
+	"fmt"
+	"html"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
+)
+
+var (
+	calHTMLBreakRE = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</li>|</tr>`)
+	// Only real tags (<p>, </a>, <br/>…) — NOT plain-text autolinks like
+	// <https://teams.microsoft.com/…> used by Outlook/Teams invitations.
+	calHTMLTagRE = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9]*(\s[^>]*)?/?>`)
+	// Separator rules (Teams: "________________…").
+	calRuleRE = regexp.MustCompile(`[_=─━]{4,}|-{5,}`)
+)
+
+func cleanEventPreviewText(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	s = calHTMLBreakRE.ReplaceAllString(s, " ")
+	s = calHTMLTagRE.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = calRuleRE.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func (a *App) isCalendarHidden(calID string) bool {
+	if calID == "" || len(a.hiddenCalendars) == 0 {
+		return false
+	}
+	return a.hiddenCalendars[calID]
+}
+
+func (a *App) setCalendarVisible(calID string, visible bool) {
+	if calID == "" {
+		return
+	}
+	if visible {
+		delete(a.hiddenCalendars, calID)
+	} else {
+		if a.hiddenCalendars == nil {
+			a.hiddenCalendars = make(map[string]bool)
+		}
+		a.hiddenCalendars[calID] = true
+	}
+	a.persistHiddenCalendars()
+}
+
+func (a *App) setAllCalendarsVisible(visible bool) {
+	if visible {
+		a.hiddenCalendars = nil
+	} else {
+		if a.hiddenCalendars == nil {
+			a.hiddenCalendars = make(map[string]bool, len(a.calendars))
+		}
+		for _, cal := range a.calendars {
+			a.hiddenCalendars[cal.ID] = true
+		}
+	}
+	a.persistHiddenCalendars()
+}
+
+func (a *App) persistHiddenCalendars() {
+	if a.opts.ConfigSaver == nil {
+		return
+	}
+	var hidden []string
+	for id, off := range a.hiddenCalendars {
+		if off && id != "" {
+			hidden = append(hidden, id)
+		}
+	}
+	sort.Strings(hidden)
+	cfg, err := a.opts.ConfigLoader()
+	if err != nil {
+		cfg = a.cfg
+	}
+	cfg.App.HiddenCalendars = hidden
+	cfg = config.Normalize(cfg)
+	_ = a.opts.ConfigSaver(cfg)
+	a.cfg = cfg
+}
+
+func (a *App) visibleCalendarCount() (visible, total int) {
+	total = len(a.calendars)
+	for _, cal := range a.calendars {
+		if !a.isCalendarHidden(cal.ID) {
+			visible++
+		}
+	}
+	return visible, total
+}
+
+func (a *App) calendarFilterButtonLabel() string {
+	vis, total := a.visibleCalendarCount()
+	if total == 0 || vis == total {
+		return a.tr("Alle Kalender", "All Calendars")
+	}
+	if vis == 0 {
+		return a.tr("Keine Kalender", "No Calendars")
+	}
+	if vis == 1 {
+		for _, cal := range a.calendars {
+			if !a.isCalendarHidden(cal.ID) {
+				return truncateText(cal.Name, 18)
+			}
+		}
+	}
+	return a.trf("%d / %d Kalender", "%d / %d Calendars", vis, total)
+}
+
+func (a *App) renderCalendarFilterButton(c *ui.Context) {
+	t := c.Theme()
+	vis, total := a.visibleCalendarCount()
+	filtered := total > 0 && vis < total
+
+	btn := ui.ButtonBase(c.Key("tb-cal-filter")).Width(175).Padding(5, 10).Radius(7).
+		Background(t.Background).Border(1, t.Border).Label(a.calendarFilterButtonLabel())
+	if filtered {
+		btn.Border(1, t.Accent)
+	}
+	btn.Children(func() {
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconCal).Size(13, 13).TextColor(t.TextMuted).Shrink(0)
+			ui.Text(c, a.calendarFilterButtonLabel()).FontSize(12).SingleLine().Grow(1).MinWidth(0)
+			ui.Icon(c, iconChevronDn).Size(12, 12).TextColor(t.TextMuted).Shrink(0)
+		})
+	})
+	if btn.Clicked() {
+		a.calFilterOpen = !a.calFilterOpen
+	}
+
+	ui.Popover(c.Key("tb-cal-pop"), btn, &a.calFilterOpen, func() {
+		ui.Column(c).Width(280).MaxHeight(360).Padding(10).Gap(8).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, a.tr("Kalender auswählen", "Select Calendars")).FontSize(12).Bold().Grow(1)
+				if ui.Button(c.Key("cal-flt-all"), a.tr("Alle", "All")).Padding(2, 7).Clicked() {
+					a.setAllCalendarsVisible(true)
+				}
+				if ui.Button(c.Key("cal-flt-none"), a.tr("Keine", "None")).Padding(2, 7).Clicked() {
+					a.setAllCalendarsVisible(false)
+				}
+			})
+			ui.Divider(c)
+			ui.Scroll(c.Key("cal-flt-scroll")).MaxHeight(280).FillWidth().Children(func() {
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					for _, cal := range a.calendars {
+						calCopy := cal
+						checked := !a.isCalendarHidden(calCopy.ID)
+						clr := t.Accent
+						if parsed, ok := parseHexColorUI(calCopy.Color); ok {
+							clr = parsed
+						}
+						ui.Row(c.Key("cal-flt-row-"+calCopy.ID)).FillWidth().Gap(8).AlignItems(ui.Center).Padding(2, 4).Children(func() {
+							ui.Box(c).Size(9, 9).Radius(5).Background(clr).Shrink(0)
+							if ui.Checkbox(c.Key("cal-flt-chk-"+calCopy.ID), &checked, calCopy.Name).Changed() {
+								a.setCalendarVisible(calCopy.ID, checked)
+							}
+						})
+					}
+				})
+			})
+		})
+	})
+}
+
+// filteredCalendarEvents applies both the multi-select calendar filter and calSearchQuery
+// so Month, Week, Agenda, and Search always stay in sync.
+func (a *App) filteredCalendarEvents() []backend.CalendarEvent {
+	q := strings.ToLower(strings.TrimSpace(a.calSearchQuery))
+	terms := strings.Fields(q)
+	out := make([]backend.CalendarEvent, 0, len(a.events))
+	for _, ev := range a.events {
+		if a.isCalendarHidden(ev.CalendarID) {
+			continue
+		}
+		if len(terms) > 0 {
+			hay := strings.ToLower(ev.Title + " " + ev.Location + " " + cleanEventPreviewText(ev.Description) + " " + ev.Calendar)
+			matched := true
+			for _, term := range terms {
+				if !strings.Contains(hay, term) {
+					matched = false
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+var monthNamesDE = [...]string{
+	"", "Januar", "Februar", "März", "April", "Mai", "Juni",
+	"Juli", "August", "September", "Oktober", "November", "Dezember",
+}
+
+var monthNamesEN = [...]string{
+	"", "January", "February", "March", "April", "May", "June",
+	"July", "August", "September", "October", "November", "December",
+}
+
+var weekdayShortDE = [...]string{"Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"}
+var weekdayShortEN = [...]string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+
+func (a *App) calColorForEvent(ev backend.CalendarEvent, fallback ui.Color) ui.Color {
+	for _, cal := range a.calendars {
+		if cal.ID == ev.CalendarID && strings.HasPrefix(cal.Color, "#") {
+			if c, ok := parseHexColorUI(cal.Color); ok {
+				return c
+			}
+		}
+	}
+	return fallback
+}
+
+func parseHexColorUI(hex string) (ui.Color, bool) {
+	s := strings.TrimPrefix(strings.TrimSpace(hex), "#")
+	if len(s) != 6 {
+		return ui.Color{}, false
+	}
+	r, err1 := strconv.ParseUint(s[0:2], 16, 8)
+	g, err2 := strconv.ParseUint(s[2:4], 16, 8)
+	b, err3 := strconv.ParseUint(s[4:6], 16, 8)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return ui.Color{}, false
+	}
+	return ui.RGB(uint8(r), uint8(g), uint8(b)), true
+}
+
+func (a *App) ensureCalCursor() time.Time {
+	if a.calCursor.IsZero() {
+		a.calCursor = time.Now()
+	}
+	return a.calCursor
+}
+
+func (a *App) stepCalendar(ctx context.Context, delta int) {
+	cur := a.ensureCalCursor()
+	switch a.calViewMode {
+	case 0: // Month
+		a.calCursor = time.Date(cur.Year(), cur.Month()+time.Month(delta), 1, 12, 0, 0, 0, cur.Location())
+	case 1: // Week
+		a.calCursor = cur.AddDate(0, 0, delta*7)
+	default:
+		a.calCursor = cur.AddDate(0, 0, delta*max(a.calDays, 7))
+	}
+	a.RefreshAll(ctx)
+}
+
+func (a *App) calendarPeriodLabel() string {
+	cur := a.ensureCalCursor()
+	if a.calViewMode == 0 {
+		m := monthNamesDE[cur.Month()]
+		if a.uiLang() == "en" {
+			m = monthNamesEN[cur.Month()]
+		}
+		return fmt.Sprintf("%s %d", m, cur.Year())
+	}
+	if a.calViewMode == 1 {
+		offset := (int(cur.Weekday()) + 6) % 7
+		mon := time.Date(cur.Year(), cur.Month(), cur.Day()-offset, 0, 0, 0, 0, cur.Location())
+		sun := mon.AddDate(0, 0, 6)
+		_, kw := mon.ISOWeek()
+		prefix := "KW"
+		if a.uiLang() == "en" {
+			prefix = "W"
+		}
+		return fmt.Sprintf("%s %d · %02d.%02d. – %02d.%02d.%d", prefix, kw, mon.Day(), int(mon.Month()), sun.Day(), int(sun.Month()), sun.Year())
+	}
+	return a.tr("Kalender & Termine", "Calendar & Events")
+}
+
+func (a *App) recurrenceBadgeText(ev backend.CalendarEvent) string {
+	recIdx, _, _ := parseEventRRule(ev.RecurrenceRule)
+	switch recIdx {
+	case 1:
+		return a.tr("Täglich", "Daily")
+	case 2:
+		return a.tr("Wöchentlich", "Weekly")
+	case 3:
+		return a.tr("Monatlich", "Monthly")
+	case 4:
+		return a.tr("Jährlich", "Yearly")
+	default:
+		return a.tr("Serie", "Recurring")
+	}
+}
+
+func (a *App) renderCalendarWorkspace(c *ui.Context) {
+	t := c.Theme()
+	a.ensureCalCursor()
+
+	ui.Column(c).Fill().Background(t.Background).Children(func() {
+		// Top toolbar: title + view switcher + navigation + actions
+		ui.Row(c).FillWidth().Padding(10, 16).Gap(8).AlignItems(ui.Center).Wrap().BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			ui.Text(c, a.calendarPeriodLabel()).FontSize(15).Bold().MinWidth(160)
+
+			// Navigation buttons (Month / Week)
+			if a.calViewMode == 0 || a.calViewMode == 1 {
+				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+					if ui.Button(c.Key("cal-prev"), "‹").Padding(4, 9).Clicked() {
+						a.stepCalendar(context.Background(), -1)
+					}
+					if ui.Button(c.Key("cal-today"), a.tr("Heute", "Today")).Padding(4, 10).Clicked() {
+						a.calCursor = time.Now()
+						a.RefreshAll(context.Background())
+					}
+					if ui.Button(c.Key("cal-next"), "›").Padding(4, 9).Clicked() {
+						a.stepCalendar(context.Background(), 1)
+					}
+				})
+			} else {
+				winIdx := 1
+				switch a.calDays {
+				case 7:
+					winIdx = 0
+				case 30:
+					winIdx = 2
+				}
+				if ui.Segmented(c.Key("cal-days"), &winIdx, a.tr("7 Tage", "7 Days"), a.tr("14 Tage", "14 Days"), a.tr("30 Tage", "30 Days")).Changed() {
+					switch winIdx {
+					case 0:
+						a.calDays = 7
+					case 2:
+						a.calDays = 30
+					default:
+						a.calDays = 14
+					}
+					a.RefreshAll(context.Background())
+				}
+			}
+
+			ui.Spacer(c)
+
+			// Mode switcher: Month | Week | Agenda
+			if ui.Segmented(c.Key("cal-mode"), &a.calViewMode, a.tr("Monat", "Month"), a.tr("Woche", "Week"), a.tr("Agenda", "Agenda")).Changed() {
+				a.RefreshAll(context.Background())
+			}
+
+			if a.isDirectMode() {
+				if iconBtn(c.Key("cal-sync"), iconRefresh, a.tr("Kalender synchronisieren", "Sync calendars"), ui.Color{}, false).Clicked() {
+					a.syncDirectCalendarsNow(context.Background())
+				}
+				if iconLabelBtn(c.Key("cal-cfg"), iconCal, a.tr("Google / .ics", "Google / .ics"), false, a.tr("Google Kalender & iCal-Abos verwalten", "Manage Google Calendar & iCal feeds")).Clicked() {
+					a.OpenDirectModal(1)
+				}
+			}
+			if !a.readOnly || a.isDirectMode() {
+				if iconLabelBtn(c.Key("cal-new"), iconCalPlus, a.tr("Neuer Termin", "New Event"), true, a.tr("Neuen Kalendereintrag anlegen", "Create new calendar event")).Clicked() {
+					a.OpenNewEventModal(nil)
+				}
+			}
+		})
+
+		if !a.engineReady {
+			a.renderOfflineBanner(c)
+			return
+		}
+
+		filteredEvents := a.filteredCalendarEvents()
+		q := strings.TrimSpace(a.calSearchQuery)
+		visCal, totalCal := a.visibleCalendarCount()
+		if q != "" || (totalCal > 0 && visCal < totalCal) {
+			ui.Row(c.Key("cal-filter-bar")).FillWidth().Padding(6, 16).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				var parts []string
+				if q != "" {
+					parts = append(parts, a.trf("Suche „%s“: %d Treffer", "Search “%s”: %d matches", q, len(filteredEvents)))
+				}
+				if totalCal > 0 && visCal < totalCal {
+					parts = append(parts, a.trf("%d / %d Kalender aktiv", "%d / %d calendars shown", visCal, totalCal))
+				}
+				ui.Text(c, strings.Join(parts, " · ")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
+				if q != "" {
+					if ui.Button(c.Key("cal-clr-q"), a.tr("Suche leeren", "Clear Search")).Padding(2, 8).Clicked() {
+						a.calSearchQuery = ""
+						a.lastCalSearch = ""
+						a.RefreshAll(context.Background())
+					}
+				}
+				if totalCal > 0 && visCal < totalCal {
+					if ui.Button(c.Key("cal-clr-cals"), a.tr("Alle Kalender", "All Calendars")).Padding(2, 8).Clicked() {
+						a.setAllCalendarsVisible(true)
+					}
+				}
+			})
+		}
+
+		// Group filtered events by local day key YYYY-MM-DD
+		byDay := make(map[string][]backend.CalendarEvent)
+		for _, ev := range filteredEvents {
+			dk := eventDayKey(ev.Start)
+			if dk != "" {
+				byDay[dk] = append(byDay[dk], ev)
+			}
+		}
+		for dk := range byDay {
+			evs := byDay[dk]
+			sort.SliceStable(evs, func(i, j int) bool {
+				if evs[i].AllDay != evs[j].AllDay {
+					return evs[i].AllDay
+				}
+				return evs[i].Start < evs[j].Start
+			})
+			byDay[dk] = evs
+		}
+
+		switch a.calViewMode {
+		case 0:
+			a.renderCalendarMonthGrid(c, byDay)
+		case 1:
+			a.renderCalendarWeekGrid(c, byDay)
+		default:
+			a.renderCalendarAgendaList(c, byDay)
+		}
+	})
+}
+
+func (a *App) renderCalendarMonthGrid(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
+	t := c.Theme()
+	cur := a.ensureCalCursor()
+	loc := cur.Location()
+	firstOfMonth := time.Date(cur.Year(), cur.Month(), 1, 0, 0, 0, 0, loc)
+	offset := (int(firstOfMonth.Weekday()) + 6) % 7 // Monday = 0
+	gridStart := firstOfMonth.AddDate(0, 0, -offset)
+	todayKey := time.Now().Format("2006-01-02")
+
+	// Determine 5 or 6 week rows needed
+	daysInMonth := firstOfMonth.AddDate(0, 1, -1).Day()
+	numWeeks := 5
+	if offset+daysInMonth > 35 {
+		numWeeks = 6
+	}
+
+	weekdays := weekdayShortDE
+	if a.uiLang() == "en" {
+		weekdays = weekdayShortEN
+	}
+
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(10, 14).Gap(6).Children(func() {
+		// 7-column weekday header
+		ui.Row(c).FillWidth().Gap(6).Children(func() {
+			for i, wd := range weekdays {
+				clr := t.TextMuted
+				if i >= 5 {
+					clr = withAlpha(t.TextMuted, 0.75)
+				}
+				ui.Box(c.Key("cal-wd-"+wd)).Grow(1).MinWidth(0).Padding(2, 6).Children(func() {
+					ui.Text(c, wd).FontSize(11.5).Bold().TextColor(clr)
+				})
+			}
+		})
+
+		// Scrollable week rows
+		ui.Scroll(c.Key("cal-month-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(6).Children(func() {
+				for w := 0; w < numWeeks; w++ {
+					weekIdx := w
+					ui.Row(c.Key(fmt.Sprintf("cal-wk-%d", weekIdx))).FillWidth().Gap(6).Children(func() {
+						for d := 0; d < 7; d++ {
+							day := gridStart.AddDate(0, 0, weekIdx*7+d)
+							dk := day.Format("2006-01-02")
+							inMonth := day.Month() == cur.Month()
+							isToday := dk == todayKey
+							dayEvents := byDay[dk]
+
+							cellBg := t.Surface
+							if !inMonth {
+								cellBg = withAlpha(t.Surface, 0.45)
+							}
+							cellBorder := t.Border
+							if isToday {
+								cellBorder = t.Accent
+							}
+
+							ui.Column(c.Key("cal-cell-"+dk)).Grow(1).MinWidth(0).MinHeight(106).Padding(6).Radius(8).Background(cellBg).Border(1, cellBorder).Gap(4).Children(func() {
+								// Day header row: day number + quick "+" button
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+									numText := fmt.Sprintf("%d", day.Day())
+									if isToday {
+										ui.Box(c).Padding(1, 7).Radius(10).Background(t.Accent).Children(func() {
+											ui.Text(c, numText).FontSize(11.5).Bold().TextColor(ui.RGB(255, 255, 255))
+										})
+									} else {
+										numClr := t.Text
+										if !inMonth {
+											numClr = t.TextMuted
+										}
+										ui.Text(c, numText).FontSize(12).Bold().TextColor(numClr)
+									}
+									ui.Spacer(c)
+									if !a.readOnly || a.isDirectMode() {
+										dayCopy := day
+										if ui.Button(c.Key("cal-add-"+dk), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
+											a.OpenNewEventOnDate(dayCopy)
+										}
+									}
+								})
+
+								// Up to 3 event chips per cell
+								const maxChips = 3
+								for idx, ev := range dayEvents {
+									if idx >= maxChips {
+										extra := len(dayEvents) - maxChips
+										if ui.Button(c.Key("cal-more-"+dk), a.trf("+%d weitere", "+%d more", extra)).Padding(1, 4).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.Accent).Clicked() {
+											a.calCursor = day
+											a.calViewMode = 1 // Jump straight to Week view for this day
+											a.RefreshAll(context.Background())
+										}
+										break
+									}
+									evCopy := ev
+									evClr := a.calColorForEvent(evCopy, t.Accent)
+									lbl := evCopy.Title
+									if !evCopy.AllDay {
+										if st, err := parseEventTime(evCopy.Start); err == nil {
+											lbl = st.Local().Format("15:04") + " " + lbl
+										}
+									}
+									if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+										lbl = "↻ " + lbl
+									}
+									chip := ui.Button(c.Key(fmt.Sprintf("cal-chip-%s-%d", dk, idx)), truncateText(lbl, 30)).
+										FillWidth().
+										Padding(2, 5).
+										Radius(4).
+										Background(withAlpha(evClr, 0.16)).
+										Border(1, withAlpha(evClr, 0.45)).
+										TextColor(t.Text)
+									if chip.Clicked() {
+										a.OpenEventDetails(evCopy)
+									}
+								}
+							})
+						}
+					})
+				}
+			})
+		})
+	})
+}
+
+func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
+	t := c.Theme()
+	cur := a.ensureCalCursor()
+	loc := cur.Location()
+	offset := (int(cur.Weekday()) + 6) % 7
+	weekStart := time.Date(cur.Year(), cur.Month(), cur.Day()-offset, 0, 0, 0, 0, loc)
+	todayKey := time.Now().Format("2006-01-02")
+
+	weekdays := weekdayShortDE
+	if a.uiLang() == "en" {
+		weekdays = weekdayShortEN
+	}
+
+	// Precompute days & bucket timed events by (dayIdx, hour)
+	days := make([]time.Time, 7)
+	dayKeys := make([]string, 7)
+	allDay := make([][]backend.CalendarEvent, 7)
+	bySlot := make(map[string][]backend.CalendarEvent)
+
+	for d := 0; d < 7; d++ {
+		days[d] = weekStart.AddDate(0, 0, d)
+		dayKeys[d] = days[d].Format("2006-01-02")
+		for _, ev := range byDay[dayKeys[d]] {
+			if ev.AllDay {
+				allDay[d] = append(allDay[d], ev)
+				continue
+			}
+			hour := 9
+			if st, err := parseEventTime(ev.Start); err == nil {
+				hour = st.Local().Hour()
+			}
+			if hour < 7 {
+				hour = 7
+			}
+			if hour > 21 {
+				hour = 21
+			}
+			slotKey := fmt.Sprintf("%d-%d", d, hour)
+			bySlot[slotKey] = append(bySlot[slotKey], ev)
+		}
+	}
+
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, 14).Gap(6).Children(func() {
+		// Day column headers
+		ui.Row(c).FillWidth().Gap(6).Children(func() {
+			ui.Box(c).Width(48).Shrink(0)
+			for d := 0; d < 7; d++ {
+				dayCopy := days[d]
+				isToday := dayKeys[d] == todayKey
+				hdrBg := t.Surface
+				hdrBorder := t.Border
+				if isToday {
+					hdrBg = withAlpha(t.Accent, 0.14)
+					hdrBorder = t.Accent
+				}
+				ui.Row(c.Key("cal-wkhdr-"+dayKeys[d])).Grow(1).MinWidth(0).Padding(5, 8).Radius(6).Background(hdrBg).Border(1, hdrBorder).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, fmt.Sprintf("%s %02d.%02d.", weekdays[d], dayCopy.Day(), int(dayCopy.Month()))).FontSize(12).Bold().TextColor(func() ui.Color {
+						if isToday {
+							return t.Accent
+						}
+						return t.Text
+					}())
+					ui.Spacer(c)
+					if !a.readOnly || a.isDirectMode() {
+						if ui.Button(c.Key("cal-wkadd-"+dayKeys[d]), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
+							a.OpenNewEventOnDate(dayCopy)
+						}
+					}
+				})
+			}
+		})
+
+		// All-day strip (shown if any all-day event exists in this week)
+		hasAllDay := false
+		for d := 0; d < 7; d++ {
+			if len(allDay[d]) > 0 {
+				hasAllDay = true
+				break
+			}
+		}
+		if hasAllDay {
+			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+				ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(10.5).TextColor(t.TextMuted).Width(48).Shrink(0)
+				for d := 0; d < 7; d++ {
+					ui.Column(c.Key(fmt.Sprintf("cal-wkad-%d", d))).Grow(1).MinWidth(0).Gap(3).Children(func() {
+						for idx, ev := range allDay[d] {
+							evCopy := ev
+							evClr := a.calColorForEvent(evCopy, t.Accent)
+							if ui.Button(c.Key(fmt.Sprintf("cal-wkad-ev-%d-%d", d, idx)), truncateText(evCopy.Title, 20)).
+								FillWidth().Padding(2, 6).Radius(4).Background(withAlpha(evClr, 0.22)).Border(1, withAlpha(evClr, 0.5)).TextColor(t.Text).Clicked() {
+								a.OpenEventDetails(evCopy)
+							}
+						}
+					})
+				}
+			})
+		}
+
+		// Scrollable hourly rows 07:00 – 21:00
+		ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(4).Children(func() {
+				for h := 7; h <= 21; h++ {
+					hour := h
+					ui.Row(c.Key(fmt.Sprintf("cal-wkh-%02d", hour))).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+						ui.Text(c, fmt.Sprintf("%02d:00", hour)).FontSize(11).TextColor(t.TextMuted).Width(48).Shrink(0)
+						for d := 0; d < 7; d++ {
+							slotKey := fmt.Sprintf("%d-%d", d, hour)
+							evs := bySlot[slotKey]
+							ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, withAlpha(t.Border, 0.7)).Gap(3).Children(func() {
+								for idx, ev := range evs {
+									evCopy := ev
+									evClr := a.calColorForEvent(evCopy, t.Accent)
+									lbl := evCopy.Title
+									if st, err := parseEventTime(evCopy.Start); err == nil {
+										lbl = st.Local().Format("15:04") + " " + lbl
+									}
+									if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+										lbl = "↻ " + lbl
+									}
+									if ui.Button(c.Key(fmt.Sprintf("cal-wkev-%s-%d", slotKey, idx)), truncateText(lbl, 30)).
+										FillWidth().Padding(3, 5).Radius(4).Background(withAlpha(evClr, 0.18)).Border(1, withAlpha(evClr, 0.45)).TextColor(t.Text).Clicked() {
+										a.OpenEventDetails(evCopy)
+									}
+								}
+							})
+						}
+					})
+				}
+			})
+		})
+	})
+}
+
+func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
+	t := c.Theme()
+	now := time.Now()
+	loc := now.Location()
+	startKey := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).Format("2006-01-02")
+	endKey := time.Date(now.Year(), now.Month(), now.Day()+max(a.calDays, 7), 0, 0, 0, 0, loc).Format("2006-01-02")
+
+	searching := strings.TrimSpace(a.calSearchQuery) != ""
+	var keys []string
+	for dk := range byDay {
+		if searching || (dk >= startKey && dk <= endKey) {
+			keys = append(keys, dk)
+		}
+	}
+	sort.Strings(keys)
+
+	ui.Scroll(c.Key("cal-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+		ui.Column(c).FillWidth().Padding(16).Gap(14).Children(func() {
+			if len(keys) == 0 {
+				if searching {
+					ui.Text(c, a.trf("Keine Termine für „%s“ in den ausgewählten Kalendern gefunden.", "No events matching “%s” in selected calendars.", strings.TrimSpace(a.calSearchQuery))).FontSize(13).TextColor(t.TextMuted)
+				} else {
+					ui.Text(c, a.trf("Keine Termine in den nächsten %d Tagen.", "No events in the next %d days.", a.calDays)).FontSize(13).TextColor(t.TextMuted)
+				}
+				return
+			}
+
+			for _, dk := range keys {
+				ui.Column(c.Key("calday-" + dk)).FillWidth().Gap(8).Children(func() {
+					ui.Text(c, dayHeadingLang(dk, a.uiLang())).FontSize(12.5).Bold().TextColor(t.Accent)
+					for _, ev := range byDay[dk] {
+						evCopy := ev
+						evClr := a.calColorForEvent(evCopy, t.Accent)
+						evKey := calEventKey(evCopy)
+						expanded := a.calExpanded[evKey]
+						joinURL, joinLabel := a.eventJoinLink(evCopy)
+						ui.Column(c.Key("cal-ev-"+evKey)).FillWidth().Padding(10, 12).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+							ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+								ui.Box(c).Size(4, 34).Radius(2).Background(evClr).Shrink(0)
+								ui.Text(c, formatEventRangeLang(evCopy.AllDay, evCopy.Start, evCopy.End, a.uiLang())).FontSize(12).Bold().TextColor(t.Accent).Width(110).Shrink(0)
+								ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+										ui.Text(c, evCopy.Title).FontSize(13).Bold()
+										if evCopy.IsRecurring || evCopy.RecurrenceID != "" || evCopy.RecurrenceRule != "" {
+											pillBadge(c, a.recurrenceBadgeText(evCopy), t.Background, t.TextMuted)
+										}
+									})
+									var meta []string
+									if evCopy.Calendar != "" {
+										meta = append(meta, evCopy.Calendar)
+									}
+									if evCopy.Location != "" {
+										meta = append(meta, evCopy.Location)
+									}
+									if len(meta) > 0 {
+										ui.Text(c, strings.Join(meta, " · ")).FontSize(11.5).TextColor(t.TextMuted)
+									}
+									if !expanded {
+										if desc := cleanEventPreviewText(evCopy.Description); desc != "" {
+											ui.Text(c, truncateText(desc, 280)).FontSize(11.5).TextColor(t.TextMuted).MaxLines(2)
+										}
+									}
+								}).OnClick(func() { a.toggleCalEventExpanded(evKey) })
+								if joinURL != "" {
+									if iconLabelBtn(c.Key("ev-join-"+evKey), iconLink, joinLabel, true, a.tr("Online-Besprechung im Browser öffnen", "Open online meeting in browser")).Clicked() {
+										_ = openExternalURL(joinURL)
+									}
+								}
+								if a.eventHasDetails(evCopy) {
+									lbl := a.tr("Details", "Details")
+									if expanded {
+										lbl = a.tr("Weniger", "Less")
+									}
+									if ui.Button(c.Key("ev-more-"+evKey), lbl).Padding(3, 8).Clicked() {
+										a.toggleCalEventExpanded(evKey)
+									}
+								}
+								if (!a.readOnly || a.isDirectMode()) && !evCopy.ReadOnly {
+									if iconBtn(c.Key("ev-edit-"+evKey), iconPen, a.tr("Termin bearbeiten", "Edit event"), ui.Color{}, false).Clicked() {
+										a.OpenEditEventModal(evCopy)
+									}
+									if iconBtn(c.Key("ev-del-"+evKey), iconTrash, a.tr("Termin löschen…", "Delete event…"), t.Danger, false).Clicked() {
+										a.RequestDeleteCalendarEvent(evCopy)
+									}
+								}
+							})
+							if expanded {
+								ui.Column(c).FillWidth().Padding(0, 0, 0, 138).Gap(8).Children(func() {
+									a.renderEventDetails(c, evCopy, "agenda-"+evKey, false)
+								})
+							}
+						})
+					}
+				})
+			}
+		})
+	})
+}
+
+// RenderEventWindow renders the detached native Calendar Event create/edit window on desktop.
+func (a *App) RenderEventWindow(c *ui.Context) {
+	if a.uiTheme != nil && a.uiTheme.theme != nil {
+		c.SetTheme(a.uiTheme.theme)
+	}
+	t := c.Theme()
+	c.Root().Background(t.Surface)
+	if c.Shortcut(0, ui.KeyEscape) {
+		a.CloseEventDialog()
+	}
+	ui.Column(c).Fill().Padding(16).Background(t.Surface).Gap(10).Children(func() {
+		a.renderEventFormContent(c, true)
+	})
+}
+
+func (a *App) renderEventModal(c *ui.Context) {
+	if a.detachedAuxWindows {
+		return
+	}
+	t := c.Theme()
+	ui.Modal(c, &a.eventOpen, func() {
+		ui.Column(c).Width(520).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+			a.renderEventFormContent(c, false)
+		})
+	})
+}
+
+func (a *App) renderEventFormContent(c *ui.Context, inWindow bool) {
+	t := c.Theme()
+	isEdit := a.eventEditingID != ""
+	if !inWindow {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.EventWindowTitle()).FontSize(15).Bold().Grow(1)
+			if ui.Button(c.Key("ev-x"), "✕").Clicked() {
+				a.CloseEventDialog()
+			}
+		})
+	}
+	if len(a.eventCalLabels) > 0 && !isEdit {
+		ui.Select(c.Key("ev-cal"), &a.eventCalendar, a.eventCalLabels).FillWidth()
+	} else if isEdit && a.eventCalendar != "" {
+		ui.Text(c, a.tr("Kalender: ", "Calendar: ")+a.eventCalendar).FontSize(12).TextColor(t.TextMuted)
+	}
+	ui.TextInput(c.Key("ev-title"), &a.eventTitle).Placeholder(a.tr("Titel…", "Title…")).FillWidth()
+	ui.Row(c).FillWidth().Gap(8).Children(func() {
+		ui.TextInput(c.Key("ev-start"), &a.eventStart).Placeholder("Start (YYYY-MM-DDTHH:MM)").Grow(1)
+		ui.TextInput(c.Key("ev-end"), &a.eventEnd).Placeholder(a.tr("Ende (YYYY-MM-DDTHH:MM)", "End (YYYY-MM-DDTHH:MM)")).Grow(1)
+	})
+	ui.Checkbox(c.Key("ev-allday"), &a.eventAllDay, a.tr("Ganztägiger Termin", "All-day event"))
+
+	// Recurrence selector (Serientermin / RRULE)
+	ui.Column(c).FillWidth().Gap(6).Children(func() {
+		ui.Text(c, a.tr("Wiederholung (Serientermin)", "Recurrence (Repeating Event)")).FontSize(11.5).TextColor(t.TextMuted)
+		ui.Segmented(
+			c.Key("ev-rec"),
+			&a.eventRecurrence,
+			a.tr("Keine", "None"),
+			a.tr("Täglich", "Daily"),
+			a.tr("Wöchentlich", "Weekly"),
+			a.tr("Monatlich", "Monthly"),
+			a.tr("Jährlich", "Yearly"),
+		)
+		if a.eventRecurrence > 0 {
+			ui.Row(c).FillWidth().Gap(8).Children(func() {
+				ui.TextInput(c.Key("ev-rec-cnt"), &a.eventRecCount).Placeholder(a.tr("Anzahl (optional, z. B. 10)", "Count (optional, e.g. 10)")).Grow(1)
+				ui.TextInput(c.Key("ev-rec-until"), &a.eventRecUntil).Placeholder(a.tr("Bis (JJJJ-MM-TT, optional)", "Until (YYYY-MM-DD, optional)")).Grow(1)
+			})
+		}
+	})
+
+	ui.TextInput(c.Key("ev-loc"), &a.eventLocation).Placeholder(a.tr("Ort / Meeting-Link…", "Location / Meeting link…")).FillWidth()
+	descArea := ui.TextArea(c.Key("ev-desc"), &a.eventDesc).Placeholder(a.tr("Notizen…", "Notes…")).FillWidth()
+	if inWindow {
+		descArea.Grow(1).MinHeight(120)
+	} else {
+		descArea.Height(86)
+	}
+
+	ui.Row(c).FillWidth().Gap(8).Children(func() {
+		if isEdit && !a.eventEditingEv.ReadOnly {
+			if iconLabelBtn(c.Key("ev-modal-del"), iconTrash, a.tr("Löschen", "Delete"), false, a.tr("Termin löschen…", "Delete event…")).Clicked() {
+				ev := a.eventEditingEv
+				a.CloseEventDialog()
+				a.RequestDeleteCalendarEvent(ev)
+			}
+		}
+		ui.Spacer(c)
+		if ui.Button(c.Key("ev-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
+			a.CloseEventDialog()
+		}
+		saveLbl := a.tr("Termin speichern", "Save Event")
+		if isEdit {
+			saveLbl = a.tr("Änderungen speichern", "Save Changes")
+		}
+		if a.eventBusy {
+			saveLbl = a.tr("Speichere…", "Saving…")
+		}
+		if ui.PrimaryButton(c.Key("ev-save"), saveLbl).Clicked() && !a.eventBusy {
+			a.SaveCalendarEvent(context.Background())
+		}
+	})
+}

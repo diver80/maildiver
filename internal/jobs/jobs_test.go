@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/omathunder/internal/config"
-	"github.com/diver80/omathunder/internal/triage"
+	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 // fakeTB answers the add-on's host methods and records them.

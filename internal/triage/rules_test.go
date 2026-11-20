@@ -185,14 +185,14 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 		col    string
 		ok     bool
 	}{
-		{"INBOX/avono/todo", "action", true},
-		{"INBOX/avono/To-Do", "action", true},
-		{"INBOX/Helvetia/waiting", "waiting", true},
-		{"INBOX/Helvetia/Wartet", "waiting", true},
-		{"INBOX/REWE/done", "done", true},
-		{"INBOX/REWE/Erledigt", "done", true},
-		{"INBOX/avono/Reise", "", false},
-		{"INBOX/avono/Teams 26", "", false},
+		{"INBOX/work/todo", "action", true},
+		{"INBOX/work/To-Do", "action", true},
+		{"INBOX/ClientA/waiting", "waiting", true},
+		{"INBOX/ClientA/Wartet", "waiting", true},
+		{"INBOX/ClientB/done", "done", true},
+		{"INBOX/ClientB/Erledigt", "done", true},
+		{"INBOX/work/Reise", "", false},
+		{"INBOX/work/Teams 26", "", false},
 		{"INBOX/atlassian", "", false},
 		{"INBOX", "", false},
 	}
@@ -205,9 +205,9 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 
 	cTodo, matched := EvaluateStage0(MessageInput{
 		ID:      "todo-1",
-		Folder:  "INBOX/avono/todo",
+		Folder:  "INBOX/work/todo",
 		Subject: "Bitte kurz pruefen",
-		From:    "max@avono.de",
+		From:    "max@example.org",
 		Unread:  true,
 	}, true)
 	if matched || cTodo.KanbanColumn != "action" || cTodo.Bucket != BucketAction || !cTodo.NeedsAttention {
@@ -216,9 +216,9 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 
 	cWait, matched := EvaluateStage0(MessageInput{
 		ID:      "wait-1",
-		Folder:  "INBOX/Helvetia/waiting",
+		Folder:  "INBOX/ClientA/waiting",
 		Subject: "Angebot versendet",
-		From:    "ich@avono.de",
+		From:    "ich@example.org",
 		Unread:  false,
 	}, true)
 	if matched || cWait.KanbanColumn != "waiting" || cWait.Bucket != BucketWaiting || cWait.NeedsAttention {
@@ -228,9 +228,9 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 	// Neutral subfolders like "Reise" must leave KanbanColumn empty for Stage 1/fallback.
 	cOther, matchedOther := EvaluateStage0(MessageInput{
 		ID:      "reise-1",
-		Folder:  "INBOX/avono/Reise",
+		Folder:  "INBOX/work/Reise",
 		Subject: "Hotelbuchung Rueckfrage",
-		From:    "kollege@avono.de",
+		From:    "kollege@example.org",
 		Unread:  true,
 	}, true)
 	if matchedOther || cOther.KanbanColumn != "" {
@@ -239,7 +239,7 @@ func TestFolderKanbanColumnMapping(t *testing.T) {
 
 	// Already classified invoice gets ApplyFolderKanbanColumn applied when placed into todo.
 	inv := Classification{MessageID: "i1", Bucket: BucketInvoice, KanbanColumn: "invoice"}
-	if !ApplyFolderKanbanColumn(&inv, "INBOX/avono/todo") || inv.KanbanColumn != "action" {
+	if !ApplyFolderKanbanColumn(&inv, "INBOX/work/todo") || inv.KanbanColumn != "action" {
 		t.Fatalf("expected ApplyFolderKanbanColumn to map todo to action, got %+v", inv)
 	}
 }
