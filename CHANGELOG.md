@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 (2026-11-20)
+
+### Desktop
+- **Tabellen in Mails:** „▦ Tabelle“ im Verfassen-Fenster übernimmt eine kopierte Tabelle (Confluence, Excel, Webseite) mit ihren Links, sonst eine leere Vorlage. Gesendet wird eine echte HTML-Tabelle; Links `[Text](https://…)` werden klickbar. Empfangene Datentabellen erscheinen in der Leseansicht als Tabelle, Layout-Tabellen von Newslettern bleiben Text.
+- **Unterhaltung öffnen in…** (Knopf an der Mail): Claude Code oder der Antigravity-Agent starten im Terminal mit der Unterhaltung als Markdown-Datei und fassen sie zusammen; Antigravity (App) öffnet die Datei; für Claude (App) und alles andere liegt sie als Markdown in der Zwischenablage. Älteste Mail zuerst, Zitate früherer Mails weggelassen, verschlüsselte Mails ohne Inhalt. Die Dateien liegen nur für dich lesbar im Zustandsordner und werden nach einem Tag gelöscht. Auf dem Telefon: „Unterhaltung teilen…“.
+
+### Android
+- **Telefon-Ansicht:** ein Bildschirm nach dem anderen – Postfächer, Mail-Liste, Mail – mit der Zurück-Geste; Wischen zum Archivieren, Löschen und Gelesen-Markieren; Ziehen zum Aktualisieren; Verfassen im Vollbild. Erscheint auf Android und in Desktop-Fenstern unter 640 px Breite; Dialoge passen sich der Bildschirmbreite an.
+- **Konten per QR-Code übernehmen:** „Vom Computer übernehmen (QR-Code)“ öffnet die Kamera des Systems (ohne Kamera-Berechtigung) und liest den Übertragungscode, den der Computer unter *Einstellungen → Geräte-Übertragung* zeigt.
+- **Neue Mails im Hintergrund:** Android weckt MailDiver etwa alle 15 Minuten (mit Netz); neue Mails im Posteingang erscheinen als Benachrichtigung – jede einmal, und keine, die du in der geöffneten App schon gesehen hast.
+- **Passwörter im Android-Keystore:** Zugangsdaten liegen in einer Datei, die mit einem vom Android-Keystore geschützten Schlüssel (AES-256-GCM) verschlüsselt ist; eine unverschlüsselte Datei früherer Builds wird übernommen und gelöscht.
+- Links und Anhänge öffnen über das System.
+
 ## 0.5.0 (2026-11-20)
 
 ### Umbau: MailDiver – eigenständig, ohne Thunderbird
