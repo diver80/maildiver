@@ -25,7 +25,8 @@ func BuildStyledEmailHTML(plainBody string) string {
 	norm = strings.ReplaceAll(norm, "\r", "\n")
 
 	msgPart, sigPart, quotePart, hasSig := splitPlainMailParts(norm)
-	hasMarkup := mdBoldRE.MatchString(msgPart) || mdCodeRE.MatchString(msgPart) || strings.Contains(msgPart, "\n- ")
+	hasMarkup := mdBoldRE.MatchString(msgPart) || mdCodeRE.MatchString(msgPart) || strings.Contains(msgPart, "\n- ") ||
+		mdLinkRE.MatchString(msgPart) || hasMarkdownTable(msgPart)
 	if (!hasSig || strings.TrimSpace(sigPart) == "") && !hasMarkup {
 		return ""
 	}
@@ -125,23 +126,16 @@ func writeHTMLParagraphs(b *strings.Builder, text string) {
 			b.WriteString(`</ul>`)
 			continue
 		}
-		if i > 0 {
-			b.WriteString(`<p style="margin:10px 0 0 0;">`)
-		} else {
-			b.WriteString(`<p style="margin:0;">`)
-		}
-		for j, ln := range lines {
-			if j > 0 {
-				b.WriteString(`<br>`)
-			}
-			b.WriteString(formatRichInlineHTML(ln))
-		}
-		b.WriteString(`</p>`)
+		writeBlock(b, lines, i == 0)
 	}
 }
 
 func formatRichInlineHTML(line string) string {
-	s := linkifyHTMLText(line)
+	return formatLinksHTML(line, func(s string) string { return applyInlineMarkup(linkifyHTMLText(s)) })
+}
+
+// applyInlineMarkup turns `code`, **bold** and *italic* of escaped text into HTML.
+func applyInlineMarkup(s string) string {
 	s = mdCodeRE.ReplaceAllString(s, `<code style="background:#f3f4f6;padding:1px 4px;border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;">$1</code>`)
 	s = mdBoldRE.ReplaceAllString(s, `<strong>$1</strong>`)
 	s = mdItalicRE.ReplaceAllString(s, `<em>$1</em>`)

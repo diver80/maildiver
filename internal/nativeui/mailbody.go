@@ -772,6 +772,12 @@ func (m *mdWriter) block(n *xhtml.Node) {
 		m.inItem--
 		m.flush()
 		return
+	case atom.Table:
+		if rows := dataTableRows(n); rows != nil {
+			m.flush()
+			m.table(rows)
+			return
+		}
 	case atom.Tr:
 		if cells := simpleRowCells(n); cells != nil {
 			m.flush()
@@ -794,6 +800,109 @@ func (m *mdWriter) block(n *xhtml.Node) {
 		m.children(n)
 	}
 	m.flush()
+}
+
+// dataTableRows returns the cells of a table that holds data – rows of the same number of cells
+// (two or more, in two rows or more), no table inside and no pictures – so that it shows as a
+// table. Mails lay themselves out with tables too; those return nil and read as text.
+func dataTableRows(t *xhtml.Node) [][]*xhtml.Node {
+	var rows [][]*xhtml.Node
+	ok := true
+	var walk func(n *xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		for c := n.FirstChild; c != nil && ok; c = c.NextSibling {
+			if c.Type != xhtml.ElementNode {
+				continue
+			}
+			switch c.DataAtom {
+			case atom.Thead, atom.Tbody, atom.Tfoot:
+				walk(c)
+			case atom.Caption, atom.Colgroup, atom.Col:
+			case atom.Tr:
+				if hiddenNode(c) {
+					continue
+				}
+				var cells []*xhtml.Node
+				for cell := c.FirstChild; cell != nil; cell = cell.NextSibling {
+					if cell.Type != xhtml.ElementNode {
+						continue
+					}
+					if (cell.DataAtom != atom.Td && cell.DataAtom != atom.Th) || hasLayoutContent(cell) {
+						ok = false
+						return
+					}
+					cells = append(cells, cell)
+				}
+				rows = append(rows, cells)
+			default:
+				ok = false
+			}
+		}
+	}
+	walk(t)
+	if !ok || len(rows) < 2 {
+		return nil
+	}
+	cols := len(rows[0])
+	headerRow, anyHeader := true, false
+	for i, r := range rows {
+		if len(r) != cols || cols < 2 {
+			return nil
+		}
+		for _, cell := range r {
+			if cell.DataAtom == atom.Th {
+				anyHeader = true
+			} else if i == 0 {
+				headerRow = false
+			}
+		}
+	}
+	// A header row on top makes a table. Header cells elsewhere (on the left: "Status | Open")
+	// make a list of fields, which reads better as lines; so do two columns without headers.
+	switch {
+	case headerRow && anyHeader:
+		return rows
+	case !anyHeader && cols >= 3:
+		return rows
+	}
+	return nil
+}
+
+// hasLayoutContent reports a table or a picture inside a cell: the table lays out a mail.
+func hasLayoutContent(n *xhtml.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != xhtml.ElementNode {
+			continue
+		}
+		if c.DataAtom == atom.Table || (c.DataAtom == atom.Img && !pixelImage(c)) || hasLayoutContent(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// table writes rows as a Markdown table, the first row as its header.
+func (m *mdWriter) table(rows [][]*xhtml.Node) {
+	prefix := strings.Repeat("> ", m.quote)
+	var b strings.Builder
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(prefix + "|")
+		for _, cell := range r {
+			m.push()
+			m.lineText, m.space = false, false
+			m.children(cell)
+			txt := trimBreaks(strings.Join(strings.Fields(m.pop()), " "))
+			b.WriteString(" " + txt + " |") // the text arrives escaped, "|" as "\|"
+		}
+		if i == 0 {
+			b.WriteString("\n" + prefix + "|" + strings.Repeat(" --- |", len(r)))
+		}
+	}
+	m.space, m.lineText = false, false
+	m.writeBlock(b.String(), false)
 }
 
 // simpleRowCells returns the cells of a table row that holds only inline content (a row of
