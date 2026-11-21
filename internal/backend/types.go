@@ -318,8 +318,9 @@ type ComposeRequest struct {
 	// Sign: "on", "off" or "" (the identity's default). A reply to an encrypted
 	// mail is always encrypted; a silent draft of it opens its window instead (Reason
 	// "encrypted_reply" in the result).
-	Sign    string `json:"sign,omitempty"`
-	Encrypt bool   `json:"encrypt,omitempty"`
+	Sign       string `json:"sign,omitempty"`
+	Encrypt    bool   `json:"encrypt,omitempty"`
+	CryptoTech string `json:"cryptoTech,omitempty"` // "" = auto, "smime", "pgp"
 	// IdempotencyKey deduplicates retries (contract §5). ComposeDraft/ComposeSend fill in a
 	// random key when empty; callers that may retry should set a stable one.
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`

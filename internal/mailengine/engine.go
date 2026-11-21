@@ -18,6 +18,7 @@ import (
 
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/pgp"
 	"github.com/diver80/maildiver/internal/secretstore"
 	"github.com/diver80/maildiver/internal/smime"
 )
@@ -59,6 +60,7 @@ type Engine struct {
 	store   *Store
 	secrets secretstore.Store
 	smime   *smime.Manager
+	pgp     *pgp.Manager
 	events  *events.Hub
 	loadCfg func() (config.Config, error)
 	saveCfg func(config.Config) error
@@ -121,10 +123,12 @@ func New(opts Options) (*Engine, error) {
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	smimeDir := filepath.Join(filepath.Dir(dbPath), "smime")
+	pgpDir := filepath.Join(filepath.Dir(dbPath), "pgp")
 	return &Engine{
 		store:       st,
 		secrets:     secrets,
 		smime:       smime.NewManager(smimeDir, secrets),
+		pgp:         pgp.NewManager(pgpDir, secrets),
 		events:      ev,
 		loadCfg:     loadCfg,
 		saveCfg:     saveCfg,
@@ -197,6 +201,76 @@ func (e *Engine) DeleteSMIMEContact(email string) error {
 		return nil
 	}
 	return e.smime.DeleteContactCert(email)
+}
+
+// PGP returns the engine's OpenPGP keyring & key manager.
+func (e *Engine) PGP() *pgp.Manager { return e.pgp }
+
+func (e *Engine) ImportPGPKeyFile(path, passphrase string) ([]pgp.KeyInfo, error) {
+	if e.pgp == nil {
+		return nil, fmt.Errorf("OpenPGP nicht initialisiert")
+	}
+	raw, err := readBoundedRegularFile(expandHomePath(path), 4*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	return e.pgp.ImportKeys(raw, passphrase)
+}
+
+func (e *Engine) ImportPGPArmor(armored, passphrase string) ([]pgp.KeyInfo, error) {
+	if e.pgp == nil {
+		return nil, fmt.Errorf("OpenPGP nicht initialisiert")
+	}
+	return e.pgp.ImportKeys([]byte(armored), passphrase)
+}
+
+func (e *Engine) GeneratePGPKey(name, email, passphrase string) (pgp.KeyInfo, error) {
+	if e.pgp == nil {
+		return pgp.KeyInfo{}, fmt.Errorf("OpenPGP nicht initialisiert")
+	}
+	return e.pgp.GenerateIdentity(name, email, passphrase)
+}
+
+func (e *Engine) ExportPGPPublicKey(email string) (string, error) {
+	if e.pgp == nil {
+		return "", fmt.Errorf("OpenPGP nicht initialisiert")
+	}
+	return e.pgp.ExportPublicKeyArmor(email)
+}
+
+func (e *Engine) FetchPGPKeyOnline(ctx context.Context, email string) ([]pgp.KeyInfo, error) {
+	if e.pgp == nil {
+		return nil, fmt.Errorf("OpenPGP nicht initialisiert")
+	}
+	return e.pgp.FetchOnlinePublicKey(ctx, email)
+}
+
+func (e *Engine) ListPGPIdentities() []pgp.KeyInfo {
+	if e.pgp == nil {
+		return nil
+	}
+	return e.pgp.ListIdentities()
+}
+
+func (e *Engine) ListPGPContacts() []pgp.KeyInfo {
+	if e.pgp == nil {
+		return nil
+	}
+	return e.pgp.ListContacts()
+}
+
+func (e *Engine) DeletePGPIdentity(email string) error {
+	if e.pgp == nil {
+		return nil
+	}
+	return e.pgp.DeleteIdentity(email)
+}
+
+func (e *Engine) DeletePGPContact(email string) error {
+	if e.pgp == nil {
+		return nil
+	}
+	return e.pgp.DeleteContact(email)
 }
 
 // Connected implements bridge.RPCClient; direct engine is always connected locally.
@@ -625,6 +699,13 @@ func (e *Engine) DeleteAccount(ctx context.Context, accountID string) error {
 		for _, em := range removedEmails {
 			if !keptEmails[em] {
 				_ = e.smime.DeleteIdentity(em)
+			}
+		}
+	}
+	if e.pgp != nil {
+		for _, em := range removedEmails {
+			if !keptEmails[em] {
+				_ = e.pgp.DeleteIdentity(em)
 			}
 		}
 	}

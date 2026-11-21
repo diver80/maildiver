@@ -16,6 +16,7 @@ import (
 
 	"github.com/diver80/maildiver/internal/backend"
 	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/maildiver/internal/pgp"
 	"github.com/diver80/maildiver/internal/smime"
 	"github.com/diver80/maildiver/internal/triage"
 )
@@ -349,8 +350,8 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 		detail.BodyHtml = m.BodyHTML
 	}
 
-	// S/MIME decryption & signature verification on raw RFC 5322 bytes (plaintext never persisted to SQLite).
-	if len(m.RawEML) > 0 && e.smime != nil {
+	// OpenPGP & S/MIME decryption & signature verification on raw RFC 5322 bytes (plaintext never persisted to SQLite).
+	if len(m.RawEML) > 0 && (e.smime != nil || e.pgp != nil) {
 		e.applySMIMERead(m.RawEML, p.Decrypt, p.Format, &detail)
 	}
 
@@ -364,23 +365,88 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 	return marshalJSON(detail)
 }
 
+func (e *Engine) applyDecryptedPayload(dp ParsedMessage, format string, detail *backend.MessageDetail) {
+	detail.BodyText = dp.BodyText
+	if format == "html" || format == "both" {
+		detail.BodyHtml = dp.BodyHTML
+	}
+	detail.Attachments = dp.Attachments
+	if strings.TrimSpace(dp.ICSBody) != "" {
+		detail.HasICS = true
+		if evs, ierr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(dp.ICSBody)); ierr == nil && len(evs) > 0 {
+			ev := storedEventToBridge(evs[0])
+			ev.Organizer, ev.Attendees = ParseICSInviteMeta(dp.ICSBody)
+			detail.ICSInvite = &ev
+		}
+	}
+}
+
 func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string, detail *backend.MessageDetail) {
-	// Quick detection via ParseRawMessage flags / headers
 	parsed, _ := ParseRawMessage(rawEML)
-	detail.Security.PGP = parsed.IsPGP
-	if parsed.IsPGP {
-		if parsed.Encrypted {
+	fromAddr := ""
+	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
+		fromAddr = strings.ToLower(strings.TrimSpace(addrs[0]))
+	}
+	hasInlinePGPEnc := strings.Contains(string(rawEML), "-----BEGIN PGP MESSAGE-----")
+	hasInlinePGPSig := strings.Contains(string(rawEML), "-----BEGIN PGP SIGNED MESSAGE-----")
+	if parsed.IsPGP || hasInlinePGPEnc || hasInlinePGPSig {
+		detail.Security.PGP = true
+		if parsed.Encrypted || hasInlinePGPEnc {
 			detail.Security.Encrypted = true
-			detail.Security.Decryption = "skipped"
+			if !allowDecrypt {
+				detail.Security.Decryption = "skipped"
+				detail.BodyText = ""
+				detail.BodyHtml = ""
+				detail.Attachments = nil
+				return
+			}
+			if e.pgp == nil {
+				detail.Security.Decryption = "fail"
+				detail.Security.Error = "OpenPGP nicht initialisiert"
+				return
+			}
+			decrypted, vr, isInline, isEnc, derr := pgp.DecryptMIME(rawEML, e.pgp.AllEntities(), fromAddr)
+			if isEnc {
+				if derr != nil {
+					detail.Security.Decryption = "fail"
+					detail.Security.Error = derr.Error()
+					return
+				}
+				detail.Security.Decryption = "success"
+				if isInline {
+					detail.BodyText = string(decrypted)
+				} else if dp, perr := ParseRawMessage(decrypted); perr == nil {
+					e.applyDecryptedPayload(dp, format, detail)
+				} else {
+					detail.BodyText = string(decrypted)
+				}
+				if vr != nil {
+					applyPGPVerifyToSecurity(vr, &detail.Security)
+				}
+				return
+			}
+		}
+		if e.pgp != nil {
+			if vr, plain, isSigned := pgp.VerifyMIME(rawEML, fromAddr, e.pgp.AllEntities()); isSigned {
+				if vr != nil {
+					applyPGPVerifyToSecurity(vr, &detail.Security)
+				} else {
+					detail.Security.Signed = true
+				}
+				if len(plain) > 0 {
+					detail.BodyText = string(plain)
+				}
+				return
+			}
 		}
 		if parsed.Signed {
 			detail.Security.Signed = true
 		}
 		return
 	}
-	fromAddr := ""
-	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
-		fromAddr = strings.ToLower(strings.TrimSpace(addrs[0]))
+
+	if e.smime == nil {
+		return
 	}
 	if parsed.Encrypted {
 		detail.Security.Encrypted = true
@@ -402,19 +468,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 			detail.Security.SMIME = true
 			detail.Security.Decryption = "success"
 			if dp, perr := ParseRawMessage(decrypted); perr == nil {
-				detail.BodyText = dp.BodyText
-				if format == "html" || format == "both" {
-					detail.BodyHtml = dp.BodyHTML
-				}
-				detail.Attachments = dp.Attachments
-				if strings.TrimSpace(dp.ICSBody) != "" {
-					detail.HasICS = true
-					if evs, ierr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(dp.ICSBody)); ierr == nil && len(evs) > 0 {
-						ev := storedEventToBridge(evs[0])
-						ev.Organizer, ev.Attendees = ParseICSInviteMeta(dp.ICSBody)
-						detail.ICSInvite = &ev
-					}
-				}
+				e.applyDecryptedPayload(dp, format, detail)
 			}
 			if vr != nil {
 				applySMIMEVerifyToSecurity(vr, fromAddr, &detail.Security)
@@ -450,6 +504,23 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 			detail.Security.Signed = true
 		}
 	}
+}
+
+func applyPGPVerifyToSecurity(vr *pgp.VerifyResult, sec *backend.MessageSecurity) {
+	sec.Signed = true
+	sec.PGP = true
+	sec.SignatureValid = vr.Valid
+	sec.SignatureTrusted = vr.Trusted
+	sec.SignerEmail = vr.SignerEmail
+	sec.SignerSubject = vr.SignerUserID
+	if vr.SignerKeyID != "" {
+		sec.SignerIssuer = "PGP " + vr.SignerKeyID
+		if len(vr.SignerFingerprint) >= 16 {
+			sec.SignerIssuer += " · " + vr.SignerFingerprint[len(vr.SignerFingerprint)-16:]
+		}
+	}
+	sec.SignerAddressMismatch = vr.SignerAddressMismatch
+	sec.SignatureError = vr.Error
 }
 
 func applySMIMEVerifyToSecurity(vr *smime.VerifyResult, fromAddr string, sec *backend.MessageSecurity) {
@@ -1124,9 +1195,9 @@ func resolveOutgoingIdentity(acc config.DirectAccount, req backend.ComposeReques
 	return fromEmail, fromName
 }
 
-func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, req backend.ComposeRequest, includeBcc bool) (fromEmail, msgID string, raw []byte, err error) {
+func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, req backend.ComposeRequest, includeBcc bool) (fromEmail, msgID string, raw []byte, compSec *backend.ComposeSecurity, err error) {
 	if len(req.BodyHTML) > maxOutgoingHTMLBytes {
-		return "", "", nil, fmt.Errorf("HTML-Inhalt überschreitet das Limit von 2 MB")
+		return "", "", nil, nil, fmt.Errorf("HTML-Inhalt überschreitet das Limit von 2 MB")
 	}
 	fromEmail, fromName := resolveOutgoingIdentity(acc, req)
 	inReplyTo := cleanMsgID(req.InReplyTo)
@@ -1153,7 +1224,7 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 		if !ok {
 			m, gerr := e.store.GetMessage(ctx, sa.MessageID)
 			if gerr != nil {
-				return "", "", nil, fmt.Errorf("Quell-Nachricht für Anhang %q nicht gefunden", sa.Name)
+				return "", "", nil, nil, fmt.Errorf("Quell-Nachricht für Anhang %q nicht gefunden", sa.Name)
 			}
 			if len(m.RawEML) == 0 {
 				if srcAcc, aok := e.findAccount(m.AccountID); aok {
@@ -1167,14 +1238,14 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 		}
 		name, ct, data, eerr := ExtractAttachment(srcRaw, sa.PartName, sa.Name)
 		if eerr != nil {
-			return "", "", nil, fmt.Errorf("Anhang %q konnte nicht übernommen werden: %w", sa.Name, eerr)
+			return "", "", nil, nil, fmt.Errorf("Anhang %q konnte nicht übernommen werden: %w", sa.Name, eerr)
 		}
 		if int64(len(data)) > maxOutgoingAttachmentBytes {
-			return "", "", nil, fmt.Errorf("Anhang %q überschreitet 25 MB", name)
+			return "", "", nil, nil, fmt.Errorf("Anhang %q überschreitet 25 MB", name)
 		}
 		totalBytes += int64(len(data))
 		if totalBytes > maxOutgoingTotalAttachmentBytes {
-			return "", "", nil, fmt.Errorf("Gesamtgröße aller Anhänge überschreitet 35 MB")
+			return "", "", nil, nil, fmt.Errorf("Gesamtgröße aller Anhänge überschreitet 35 MB")
 		}
 		atts = append(atts, OutgoingAttachment{
 			Filename:    name,
@@ -1188,15 +1259,15 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 			continue
 		}
 		if isBlockedSensitiveAttachmentPath(p) {
-			return "", "", nil, fmt.Errorf("Anhang %q ist eine geschützte MailDiver-Geheimdatei und kann nicht versendet werden", filepath.Base(p))
+			return "", "", nil, nil, fmt.Errorf("Anhang %q ist eine geschützte MailDiver-Geheimdatei und kann nicht versendet werden", filepath.Base(p))
 		}
 		data, err := readBoundedRegularFile(p, maxOutgoingAttachmentBytes)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("Anhang %q nicht lesbar: %w", filepath.Base(p), err)
+			return "", "", nil, nil, fmt.Errorf("Anhang %q nicht lesbar: %w", filepath.Base(p), err)
 		}
 		totalBytes += int64(len(data))
 		if totalBytes > maxOutgoingTotalAttachmentBytes {
-			return "", "", nil, fmt.Errorf("Gesamtgröße aller Anhänge überschreitet 35 MB")
+			return "", "", nil, nil, fmt.Errorf("Gesamtgröße aller Anhänge überschreitet 35 MB")
 		}
 		atts = append(atts, OutgoingAttachment{
 			Filename: filepath.Base(p),
@@ -1228,41 +1299,120 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 		References:       refs,
 	})
 
-	// Apply S/MIME signing & encryption on outgoing sends (drafts stay editable until sent).
-	if !includeBcc && e.smime != nil {
+	// Apply OpenPGP or S/MIME signing & encryption on outgoing sends (drafts stay editable until sent).
+	if !includeBcc {
+		secured, sec, serr := e.applyOutgoingSecurity(fromEmail, req, raw)
+		if serr != nil {
+			return "", "", nil, nil, serr
+		}
+		raw = secured
+		compSec = sec
+	}
+	return fromEmail, msgID, raw, compSec, nil
+}
+
+func (e *Engine) resolveOutgoingCryptoTech(fromEmail string, req backend.ComposeRequest) string {
+	tech := strings.ToLower(strings.TrimSpace(req.CryptoTech))
+	if tech == "pgp" || tech == "openpgp" {
+		return "pgp"
+	}
+	if tech == "smime" {
+		return "smime"
+	}
+	hasPGP := e.pgp != nil && e.pgp.HasIdentity(fromEmail)
+	hasSMIME := e.smime != nil && e.smime.HasIdentity(fromEmail)
+	if req.Encrypt && e.pgp != nil {
+		rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
+		if len(rcptAddrs) > 0 {
+			if _, missing := e.pgp.LookupRecipientKeys(rcptAddrs); len(missing) == 0 {
+				return "pgp"
+			}
+		}
+	}
+	if hasSMIME {
+		return "smime"
+	}
+	if hasPGP {
+		return "pgp"
+	}
+	return "smime"
+}
+
+func (e *Engine) applyOutgoingSecurity(fromEmail string, req backend.ComposeRequest, raw []byte) ([]byte, *backend.ComposeSecurity, error) {
+	tech := e.resolveOutgoingCryptoTech(fromEmail, req)
+	if tech == "pgp" && e.pgp != nil {
+		wantSign := req.Sign == "on" || (req.Sign == "" && e.pgp.HasIdentity(fromEmail))
+		signer, _ := e.pgp.LoadIdentity(fromEmail)
+		if wantSign && signer == nil && req.Sign == "on" {
+			return nil, nil, fmt.Errorf("kein OpenPGP-Privatschlüssel für %s gefunden", fromEmail)
+		}
+		if req.Encrypt {
+			rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
+			keys, missing := e.pgp.LookupRecipientKeys(rcptAddrs)
+			if len(missing) > 0 {
+				return nil, nil, fmt.Errorf("OpenPGP-Verschlüsselung nicht möglich — fehlender Public Key für: %s", strings.Join(missing, ", "))
+			}
+			if selfKeys, _ := e.pgp.LookupRecipientKeys([]string{fromEmail}); len(selfKeys) > 0 {
+				keys = append(keys, selfKeys...)
+			}
+			optSigner := signer
+			if !wantSign {
+				optSigner = nil
+			}
+			encRaw, err := pgp.EncryptMIME(raw, keys, optSigner)
+			if err != nil {
+				return nil, nil, err
+			}
+			return encRaw, &backend.ComposeSecurity{Technology: "OpenPGP", Signed: optSigner != nil, Encrypted: true}, nil
+		}
+		if wantSign && signer != nil {
+			signedRaw, err := pgp.SignMIME(raw, signer)
+			if err != nil {
+				return nil, nil, err
+			}
+			return signedRaw, &backend.ComposeSecurity{Technology: "OpenPGP", Signed: true, Encrypted: false}, nil
+		}
+		return raw, nil, nil
+	}
+
+	if e.smime != nil {
 		wantSign := req.Sign == "on" || (req.Sign == "" && e.smime.HasIdentity(fromEmail))
+		signed := false
 		if wantSign {
 			id, lerr := e.smime.LoadIdentity(fromEmail)
 			if lerr != nil {
 				if req.Sign == "on" {
-					return "", "", nil, lerr
+					return nil, nil, lerr
 				}
 			} else {
 				signedRaw, serr := smime.SignMIME(raw, id)
 				if serr != nil {
-					return "", "", nil, serr
+					return nil, nil, serr
 				}
 				raw = signedRaw
+				signed = true
 			}
 		}
 		if req.Encrypt {
 			rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
 			certs, missing := e.smime.LookupRecipientCerts(rcptAddrs)
 			if len(missing) > 0 {
-				return "", "", nil, fmt.Errorf("S/MIME-Verschlüsselung nicht möglich — fehlendes Zertifikat für: %s", strings.Join(missing, ", "))
+				return nil, nil, fmt.Errorf("S/MIME-Verschlüsselung nicht möglich — fehlendes Zertifikat für: %s", strings.Join(missing, ", "))
 			}
-			// Also include sender's own cert if available so the Sent folder copy remains readable.
 			if selfCerts, _ := e.smime.LookupRecipientCerts([]string{fromEmail}); len(selfCerts) > 0 {
 				certs = append(certs, selfCerts...)
 			}
 			encRaw, eerr := smime.EncryptMIME(raw, certs)
 			if eerr != nil {
-				return "", "", nil, eerr
+				return nil, nil, eerr
 			}
 			raw = encRaw
 		}
+		if signed || req.Encrypt {
+			return raw, &backend.ComposeSecurity{Technology: "S/MIME", Signed: signed, Encrypted: req.Encrypt}, nil
+		}
 	}
-	return fromEmail, msgID, raw, nil
+	return raw, nil, nil
 }
 
 // deleteDraftIfExists removes a superseded or sent draft from IMAP and local SQLite (best-effort).
@@ -1320,7 +1470,7 @@ func (e *Engine) rpcComposeDraft(ctx context.Context, params any) (json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	_, msgID, raw, err := e.buildComposeRaw(ctx, acc, req, true)
+	_, msgID, raw, _, err := e.buildComposeRaw(ctx, acc, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1394,24 +1544,9 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	if len(recipients) == 0 {
 		return nil, fmt.Errorf("invalid_argument: bitte mindestens einen Empfänger angeben")
 	}
-	fromEmail, msgID, raw, err := e.buildComposeRaw(ctx, acc, req, false)
+	fromEmail, msgID, raw, compSec, err := e.buildComposeRaw(ctx, acc, req, false)
 	if err != nil {
 		return nil, err
-	}
-	var compSec *backend.ComposeSecurity
-	if e.smime != nil {
-		signed := false
-		wantSign := req.Sign == "on" || (req.Sign == "" && e.smime.HasIdentity(fromEmail))
-		if wantSign && e.smime.HasIdentity(fromEmail) {
-			signed = true
-		}
-		if signed || req.Encrypt {
-			compSec = &backend.ComposeSecurity{
-				Technology: "S/MIME",
-				Signed:     signed,
-				Encrypted:  req.Encrypt,
-			}
-		}
 	}
 	if err := SendSMTP(ctx, acc, pass, fromEmail, recipients, raw); err != nil {
 		if isTransientNetworkError(err) {
@@ -1864,11 +1999,18 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 		folderPath string
 		read       bool
 		flagged    bool
+		copyTarget string
 		moveTarget string
 		permDel    bool
 	}
 	var ops []folderBatchOp
 	opIdx := map[fltKey]int{}
+	junkFolderPath := ""
+	if jf, ok := e.store.FindFolderByType(ctx, acc.ID, "junk"); ok {
+		junkFolderPath = jf.Path
+	} else {
+		junkFolderPath = e.resolveTargetFolderPath(ctx, acc.ID, "Junk")
+	}
 
 	for _, sf := range sourceFolders {
 		msgs, _, merr := e.store.ListMessages(ctx, MessageQuery{
@@ -1881,7 +2023,7 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 		}
 		for _, m := range msgs {
 			var readSet, flagSet bool
-			var moveTarget string
+			var copyTarget, moveTarget string
 			var permDel bool
 			matchedAny := false
 			for _, flt := range filters {
@@ -1903,6 +2045,15 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 					case "addStar":
 						flagSet = true
 						matchedAny = true
+					case "copyToFolder":
+						copyTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
+						matchedAny = true
+					case "junk":
+						if junkFolderPath != "" {
+							moveTarget = junkFolderPath
+							matchedAny = true
+							stop = true
+						}
 					case "moveToFolder":
 						moveTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
 						matchedAny = true
@@ -1922,15 +2073,16 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 					break
 				}
 			}
+			copied := copyTarget != "" && !strings.EqualFold(copyTarget, m.FolderPath)
 			moved := moveTarget != "" && !strings.EqualFold(moveTarget, m.FolderPath)
-			if !matchedAny || (!readSet && !flagSet && !moved && !permDel) {
+			if !matchedAny || (!readSet && !flagSet && !copied && !moved && !permDel) {
 				continue
 			}
-			// Skip no-op read/flag updates when message is not moving/deleting and already has those flags.
-			if !moved && !permDel && (!readSet || m.Read) && (!flagSet || m.Flagged) {
+			// Skip no-op read/flag updates when message is not moving/copying/deleting and already has those flags.
+			if !copied && !moved && !permDel && (!readSet || m.Read) && (!flagSet || m.Flagged) {
 				continue
 			}
-			k := fltKey{folderPath: m.FolderPath, read: readSet, flagged: flagSet, moveTarget: moveTarget, permDel: permDel}
+			k := fltKey{folderPath: m.FolderPath, read: readSet, flagged: flagSet, copyTarget: copyTarget, moveTarget: moveTarget, permDel: permDel}
 			idx, ok := opIdx[k]
 			if !ok {
 				idx = len(ops)
@@ -1948,6 +2100,7 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 					FolderPath:      m.FolderPath,
 					Read:            rPtr,
 					Flagged:         fPtr,
+					CopyTargetPath:  copyTarget,
 					MoveTargetPath:  moveTarget,
 					PermanentDelete: permDel,
 				})
@@ -2012,7 +2165,7 @@ func (e *Engine) DeleteFilter(ctx context.Context, accountID, name string) error
 	return e.store.DeleteFilter(ctx, accountID, name)
 }
 
-// ToggleFilter enables or disables a local OmaThunder rule.
+// ToggleFilter enables or disables a local MailDiver rule.
 func (e *Engine) ToggleFilter(ctx context.Context, accountID, name string, enabled bool) error {
 	_, err := e.store.UpsertFilter(ctx, backend.FilterUpsertRequest{
 		Mode:         "toggle",
@@ -2022,6 +2175,11 @@ func (e *Engine) ToggleFilter(ctx context.Context, accountID, name string, enabl
 		Enabled:      enabled,
 	})
 	return err
+}
+
+// MoveFilter shifts a rule's evaluation priority earlier (delta < 0) or later (delta > 0).
+func (e *Engine) MoveFilter(ctx context.Context, accountID, name string, delta int) error {
+	return e.store.ReorderFilter(ctx, accountID, name, delta)
 }
 
 // CallHost implements jobs.Caller so triage scans and archive runs work directly in-process.

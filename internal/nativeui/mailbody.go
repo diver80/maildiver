@@ -1163,21 +1163,27 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	var lines []string
 	if sec.Encrypted {
 		switch {
-		case sec.PGP:
-			lines = append(lines, a.tr(
-				"OpenPGP-verschlüsselt (PGP/MIME). Entschlüsselung folgt in Phase 2.",
-				"OpenPGP encrypted (PGP/MIME). Decryption arrives in Phase 2."))
 		case sec.Readable():
-			if sec.SMIME {
+			if sec.PGP {
+				lines = append(lines, a.tr("OpenPGP-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
+					"OpenPGP encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
+			} else if sec.SMIME {
 				lines = append(lines, a.tr("S/MIME-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
 					"S/MIME encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
 			} else {
 				lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
 					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
 			}
+		case sec.PGP:
+			msgErr := a.tr("OpenPGP-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Schlüssel unter Konten → S/MIME & PGP importieren).",
+				"OpenPGP encrypted. MailDiver could not decrypt this email (import secret key under Accounts → S/MIME & PGP).")
+			if sec.Error != "" {
+				msgErr += " (" + sec.Error + ")"
+			}
+			lines = append(lines, msgErr)
 		default:
-			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Konten → S/MIME importieren).",
-				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Accounts → S/MIME).")
+			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Konten → S/MIME & PGP importieren).",
+				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Accounts → S/MIME & PGP).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}
@@ -1186,8 +1192,22 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	}
 	if sec.Signed {
 		switch {
+		case sec.PGP && !sec.SMIME && sec.SignatureValid && sec.SignerAddressMismatch:
+			lines = append(lines, a.trf("WARNUNG: OpenPGP-Signatur gültig für %s, weicht aber von der Absender-Adresse ab!",
+				"WARNING: OpenPGP signature valid for %s, but does not match the From address!", sec.SignerEmail))
+		case sec.PGP && !sec.SMIME && sec.SignatureValid:
+			who := sec.SignerEmail
+			if sec.SignerSubject != "" && !strings.EqualFold(sec.SignerSubject, who) {
+				who = sec.SignerSubject
+			}
+			lines = append(lines, a.trf("OpenPGP-Signatur gültig (%s · %s)",
+				"OpenPGP signature valid (%s · %s)", who, sec.SignerIssuer))
+		case sec.PGP && !sec.SMIME && sec.SignatureError != "":
+			lines = append(lines, a.trf("OpenPGP-Signatur nicht verifizierbar (%s)",
+				"OpenPGP signature could not be verified (%s)", sec.SignatureError))
 		case sec.PGP && !sec.SMIME:
-			lines = append(lines, a.tr("Mit OpenPGP signiert (Signaturprüfung folgt in Phase 2).", "Signed with OpenPGP (signature verification arrives in Phase 2)."))
+			lines = append(lines, a.tr("Mit OpenPGP signiert — Absender-Public-Key nicht im Schlüsselbund.",
+				"Signed with OpenPGP — sender public key not in keyring."))
 		case sec.SMIME && sec.SignatureValid && sec.SignerAddressMismatch:
 			lines = append(lines, a.trf("WARNUNG: S/MIME-Signatur gültig für %s, weicht aber von der Absender-Adresse ab!",
 				"WARNING: S/MIME signature valid for %s, but does not match the From address!", sec.SignerEmail))
@@ -1210,11 +1230,11 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	}
 	ui.Row(c.Key("sec-note")).FillWidth().AlignItems(ui.Center).Gap(8).Padding(6, 10).Radius(8).Border(1, t.Border).Children(func() {
 		switch {
-		case sec.SMIME && sec.Signed && (!sec.SignatureValid || sec.SignerAddressMismatch):
+		case (sec.SMIME || sec.PGP) && sec.Signed && (!sec.SignatureValid || sec.SignerAddressMismatch):
 			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Danger)
 		case sec.Encrypted && !sec.Readable():
 			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Warning)
-		case sec.Encrypted || (sec.SMIME && sec.SignatureValid && sec.SignatureTrusted):
+		case sec.Encrypted || (sec.SignatureValid && (sec.SignatureTrusted || sec.PGP)):
 			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Success)
 		case sec.SMIME && sec.SignatureValid:
 			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Warning)

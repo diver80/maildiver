@@ -30,6 +30,7 @@ type MessageInput struct {
 	Subject     string            `json:"subject"`
 	From        string            `json:"from"`
 	To          []string          `json:"to,omitempty"`
+	CC          []string          `json:"cc,omitempty"`
 	Date        string            `json:"date"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	BodyText    string            `json:"bodyText"`

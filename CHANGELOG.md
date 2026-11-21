@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.4 (2026-11-21)
+
+### Natives OpenPGP (PGP/MIME & Inline PGP)
+- **Neues reines Go-OpenPGP-Paket ([internal/pgp](internal/pgp)):** Komplette OpenPGP-Unterstützung ohne externes `gpg` (RFC 3156 `multipart/signed` & `multipart/encrypted` sowie Inline-PGP & Clearsigned-Nachrichten).
+- **Schlüsselverwaltung & OS-Schlüsselbund:** Eigene Schlüssel erzeugen (RSA-3072), `.asc`/`.gpg`-Schlüssel (privat & öffentlich, inkl. Passphrase-Schutz) per Datei oder Textblock importieren, Public Keys per 1-Klick kopieren sowie Empfänger-Keys direkt über **WKD / `keys.openpgp.org`** nachladen. Private Keys liegen ausschließlich im System-Schlüsselbund (`secretstore`).
+- **Lesen & Verfassen:** Automatische PGP/MIME- und Inline-PGP-Entschlüsselung & Signaturprüfung (inkl. Absender-Adressabgleich) in der Leseansicht, Compose-Auswahl (`Auto` / `S/MIME` / `OpenPGP`) sowie automatische PGP-Vorauswahl beim Antworten auf PGP-verschlüsselte Mails.
+
+### Regeleditor & Filter-Engine
+- **Filter-Matching-Fix (`matchFilterAgainstMessage`):** Übergibt jetzt auch Nachrichtentext (`body`), `cc`/`toOrCc`, Mail-Header (`header`) und Anhänge (`attachment`) an die Filter-Engine.
+- **Erweiterter Regeleditor:** Lokalisierte Feld- & Operator-Dropdowns (inkl. `cc`, `toOrCc`, beliebiger Mail-Header, Anhang-Name, `isEmpty`/`isNotEmpty`, Regex `regex`/`notRegex`), Account-Ordner-Picker für *Verschieben* und *Kopieren*, Aktionen für *Als Spam markieren* & *Weitere Regeln stoppen*, Live-Treffervorschau auf geladene Mails, Anzeige erkannter Regelkonflikte (`FindFilterIssues`) sowie ↑/↓-Sortierung der Regel-Priorität.
+
 ## 0.7.3 (2026-11-21)
 
 ### Verfassen, Anhänge & Konten-Komfort

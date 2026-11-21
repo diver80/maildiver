@@ -1601,7 +1601,7 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 			}
 		}
 		return StoredFilter{}, fmt.Errorf("not_found: filter %q", target)
-	case "replace":
+	case "replace", "update":
 		target := strings.TrimSpace(req.ExistingName)
 		if target == "" {
 			target = name
@@ -1675,6 +1675,41 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 func (s *Store) DeleteFilter(ctx context.Context, accountID, name string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM filters WHERE account_id=? AND lower(name)=lower(?)`, accountID, name)
 	return err
+}
+
+// ReorderFilter moves the named rule one step earlier (delta < 0) or later (delta > 0) for its account.
+func (s *Store) ReorderFilter(ctx context.Context, accountID, name string, delta int) error {
+	if delta == 0 {
+		return nil
+	}
+	list, err := s.ListFilters(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, f := range list {
+		if strings.EqualFold(f.Name, name) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("not_found: filter %q", name)
+	}
+	target := idx - 1
+	if delta > 0 {
+		target = idx + 1
+	}
+	if target < 0 || target >= len(list) {
+		return nil
+	}
+	list[idx], list[target] = list[target], list[idx]
+	for pos, f := range list {
+		if _, uerr := s.db.ExecContext(ctx, `UPDATE filters SET position=? WHERE id=?`, pos, f.ID); uerr != nil {
+			return uerr
+		}
+	}
+	return nil
 }
 
 // --- Idempotency Keys ---

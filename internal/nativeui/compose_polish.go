@@ -55,6 +55,7 @@ type composeDraftBackup struct {
 	SourceAttachments []backend.SourceAttachment
 	Sign              int
 	Encrypt           bool
+	CryptoTech        int
 	ReplyEncrypted    bool
 }
 
@@ -175,6 +176,7 @@ func (a *App) captureComposeBackup() composeDraftBackup {
 		SourceAttachments: append([]backend.SourceAttachment(nil), a.composeSourceAttachments...),
 		Sign:              a.composeSign,
 		Encrypt:           a.composeEncrypt,
+		CryptoTech:        a.composeCryptoTech,
 		ReplyEncrypted:    a.composeReplyEncrypted,
 	}
 }
@@ -208,6 +210,7 @@ func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.composeSourceAttachments = append([]backend.SourceAttachment(nil), b.SourceAttachments...)
 	a.composeSign = b.Sign
 	a.composeEncrypt = b.Encrypt
+	a.composeCryptoTech = b.CryptoTech
 	a.composeReplyEncrypted = b.ReplyEncrypted
 	a.composeEditorDirty = true
 	a.composeDirtyAt = time.Now()

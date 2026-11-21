@@ -208,8 +208,10 @@ type composeState struct {
 	markReadSeq int
 	// conversation is the open mail's conversation in the reading pane.
 	conversation conversationUI
-	// composeEncrypt: S/MIME encrypt outgoing mail.
+	// composeEncrypt: S/MIME or OpenPGP encrypt outgoing mail.
 	composeEncrypt bool
+	// composeCryptoTech: 0 = Auto, 1 = S/MIME, 2 = OpenPGP
+	composeCryptoTech int
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
 }
@@ -2717,6 +2719,7 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeNonce = backend.NewIdempotencyKey()
 	a.composeSign = 0
 	a.composeEncrypt = false
+	a.composeCryptoTech = 0
 	a.composeReplyEncrypted = false
 	a.composeBaseline, a.composeCloseAsk = "", false
 	a.composeBodyHTML = ""
@@ -2920,6 +2923,41 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
 	if msg.Security.Encrypted && a.opts.Direct != nil {
+		if msg.Security.PGP {
+			a.composeCryptoTech = 2
+			knownPGP := map[string]bool{}
+			for _, pk := range a.opts.Direct.ListPGPContacts() {
+				if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
+					knownPGP[em] = true
+				}
+				for _, em := range pk.Emails {
+					knownPGP[strings.ToLower(strings.TrimSpace(em))] = true
+				}
+			}
+			for _, pk := range a.opts.Direct.ListPGPIdentities() {
+				if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
+					knownPGP[em] = true
+				}
+			}
+			rcpts := splitEmailList(a.composeTo)
+			if len(rcpts) > 0 {
+				allHave := true
+				for _, r := range rcpts {
+					em := strings.ToLower(strings.TrimSpace(r))
+					if addr, err := mail.ParseAddress(r); err == nil {
+						em = strings.ToLower(strings.TrimSpace(addr.Address))
+					}
+					if !knownPGP[em] {
+						allHave = false
+						break
+					}
+				}
+				if allHave {
+					a.composeEncrypt = true
+				}
+			}
+			return
+		}
 		knownCert := map[string]bool{}
 		for _, ci := range a.opts.Direct.ListSMIMEContacts() {
 			if em := strings.ToLower(strings.TrimSpace(ci.Email)); em != "" {

@@ -706,7 +706,11 @@ func moveMessagesIMAP(c *imapclient.Client, uidSet imap.UIDSet, targetPath strin
 	return uidExpungeIMAP(c, uidSet)
 }
 
-func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expectedUIDValidity uint32, uids []imap.UID, read, flagged *bool, moveTargetPath string, permanentDelete bool) error {
+func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expectedUIDValidity uint32, uids []imap.UID, read, flagged *bool, moveTargetPath string, permanentDelete bool, copyTargetPaths ...string) error {
+	copyTargetPath := ""
+	if len(copyTargetPaths) > 0 {
+		copyTargetPath = copyTargetPaths[0]
+	}
 	chunks := chunkUIDs(uids, imapUIDChunkSize)
 	if len(chunks) == 0 {
 		return nil
@@ -735,6 +739,11 @@ func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expected
 			}
 			if err := c.Store(uidSet, &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close(); err != nil {
 				return fmt.Errorf("IMAP STORE \\Flagged: %w", err)
+			}
+		}
+		if copyTargetPath != "" && !strings.EqualFold(copyTargetPath, folderPath) {
+			if _, err := c.Copy(uidSet, copyTargetPath).Wait(); err != nil {
+				return fmt.Errorf("IMAP COPY %q: %w", copyTargetPath, err)
 			}
 		}
 		if moveTargetPath != "" && !strings.EqualFold(moveTargetPath, folderPath) {
@@ -781,6 +790,7 @@ type folderBatchOp struct {
 	Messages        []StoredMessage
 	Read            *bool
 	Flagged         *bool
+	CopyTargetPath  string
 	MoveTargetPath  string
 	PermanentDelete bool
 }
@@ -831,7 +841,7 @@ func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAcc
 			}
 			validityByPath[op.FolderPath] = expVal
 		}
-		errs[i] = applyFlagsAndMoveOnClient(c, op.FolderPath, expVal, uids, op.Read, op.Flagged, op.MoveTargetPath, op.PermanentDelete)
+		errs[i] = applyFlagsAndMoveOnClient(c, op.FolderPath, expVal, uids, op.Read, op.Flagged, op.MoveTargetPath, op.PermanentDelete, op.CopyTargetPath)
 	}
 	return errs
 }
@@ -1412,15 +1422,25 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 }
 
 func matchFilterAgainstMessage(flt StoredFilter, m StoredMessage) bool {
+	attNames := make([]string, 0, len(m.Attachments))
+	for _, a := range m.Attachments {
+		if strings.TrimSpace(a.Name) != "" {
+			attNames = append(attNames, a.Name)
+		}
+	}
 	in := triage.MessageInput{
-		ID:        m.ID,
-		AccountID: m.AccountID,
-		Folder:    m.FolderPath,
-		Subject:   m.Subject,
-		From:      m.From,
-		To:        m.To,
-		Date:      m.DateISO,
-		Unread:    !m.Read,
+		ID:          m.ID,
+		AccountID:   m.AccountID,
+		Folder:      m.FolderPath,
+		Subject:     m.Subject,
+		From:        m.From,
+		To:          m.To,
+		CC:          m.CC,
+		Date:        m.DateISO,
+		Headers:     m.Headers,
+		BodyText:    m.BodyText,
+		Unread:      !m.Read,
+		Attachments: attNames,
 	}
 	rep := triage.EvaluateQuickRulePreview(flt.Conditions, flt.MatchAll, map[string]bool{m.ID: true}, []triage.MessageInput{in}, "")
 	return rep.MarkedMatched > 0

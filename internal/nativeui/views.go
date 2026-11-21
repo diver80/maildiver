@@ -1266,18 +1266,26 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 		})
 
 		if a.composeReplyEncrypted {
-			ui.Text(c, a.tr(
-				"Hinweis: Die Original-Mail war verschlüsselt. Aktiviere unten „S/MIME verschlüsseln“, falls das Empfänger-Zertifikat vorhanden ist.",
-				"Note: the original email was encrypted. Enable “S/MIME encrypt” below if the recipient certificate is available.",
-			)).FontSize(11.5).TextColor(t.Warning)
+			if a.composeCryptoTech == 2 {
+				ui.Text(c, a.tr(
+					"Hinweis: Die Original-Mail war OpenPGP-verschlüsselt. Aktiviere unten „Verschlüsseln“, falls der Empfänger-Public-Key vorhanden ist.",
+					"Note: the original email was OpenPGP-encrypted. Enable “Encrypt” below if the recipient public key is available.",
+				)).FontSize(11.5).TextColor(t.Warning)
+			} else {
+				ui.Text(c, a.tr(
+					"Hinweis: Die Original-Mail war verschlüsselt. Aktiviere unten „S/MIME verschlüsseln“, falls das Empfänger-Zertifikat vorhanden ist.",
+					"Note: the original email was encrypted. Enable “S/MIME encrypt” below if the recipient certificate is available.",
+				)).FontSize(11.5).TextColor(t.Warning)
+			}
 		}
 
 		if a.isDirectMode() && !a.readOnly {
 			ui.Row(c.Key("cmp-smime-bar")).FillWidth().Gap(10).Wrap().AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
-				ui.Text(c, "S/MIME:").FontSize(11.5).TextColor(t.TextMuted)
+				ui.Text(c, a.tr("Sicherheit:", "Security:")).FontSize(11.5).TextColor(t.TextMuted)
 				ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Auto", "Auto"), a.tr("Signieren", "Sign"), a.tr("Ohne", "Off"))
 				ui.Checkbox(c.Key("cmp-enc"), &a.composeEncrypt, a.tr("Verschlüsseln", "Encrypt"))
+				ui.Segmented(c.Key("cmp-tech"), &a.composeCryptoTech, a.tr("Auto", "Auto"), "S/MIME", "OpenPGP")
 			})
 		}
 
@@ -1392,6 +1400,7 @@ func (a *App) buildComposeReq(openWindow bool) backend.ComposeRequest {
 		OpenWindow:        openWindow,
 		Sign:              [...]string{"", "on", "off"}[min(max(a.composeSign, 0), 2)],
 		Encrypt:           a.composeEncrypt,
+		CryptoTech:        [...]string{"", "smime", "pgp"}[min(max(a.composeCryptoTech, 0), 2)],
 	}
 }
 

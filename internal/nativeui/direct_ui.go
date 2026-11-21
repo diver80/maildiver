@@ -17,6 +17,7 @@ import (
 	"github.com/diver80/maildiver/internal/backend"
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/maildiver/internal/pgp"
 	"github.com/diver80/maildiver/internal/smime"
 	"github.com/diver80/maildiver/internal/triage"
 )
@@ -39,6 +40,7 @@ type DirectController interface {
 	SyncCalendarsNow(ctx context.Context) error
 	DeleteFilter(ctx context.Context, accountID, name string) error
 	ToggleFilter(ctx context.Context, accountID, name string, enabled bool) error
+	MoveFilter(ctx context.Context, accountID, name string, delta int) error
 	SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error)
 	SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error)
 	ReadAttachmentPreview(ctx context.Context, msgID, partName, filename string) (mailengine.AttachmentPreviewData, error)
@@ -68,6 +70,15 @@ type DirectController interface {
 	ListSMIMEContacts() []smime.CertInfo
 	DeleteSMIMEIdentity(email string) error
 	DeleteSMIMEContact(email string) error
+	ImportPGPKeyFile(path, passphrase string) ([]pgp.KeyInfo, error)
+	ImportPGPArmor(armored, passphrase string) ([]pgp.KeyInfo, error)
+	GeneratePGPKey(name, email, passphrase string) (pgp.KeyInfo, error)
+	ExportPGPPublicKey(email string) (string, error)
+	FetchPGPKeyOnline(ctx context.Context, email string) ([]pgp.KeyInfo, error)
+	ListPGPIdentities() []pgp.KeyInfo
+	ListPGPContacts() []pgp.KeyInfo
+	DeletePGPIdentity(email string) error
+	DeletePGPContact(email string) error
 	AddCalDAVAccount(ctx context.Context, name, rawURL, username, password string) (int, error)
 	AddCardDAVAccount(ctx context.Context, name, rawURL, username, password string) (int, error)
 	DeleteCalDAVAccount(ctx context.Context, id string) error
@@ -138,23 +149,31 @@ type directUI struct {
 	carddavList []config.DAVAccountConfig
 
 	// Local filter rules & inline rule editor
-	rules              []triage.NativeFilter
-	rulesBusy          bool
-	rulesErr           string
-	ruleEditOpen       bool
-	ruleEditOrigName   string
-	ruleEditOrigAccID  string
-	ruleEditAccountLbl string
-	ruleEditAccountMap map[string]string
-	ruleEditName       string
-	ruleEditEnabled    bool
-	ruleEditMatchMode  int // 0 = Match All (AND), 1 = Match Any (OR)
-	ruleEditConds      []triage.NativeCondition
-	ruleEditMarkRead   bool
-	ruleEditAddStar    bool
-	ruleEditMove       bool
-	ruleEditMoveFolder string
-	ruleEditDelete     bool
+	rules                []triage.NativeFilter
+	rulesBusy            bool
+	rulesErr             string
+	ruleEditOpen         bool
+	ruleEditOrigName     string
+	ruleEditOrigAccID    string
+	ruleEditAccountLbl   string
+	ruleEditAccountMap   map[string]string
+	ruleEditName         string
+	ruleEditEnabled      bool
+	ruleEditMatchMode    int // 0 = Match All (AND), 1 = Match Any (OR)
+	ruleEditConds        []triage.NativeCondition
+	ruleEditMarkRead     bool
+	ruleEditAddStar      bool
+	ruleEditMove         bool
+	ruleEditMoveFolder   string
+	ruleEditCopy         bool
+	ruleEditCopyFolder   string
+	ruleEditJunk         bool
+	ruleEditDelete       bool
+	ruleEditStop         bool
+	ruleEditPreviewDone  bool
+	ruleEditPreviewCount int
+	ruleEditPreviewTotal int
+	ruleEditPreviewHits  []string
 
 	// Read-only Thunderbird profile importer
 	tbInitDone      bool
@@ -172,7 +191,8 @@ type directUI struct {
 	tbResult        *mailengine.TBImportReport
 	tbResultErr     string
 
-	// S/MIME certificates (Phase 2A)
+	// S/MIME certificates & OpenPGP keys (Phase 2)
+	secSubTab       int // 0 = S/MIME, 1 = OpenPGP
 	smimeIdentities []smime.CertInfo
 	smimeContacts   []smime.CertInfo
 	smimeP12Path    string
@@ -180,6 +200,18 @@ type directUI struct {
 	smimeCertPath   string
 	smimeMsg        string
 	smimeErr        bool
+
+	pgpIdentities []pgp.KeyInfo
+	pgpContacts   []pgp.KeyInfo
+	pgpImpPath    string
+	pgpImpPass    string
+	pgpPasteArmor string
+	pgpGenName    string
+	pgpGenEmail   string
+	pgpFetchEmail string
+	pgpBusy       bool
+	pgpMsg        string
+	pgpErr        bool
 
 	// Sidebar folder creation & destructive action confirmations
 	newFolderAccountID string
@@ -834,6 +866,25 @@ func (a *App) deleteDirectRule(ctx context.Context, accountID, name string) {
 	}()
 }
 
+func (a *App) moveDirectRule(ctx context.Context, accountID, name string, delta int) {
+	dc := a.opts.Direct
+	if dc == nil {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		err := dc.MoveFilter(c, accountID, name, delta)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.direct.rulesErr = err.Error()
+				return
+			}
+			a.reloadDirectState(context.Background())
+		})
+	}()
+}
+
 func (a *App) runAllDirectRulesNow(ctx context.Context) {
 	bc, err := a.client()
 	if err != nil {
@@ -1042,7 +1093,7 @@ func (a *App) renderDirectModal(c *ui.Context) {
 			// d.tab is the view (3 the Thunderbird import); a phone has no Thunderbird to import from,
 			// and without that tab the others fit its width.
 			views := []int{0, 1, 2, 3, 4}
-			labels := []string{a.tr("E-Mail", "Email"), a.tr("Kalender", "Calendar"), a.tr("Regeln", "Rules"), a.tr("TB-Import", "TB Import"), "S/MIME"}
+			labels := []string{a.tr("E-Mail", "Email"), a.tr("Kalender", "Calendar"), a.tr("Regeln", "Rules"), a.tr("TB-Import", "TB Import"), "S/MIME & PGP"}
 			if isMobileOS() {
 				views = []int{0, 1, 2, 4}
 				labels = append(labels[:3:3], labels[4])
@@ -1060,6 +1111,7 @@ func (a *App) renderDirectModal(c *ui.Context) {
 				}
 				if d.tab == 4 {
 					a.reloadSMIMECerts()
+					a.reloadPGPKeys()
 				}
 			}
 
@@ -1693,6 +1745,31 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 		ui.Text(c, d.rulesErr).FontSize(12).TextColor(t.Danger)
 	}
 
+	if issues := triage.FindFilterIssues(d.rules, ""); len(issues) > 0 {
+		errCnt := 0
+		for _, is := range issues {
+			if is.Severity == "error" {
+				errCnt++
+			}
+		}
+		if errCnt > 0 {
+			ui.Column(c.Key("dir-rule-issues")).FillWidth().Padding(8, 10).Radius(8).Background(withAlpha(t.Warning, 0.12)).Border(1, withAlpha(t.Warning, 0.45)).Gap(3).Children(func() {
+				ui.Text(c, a.trf("Erkannte Regel-Hinweise (%d):", "Detected rule issues (%d):", errCnt)).FontSize(11.5).Bold().TextColor(t.Warning)
+				shown := 0
+				for _, is := range issues {
+					if is.Severity != "error" {
+						continue
+					}
+					ui.Text(c, "• "+is.FilterName+": "+is.Detail).FontSize(11).TextColor(t.Text)
+					shown++
+					if shown >= 4 {
+						break
+					}
+				}
+			})
+		}
+	}
+
 	if d.ruleEditOpen {
 		a.renderRuleEditorPanel(c)
 	}
@@ -1715,7 +1792,7 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 				}
 			}
 			ui.Column(c.Key(fmt.Sprintf("dir-rule-%d-%s", i, fCopy.Name))).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Text(c, fCopy.Name).FontSize(13).Bold().Grow(1).SingleLine()
 					if fCopy.AccountID != "" {
 						pillBadge(c, a.accountDisplayName(fCopy.AccountID), t.Surface, t.TextMuted)
@@ -1724,6 +1801,12 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 						pillBadge(c, a.tr("Aktiv", "Active"), withAlpha(t.Success, 0.18), t.Success)
 					} else {
 						pillBadge(c, a.tr("Pausiert", "Paused"), t.Surface, t.TextMuted)
+					}
+					if ui.Button(c.Key(fmt.Sprintf("dir-rup-%d", i)), "↑").Tooltip(a.tr("Nach oben", "Move up")).Padding(2, 6).Disabled(i == 0).Clicked() {
+						a.moveDirectRule(context.Background(), fCopy.AccountID, fCopy.Name, -1)
+					}
+					if ui.Button(c.Key(fmt.Sprintf("dir-rdn-%d", i)), "↓").Tooltip(a.tr("Nach unten", "Move down")).Padding(2, 6).Disabled(i == len(d.rules)-1).Clicked() {
+						a.moveDirectRule(context.Background(), fCopy.AccountID, fCopy.Name, 1)
 					}
 					toggleLbl := a.tr("Pausieren", "Pause")
 					if !fCopy.Enabled {

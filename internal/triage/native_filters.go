@@ -106,6 +106,10 @@ func canonicalFilterOp(op string) (canon string, ok bool) {
 		return "isEmpty", true
 	case "isnotempty", "isntempty":
 		return "isNotEmpty", true
+	case "regex":
+		return "regex", true
+	case "notregex":
+		return "notRegex", true
 	default:
 		return "", false
 	}
@@ -114,7 +118,7 @@ func canonicalFilterOp(op string) (canon string, ok bool) {
 // isNegativeFilterOp reports operators that must hold for EVERY address/part of a header
 // (Thunderbird's "match all before deciding" semantics).
 func isNegativeFilterOp(canon string) bool {
-	return canon == "doesNotContain" || canon == "isNot" || canon == "isEmpty"
+	return canon == "doesNotContain" || canon == "isNot" || canon == "isEmpty" || canon == "notRegex"
 }
 
 // matchFilterString applies a canonical operator to one candidate string (case-insensitive).
@@ -143,6 +147,18 @@ func matchFilterString(candidate, canon, needle string) bool {
 		return strings.HasPrefix(c, n)
 	case "endsWith":
 		return strings.HasSuffix(c, n)
+	case "regex":
+		re, err := regexp.Compile("(?is)" + strings.TrimSpace(needle))
+		if err != nil {
+			return false
+		}
+		return re.MatchString(candidate)
+	case "notRegex":
+		re, err := regexp.Compile("(?is)" + strings.TrimSpace(needle))
+		if err != nil {
+			return false
+		}
+		return !re.MatchString(candidate)
 	default:
 		return false
 	}
@@ -267,15 +283,18 @@ func evalConditionAgainstMessage(cond NativeCondition, msg MessageInput) (matche
 		return evalAddressHeader([]string{msg.From}, canon, cond.Value), ""
 	case "to":
 		return evalAddressHeader(msg.To, canon, cond.Value), ""
+	case "cc":
+		return evalAddressHeader(msg.CC, canon, cond.Value), ""
 	case "toorcc":
-		// MessageInput carries no Cc list; To is the best local approximation.
-		return evalAddressHeader(msg.To, canon, cond.Value), ""
+		combined := append(append([]string(nil), msg.To...), msg.CC...)
+		return evalAddressHeader(combined, canon, cond.Value), ""
 	case "alladdresses":
-		all := make([]string, 0, len(msg.To)+1)
+		all := make([]string, 0, len(msg.To)+len(msg.CC)+1)
 		if strings.TrimSpace(msg.From) != "" {
 			all = append(all, msg.From)
 		}
 		all = append(all, msg.To...)
+		all = append(all, msg.CC...)
 		return evalAddressHeader(all, canon, cond.Value), ""
 	case "subject":
 		ok := matchFilterString(ThunderbirdFilterSubject(msg.Subject), canon, cond.Value)
@@ -285,6 +304,27 @@ func evalConditionAgainstMessage(cond NativeCondition, msg MessageInput) (matche
 		return ok, ""
 	case "body":
 		return matchFilterString(msg.BodyText, canon, cond.Value), ""
+	case "attachment", "attachments":
+		if canon == "isEmpty" {
+			return len(msg.Attachments) == 0, ""
+		}
+		if canon == "isNotEmpty" {
+			return len(msg.Attachments) > 0, ""
+		}
+		neg := isNegativeFilterOp(canon)
+		if len(msg.Attachments) == 0 {
+			return neg, ""
+		}
+		for _, att := range msg.Attachments {
+			hit := matchFilterString(att, canon, cond.Value)
+			if neg && !hit {
+				return false, ""
+			}
+			if !neg && hit {
+				return true, ""
+			}
+		}
+		return neg, ""
 	case "header":
 		hKey := strings.ToLower(strings.TrimSpace(cond.HeaderName))
 		for k, v := range msg.Headers {
