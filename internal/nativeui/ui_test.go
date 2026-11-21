@@ -424,13 +424,16 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	}
 }
 
-// TestRenderScreens renders high-DPI PNG screenshots into OMATHUNDER_RENDER:
+// TestRenderScreens renders high-DPI PNG screenshots into MAILDIVER_RENDER (or OMATHUNDER_RENDER):
 //
-//	OMATHUNDER_RENDER=/tmp/shots go test ./internal/nativeui -run TestRenderScreens
+//	MAILDIVER_RENDER=docs/screenshots go test ./internal/nativeui -run TestRenderScreens
 func TestRenderScreens(t *testing.T) {
-	dir := os.Getenv("OMATHUNDER_RENDER")
+	dir := os.Getenv("MAILDIVER_RENDER")
 	if dir == "" {
-		t.Skip("OMATHUNDER_RENDER not set")
+		dir = os.Getenv("OMATHUNDER_RENDER")
+	}
+	if dir == "" {
+		t.Skip("MAILDIVER_RENDER not set")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -462,7 +465,7 @@ func TestRenderScreens(t *testing.T) {
 	app.providerLabel = "anthropic (api)"
 	app.agentBackend = "anthropic"
 	app.agentModel = "claude-sonnet-4-5"
-	app.modelChoices = []string{"claude-sonnet-4-5", "gemini-4-hydrogen", "gpt-4o-mini"}
+	app.modelChoices = []string{"claude-sonnet-4-5", "gemini-2.5-flash", "gpt-4o-mini"}
 	app.accounts = []backend.Account{{ID: "acc1", Name: "Work (IMAP)"}, {ID: "acc2", Name: "Privat"}}
 	app.lastSync = now.Add(-2 * time.Minute)
 	app.accountLabels = []string{"Alle Konten", "Work (IMAP)", "Privat"}
@@ -485,22 +488,22 @@ func TestRenderScreens(t *testing.T) {
 	app.messages = []backend.MessageHeader{
 		{
 			ID: "m1", AccountID: "acc1", Folder: "INBOX",
-			From: "Alice Weber <alice@acme.de>", To: []string{"frank@example.com"}, Subject: "Q4 Rollout & Budget-Freigabe bis Freitag",
+			From: "Alice Meyer <alice@acme.example>", To: []string{"alex@example.org"}, Subject: "Q4 Rollout & Budget-Freigabe bis Freitag",
 			Date: today + "T09:15:00+01:00", Unread: true, Flagged: true,
 		},
 		{
 			ID: "m2", AccountID: "acc1", Folder: "Spaces/ACME",
-			From: "Markus Klein <m.klein@partner.io>", Subject: "Jira Cloud Migration: Terminvorschlag Workshop",
+			From: "Markus Klein <m.klein@partner.example>", Subject: "Cloud Migration: Terminvorschlag Workshop",
 			Date: today + "T08:40:00+01:00", Unread: true,
 		},
 		{
 			ID: "m3", AccountID: "acc1", Folder: "Rechnungen",
-			From: "Hetzner Billing <billing@hetzner.com>", Subject: "Rechnung #2026-11-4821 f\u00e4llig",
+			From: "Cloud Billing <billing@cloud.example>", Subject: "Rechnung #2026-11-4821 f\u00e4llig",
 			Date: today + "T07:20:00+01:00", Unread: true,
 		},
 		{
 			ID: "m4", AccountID: "acc1", Folder: "INBOX",
-			From: "Sarah M\u00fcller <sarah@example.com>", Subject: "Review Notes: OmaThunder Native UI",
+			From: "Sarah M\u00fcller <sarah@example.org>", Subject: "Review Notes: MailDiver Native UI",
 			Date: now.AddDate(0, 0, -1).Format("2006-01-02") + "T16:45:00+01:00", Unread: false,
 		},
 	}
@@ -518,24 +521,24 @@ func TestRenderScreens(t *testing.T) {
 	app.barSummary = triage.BarSummary{ActionCount: 2, WaitingCount: 1, InvoiceCount: 1}
 	app.selectedMsg = &backend.MessageDetail{
 		MessageHeader: app.messages[0],
-		BodyText:      "Hallo Frank,\n\ndie finale Kalkulation f\u00fcr das Q4-Rollout liegt vor:\n- Lizenzen & Infrastruktur: 14.200 EUR\n- Migration & Workshop (2 Tage): 3.600 EUR\n\nK\u00f6nnen wir heute um 14:00 Uhr kurz abstimmen, ob das Budget so freigegeben werden kann?\n\nViele Gr\u00fc\u00dfe\nAlice",
+		BodyText:      "Hallo Alex,\n\ndie finale Kalkulation f\u00fcr das Q4-Rollout liegt vor:\n- Lizenzen & Infrastruktur: 14.200 EUR\n- Migration & Workshop (2 Tage): 3.600 EUR\n\nK\u00f6nnen wir heute um 14:00 Uhr kurz abstimmen, ob das Budget so freigegeben werden kann?\n\nViele Gr\u00fc\u00dfe\nAlice",
 		Attachments: []backend.Attachment{
 			{Name: "Q4-Kalkulation.pdf", Size: 248000, ContentType: "application/pdf"},
 		},
 	}
 	app.inspectorMode = "summarize"
 	app.inspectorResult = "**Kernaussage:** Alice bittet um Budget-Freigabe f\u00fcr das Q4-Rollout (**17.800 EUR** gesamt) und schl\u00e4gt ein kurzes Abstimmungsgespr\u00e4ch heute um **14:00 Uhr** vor.\n\n- **Frist:** Freitag\n- **N\u00e4chster Schritt:** Termin-Slot 14:00 pr\u00fcfen & Freigabe-Antwort entwerfen."
-	app.inspectorDraft = "Hallo Alice,\n\nvielen Dank f\u00fcr die \u00dcbersicht. 14:00 Uhr passt mir heute gut \u2014 lass uns das Q4-Budget dort final freigeben.\n\nViele Gr\u00fc\u00dfe\nFrank"
+	app.inspectorDraft = "Hallo Alice,\n\nvielen Dank f\u00fcr die \u00dcbersicht. 14:00 Uhr passt mir heute gut \u2014 lass uns das Q4-Budget dort final freigeben.\n\nViele Gr\u00fc\u00dfe\nAlex"
 
 	app.events = []backend.CalendarEvent{
 		{ID: "e1", CalendarID: "c1", Calendar: "Arbeit", Title: "Daily Engineering Sync", Start: today + "T10:00:00+01:00", End: today + "T10:30:00+01:00", Location: "Meet"},
 		{ID: "e2", CalendarID: "c1", Calendar: "Arbeit", Title: "Q4 Rollout Budget-Abstimmung", Start: today + "T14:00:00+01:00", End: today + "T14:30:00+01:00", Location: "Zoom"},
 		{ID: "e3", CalendarID: "c1", Calendar: "Privat", Title: "Zahnarzt Termin", Start: today + "T17:15:00+01:00", End: today + "T18:00:00+01:00", Location: "Innenstadt"},
-		{ID: "e4", CalendarID: "c1", Calendar: "Arbeit", Title: "Atlassian Partner Review", Start: tomorrow + "T11:00:00+01:00", End: tomorrow + "T12:00:00+01:00", Location: "Teams"},
+		{ID: "e4", CalendarID: "c1", Calendar: "Arbeit", Title: "Partner Architecture Review", Start: tomorrow + "T11:00:00+01:00", End: tomorrow + "T12:00:00+01:00", Location: "Teams"},
 	}
 	app.recentAlerts = []AlertItem{
-		{ID: "omathunder-mail-m1", Kind: "mail", Title: "Alice Weber", Subtitle: "Neue E-Mail", Body: "Q4 Rollout & Budget-Freigabe"},
-		{ID: "omathunder-cal-e2", Kind: "calendar", Title: "Budget-Abstimmung", Subtitle: "Heute 14:00", Body: "Arbeit"},
+		{ID: "maildiver-mail-m1", Kind: "mail", Title: "Alice Meyer", Subtitle: "Neue E-Mail", Body: "Q4 Rollout & Budget-Freigabe"},
+		{ID: "maildiver-cal-e2", Kind: "calendar", Title: "Budget-Abstimmung", Subtitle: "Heute 14:00", Body: "Arbeit"},
 	}
 	app.chatEntries = []ChatEntry{
 		{ID: "u-1", Role: "user", Content: "Gib mir mein Tages-Briefing f\u00fcr heute."},
@@ -565,12 +568,12 @@ func TestRenderScreens(t *testing.T) {
 		}
 	}
 
-	saveShot("omathunder-main-dark.png", app.RenderMain, 1380, 860)
-	saveShot("omathunder-tray-widget.png", app.RenderStatusWidget, 400, 510)
+	saveShot("app-main.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-tray-widget.png", app.RenderStatusWidget, 400, 510)
 
 	// Screenshot 2: Footer Contact Discovery card in Inspector (1 existing to enrich + 1 new to import)
 	app.inspectorMode = "extract_contacts"
-	app.inspectorResult = "2 Kontakte im E-Mail-Footer erkannt und lokal mit deinem Thunderbird-Adressbuch abgeglichen."
+	app.inspectorResult = "2 Kontakte im E-Mail-Footer erkannt und lokal mit deinem Adressbuch abgeglichen."
 	app.inspectorDraft = ""
 	app.contactsBookLabels = []string{"Persönliches Adressbuch", "Geschäftskontakte"}
 	app.contactsBookByLabel = map[string]string{"Persönliches Adressbuch": "ab1", "Geschäftskontakte": "ab2"}
@@ -578,12 +581,12 @@ func TestRenderScreens(t *testing.T) {
 	app.inspectorContacts = []ContactProposal{
 		{
 			Extracted: ai.ExtractedContact{
-				DisplayName: "Alice Weber", FirstName: "Alice", LastName: "Weber",
-				Email: "alice@acme.de", Phone: "+49 30 555010", Mobile: "+49 170 9876543",
-				Company: "ACME GmbH", JobTitle: "Head of Engineering", Website: "https://acme.de",
+				DisplayName: "Alice Meyer", FirstName: "Alice", LastName: "Meyer",
+				Email: "alice@acme.example", Phone: "+49 30 555010", Mobile: "+49 170 9876543",
+				Company: "ACME GmbH", JobTitle: "Head of Engineering", Website: "https://acme.example",
 				Address: "Musterstr. 12, 10115 Berlin",
 			},
-			Existing:         &backend.ContactRecord{ID: "ct1", DisplayName: "Alice Weber", Email: "alice@acme.de"},
+			Existing:         &backend.ContactRecord{ID: "ct1", DisplayName: "Alice Meyer", Email: "alice@acme.example"},
 			Status:           "enrich",
 			MissingFieldKeys: []string{"phone", "mobile", "company", "job_title", "website", "address"},
 			MissingFields:    []string{"Telefon", "Mobil", "Firma", "Position", "Website", "Adresse"},
@@ -591,21 +594,21 @@ func TestRenderScreens(t *testing.T) {
 		{
 			Extracted: ai.ExtractedContact{
 				DisplayName: "Markus Klein", FirstName: "Markus", LastName: "Klein",
-				Email: "m.klein@partner.io", Phone: "+49 89 441200", Company: "Partner.io AG",
+				Email: "m.klein@partner.example", Phone: "+49 89 441200", Company: "Partner.example AG",
 				JobTitle: "Solution Architect",
 			},
 			Status: "new",
 		},
 	}
-	saveShot("omathunder-contacts-dark.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-contacts-dark.png", app.RenderMain, 1380, 860)
 
-	// Screenshot 3: Help Modal (Overview + Interactive TOC + TB Filter maintenance note)
+	// Screenshot 3: Help Modal (Overview + Interactive TOC)
 	app.inspectorContacts = nil
 	app.helpTopic = "all"
 	app.helpOpen = true
-	saveShot("omathunder-help-dark.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-help-dark.png", app.RenderMain, 1380, 860)
 	app.helpTopic = "shortcuts"
-	saveShot("omathunder-help-shortcuts-dark.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-help-shortcuts-dark.png", app.RenderMain, 1380, 860)
 	app.helpTopic = "all"
 	app.helpOpen = false
 
@@ -614,69 +617,69 @@ func TestRenderScreens(t *testing.T) {
 	app.messages = append([]backend.MessageHeader{
 		{
 			ID: "m-nl-1", AccountID: "acc1", Folder: "INBOX",
-			From: "Monitoring Bot <alerts@cloud-status.io>", Subject: "[Daily Digest] Nightly Build OK #412",
+			From: "Monitoring Bot <alerts@cloud-status.example>", Subject: "[Daily Digest] Nightly Build OK #412",
 			Date: today + "T06:05:00+01:00", Unread: true,
 		},
 		{
 			ID: "m-nl-2", AccountID: "acc1", Folder: "INBOX",
-			From: "Monitoring Bot <alerts@cloud-status.io>", Subject: "[Daily Digest] Staging Sync OK #411",
+			From: "Monitoring Bot <alerts@cloud-status.example>", Subject: "[Daily Digest] Staging Sync OK #411",
 			Date: today + "T05:50:00+01:00", Unread: true,
 		},
 		{
 			ID: "m-nl-3", AccountID: "acc1", Folder: "INBOX",
-			From: "Monitoring Bot <alerts@cloud-status.io>", Subject: "[Daily Digest] Backup Report OK #410",
+			From: "Monitoring Bot <alerts@cloud-status.example>", Subject: "[Daily Digest] Backup Report OK #410",
 			Date: now.AddDate(0, 0, -1).Format("2006-01-02") + "T06:00:00+01:00", Unread: false,
 		},
 	}, app.messages...)
 	app.SetMailChecked(0, true, false)
 	app.SetMailChecked(1, true, false)
 	app.OpenQuickRuleWizard()
-	saveShot("omathunder-quick-rule-dark.png", app.RenderMain, 1380, 860)
+	saveShot("app-quick-rule.png", app.RenderMain, 1380, 860)
 	app.quickRuleOpen = false
 	app.ClearMailSelection()
 	app.messages = prevMsgs
 
 	// Screenshot 3c: "Move to…" picker (v)
 	app.OpenMovePicker()
-	saveShot("omathunder-move-dark.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-move-dark.png", app.RenderMain, 1380, 860)
 	app.moveOpen = false
 
 	// Screenshot 3c1: the open mail inside its conversation (newest on top)
 	prevInspector, prevDraft := app.inspectorResult, app.inspectorDraft
 	app.inspectorResult, app.inspectorDraft, app.inspectorMode = "", "", ""
 	app.conversation = conversationUI{forID: "m1", open: map[string]*convItem{}, conv: &backend.Conversation{ThreadID: "th:q4", Messages: []backend.ConversationMessage{
-		{MessageHeader: backend.MessageHeader{ID: "c3", From: "Max Muster <frank@example.com>", Date: today + "T09:40:00+01:00", Folder: "Sent"}, Snippet: "Danke Alice, 14:00 passt. Ich bringe die Freigabe gleich mit."},
+		{MessageHeader: backend.MessageHeader{ID: "c3", From: "Alex Muster <alex@example.org>", Date: today + "T09:40:00+01:00", Folder: "Sent"}, Snippet: "Danke Alice, 14:00 passt. Ich bringe die Freigabe gleich mit."},
 		{MessageHeader: app.messages[0]},
-		{MessageHeader: backend.MessageHeader{ID: "c1", From: "Alice Weber <alice@acme.de>", Date: now.AddDate(0, 0, -2).Format("2006-01-02") + "T16:20:00+01:00"}, Snippet: "Hier die erste Schätzung für das Rollout – Lizenzen noch ohne Rabatt."},
-		{MessageHeader: backend.MessageHeader{ID: "c0", From: "Max Muster <frank@example.com>", Date: now.AddDate(0, 0, -3).Format("2006-01-02") + "T11:05:00+01:00", Folder: "Sent"}, Snippet: "Kannst du mir bis Ende der Woche eine Kalkulation für Q4 schicken?"},
+		{MessageHeader: backend.MessageHeader{ID: "c1", From: "Alice Meyer <alice@acme.example>", Date: now.AddDate(0, 0, -2).Format("2006-01-02") + "T16:20:00+01:00"}, Snippet: "Hier die erste Schätzung für das Rollout – Lizenzen noch ohne Rabatt."},
+		{MessageHeader: backend.MessageHeader{ID: "c0", From: "Alex Muster <alex@example.org>", Date: now.AddDate(0, 0, -3).Format("2006-01-02") + "T11:05:00+01:00", Folder: "Sent"}, Snippet: "Kannst du mir bis Ende der Woche eine Kalkulation für Q4 schicken?"},
 	}}}
-	saveShot("omathunder-conversation-dark.png", app.RenderMain, 1380, 1100)
+	saveShot("app-conversation.png", app.RenderMain, 1380, 1100)
 	app.conversation = conversationUI{}
 	app.inspectorResult, app.inspectorDraft, app.inspectorMode = prevInspector, prevDraft, "summarize"
 
 	// Screenshot 3c1b: a reply with the quoted original, closed by Escape: it asks instead of
 	// losing the text.
-	app.OpenComposeReply(&backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "Hallo Frank,\n\nkönnen wir heute um 14:00 kurz abstimmen?\n\nViele Grüße\nAlice"}, "Hallo Alice,\n\n14:00 passt.")
+	app.OpenComposeReply(&backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "Hallo Alex,\n\nkönnen wir heute um 14:00 kurz abstimmen?\n\nViele Grüße\nAlice"}, "Hallo Alice,\n\n14:00 passt.")
 	app.guardComposeClose()
 	app.composeBody = "Hallo Alice,\n\n14:00 passt, ich bringe die Freigabe mit." + strings.TrimPrefix(app.composeBody, "Hallo Alice,\n\n14:00 passt.")
 	app.composeOpen = false
 	app.guardComposeClose()
-	saveShot("omathunder-compose-ask-dark.png", app.RenderMain, 1380, 900)
+	saveShot("maildiver-compose-ask-dark.png", app.RenderMain, 1380, 900)
 	app.closeCompose()
 
 	// Screenshot 3c2: settings and the archive dialog
 	app.OpenSettings()
-	saveShot("omathunder-settings-dark.png", app.RenderMain, 1380, 860)
+	saveShot("app-settings.png", app.RenderMain, 1380, 860)
 	app.settings.open = false
 	prevAccounts := app.accounts
 	app.accounts = []backend.Account{{ID: "acc1", Name: "Work"}}
 	app.cfg.Mailbox.TriageAccountIDs = []string{"acc1"}
 	app.OpenArchiveDialog(context.Background())
 	app.arch.preview = &jobs.ArchivePreview{TotalCount: 2, TotalMatched: 2, TotalBytes: 48000, ScannedFolders: 1, Candidates: []jobs.ArchiveCandidate{
-		{Subject: "Rechnung März 2024", From: "billing@acme.de", Date: "2024-03-02T09:00:00Z", Size: 24000},
-		{Subject: "Angebot Messestand", From: "Laura Weber <laura@messe.de>", Date: "2024-04-11T09:00:00Z", Size: 24000},
+		{Subject: "Rechnung März 2024", From: "billing@acme.example", Date: "2024-03-02T09:00:00Z", Size: 24000},
+		{Subject: "Angebot Messestand", From: "Laura Brandt <laura@messe.example>", Date: "2024-04-11T09:00:00Z", Size: 24000},
 	}}
-	saveShot("omathunder-archive-dark.png", app.RenderMain, 1380, 860)
+	saveShot("app-archive.png", app.RenderMain, 1380, 860)
 	app.arch = archiveUI{}
 	app.accounts = prevAccounts
 
@@ -684,7 +687,7 @@ func TestRenderScreens(t *testing.T) {
 	prevDetail, prevMode, prevResult, prevDraft := app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft
 	app.inspectorMode, app.inspectorResult, app.inspectorDraft = "", "", ""
 	app.selectedMsg = &backend.MessageDetail{
-		MessageHeader: backend.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Frank <frank@example.com>"}, Subject: "Acme SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
+		MessageHeader: backend.MessageHeader{ID: "m1", AccountID: "acc1", Folder: "INBOX", From: "Confluence <confluence@example.atlassian.net>", To: []string{"Alex <alex@example.org>"}, Subject: "Acme SDK Release (2.0.0) plus more pages your team is working on", Date: today + "T10:56:00+01:00"},
 		BodyText:      "Stay connected\n\nAcme SDK Release (2.0.0)\n[https://example.atlassian.net/wiki/spaces/GS/pages/1]",
 		BodyHtml: `<div style="display:none">Stay connected to people and their work &zwnj;&nbsp;&zwnj;</div>
 <table><tr><td><img src="https://cdn.example.net/logo.png" width="120" alt="Confluence"></td></tr><tr><td>
@@ -701,9 +704,9 @@ func TestRenderScreens(t *testing.T) {
 </td></tr></table>`,
 	}
 	app.readerBody = readerBody{}
-	saveShot("omathunder-mail-html-dark.png", app.RenderMain, 1380, 860)
+	saveShot("app-reading-pane.png", app.RenderMain, 1380, 860)
 	app.readerPlain = true
-	saveShot("omathunder-mail-text-dark.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-mail-text-dark.png", app.RenderMain, 1380, 860)
 	app.readerPlain = false
 	app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft = prevDetail, prevMode, prevResult, prevDraft
 	app.readerBody = readerBody{}
@@ -731,12 +734,12 @@ func TestRenderScreens(t *testing.T) {
 	// Screenshot 4: English UI switch verification shot
 	app.SetLanguage("en")
 	app.inspectorMode = "summarize"
-	saveShot("omathunder-main-en.png", app.RenderMain, 1380, 860)
+	saveShot("maildiver-main-en.png", app.RenderMain, 1380, 860)
 
 	app.SetLanguage("de")
 	app.applyThemeChoice("Catppuccin Latte (catppuccin-latte)")
 	app.navID = "calendar"
-	saveShot("omathunder-calendar-light.png", app.RenderMain, 1380, 860)
+	saveShot("app-calendar-light.png", app.RenderMain, 1380, 860)
 }
 
 func TestRenderAppIconPNG(t *testing.T) {

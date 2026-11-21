@@ -192,6 +192,10 @@ func (e *Engine) AddCalDAVAccount(ctx context.Context, name, rawURL, username, p
 	if err != nil {
 		return 0, err
 	}
+	discovered := discoverDAVCollectionURL(ctx, nil, safeURL, "caldav", username, password, e.allowLoopbackICal)
+	if discovered != "" {
+		safeURL = discovered
+	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "CalDAV"
@@ -240,6 +244,10 @@ func (e *Engine) AddCardDAVAccount(ctx context.Context, name, rawURL, username, 
 	safeURL, err := validateDAVURL(rawURL, e.allowLoopbackICal)
 	if err != nil {
 		return 0, err
+	}
+	discovered := discoverDAVCollectionURL(ctx, nil, safeURL, "carddav", username, password, e.allowLoopbackICal)
+	if discovered != "" {
+		safeURL = discovered
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -311,6 +319,7 @@ func (e *Engine) DeleteCardDAVAccount(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
+	_ = e.store.DeleteContactsByAddressBook(ctx, "carddav:"+id)
 	e.cfgMu.Lock()
 	cfg := e.loadConfig()
 	kept := cfg.Direct.CardDAVAccounts[:0]
@@ -331,11 +340,9 @@ func (e *Engine) DeleteCardDAVAccount(ctx context.Context, id string) error {
 
 // SyncAllDAV synchronizes all configured CalDAV calendars and CardDAV address books.
 func (e *Engine) SyncAllDAV(ctx context.Context) error {
-	cfg, err := e.loadCfg()
-	if err != nil {
-		return nil
-	}
+	cfg := e.loadConfig()
 	var firstErr error
+	calChanged := false
 	for _, acc := range cfg.Direct.CalDAVAccounts {
 		if !acc.Enabled || acc.URL == "" {
 			continue
@@ -349,6 +356,10 @@ func (e *Engine) SyncAllDAV(ctx context.Context) error {
 			continue
 		}
 		_ = e.store.ReplaceCalendarEvents(ctx, acc.ID, evs)
+		calChanged = true
+	}
+	if calChanged {
+		e.emitCalendarChanged()
 	}
 	for _, acc := range cfg.Direct.CardDAVAccounts {
 		if !acc.Enabled || acc.URL == "" {
@@ -362,10 +373,15 @@ func (e *Engine) SyncAllDAV(ctx context.Context) error {
 			}
 			continue
 		}
+		bookID := "carddav:" + acc.ID
+		keep := make(map[string]bool, len(cts))
 		for _, ct := range cts {
-			ct.AddressBookID = "carddav:" + acc.ID
-			_, _, _ = e.store.UpsertContact(ctx, backend.ContactUpsertRequest{Contact: ct, AddressBookID: ct.AddressBookID})
+			ct.AddressBookID = bookID
+			if saved, _, serr := e.store.UpsertContact(ctx, backend.ContactUpsertRequest{Contact: ct, AddressBookID: bookID}); serr == nil {
+				keep[saved.ID] = true
+			}
 		}
+		_ = e.store.DeleteMissingAddressBookContacts(ctx, bookID, keep)
 	}
 	return firstErr
 }

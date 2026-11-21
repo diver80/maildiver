@@ -27,6 +27,12 @@ func (e *Engine) SyncInboxes(ctx context.Context) error {
 	return firstErr
 }
 
+// SyncBackgroundExtras flushes any queued Outbox emails and refreshes calendars during WorkManager wakes.
+func (e *Engine) SyncBackgroundExtras(ctx context.Context) {
+	_, _ = e.FlushOutbox(ctx)
+	_ = e.SyncCalendarsNow(ctx)
+}
+
 // maxNewInboxMail bounds the mails one wake-up reports.
 const maxNewInboxMail = 50
 

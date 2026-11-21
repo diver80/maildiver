@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/mobile"
@@ -181,6 +182,20 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 		}
 		box.Children(func() {
 			ui.Column(c).FillWidth().Padding(8, 0, 96, 0).Gap(4).Children(func() {
+				if len(a.outboxItems) > 0 {
+					obRow := ui.ButtonBase(c.Key("ph-outbox-btn")).FillWidth().Padding(10, 16).Gap(8).Background(withAlpha(t.Warning, 0.14)).Label(a.tr("Offline-Postausgang", "Offline Outbox"))
+					obRow.Children(func() {
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+							ui.Icon(c, iconSend).Size(18, 18).TextColor(t.Warning)
+							ui.Text(c, fmt.Sprintf("%s (%d)", a.tr("Postausgang warten auf Versand", "Outbox pending"), len(a.outboxItems))).FontSize(14).Bold().TextColor(t.Warning).Grow(1)
+							ui.Icon(c, iconChevronRt).Size(16, 16).TextColor(t.Warning)
+						})
+					})
+					if obRow.Clicked() {
+						a.outboxOpen = true
+						a.LoadOutbox(context.Background())
+					}
+				}
 				mobile.Section(c, a.tr("Arbeitsbereich", "Workspace"), func() {
 					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)"), a.unreadCount(), 0)
 					a.phoneBoxRow(c, "recent", iconMail, a.tr("Aktuelle Mails", "Recent Mail"), 0, 0)
@@ -191,12 +206,75 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 					}
 				})
 				for _, g := range a.groupFoldersByAccount() {
-					mobile.Section(c, g.Name, func() {
-						for _, row := range g.Rows {
+					gCopy := g
+					mobile.Section(c, gCopy.Name, func() {
+						for _, row := range gCopy.Rows {
 							a.phoneFolderRow(c, row)
+						}
+						if a.isDirectMode() && !a.readOnly {
+							if a.direct.newFolderAccountID == gCopy.AccountID {
+								ui.Row(c.Key("ph-nf-row-"+gCopy.AccountID)).FillWidth().Padding(6, 14).Gap(6).AlignItems(ui.Center).Children(func() {
+									inp := ui.TextInput(c.Key("ph-nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
+									if (ui.Button(c.Key("ph-nf-ok-"+gCopy.AccountID), "✓").Padding(6, 12).Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
+										a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
+									}
+									if ui.Button(c.Key("ph-nf-x-"+gCopy.AccountID), "✕").Padding(6, 10).Clicked() {
+										a.direct.newFolderAccountID = ""
+										a.direct.newFolderName = ""
+									}
+								})
+							} else {
+								b := ui.ButtonBase(c.Key("ph-nf-add-"+gCopy.AccountID)).FillWidth().Padding(8, 16).Label(a.tr("Neuer Ordner", "New Folder"))
+								b.Children(func() {
+									ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+										ui.Icon(c, iconFolderPlus).Size(16, 16).TextColor(t.TextMuted)
+										ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(13.5).TextColor(t.TextMuted)
+									})
+								})
+								if b.Clicked() {
+									a.direct.newFolderAccountID = gCopy.AccountID
+									a.direct.newFolderName = ""
+								}
+							}
 						}
 					})
 				}
+				mobile.Section(c, a.tr("Werkzeuge", "Tools"), func() {
+					scanLbl := a.tr("Triage-Scan starten", "Run triage scan")
+					if a.scanRunning {
+						scanLbl = a.tr("Triage-Scan läuft…", "Triage scan running…")
+					}
+					bScan := ui.ButtonBase(c.Key("ph-tool-scan")).FillWidth().Padding(10, 16).Label(scanLbl)
+					bScan.Children(func() {
+						ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconSparkles).Size(18, 18).TextColor(t.Accent)
+							ui.Text(c, scanLbl).FontSize(14.5)
+						})
+					})
+					if bScan.Clicked() && a.engineReady && !a.scanRunning && a.cfg.Features.Triage {
+						a.StartTriageScan(context.Background())
+					}
+					bArch := ui.ButtonBase(c.Key("ph-tool-arch")).FillWidth().Padding(10, 16).Label(a.tr("Archiv & Aufräumen", "Archive & cleanup"))
+					bArch.Children(func() {
+						ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconArchive).Size(18, 18).TextColor(t.TextMuted)
+							ui.Text(c, a.tr("Archiv & Aufräumen…", "Archive & cleanup…")).FontSize(14.5)
+						})
+					})
+					if bArch.Clicked() && a.engineReady {
+						a.OpenArchiveDialog(context.Background())
+					}
+					bRules := ui.ButtonBase(c.Key("ph-tool-rules")).FillWidth().Padding(10, 16).Label(a.tr("Filterregeln", "Filter rules"))
+					bRules.Children(func() {
+						ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconFilter).Size(18, 18).TextColor(t.TextMuted)
+							ui.Text(c, a.tr("Filterregeln verwalten…", "Manage filter rules…")).FontSize(14.5)
+						})
+					})
+					if bRules.Clicked() && a.engineReady {
+						a.OpenFilterRules(context.Background())
+					}
+				})
 			})
 		})
 		a.phoneComposeButton(c)
@@ -308,6 +386,22 @@ func (a *App) renderPhoneList(c *ui.Context) {
 		} else {
 			a.phoneBar(c, a.currentViewTitle(), true, func() {
 				if a.navID != "calendar" && a.navID != "contacts" {
+					if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
+						if phoneIconButton(c.Key("ph-mark-all-read"), iconMailOpen, a.tr("Alle gelesen", "Mark all read"), ui.Color{}).Clicked() {
+							a.MarkCurrentViewAllRead(context.Background())
+						}
+					}
+					if trashAcc := a.currentTrashAccountID(); trashAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+						if phoneIconButton(c.Key("ph-empty-trash"), iconTrash, a.tr("Papierkorb leeren", "Empty Trash"), t.Danger).Clicked() {
+							if a.direct.emptyTrashArmID == trashAcc && time.Since(a.direct.emptyTrashArmAt) < 5*time.Second {
+								a.EmptyAccountTrash(context.Background(), trashAcc)
+							} else {
+								a.direct.emptyTrashArmID = trashAcc
+								a.direct.emptyTrashArmAt = time.Now()
+								a.toast(a.tr("Nochmal tippen zum endgültigen Leeren", "Tap again to empty Trash"), "warning")
+							}
+						}
+					}
 					if phoneIconButton(c.Key("ph-search"), iconSearch, a.tr("Suchen", "Search"), ui.Color{}).Clicked() {
 						a.phone.search = !a.phone.search
 						a.focusSearch = a.phone.search
@@ -324,14 +418,37 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			return
 		}
 		if a.phone.search || strings.TrimSpace(a.searchQuery) != "" {
-			ui.Row(c).FillWidth().Padding(8, 12).Children(func() {
-				sf := ui.SearchField(c.Key("ph-search-field"), &a.searchQuery).Placeholder(a.tr("Mails durchsuchen", "Search mail")).Grow(1)
-				if a.focusSearch {
-					sf.Focus()
-					a.focusSearch = false
-				}
-				if sf.Submitted() {
-					a.LoadMessages(context.Background())
+			ui.Column(c).FillWidth().Padding(8, 12).Gap(6).Children(func() {
+				ui.Row(c).FillWidth().Children(func() {
+					sf := ui.SearchField(c.Key("ph-search-field"), &a.searchQuery).Placeholder(a.tr("Mails durchsuchen", "Search mail")).Grow(1)
+					if a.focusSearch {
+						sf.Focus()
+						a.focusSearch = false
+					}
+					if sf.Submitted() {
+						a.lastSearchQuery = strings.TrimSpace(a.searchQuery)
+						a.LoadMessages(context.Background())
+					} else if strings.TrimSpace(a.searchQuery) == "" && a.lastSearchQuery != "" {
+						a.lastSearchQuery = ""
+						a.serverSearchDoneQuery = ""
+						a.serverSearchDoneKey = ""
+						a.LoadMessages(context.Background())
+					}
+				})
+				if q := strings.TrimSpace(a.searchQuery); q != "" && a.engineReady {
+					ui.Row(c.Key("ph-srv-search-bar")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+						if a.serverSearchBusy {
+							ui.Spinner(c)
+							ui.Text(c, a.tr("Suche auf Server…", "Searching server…")).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
+						} else if a.serverSearchDoneKey == a.serverSearchScopeKey(q) {
+							ui.Text(c, a.trf("Server-Suche: %d Treffer", "Server search: %d matches", a.serverSearchCount)).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
+						} else {
+							ui.Text(c, a.tr("Nur lokal gesucht.", "Searched locally.")).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
+							if ui.Button(c.Key("ph-srv-search-go"), a.tr("Auf Server suchen", "Search Server")).Padding(4, 10).Clicked() {
+								a.SearchMessagesOnServer(context.Background())
+							}
+						}
+					})
 				}
 			})
 		}
@@ -654,6 +771,21 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 		{Label: readLbl, OnTap: func() {
 			a.PerformMessageAction(context.Background(), id, backend.MessageActionsRequest{Read: &read}, "")
 		}},
+		{Label: func() string {
+			if msg.Flagged {
+				return a.tr("Stern entfernen", "Remove star")
+			}
+			return a.tr("Mit Stern markieren", "Add star")
+		}(), OnTap: func() {
+			flag := !msg.Flagged
+			a.PerformMessageAction(context.Background(), id, backend.MessageActionsRequest{Flagged: &flag}, "")
+		}},
+	}
+	if unsubHTTPS, unsubMailto, _ := parseUnsubscribeTargets(msg); unsubHTTPS != "" || unsubMailto != "" {
+		actions = append(actions, mobile.Action{
+			Label: a.tr("Von Newsletter abmelden", "Unsubscribe"),
+			OnTap: func() { a.PerformUnsubscribe(context.Background(), msg) },
+		})
 	}
 	if !a.readOnly {
 		actions = append(actions, mobile.Action{Label: a.tr("Verschieben nach…", "Move to…"), OnTap: func() { a.OpenMovePicker() }})
@@ -669,6 +801,9 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 		}
 	}
 	actions = append(actions,
+		mobile.Action{Label: a.tr("Filterregel erstellen…", "Create filter rule…"), OnTap: func() {
+			a.OpenQuickRuleWizard()
+		}},
 		mobile.Action{Label: a.tr("Unterhaltung teilen… (Claude, …)", "Share conversation… (Claude, …)"), OnTap: func() {
 			a.OpenConversationIn(context.Background(), msg, handoffShare)
 		}},

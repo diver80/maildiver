@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -87,6 +88,13 @@ func (a *App) renderToolbar(c *ui.Context) {
 				}
 			}
 			if a.isDirectMode() {
+				if len(a.outboxItems) > 0 {
+					obLbl := fmt.Sprintf("%s (%d)", a.tr("Postausgang", "Outbox"), len(a.outboxItems))
+					if ui.Button(c.Key("tb-outbox"), obLbl).TextColor(t.Warning).Tooltip(a.tr("Wartende E-Mails im Offline-Postausgang anzeigen & senden", "View & send queued offline Outbox emails")).Clicked() {
+						a.outboxOpen = true
+						a.LoadOutbox(context.Background())
+					}
+				}
 				if iconLabelBtn(c.Key("tb-direct"), iconMail, a.tr("Konten", "Accounts"), false, a.tr("IMAP/SMTP-Konten, Google Kalender & .ics verwalten", "Manage IMAP/SMTP accounts, Google Calendar & .ics")).Clicked() {
 					a.OpenDirectModal(0)
 				}
@@ -102,6 +110,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 			}
 			if iconBtn(c.Key("tb-copilot"), iconSidebar, a.tr("KI-Assistent ein/aus (⌘J)", "Toggle AI Assistant (⌘J)"), ui.Color{}, a.showCopilot).Clicked() {
 				a.showCopilot = !a.showCopilot
+				a.persistLayoutPrefs()
 			}
 		})
 	})
@@ -118,15 +127,18 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		}
 		if m.Item(a.tr("Seitenleiste", "Sidebar")).Checked(!a.hideSidebar).Chosen() {
 			a.hideSidebar = !a.hideSidebar
+			a.persistLayoutPrefs()
 		}
 		if m.Item(a.tr("KI-Assistent", "AI Assistant")).Checked(a.showCopilot).Shortcut(ui.Cmd, ui.KeyJ).Chosen() {
 			a.showCopilot = !a.showCopilot
+			a.persistLayoutPrefs()
 		}
 		if m.Item(a.tr("Web-Vorschau (automatisch)", "Web preview (auto)")).Checked(a.cfg.App.LinkPreview.Enabled).Chosen() {
 			a.ToggleWebPreviewAuto()
 		}
 		if m.Item(a.tr("Desktop-Meldungen", "Desktop alerts")).Checked(a.notifyEnabled).Chosen() {
 			a.notifyEnabled = !a.notifyEnabled
+			a.persistLayoutPrefs()
 		}
 		m.Separator()
 		m.Submenu(a.tr("Sprache", "Language"), func(m *ui.Menu) {

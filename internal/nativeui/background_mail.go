@@ -53,6 +53,9 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 	mygo.Power.OnSuspend(func() { foreground.Store(false); seen() })
 
 	background.Handle(backgroundMailTask, func(c context.Context) error {
+		if ext, ok := opts.Direct.(interface{ SyncBackgroundExtras(context.Context) }); ok {
+			ext.SyncBackgroundExtras(c)
+		}
 		if err := bm.SyncInboxes(c); err != nil {
 			return err // runs again later
 		}

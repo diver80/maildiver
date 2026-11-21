@@ -18,7 +18,7 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 	cfg := config.Default().AI
 	cfg.Classifier = config.ProviderConfig{
 		Backend:  "gemini-api",
-		Model:    "gemini-4-hydrogen",
+		Model:    "gemini-2.5-flash",
 		Endpoint: srv.URL,
 	}
 
@@ -33,13 +33,13 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify failed: %v", err)
 	}
-	if rec.count() != 1 || !strings.Contains(rec.path(0), "gemini-4-hydrogen") {
-		t.Fatalf("expected one request for gemini-4-hydrogen, got %q", rec.path(0))
+	if rec.count() != 1 || !strings.Contains(rec.path(0), "gemini-2.5-flash") {
+		t.Fatalf("expected one request for gemini-2.5-flash, got %q", rec.path(0))
 	}
 	if c.Bucket != triage.BucketAction || c.KanbanColumn != "action" || c.Deadline != "2026-11-15" {
 		t.Fatalf("unexpected classification: %+v", c)
 	}
-	if c.Model != "gemini-api:gemini-4-hydrogen" {
+	if c.Model != "gemini-api:gemini-2.5-flash" {
 		t.Fatalf("unexpected model label %q", c.Model)
 	}
 }

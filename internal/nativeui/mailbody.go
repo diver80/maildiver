@@ -1162,7 +1162,12 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
 	var lines []string
 	if sec.Encrypted {
-		if sec.Readable() {
+		switch {
+		case sec.PGP:
+			lines = append(lines, a.tr(
+				"OpenPGP-verschlüsselt (PGP/MIME). Entschlüsselung folgt in Phase 2.",
+				"OpenPGP encrypted (PGP/MIME). Decryption arrives in Phase 2."))
+		case sec.Readable():
 			if sec.SMIME {
 				lines = append(lines, a.tr("S/MIME-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
 					"S/MIME encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
@@ -1170,9 +1175,9 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 				lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
 					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
 			}
-		} else {
-			msgErr := a.tr("Verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (S/MIME-Zertifikat unter Konten → S/MIME importieren).",
-				"Encrypted. MailDiver could not decrypt this email (import S/MIME certificate under Accounts → S/MIME).")
+		default:
+			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Konten → S/MIME importieren).",
+				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Accounts → S/MIME).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}
@@ -1181,6 +1186,11 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	}
 	if sec.Signed {
 		switch {
+		case sec.PGP && !sec.SMIME:
+			lines = append(lines, a.tr("Mit OpenPGP signiert (Signaturprüfung folgt in Phase 2).", "Signed with OpenPGP (signature verification arrives in Phase 2)."))
+		case sec.SMIME && sec.SignatureValid && sec.SignerAddressMismatch:
+			lines = append(lines, a.trf("WARNUNG: S/MIME-Signatur gültig für %s, weicht aber von der Absender-Adresse ab!",
+				"WARNING: S/MIME signature valid for %s, but does not match the From address!", sec.SignerEmail))
 		case sec.SMIME && sec.SignatureValid && sec.SignatureTrusted:
 			who := sec.SignerEmail
 			if sec.SignerSubject != "" && !strings.EqualFold(sec.SignerSubject, who) {
@@ -1200,7 +1210,7 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 	}
 	ui.Row(c.Key("sec-note")).FillWidth().AlignItems(ui.Center).Gap(8).Padding(6, 10).Radius(8).Border(1, t.Border).Children(func() {
 		switch {
-		case sec.SMIME && sec.Signed && !sec.SignatureValid:
+		case sec.SMIME && sec.Signed && (!sec.SignatureValid || sec.SignerAddressMismatch):
 			ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Danger)
 		case sec.Encrypted && !sec.Readable():
 			ui.Icon(c, iconLock).Size(14, 14).TextColor(t.Warning)

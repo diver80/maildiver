@@ -41,6 +41,7 @@ type ParsedMessage struct {
 	ICSBody     string
 	Encrypted   bool
 	Signed      bool
+	IsPGP       bool
 }
 
 // ParseRawMessage parses an RFC 5322 / MIME message into structured fields.
@@ -94,6 +95,13 @@ func ParseRawMessage(raw []byte) (ParsedMessage, error) {
 	if strings.TrimSpace(out.BodyText) == "" && strings.TrimSpace(out.BodyHTML) != "" {
 		out.BodyText = htmlToPlainText(out.BodyHTML)
 	}
+	if strings.Contains(out.BodyText, "-----BEGIN PGP MESSAGE-----") {
+		out.IsPGP = true
+		out.Encrypted = true
+	} else if strings.Contains(out.BodyText, "-----BEGIN PGP SIGNED MESSAGE-----") {
+		out.IsPGP = true
+		out.Signed = true
+	}
 	return out, nil
 }
 
@@ -110,8 +118,22 @@ func walkMIMEEntity(e *message.Entity, out *ParsedMessage, inlineFallback *[]bac
 	switch ct {
 	case "multipart/signed":
 		out.Signed = true
-	case "multipart/encrypted", "application/pkcs7-mime", "application/x-pkcs7-mime":
+		if strings.Contains(strings.ToLower(params["protocol"]), "pgp") || strings.HasPrefix(strings.ToLower(params["micalg"]), "pgp") {
+			out.IsPGP = true
+		}
+	case "multipart/encrypted":
 		out.Encrypted = true
+		if strings.Contains(strings.ToLower(params["protocol"]), "pgp") {
+			out.IsPGP = true
+		}
+	case "application/pkcs7-mime", "application/x-pkcs7-mime":
+		out.Encrypted = true
+	case "application/pgp-encrypted":
+		out.Encrypted = true
+		out.IsPGP = true
+	case "application/pgp-signature":
+		out.Signed = true
+		out.IsPGP = true
 	}
 
 	if mr := e.MultipartReader(); mr != nil {

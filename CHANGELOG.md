@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.1 (2026-11-21)
+
+### Zuverlässigkeit, Protokolle & Sicherheit
+- **Offline-Postausgang (Outbox) UI & Lifecycle:** Postausgangs-Status (`queued` / `failed` mit Fehlermeldung, Draft-Bereinigung nach Versand, dauerhafte SMTP-Fehlererkennung), Warn-Toast „Offline – in Postausgang eingereiht“ sowie Desktop- & Phone-Postausgangs-Modal mit *Alle jetzt senden* und *Verwerfen*.
+- **CalDAV & CardDAV 2-Wege-Sync:** Automatische `/.well-known/{caldav,carddav}` + `PROPFIND`-Sammlungserkennung, CalDAV Event-Writeback (`PUT` / `DELETE`), CardDAV-Adressbücher inkl. Kontakt-`PUT`/`DELETE`, Entfernung remote gelöschter Kontakte sowie UI-Event nach Sync.
+- **IMAP-Stabilität:** Socket-Deadlines (`context.AfterFunc`) gegen hängende Verbindungen, Ordner umbenennen & löschen (unter Beachtung von Server-Trennern und Special-Use-Schutz), `OR (Subject, From)` + ASCII-Suchfallback bei `BADCHARSET`, verlässlicher `lastFull`-Retry nach Sync-Fehlern.
+- **Verschlüsselte Secrets auf Linux & Windows:** Linux (`secret-tool`/libsecret + AES-256-GCM) und Windows (DPAPI `CryptProtectData` + AES-256-GCM) statt unverschlüsseltem `secrets.json`.
+- **S/MIME & OpenPGP-Hinweis:** Signatur-Zertifikat-vs-Absender-Abgleich (`SignerAddressMismatch`), automatische S/MIME-Verschlüsselung beim Antworten falls Empfängerzertifikat vorliegt, Identitätsbereinigung beim Kontolöschen sowie sauberer PGP/MIME Phase-2-Hinweis ohne irreführenden S/MIME-Importdialog.
+- **KI, Archiv & Konfig:** `gemini-2.5-flash` Standardmodell, `<maildiver_instructions>` Prompt-Wrapper, `.maildiver-index.json` (mit Legacy-Fallback).
+
+### Desktop, Compose & Mobile Parität
+- **1-Klick Newsletter-Abmeldung:** `List-Unsubscribe` (`https://`, RFC 8058 One-Click POST, `mailto:`) direkt in Desktop- & Phone-Leseansicht.
+- **Compose-Feinschliff:** Kontakte-Auswahl (`Kontakte…`) direkt am *An*-Feld, `cid:`-Inline-Bilder in HTML-Weiterleitungen & Entwürfen im WYSIWYG-Editor, Live-Theme-Aktualisierung im offenen Editor, quoted-Komma-Fix in Autocomplete (`"Nachname, Vorname"`).
+- **Kalender-Erinnerungen & Layout:** Erinnerungen ignorieren ausgeblendete Kalender; Seitenleiste, Copilot, Benachrichtigungen und Splitter-Breiten bleiben persistent gespeichert.
+- **Phone / Android Parität:** Sprache, Design & HTML-Einfärbung in den Phone-Einstellungen, „Auf Server suchen“, „Alle gelesen“, „Papierkorb leeren“, „Neuer Ordner…“, Kalender-Suche & -Filter, Postausgang-Zugriff, Stern/Quick-Rule/Abmelden im Aktionsmenü sowie Outbox-Flush & Kalender-Sync im Android-WorkManager.
+
+## 0.7.0 (2026-11-21)
+
+- **Android & Phone:** Long-Press Mehrfachauswahl (Stern, Gelesen, Archiv, Löschen), Mobile-Fixes für Kontakte, Kalender, Anhänge und Verfassen.
+- **Fokus & Markieren:** Ansicht *Fokus (Ungelesen & ★)* hält gesternte Mails oben angeheftet; Stern-Aktionen in Liste, Leiste und Batch-Menü.
+- **Desktop HTML-WYSIWYG-Editor:** Rich-Text-Editor mit Copy & Paste von Inline-Bildern (`cid:` `multipart/related`), bearbeitbaren HTML-Tabellen, Drag & Drop sowie Zwischenablage-Anhängen.
+- **Lokale KI & Ordner-Persistenz:** Live-Modell-Dropdown in Einstellungen & Copilot (u. a. Ollama mit `inkling-2-mini`), dauerhaft gespeicherte Ordner- & Konto-Klappzustände.
+
 ## 0.6.1 (2026-11-21)
 
 - **Keine falschen Sync-Fehler mehr:** Ein manueller Abgleich (Ziehen zum Aktualisieren, Sync-Knopf, erster Abgleich eines neuen Kontos) läuft im Hintergrund zu Ende, auch wenn er länger dauert als die Anzeige wartet; dann erscheint „Synchronisierung läuft im Hintergrund weiter“. Ein abgebrochenes Warten – oder eine von Android beendete Hintergrund-Aufgabe – markiert das Konto nicht mehr mit „context deadline exceeded“.

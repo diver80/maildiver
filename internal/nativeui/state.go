@@ -14,7 +14,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/mail"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -181,6 +183,8 @@ type composeState struct {
 	composeLastToQuery       string
 	composeLastCCQuery       string
 	composeLastBCCQuery      string
+	composeContactPickerOpen bool
+	composeContactFilter     string
 	composeBusy              bool
 	composeConfirm           bool
 	composeNonce             string // per compose session; send idempotency key = nonce + content hash
@@ -304,11 +308,16 @@ type App struct {
 	sidebarSplit       float32
 	mailSplit          float32
 	copilotSplit       float32
+	lastLayoutKey      string
+	lastLayoutSaveAt   time.Time
 
 	// Mailbox & Calendar data
 	accounts      []backend.Account
 	folders       []backend.Folder
 	messages      []backend.MessageHeader
+	outboxItems   []backend.OutboxEntry
+	outboxOpen    bool
+	outboxBusy    bool
 	msgLoadSeq    uint64 // incremented per message-list load; stale responses are dropped
 	totalMessages int
 	// Paging: nextCursor continues the list (empty at its end); listKey names the view the list
@@ -429,11 +438,12 @@ func NewApp(opts Options) *App {
 		calDays:          14,
 		calViewMode:      0,
 		calCursor:        time.Now(),
-		showCopilot:      true,
-		notifyEnabled:    true,
-		sidebarSplit:     230,
-		mailSplit:        370,
-		copilotSplit:     0,
+		showCopilot:      cfg.App.ShowCopilot == nil || *cfg.App.ShowCopilot,
+		hideSidebar:      cfg.App.HideSidebar != nil && *cfg.App.HideSidebar,
+		notifyEnabled:    cfg.App.NotifyEnabled == nil || *cfg.App.NotifyEnabled,
+		sidebarSplit:     max(float32(180), cfg.App.SidebarSplit),
+		mailSplit:        max(float32(280), cfg.App.MailSplit),
+		copilotSplit:     cfg.App.CopilotSplit,
 		helpTopic:        "all",
 		seenMails:        make(map[string]bool),
 		syncErrors:       make(map[string]string),
@@ -723,7 +733,54 @@ func (a *App) applyPalette(pal theme.Palette, src string) bool {
 	a.activePalette = pal
 	a.themeSource = src
 	a.uiTheme.setPalette(pal)
+	if a.composeOpen && a.composeUsingWYSIWYG() && a.composeEditor.Widget() != nil {
+		a.composeEditor.UpdateTheme(a.composeThemePalette())
+	}
 	return true
+}
+
+func (a *App) layoutStateKey() string {
+	return fmt.Sprintf("%v|%v|%v|%.0f|%.0f|%.0f", a.hideSidebar, a.showCopilot, a.notifyEnabled, a.sidebarSplit, a.mailSplit, a.copilotSplit)
+}
+
+func (a *App) persistLayoutPrefs() {
+	if a.opts.ConfigLoader == nil || a.opts.ConfigSaver == nil {
+		return
+	}
+	a.lastLayoutKey = a.layoutStateKey()
+	a.lastLayoutSaveAt = time.Now()
+	cfg, err := a.opts.ConfigLoader()
+	if err != nil {
+		cfg = a.cfg
+	}
+	hs := a.hideSidebar
+	sc := a.showCopilot
+	ne := a.notifyEnabled
+	cfg.App.HideSidebar = &hs
+	cfg.App.ShowCopilot = &sc
+	cfg.App.NotifyEnabled = &ne
+	if a.sidebarSplit > 0 {
+		cfg.App.SidebarSplit = a.sidebarSplit
+	}
+	if a.mailSplit > 0 {
+		cfg.App.MailSplit = a.mailSplit
+	}
+	if a.copilotSplit > 0 {
+		cfg.App.CopilotSplit = a.copilotSplit
+	}
+	a.cfg = cfg
+	go func(c config.Config) { _ = a.opts.ConfigSaver(c) }(cfg)
+}
+
+func (a *App) maybePersistLayoutSplits() {
+	k := a.layoutStateKey()
+	if a.lastLayoutKey == "" {
+		a.lastLayoutKey = k
+		return
+	}
+	if k != a.lastLayoutKey && time.Since(a.lastLayoutSaveAt) >= 800*time.Millisecond {
+		a.persistLayoutPrefs()
+	}
 }
 
 // runThemeWatcher resolves the live (Omarchy/system) theme OFF the UI thread (it may shell out
@@ -844,6 +901,8 @@ func (a *App) finishRefresh(ctx context.Context) {
 	a.refreshing = false
 	if !a.isDirectMode() {
 		a.phone.refresh.Refreshing = false
+	} else {
+		a.LoadOutbox(ctx)
 	}
 	a.loading = false
 	a.notifyTray()
@@ -1821,11 +1880,96 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 				a.startMessageLoad(ctx)
 				a.refreshFoldersBackground(ctx)
 			}
+			if res.Queued {
+				a.LoadOutbox(ctx)
+				a.toast(a.tr("Offline – in Postausgang eingereiht", "Offline – queued in Outbox")+a.composeSecuritySuffix(res.Security), "warning")
+				return
+			}
 			if res.SentCopyFailed {
 				a.toast(a.tr("E-Mail gesendet – aber nicht in „Gesendet“ abgelegt", "Email sent – but not stored in Sent"), "warning")
 				return
 			}
 			a.toast(a.tr("E-Mail gesendet", "Email sent")+a.composeSecuritySuffix(res.Security), "success")
+		})
+	}()
+}
+
+// LoadOutbox fetches all pending or failed outgoing emails from the offline outbox.
+func (a *App) LoadOutbox(ctx context.Context) {
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		items, lerr := bc.OutboxList(c)
+		if lerr != nil {
+			return
+		}
+		a.emitUpdate(func() {
+			a.outboxItems = items
+		})
+	}()
+}
+
+// FlushOutbox immediately retries all messages currently in the offline outbox.
+func (a *App) FlushOutbox(ctx context.Context) {
+	if a.outboxBusy {
+		return
+	}
+	bc, err := a.client()
+	if err != nil || a.readOnly {
+		return
+	}
+	a.outboxBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, backend.ComposeSendTimeout)
+		defer cancel()
+		sent, rem, ferr := bc.OutboxFlush(c)
+		items, _ := bc.OutboxList(c)
+		a.emitUpdate(func() {
+			a.outboxBusy = false
+			if items != nil || ferr == nil {
+				a.outboxItems = items
+			}
+			if ferr != nil {
+				a.toast(a.tr("Postausgang-Versand fehlgeschlagen: ", "Outbox send failed: ")+a.errText(ferr), "error")
+				return
+			}
+			if sent > 0 && rem == 0 {
+				a.toast(a.trf("%d E-Mail(s) aus Postausgang gesendet", "Sent %d email(s) from Outbox", sent), "success")
+				a.outboxOpen = false
+			} else if sent > 0 {
+				a.toast(a.trf("%d gesendet, %d verbleiben im Postausgang", "%d sent, %d remaining in Outbox", sent, rem), "warning")
+			} else if rem > 0 {
+				a.toast(a.trf("Noch %d E-Mail(s) im Postausgang (Details prüfen)", "%d email(s) still in Outbox (check errors)", rem), "warning")
+			}
+		})
+	}()
+}
+
+// DeleteOutboxItem removes a single queued or failed email from the offline outbox.
+func (a *App) DeleteOutboxItem(ctx context.Context, id string) {
+	bc, err := a.client()
+	if err != nil || a.readOnly || id == "" {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if derr := bc.OutboxDelete(c, id); derr != nil {
+			a.emitUpdate(func() {
+				a.toast(a.tr("Löschen fehlgeschlagen: ", "Delete failed: ")+a.errText(derr), "error")
+			})
+			return
+		}
+		items, _ := bc.OutboxList(c)
+		a.emitUpdate(func() {
+			a.outboxItems = items
+			if len(items) == 0 {
+				a.outboxOpen = false
+			}
 		})
 	}()
 }
@@ -2550,6 +2694,8 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeLastToQuery = ""
 	a.composeLastCCQuery = ""
 	a.composeLastBCCQuery = ""
+	a.composeContactPickerOpen = false
+	a.composeContactFilter = ""
 	a.composeConfirm = false
 	a.composeNonce = backend.NewIdempotencyKey()
 	a.composeSign = 0
@@ -2589,6 +2735,8 @@ func (a *App) closeCompose() {
 	a.composeKeepHTML = false
 	a.composeBodyHTML = ""
 	a.composeEditorDirty = false
+	a.composeContactPickerOpen = false
+	a.composeContactFilter = ""
 	a.syncAuxWindows()
 }
 
@@ -2679,6 +2827,9 @@ func (a *App) OpenComposeFromDraft(msg *backend.MessageDetail) {
 		a.composeBodyHTML = buildComposeEditorInitialHTML(body, "", "", "", nil, "")
 	}
 	a.composeEditorGen++
+	if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {
+		a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, "", "", a.composeEditorGen)
+	}
 }
 
 // isDraftsMessage reports whether msg resides in a Drafts folder.
@@ -2731,6 +2882,39 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 	a.composeBodyHTML = buildComposeEditorInitialHTML(body, stripSignatureDelim(sig), "", "", nil, quote)
 	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
+	if msg.Security.Encrypted && a.opts.Direct != nil {
+		knownCert := map[string]bool{}
+		for _, ci := range a.opts.Direct.ListSMIMEContacts() {
+			if em := strings.ToLower(strings.TrimSpace(ci.Email)); em != "" {
+				knownCert[em] = true
+			}
+			for _, em := range ci.Emails {
+				knownCert[strings.ToLower(strings.TrimSpace(em))] = true
+			}
+		}
+		for _, ci := range a.opts.Direct.ListSMIMEIdentities() {
+			if em := strings.ToLower(strings.TrimSpace(ci.Email)); em != "" {
+				knownCert[em] = true
+			}
+		}
+		rcpts := splitEmailList(a.composeTo)
+		if len(rcpts) > 0 {
+			allHave := true
+			for _, r := range rcpts {
+				em := strings.ToLower(strings.TrimSpace(r))
+				if addr, err := mail.ParseAddress(r); err == nil {
+					em = strings.ToLower(strings.TrimSpace(addr.Address))
+				}
+				if !knownCert[em] {
+					allHave = false
+					break
+				}
+			}
+			if allHave {
+				a.composeEncrypt = true
+			}
+		}
+	}
 }
 
 // maxQuoteRunes bounds the quoted original in a reply.
@@ -2870,16 +3054,62 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeKeepHTML = true
 		fwdMeta := fmt.Sprintf("%s\n%s %s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
 		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, fwdMeta, msg.BodyHtml, nil, "")
+		a.composeEditorGen++
+		if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {
+			a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, fwdMeta, sig, a.composeEditorGen)
+		}
+		return
 	} else {
 		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, "", "", nil, header)
 	}
 	a.composeEditorGen++
 }
 
+func (a *App) loadInlineImagesForCompose(msgID, rawHTML, fwdMeta, sig string, gen int) {
+	dc := a.opts.Direct
+	if dc == nil || msgID == "" || strings.TrimSpace(rawHTML) == "" {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		imgs, err := dc.ReadAllInlineImages(c, msgID)
+		if err != nil || len(imgs) == 0 {
+			return
+		}
+		var updatedHTML string
+		if fwdMeta != "" {
+			updatedHTML = buildComposeEditorInitialHTML("", sig, fwdMeta, rawHTML, imgs, "")
+		} else {
+			updatedHTML = SanitizeEmailHTML(rawHTML, imgs, false)
+		}
+		a.emitUpdate(func() {
+			if !a.composeOpen || a.composeEditorGen != gen || a.composeEditorDirty {
+				return
+			}
+			a.composeBodyHTML = updatedHTML
+			a.composeEditorGen++
+		})
+	}()
+}
+
 func lastRecipientToken(raw string) string {
-	idx := strings.LastIndex(raw, ",")
-	if idx >= 0 {
-		return strings.TrimSpace(raw[idx+1:])
+	inQuotes := false
+	lastComma := -1
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			inQuotes = !inQuotes
+		case '\\':
+			i++
+		case ',':
+			if !inQuotes {
+				lastComma = i
+			}
+		}
+	}
+	if lastComma >= 0 {
+		return strings.TrimSpace(raw[lastComma+1:])
 	}
 	return strings.TrimSpace(raw)
 }
@@ -3221,10 +3451,10 @@ func (a *App) checkUpcomingMeetingReminders() {
 	}
 	now := time.Now()
 	for _, ev := range a.events {
-		if ev.AllDay || ev.ID == "" {
+		if ev.AllDay || ev.ID == "" || a.isCalendarHidden(ev.CalendarID) {
 			continue
 		}
-		start, err := time.Parse(time.RFC3339, ev.Start)
+		start, err := parseEventTime(ev.Start)
 		if err != nil {
 			continue
 		}
@@ -3257,6 +3487,83 @@ func (a *App) pushAlert(item AlertItem) {
 	}
 	if a.onNotify != nil {
 		a.onNotify(item)
+	}
+}
+
+// parseUnsubscribeTargets extracts https:// and mailto: URIs from RFC 2369 List-Unsubscribe
+// and checks RFC 8058 List-Unsubscribe-Post one-click support.
+func parseUnsubscribeTargets(msg *backend.MessageDetail) (httpsURL, mailtoURI string, oneClick bool) {
+	if msg == nil || len(msg.Headers) == 0 {
+		return "", "", false
+	}
+	raw := strings.TrimSpace(msg.Headers["list-unsubscribe"])
+	if raw == "" {
+		return "", "", false
+	}
+	postHdr := strings.ToLower(msg.Headers["list-unsubscribe-post"])
+	oneClick = strings.Contains(postHdr, "list-unsubscribe=one-click")
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		s = strings.TrimPrefix(s, "<")
+		s = strings.TrimSuffix(s, ">")
+		s = strings.TrimSpace(s)
+		low := strings.ToLower(s)
+		if strings.HasPrefix(low, "https://") && httpsURL == "" {
+			httpsURL = s
+		} else if strings.HasPrefix(low, "mailto:") && mailtoURI == "" {
+			mailtoURI = s
+		}
+	}
+	return httpsURL, mailtoURI, oneClick
+}
+
+// PerformUnsubscribe triggers RFC 8058 one-click HTTPS POST, opens the https unsubscribe URL in
+// the system browser, or opens a prefilled mailto unsubscribe compose draft.
+func (a *App) PerformUnsubscribe(ctx context.Context, msg *backend.MessageDetail) {
+	httpsURL, mailtoURI, oneClick := parseUnsubscribeTargets(msg)
+	if httpsURL != "" && oneClick {
+		go func(u string) {
+			c, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(c, http.MethodPost, u, strings.NewReader("List-Unsubscribe=One-Click"))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				resp, rerr := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+				if rerr == nil {
+					_ = resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						a.emitUpdate(func() {
+							a.toast(a.tr("Newsletter-Abmeldung gesendet", "Unsubscribe request sent"), "success")
+						})
+						return
+					}
+				}
+			}
+			_ = openExternalURL(u)
+		}(httpsURL)
+		return
+	}
+	if httpsURL != "" {
+		_ = openExternalURL(httpsURL)
+		return
+	}
+	if mailtoURI != "" {
+		u, err := url.Parse(mailtoURI)
+		if err != nil {
+			return
+		}
+		accID := msg.AccountID
+		a.initComposeCommon(accID)
+		a.composeTo = u.Opaque
+		if subj := strings.TrimSpace(u.Query().Get("subject")); subj != "" {
+			a.composeSubject = subj
+		} else {
+			a.composeSubject = "Unsubscribe"
+		}
+		body := strings.TrimSpace(u.Query().Get("body"))
+		a.composeBody = body
+		a.composeBodyHTML = buildComposeEditorInitialHTML(body, "", "", "", nil, "")
+		a.composeEditorGen++
 	}
 }
 

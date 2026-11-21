@@ -159,11 +159,27 @@ func (e *Engine) ListContacts(ctx context.Context, query string) ([]backend.Cont
 }
 
 func (e *Engine) SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error) {
-	return e.store.SaveContactFull(ctx, c)
+	saved, err := e.store.SaveContactFull(ctx, c)
+	if err != nil {
+		return saved, err
+	}
+	if strings.HasPrefix(saved.AddressBookID, "carddav:") {
+		if derr := e.pushCardDAVContact(ctx, saved); derr != nil {
+			return saved, derr
+		}
+	}
+	return saved, nil
 }
 
 func (e *Engine) DeleteContact(ctx context.Context, id string) error {
-	return e.store.DeleteContact(ctx, id)
+	existing, gerr := e.store.GetContact(ctx, id)
+	if err := e.store.DeleteContact(ctx, id); err != nil {
+		return err
+	}
+	if gerr == nil && strings.HasPrefix(existing.AddressBookID, "carddav:") {
+		return e.deleteCardDAVContact(ctx, existing)
+	}
+	return nil
 }
 
 func (e *Engine) SuggestRecipients(ctx context.Context, query string, limit int) []RecipientSuggestion {

@@ -386,6 +386,21 @@ func (m *Manager) HasIdentity(email string) bool {
 	return ok
 }
 
+// HasContactCert reports whether a public X.509 certificate exists for email (contact or own identity).
+func (m *Manager) HasContactCert(email string) bool {
+	if m == nil {
+		return false
+	}
+	em := strings.ToLower(strings.TrimSpace(email))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.state.Contacts[em]; ok {
+		return true
+	}
+	_, ok := m.state.Identities[em]
+	return ok
+}
+
 // LoadIdentity loads the private key + leaf cert + chain for email from secretstore.
 func (m *Manager) LoadIdentity(email string) (*Identity, error) {
 	if m == nil {

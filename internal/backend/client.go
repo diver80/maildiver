@@ -345,6 +345,54 @@ func (c *Client) ComposeSend(ctx context.Context, req ComposeRequest) (json.RawM
 	return res, err
 }
 
+func (c *Client) CreateFolder(ctx context.Context, accountID, name string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, DefaultRequestTimeout, "folders.create", map[string]any{"accountId": accountID, "name": name}, nil)
+}
+
+func (c *Client) RenameFolder(ctx context.Context, accountID, folderID, newName string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, DefaultRequestTimeout, "folders.rename", map[string]any{"accountId": accountID, "folderId": folderID, "newName": newName}, nil)
+}
+
+func (c *Client) DeleteFolder(ctx context.Context, accountID, folderID string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, DefaultRequestTimeout, "folders.delete", map[string]any{"accountId": accountID, "folderId": folderID}, nil)
+}
+
+func (c *Client) OutboxList(ctx context.Context) ([]OutboxEntry, error) {
+	var res struct {
+		Items []OutboxEntry `json:"items"`
+	}
+	err := c.call(ctx, DefaultRequestTimeout, "outbox.list", nil, &res)
+	return res.Items, err
+}
+
+func (c *Client) OutboxFlush(ctx context.Context) (int, int, error) {
+	if err := c.errReadOnly(); err != nil {
+		return 0, 0, err
+	}
+	var res struct {
+		Sent      int `json:"sent"`
+		Remaining int `json:"remaining"`
+	}
+	err := c.call(ctx, ComposeSendTimeout, "outbox.flush", nil, &res)
+	return res.Sent, res.Remaining, err
+}
+
+func (c *Client) OutboxDelete(ctx context.Context, id string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, DefaultRequestTimeout, "outbox.delete", map[string]any{"id": id}, nil)
+}
+
 func (c *Client) Calendars(ctx context.Context) ([]Calendar, error) {
 	var res struct {
 		Calendars []Calendar `json:"calendars"`

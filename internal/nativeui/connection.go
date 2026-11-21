@@ -76,6 +76,8 @@ func (a *App) handleEngineEvent(ctx context.Context, name string, payload json.R
 		a.msgReload.trigger(func() { a.LoadMessages(ctx) })
 	case "calendar.changed":
 		a.calReload.trigger(func() { a.RefreshAll(ctx) })
+	case "outbox.changed":
+		a.LoadOutbox(ctx)
 	default:
 		a.handleJobEvent(ctx, name, payload)
 	}

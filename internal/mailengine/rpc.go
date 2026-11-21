@@ -28,6 +28,63 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		return e.rpcAccountsList(ctx)
 	case "folders.list":
 		return e.rpcFoldersList(ctx, params)
+	case "folders.create":
+		var p struct {
+			AccountID string `json:"accountId"`
+			Name      string `json:"name"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if err := e.CreateFolder(ctx, p.AccountID, p.Name); err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"ok": true})
+	case "folders.rename":
+		var p struct {
+			AccountID string `json:"accountId"`
+			FolderID  string `json:"folderId"`
+			NewName   string `json:"newName"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if err := e.RenameFolder(ctx, p.AccountID, p.FolderID, p.NewName); err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"ok": true})
+	case "folders.delete":
+		var p struct {
+			AccountID string `json:"accountId"`
+			FolderID  string `json:"folderId"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if err := e.DeleteFolder(ctx, p.AccountID, p.FolderID); err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"ok": true})
+	case "outbox.list":
+		items, err := e.ListOutbox(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"items": items})
+	case "outbox.flush":
+		sent, rem := e.FlushOutboxNow(ctx)
+		return marshalJSON(map[string]any{"ok": true, "sent": sent, "remaining": rem})
+	case "outbox.delete":
+		var p struct {
+			ID string `json:"id"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if err := e.DeleteOutbox(ctx, p.ID); err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"ok": true})
 	case "messages.list":
 		return e.rpcMessagesList(ctx, params)
 	case "messages.get":
@@ -310,6 +367,21 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string, detail *backend.MessageDetail) {
 	// Quick detection via ParseRawMessage flags / headers
 	parsed, _ := ParseRawMessage(rawEML)
+	detail.Security.PGP = parsed.IsPGP
+	if parsed.IsPGP {
+		if parsed.Encrypted {
+			detail.Security.Encrypted = true
+			detail.Security.Decryption = "skipped"
+		}
+		if parsed.Signed {
+			detail.Security.Signed = true
+		}
+		return
+	}
+	fromAddr := ""
+	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
+		fromAddr = strings.ToLower(strings.TrimSpace(addrs[0]))
+	}
 	if parsed.Encrypted {
 		detail.Security.Encrypted = true
 		if !allowDecrypt {
@@ -345,7 +417,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 				}
 			}
 			if vr != nil {
-				applySMIMEVerifyToSecurity(vr, &detail.Security)
+				applySMIMEVerifyToSecurity(vr, fromAddr, &detail.Security)
 				if vr.Valid && vr.SignerCert != nil {
 					e.smime.CacheContactCert(vr.SignerCert)
 				}
@@ -359,7 +431,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 	if parsed.Signed || strings.Contains(strings.ToLower(string(rawEML[:min(len(rawEML), 2048)])), "pkcs7") {
 		vr, opaqueInner, _ := smime.VerifyMIME(rawEML, nil)
 		if vr != nil {
-			applySMIMEVerifyToSecurity(vr, &detail.Security)
+			applySMIMEVerifyToSecurity(vr, fromAddr, &detail.Security)
 			if vr.Valid && vr.SignerCert != nil {
 				e.smime.CacheContactCert(vr.SignerCert)
 			}
@@ -380,7 +452,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 	}
 }
 
-func applySMIMEVerifyToSecurity(vr *smime.VerifyResult, sec *backend.MessageSecurity) {
+func applySMIMEVerifyToSecurity(vr *smime.VerifyResult, fromAddr string, sec *backend.MessageSecurity) {
 	sec.Signed = true
 	sec.SMIME = true
 	sec.SignatureValid = vr.Valid
@@ -389,6 +461,20 @@ func applySMIMEVerifyToSecurity(vr *smime.VerifyResult, sec *backend.MessageSecu
 	sec.SignerSubject = vr.SignerSubject
 	sec.SignerIssuer = vr.Issuer
 	sec.SignatureError = vr.Error
+	if vr.Valid && fromAddr != "" {
+		matched := strings.EqualFold(strings.TrimSpace(vr.SignerEmail), fromAddr)
+		if !matched && vr.SignerCert != nil {
+			for _, em := range vr.SignerCert.EmailAddresses {
+				if strings.EqualFold(strings.TrimSpace(em), fromAddr) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched && vr.SignerEmail != "" {
+			sec.SignerAddressMismatch = true
+		}
+	}
 }
 
 func (e *Engine) rpcMessagesThread(ctx context.Context, params any) (json.RawMessage, error) {
@@ -1312,19 +1398,41 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	if err != nil {
 		return nil, err
 	}
+	var compSec *backend.ComposeSecurity
+	if e.smime != nil {
+		signed := false
+		wantSign := req.Sign == "on" || (req.Sign == "" && e.smime.HasIdentity(fromEmail))
+		if wantSign && e.smime.HasIdentity(fromEmail) {
+			signed = true
+		}
+		if signed || req.Encrypt {
+			compSec = &backend.ComposeSecurity{
+				Technology: "S/MIME",
+				Signed:     signed,
+				Encrypted:  req.Encrypt,
+			}
+		}
+	}
 	if err := SendSMTP(ctx, acc, pass, fromEmail, recipients, raw); err != nil {
 		if isTransientNetworkError(err) {
 			obID := "ob-" + randomHex(8)
 			if qerr := e.store.EnqueueOutbox(ctx, OutboxItem{
-				ID:         obID,
-				AccountID:  acc.ID,
-				FromEmail:  fromEmail,
-				Recipients: recipients,
-				Subject:    req.Subject,
-				RawEML:     raw,
-				LastError:  err.Error(),
+				ID:             obID,
+				AccountID:      acc.ID,
+				FromEmail:      fromEmail,
+				Recipients:     recipients,
+				Subject:        req.Subject,
+				DraftMessageID: req.DraftMessageID,
+				Status:         "queued",
+				RawEML:         raw,
+				LastError:      err.Error(),
 			}); qerr == nil {
-				res, _ := marshalJSON(map[string]any{"ok": true, "queued": true, "outboxId": obID, "messageId": msgID})
+				e.emitOutboxChanged()
+				resPayload := map[string]any{"ok": true, "queued": true, "outboxId": obID, "messageId": msgID}
+				if compSec != nil {
+					resPayload["security"] = compSec
+				}
+				res, _ := marshalJSON(resPayload)
 				if idemKey != "" {
 					e.store.PutIdempotency(ctx, idemKey, res)
 				}
@@ -1350,7 +1458,11 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	}
 	e.emitMailSync(acc.ID)
 
-	res, _ := marshalJSON(map[string]any{"ok": true, "messageId": msgID, "sent": true, "sentCopyFailed": sentErr != nil})
+	resPayload := map[string]any{"ok": true, "messageId": msgID, "sent": true, "sentCopyFailed": sentErr != nil}
+	if compSec != nil {
+		resPayload["security"] = compSec
+	}
+	res, _ := marshalJSON(resPayload)
 	if idemKey != "" {
 		e.store.PutIdempotency(postCtx, idemKey, res)
 	}
@@ -1466,7 +1578,12 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 			IsRecurring:  rruleStr != "",
 			Status:       "confirmed",
 		}
-		if err := e.store.UpsertEvent(ctx, se); err != nil {
+		if cal.Source == "caldav" {
+			se, err = e.pushCalDAVEvent(ctx, cal, se)
+			if err != nil {
+				return nil, err
+			}
+		} else if err := e.store.UpsertEvent(ctx, se); err != nil {
 			return nil, err
 		}
 	}
@@ -1535,12 +1652,18 @@ func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMes
 		}
 	}
 
-	if cal.Source == "google" {
+	switch cal.Source {
+	case "google":
 		ev, err = e.updateGoogleEvent(ctx, cal, ev)
 		if err != nil {
 			return nil, err
 		}
-	} else {
+	case "caldav":
+		ev, err = e.pushCalDAVEvent(ctx, cal, ev)
+		if err != nil {
+			return nil, err
+		}
+	default:
 		if err := e.store.UpsertEvent(ctx, ev); err != nil {
 			return nil, err
 		}
@@ -1592,11 +1715,16 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		return marshalJSON(map[string]any{"ok": true})
 	}
 
-	if cal.Source == "google" {
+	switch cal.Source {
+	case "google":
 		if err := e.deleteGoogleEvent(ctx, cal, ev); err != nil {
 			return nil, err
 		}
-	} else {
+	case "caldav":
+		if err := e.deleteCalDAVEvent(ctx, cal, ev); err != nil {
+			return nil, err
+		}
+	default:
 		if err := e.store.DeleteEvent(ctx, p.CalendarID, ev.ID); err != nil {
 			return nil, err
 		}
@@ -1619,15 +1747,28 @@ func (e *Engine) rpcContactsSearch(ctx context.Context, params any) (json.RawMes
 	if contacts == nil {
 		contacts = []backend.ContactRecord{}
 	}
-	return marshalJSON(backend.ContactsSearchResponse{
-		Supported: true,
-		AddressBooks: []backend.AddressBook{{
-			ID:       LocalAddressBookID,
-			Name:     LocalAddressBookName,
+	books := []backend.AddressBook{{
+		ID:       LocalAddressBookID,
+		Name:     LocalAddressBookName,
+		ReadOnly: false,
+		Type:     "local",
+	}}
+	cfg := e.loadConfig()
+	for _, cd := range cfg.Direct.CardDAVAccounts {
+		if !cd.Enabled {
+			continue
+		}
+		books = append(books, backend.AddressBook{
+			ID:       "carddav:" + cd.ID,
+			Name:     cd.Name,
 			ReadOnly: false,
-			Type:     "local",
-		}},
-		Contacts: contacts,
+			Type:     "carddav",
+		})
+	}
+	return marshalJSON(backend.ContactsSearchResponse{
+		Supported:    true,
+		AddressBooks: books,
+		Contacts:     contacts,
 	})
 }
 
@@ -1639,6 +1780,11 @@ func (e *Engine) rpcContactsUpsert(ctx context.Context, params any) (json.RawMes
 	rec, action, err := e.store.UpsertContact(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	if strings.HasPrefix(rec.AddressBookID, "carddav:") {
+		if derr := e.pushCardDAVContact(ctx, rec); derr != nil {
+			return nil, derr
+		}
 	}
 	return marshalJSON(backend.ContactUpsertResponse{
 		OK:      true,

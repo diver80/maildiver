@@ -79,6 +79,76 @@ func (a *App) RenderMain(c *ui.Context) {
 		a.guardComposeClose()
 	}
 	a.renderDialogs(c)
+	a.maybePersistLayoutSplits()
+}
+
+func (a *App) renderComposeContactPicker(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c.Key("cmp-ct-pick")).FillWidth().Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.SearchField(c.Key("cmp-ct-search"), &a.composeContactFilter).Placeholder(a.tr("Kontakte filtern…", "Filter contacts…")).Grow(1)
+			if ui.Button(c.Key("cmp-ct-close"), "✕").Padding(3, 8).Clicked() {
+				a.composeContactPickerOpen = false
+			}
+		})
+		q := strings.ToLower(strings.TrimSpace(a.composeContactFilter))
+		var matches []backend.ContactRecord
+		for _, rec := range a.contacts.list {
+			if strings.TrimSpace(rec.Email) == "" {
+				continue
+			}
+			if q != "" {
+				hay := strings.ToLower(rec.DisplayName + " " + rec.FirstName + " " + rec.LastName + " " + rec.Email + " " + rec.Company)
+				if !strings.Contains(hay, q) {
+					continue
+				}
+			}
+			matches = append(matches, rec)
+			if len(matches) >= 20 {
+				break
+			}
+		}
+		if len(matches) == 0 {
+			ui.Text(c, a.tr("Keine passenden Kontakte mit E-Mail-Adresse.", "No matching contacts with email address.")).FontSize(11.5).TextColor(t.TextMuted)
+			return
+		}
+		ui.Scroll(c.Key("cmp-ct-list")).FillWidth().MaxHeight(160).Children(func() {
+			ui.Column(c).FillWidth().Gap(4).Children(func() {
+				for _, rec := range matches {
+					rc := rec
+					formatted := rc.Email
+					if name := strings.TrimSpace(rc.DisplayName); name != "" {
+						formatted = fmt.Sprintf("%s <%s>", name, rc.Email)
+					}
+					appendAddr := func(cur string) string {
+						cur = strings.TrimSpace(cur)
+						if cur == "" {
+							return formatted
+						}
+						return cur + ", " + formatted
+					}
+					ui.Row(c.Key("cmp-ct-row-" + rc.ID)).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+						label := rc.DisplayName
+						if label == "" {
+							label = rc.Email
+						} else {
+							label += " <" + rc.Email + ">"
+						}
+						ui.Text(c, label).FontSize(12).Grow(1).SingleLine()
+						if ui.Button(c.Key("cmp-ct-to-"+rc.ID), "+ An").Padding(2, 7).Clicked() {
+							a.composeTo = appendAddr(a.composeTo)
+						}
+						if ui.Button(c.Key("cmp-ct-cc-"+rc.ID), "+ CC").Padding(2, 7).Clicked() {
+							a.composeCC = appendAddr(a.composeCC)
+						}
+						if ui.Button(c.Key("cmp-ct-bcc-"+rc.ID), "+ BCC").Padding(2, 7).Clicked() {
+							a.composeBCC = appendAddr(a.composeBCC)
+						}
+					})
+				}
+			})
+		})
+	})
 }
 
 // renderDialogs shows the dialogs over the main window (desktop and phone).
@@ -89,6 +159,7 @@ func (a *App) renderDialogs(c *ui.Context) {
 	a.renderCalDeleteModal(c)
 	a.renderMovePicker(c)
 	a.renderArchiveModal(c)
+	a.renderOutboxModal(c)
 	a.renderSettingsModal(c)
 	a.renderDirectModal(c)
 	a.renderHelpModal(c)
@@ -654,6 +725,11 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 						if iconLabelBtn(c.Key("act-rule"), iconFilter, a.tr("Regel", "Rule"), false, a.tr("Quick-Regel-Assistent öffnen (q · 0 Tokens)", "Open Quick-Rule Wizard (q · 0 tokens)")).Clicked() {
 							a.OpenQuickRuleWizard()
 						}
+						if unsubHTTPS, unsubMailto, _ := parseUnsubscribeTargets(msg); unsubHTTPS != "" || unsubMailto != "" {
+							if iconLabelBtn(c.Key("act-unsub"), iconExternal, a.tr("Abmelden", "Unsubscribe"), false, a.tr("Vom Newsletter abmelden (List-Unsubscribe)", "Unsubscribe from newsletter (List-Unsubscribe)")).Clicked() {
+								a.PerformUnsubscribe(context.Background(), msg)
+							}
+						}
 					})
 					ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 						if iconLabelBtn(c.Key("ai-sum"), iconSparkles, a.tr("Zusammenfassen", "Summarize"), true, a.tr("Mail mit KI zusammenfassen (verbraucht KI-Tokens)", "Summarize email with AI (uses AI tokens)")).Clicked() {
@@ -963,8 +1039,21 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			})
 		}
 
-		// To field + autocomplete suggestions
-		ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).FillWidth()
+		// To field + Contacts picker + autocomplete suggestions
+		ui.Row(c.Key("cmp-to-row")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).Grow(1)
+			if a.isDirectMode() {
+				if ui.Button(c.Key("cmp-pick-contacts"), a.tr("Kontakte…", "Contacts…")).Padding(5, 9).Clicked() {
+					a.composeContactPickerOpen = !a.composeContactPickerOpen
+					if a.composeContactPickerOpen && len(a.contacts.list) == 0 {
+						a.LoadContacts(context.Background())
+					}
+				}
+			}
+		})
+		if a.composeContactPickerOpen {
+			a.renderComposeContactPicker(c)
+		}
 		a.refreshComposeSuggestions("to", a.composeTo)
 		a.renderComposeSuggestions(c, "to", a.composeSuggestTo)
 
@@ -1001,16 +1090,16 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 		ui.Row(c.Key("cmp-fmt-bar")).FillWidth().Gap(4).Wrap().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr("Format:", "Format:")).FontSize(11).TextColor(t.TextMuted)
 			if ui.Button(c.Key("cmp-fmt-b"), "B").Padding(1, 7).Tooltip(a.tr("Fett (**Text**)", "Bold (**text**)")).Clicked() {
-				a.composeBody = insertComposeSnippet(a.composeBody, "**fett**")
+				a.composeBody = insertComposeSnippet(a.composeBody, a.tr("**fett**", "**bold**"))
 			}
 			if ui.Button(c.Key("cmp-fmt-i"), "I").Padding(1, 7).Tooltip(a.tr("Kursiv (*Text*)", "Italic (*text*)")).Clicked() {
-				a.composeBody = insertComposeSnippet(a.composeBody, "*kursiv*")
+				a.composeBody = insertComposeSnippet(a.composeBody, a.tr("*kursiv*", "*italic*"))
 			}
 			if ui.Button(c.Key("cmp-fmt-code"), "</>").Padding(1, 7).Tooltip(a.tr("Code (`code`)", "Code (`code`)")).Clicked() {
 				a.composeBody = insertComposeSnippet(a.composeBody, "`code`")
 			}
-			if ui.Button(c.Key("cmp-fmt-ul"), "• Liste").Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
-				a.composeBody = insertComposeSnippet(a.composeBody, "\n- Punkt 1\n- Punkt 2")
+			if ui.Button(c.Key("cmp-fmt-ul"), a.tr("• Liste", "• List")).Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
+				a.composeBody = insertComposeSnippet(a.composeBody, a.tr("\n- Punkt 1\n- Punkt 2", "\n- Item 1\n- Item 2"))
 			}
 			if ui.Button(c.Key("cmp-fmt-table"), a.tr("▦ Tabelle", "▦ Table")).Padding(1, 7).Tooltip(a.tr(
 				"Tabelle einfügen: übernimmt eine kopierte Tabelle (Confluence, Excel, Webseite) mit Links, sonst eine leere Vorlage. Wird als echte Tabelle gesendet.",
@@ -1372,11 +1461,76 @@ func (a *App) renderInspectorContacts(c *ui.Context) {
 	})
 }
 
+func (a *App) renderOutboxModal(c *ui.Context) {
+	if !a.outboxOpen {
+		return
+	}
+	t := c.Theme()
+	ui.Modal(c, &a.outboxOpen, func() {
+		ui.Column(c).Width(a.modalW(620)).MaxHeight(520).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, a.tr("Offline-Postausgang", "Offline Outbox")).FontSize(16).Bold().Grow(1)
+				if ui.Button(c.Key("ob-x"), "✕").Clicked() {
+					a.outboxOpen = false
+				}
+			})
+			if len(a.outboxItems) == 0 {
+				ui.Text(c, a.tr("Der Postausgang ist leer.", "The Outbox is empty.")).FontSize(13).TextColor(t.TextMuted)
+			} else {
+				ui.Scroll(c.Key("ob-scroll")).FillWidth().MaxHeight(340).Children(func() {
+					ui.Column(c).FillWidth().Gap(8).Children(func() {
+						for _, it := range a.outboxItems {
+							item := it
+							ui.Column(c.Key("ob-item-"+item.ID)).FillWidth().Padding(10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(4).Children(func() {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+									subj := item.Subject
+									if strings.TrimSpace(subj) == "" {
+										subj = a.tr("(Kein Betreff)", "(No subject)")
+									}
+									ui.Text(c, subj).FontSize(13).Bold().Grow(1).SingleLine()
+									statusLbl := a.tr("Wartend", "Queued")
+									statusCol := t.Warning
+									if item.Status == "failed" {
+										statusLbl = a.tr("Fehlgeschlagen", "Failed")
+										statusCol = t.Danger
+									}
+									ui.Text(c, fmt.Sprintf("%s · %dx", statusLbl, item.Attempts)).FontSize(11).TextColor(statusCol).Bold()
+									if ui.Button(c.Key("ob-del-"+item.ID), a.tr("Verwerfen", "Discard")).Padding(3, 8).TextColor(t.Danger).Clicked() {
+										a.DeleteOutboxItem(context.Background(), item.ID)
+									}
+								})
+								ui.Text(c, a.tr("An: ", "To: ")+strings.Join(item.Recipients, ", ")).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
+								if item.LastError != "" {
+									ui.Text(c, item.LastError).FontSize(11).TextColor(t.Danger).MaxLines(2)
+								}
+							})
+						}
+					})
+				})
+			}
+			ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Children(func() {
+				if ui.Button(c.Key("ob-close"), a.tr("Schließen", "Close")).Clicked() {
+					a.outboxOpen = false
+				}
+				if len(a.outboxItems) > 0 && !a.readOnly {
+					lbl := a.tr("Alle jetzt senden", "Send All Now")
+					if a.outboxBusy {
+						lbl = a.tr("Sende…", "Sending…")
+					}
+					if ui.PrimaryButton(c.Key("ob-flush"), lbl).Disabled(a.outboxBusy).Clicked() {
+						a.FlushOutbox(context.Background())
+					}
+				}
+			})
+		})
+	})
+}
+
 func (a *App) renderQuickRuleModal(c *ui.Context) {
 	t := c.Theme()
 	ui.Modal(c, &a.quickRuleOpen, func() {
 		preview := a.QuickRulePreview()
-		ui.Column(c).Width(740).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(740)).MaxHeight(760).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconFilter).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Quick-Regel-Assistent · Filterregel", "Quick-Rule Wizard · Filter Rule")).FontSize(16).Bold().Grow(1)

@@ -566,17 +566,57 @@ func (a *App) renderFolderSections(c *ui.Context) {
 func (a *App) renderFolderRow(c *ui.Context, row folderRow) {
 	t := c.Theme()
 	f := row.Folder
+	if a.direct.renameFolderID == f.ID && a.isDirectMode() && !a.readOnly {
+		ui.Row(c.Key("rf-row-"+f.ID)).FillWidth().Padding(4, 8, 4, 8+float32(row.Depth)*14).Gap(4).AlignItems(ui.Center).Children(func() {
+			inp := ui.TextInput(c.Key("rf-in-"+f.ID), &a.direct.renameFolderName).Placeholder(a.tr("Neuer Name…", "New name…")).Grow(1)
+			okBtn := ui.Button(c.Key("rf-ok-"+f.ID), "✓").Padding(3, 6)
+			if a.direct.newFolderBusy {
+				okBtn.Disabled(true)
+			}
+			if (okBtn.Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.renameFolderName) != "" {
+				a.RenameIMAPFolder(context.Background(), f.AccountID, f.ID, a.direct.renameFolderName)
+			}
+			if ui.Button(c.Key("rf-x-"+f.ID), "✕").Padding(3, 6).Clicked() {
+				a.direct.renameFolderID = ""
+				a.direct.renameFolderAccID = ""
+				a.direct.renameFolderName = ""
+			}
+		})
+		return
+	}
 	label := f.Name
 	if label == "" {
 		label = cleanFolderPath(f.Path)
 	}
+	isCustom := a.isDirectMode() && !a.readOnly && isUserManageableFolder(f)
+	isActive := a.navID == "folder:"+f.ID
 	item := ui.SidebarItem(c, "folder:"+f.ID, folderIcon(f), label)
 	item.Padding(t.Space(1.5), t.Space(2), t.Space(1.5), t.Space(2)+float32(row.Depth)*14)
-	if !row.HasKids && f.UnreadCount <= 0 {
+	if !row.HasKids && f.UnreadCount <= 0 && !isCustom {
 		return
 	}
+	hovered := isActive || item.Hovered()
 	item.Children(func() {
 		ui.Spacer(c)
+		if isCustom && (hovered || a.direct.delFolderArmID == f.ID) {
+			if a.direct.delFolderArmID == f.ID && time.Since(a.direct.delFolderArmAt) < 4*time.Second {
+				if ui.Button(c.Key("fd-del-yes-"+f.ID), a.tr("Löschen?", "Delete?")).Padding(2, 6).TextColor(t.Danger).Clicked() {
+					a.DeleteIMAPFolder(context.Background(), f.AccountID, f.ID)
+				}
+			} else {
+				iconBtn(c.Key("fd-menu-"+f.ID), iconDots, a.tr("Ordner verwalten", "Manage folder"), ui.Color{}, false).PopoverMenuButton(func(m *ui.Menu) {
+					if m.Item(a.tr("Umbenennen…", "Rename…")).Chosen() {
+						a.direct.renameFolderID = f.ID
+						a.direct.renameFolderAccID = f.AccountID
+						a.direct.renameFolderName = label
+					}
+					if m.Item(a.tr("Ordner löschen", "Delete folder")).Chosen() {
+						a.direct.delFolderArmID = f.ID
+						a.direct.delFolderArmAt = time.Now()
+					}
+				})
+			}
+		}
 		if f.UnreadCount > 0 {
 			ui.Badge(c, fmt.Sprintf("%d", f.UnreadCount))
 		}
@@ -592,4 +632,18 @@ func (a *App) renderFolderRow(c *ui.Context, row folderRow) {
 			}
 		}
 	})
+}
+
+func isUserManageableFolder(f backend.Folder) bool {
+	switch strings.ToLower(strings.TrimSpace(f.Type)) {
+	case "inbox", "sent", "drafts", "trash", "junk", "archive":
+		return false
+	}
+	for _, su := range f.SpecialUse {
+		switch strings.ToLower(strings.TrimSpace(su)) {
+		case "inbox", "sent", "drafts", "trash", "junk", "archive", "all":
+			return false
+		}
+	}
+	return !strings.EqualFold(cleanFolderPath(f.Path), "INBOX")
 }

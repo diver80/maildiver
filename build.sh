@@ -135,16 +135,16 @@ if [[ "$BUILD_ANDROID" == "true" ]]; then
     echo "or via: sdkmanager 'ndk;27.2.12479018' and export ANDROID_NDK_HOME." >&2
     exit 1
   fi
-  echo "==> Building Android (android/arm64) via mygo@${MYGO_VERSION}..."
+  echo "==> Building Android (${ANDROID_PLATFORMS:-android/arm64}) via mygo@${MYGO_VERSION}..."
   (cd "$ROOT_DIR" && ANDROID_NDK_HOME="$NDK_DIR" MYGO_LDFLAGS="-X main.version=${VERSION}" \
     go run "github.com/egoist/mygo/cmd/mygo@${MYGO_VERSION}" build \
-      -platform "android/arm64" -o "$DIST_DIR/android")
+      -platform "${ANDROID_PLATFORMS:-android/arm64}" -o "$DIST_DIR/android")
 fi
 
 echo "==> Writing SHA256 checksums..."
 shopt -s nullglob
 ASSETS=()
-for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip; do
+for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip "$DIST_DIR"/*.dmg; do
   [[ -f "$f" ]] && ASSETS+=("$(basename "$f")")
 done
 for sub in packages android; do

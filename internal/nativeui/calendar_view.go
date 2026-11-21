@@ -373,6 +373,20 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 			return
 		}
 
+		if a.isPhone() {
+			ui.Row(c.Key("ph-cal-tools")).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				sf := ui.SearchField(c.Key("ph-cal-search"), &a.calSearchQuery).Placeholder(a.tr("Termine durchsuchen", "Search calendar")).Grow(1)
+				curQ := strings.TrimSpace(a.calSearchQuery)
+				if sf.Submitted() || (sf.Changed() && ((curQ != "" && a.lastCalSearch == "") || (curQ == "" && a.lastCalSearch != ""))) {
+					a.lastCalSearch = curQ
+					a.RefreshAll(context.Background())
+				}
+				if len(a.calendars) > 0 {
+					a.renderCalendarFilterButton(c)
+				}
+			})
+		}
+
 		filteredEvents := a.filteredCalendarEvents()
 		q := strings.TrimSpace(a.calSearchQuery)
 		visCal, totalCal := a.visibleCalendarCount()

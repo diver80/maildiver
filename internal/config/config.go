@@ -59,6 +59,13 @@ type AppConfig struct {
 	HiddenCalendars []string `json:"hiddenCalendars,omitempty"`
 	// AllowedImageSenders stores lowercase sender emails whose remote images load automatically.
 	AllowedImageSenders []string `json:"allowedImageSenders,omitempty"`
+	// Persisted desktop panel/window layout preferences.
+	HideSidebar   *bool   `json:"hideSidebar,omitempty"`
+	ShowCopilot   *bool   `json:"showCopilot,omitempty"`
+	NotifyEnabled *bool   `json:"notifyEnabled,omitempty"`
+	SidebarSplit  float32 `json:"sidebarSplit,omitempty"`
+	MailSplit     float32 `json:"mailSplit,omitempty"`
+	CopilotSplit  float32 `json:"copilotSplit,omitempty"`
 }
 
 // Values of AppConfig.MarkRead.
@@ -203,7 +210,7 @@ func Default() Config {
 		AI: AIConfig{
 			Classifier: ProviderConfig{
 				Backend: "gemini-api",
-				Model:   "gemini-4-hydrogen",
+				Model:   "gemini-2.5-flash",
 			},
 			Agent: ProviderConfig{
 				Backend: "claude-cli",

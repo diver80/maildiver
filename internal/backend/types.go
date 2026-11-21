@@ -185,16 +185,18 @@ type MessageSecurity struct {
 	Encrypted bool `json:"encrypted"`
 	// Decryption: "none" (not encrypted), "success", "fail" (no key, cancelled) or "skipped"
 	// (read without decrypting).
-	Decryption       string `json:"decryption,omitempty"`
-	Signed           bool   `json:"signed"`
-	SMIME            bool   `json:"smime,omitempty"`
-	SignatureValid   bool   `json:"signatureValid,omitempty"`
-	SignatureTrusted bool   `json:"signatureTrusted,omitempty"`
-	SignerEmail      string `json:"signerEmail,omitempty"`
-	SignerSubject    string `json:"signerSubject,omitempty"`
-	SignerIssuer     string `json:"signerIssuer,omitempty"`
-	SignatureError   string `json:"signatureError,omitempty"`
-	Error            string `json:"error,omitempty"`
+	Decryption            string `json:"decryption,omitempty"`
+	Signed                bool   `json:"signed"`
+	SMIME                 bool   `json:"smime,omitempty"`
+	PGP                   bool   `json:"pgp,omitempty"`
+	SignatureValid        bool   `json:"signatureValid,omitempty"`
+	SignatureTrusted      bool   `json:"signatureTrusted,omitempty"`
+	SignerAddressMismatch bool   `json:"signerAddressMismatch,omitempty"`
+	SignerEmail           string `json:"signerEmail,omitempty"`
+	SignerSubject         string `json:"signerSubject,omitempty"`
+	SignerIssuer          string `json:"signerIssuer,omitempty"`
+	SignatureError        string `json:"signatureError,omitempty"`
+	Error                 string `json:"error,omitempty"`
 }
 
 // Readable reports that the content is there: not encrypted, or decrypted.
@@ -328,12 +330,29 @@ type ComposeResult struct {
 	WindowOpened bool   `json:"windowOpened"`
 	MessageID    string `json:"messageId,omitempty"`
 	DraftID      string `json:"draftId,omitempty"`
+	Queued       bool   `json:"queued,omitempty"`
+	OutboxID     string `json:"outboxId,omitempty"`
 	// Reason "encrypted_reply": a reply to an encrypted mail was opened for editing instead of
 	// being saved silently, so that it stays encrypted.
 	Reason   string           `json:"reason,omitempty"`
 	Security *ComposeSecurity `json:"security,omitempty"`
 	// SentCopyFailed: the mail went out, but its copy could not be stored in the Sent folder.
 	SentCopyFailed bool `json:"sentCopyFailed,omitempty"`
+}
+
+// OutboxEntry describes a queued or failed outgoing email in the local offline outbox.
+type OutboxEntry struct {
+	ID             string   `json:"id"`
+	AccountID      string   `json:"accountId"`
+	FromEmail      string   `json:"fromEmail"`
+	Recipients     []string `json:"recipients"`
+	Subject        string   `json:"subject"`
+	DraftMessageID string   `json:"draftMessageId,omitempty"`
+	Status         string   `json:"status"`
+	Attempts       int      `json:"attempts"`
+	LastError      string   `json:"lastError,omitempty"`
+	CreatedAt      int64    `json:"createdAt"`
+	NextRetryAt    int64    `json:"nextRetryAt"`
 }
 
 // ComposeSecurity is what was applied: Technology "OpenPGP" or "S/MIME", "" without a key.

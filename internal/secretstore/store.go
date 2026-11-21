@@ -59,10 +59,14 @@ func Default() Store {
 			legacyFallback: legacyFB,
 		}
 	}
-	if legacyFB != nil {
-		return &fallbackStore{primary: fb, legacy: legacyFB}
+	var primary Store = fb
+	if ps := newPlatformSecretStore("MailDiver", filepath.Join(dir, "secrets.seal"), filepath.Join(dir, "secrets.json")); ps != nil {
+		primary = ps
 	}
-	return fb
+	if legacyFB != nil {
+		return &fallbackStore{primary: primary, legacy: legacyFB}
+	}
+	return primary
 }
 
 // fallbackStore reads from primary first, falling back to legacy on ErrNotFound.

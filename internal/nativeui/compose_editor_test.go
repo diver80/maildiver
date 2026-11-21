@@ -62,6 +62,8 @@ func (f *fakeComposeEditorHost) UpdateSignature(sigHTML string) {
 	f.mu.Unlock()
 }
 
+func (f *fakeComposeEditorHost) UpdateTheme(ComposeThemePalette) {}
+
 func (f *fakeComposeEditorHost) InsertHTML(fragHTML string) {
 	f.mu.Lock()
 	f.inserted = append(f.inserted, fragHTML)

@@ -45,7 +45,12 @@ type DirectController interface {
 	ImportMessageICS(ctx context.Context, msgID, calendarID string) (int, error)
 	RespondMessageICS(ctx context.Context, msgID, calendarID, status string) (mailengine.ICSRespondResult, error)
 	CreateFolder(ctx context.Context, accountID, name string) error
+	RenameFolder(ctx context.Context, accountID, folderID, newName string) error
+	DeleteFolder(ctx context.Context, accountID, folderID string) error
 	EmptyTrash(ctx context.Context, accountID string) (int, error)
+	ListOutbox(ctx context.Context) ([]mailengine.OutboxItem, error)
+	FlushOutboxNow(ctx context.Context) (int, int)
+	DeleteOutbox(ctx context.Context, id string) error
 	MarkSpam(ctx context.Context, msgID string) error
 	ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error)
 	SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error)
@@ -176,6 +181,11 @@ type directUI struct {
 	newFolderAccountID string
 	newFolderName      string
 	newFolderBusy      bool
+	renameFolderID     string
+	renameFolderAccID  string
+	renameFolderName   string
+	delFolderArmID     string
+	delFolderArmAt     time.Time
 	emptyTrashArmID    string
 	emptyTrashArmAt    time.Time
 	delAccArmID        string
@@ -1924,6 +1934,60 @@ func (a *App) CreateIMAPFolder(ctx context.Context, accountID, name string) {
 			a.direct.newFolderAccountID = ""
 			a.direct.newFolderName = ""
 			a.toast(a.trf("Ordner „%s“ erstellt", "Created folder “%s”", name), "success")
+			a.RefreshAll(context.Background())
+		})
+	}()
+}
+
+// RenameIMAPFolder renames an IMAP folder and refreshes the folder list.
+func (a *App) RenameIMAPFolder(ctx context.Context, accountID, folderID, newName string) {
+	dc := a.opts.Direct
+	newName = strings.TrimSpace(newName)
+	if dc == nil || folderID == "" || newName == "" || a.direct.newFolderBusy {
+		return
+	}
+	a.direct.newFolderBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		err := dc.RenameFolder(c, accountID, folderID, newName)
+		a.emitUpdate(func() {
+			a.direct.newFolderBusy = false
+			if err != nil {
+				a.toast(a.tr("Ordner umbenennen fehlgeschlagen: ", "Rename folder failed: ")+err.Error(), "error")
+				return
+			}
+			a.direct.renameFolderID = ""
+			a.direct.renameFolderAccID = ""
+			a.direct.renameFolderName = ""
+			a.toast(a.trf("Ordner umbenannt in „%s“", "Folder renamed to “%s”", newName), "success")
+			a.RefreshAll(context.Background())
+		})
+	}()
+}
+
+// DeleteIMAPFolder deletes a user IMAP folder and refreshes the folder list.
+func (a *App) DeleteIMAPFolder(ctx context.Context, accountID, folderID string) {
+	dc := a.opts.Direct
+	if dc == nil || folderID == "" || a.direct.newFolderBusy {
+		return
+	}
+	a.direct.delFolderArmID = ""
+	a.direct.newFolderBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		err := dc.DeleteFolder(c, accountID, folderID)
+		a.emitUpdate(func() {
+			a.direct.newFolderBusy = false
+			if err != nil {
+				a.toast(a.tr("Ordner löschen fehlgeschlagen: ", "Delete folder failed: ")+err.Error(), "error")
+				return
+			}
+			if a.navID == "folder:"+folderID {
+				a.setNav("recent")
+			}
+			a.toast(a.tr("Ordner gelöscht", "Folder deleted"), "success")
 			a.RefreshAll(context.Background())
 		})
 	}()

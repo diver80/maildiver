@@ -79,6 +79,16 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 	return c, nil
 }
 
+func watchIMAPCtx(ctx context.Context, c *imapclient.Client) func() {
+	if ctx == nil || c == nil {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.Close()
+	})
+	return func() { stop() }
+}
+
 func isLoopbackHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
@@ -119,7 +129,9 @@ func (e *Engine) syncAccountIMAP(ctx context.Context, acc config.DirectAccount, 
 	if err != nil {
 		return SyncResult{AccountID: acc.ID}, err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
@@ -927,10 +939,23 @@ func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount,
 		// IMAP TEXT searches headers + full body on the server.
 		data, err := c.UIDSearch(&imap.SearchCriteria{Text: []string{query}}, nil).Wait()
 		if err != nil {
-			// Some IMAP servers reject UTF-8/TEXT with BADCHARSET; retry with Subject header search.
+			// Some IMAP servers reject UTF-8/TEXT with BADCHARSET; retry with Subject OR From, then ASCII fallback.
 			data, err = c.UIDSearch(&imap.SearchCriteria{
-				Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: query}},
+				Or: [][2]imap.SearchCriteria{{
+					{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: query}}},
+					{Header: []imap.SearchCriteriaHeaderField{{Key: "From", Value: query}}},
+				}},
 			}, nil).Wait()
+			if err != nil {
+				if asciiQ := toASCIIQuery(query); asciiQ != "" {
+					data, err = c.UIDSearch(&imap.SearchCriteria{
+						Or: [][2]imap.SearchCriteria{{
+							{Text: []string{asciiQ}},
+							{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: asciiQ}}},
+						}},
+					}, nil).Wait()
+				}
+			}
 			if err != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("IMAP SEARCH %q: %w", f.Path, err)
@@ -1175,6 +1200,18 @@ func (e *Engine) appendMessageIMAP(ctx context.Context, acc config.DirectAccount
 	return 0, nil
 }
 
+func toASCIIQuery(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 0x20 && r <= 0x7e {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 func (e *Engine) createFolderIMAP(ctx context.Context, acc config.DirectAccount, folderPath string) error {
 	pass, err := e.accountPassword(acc.ID)
 	if err != nil {
@@ -1184,12 +1221,62 @@ func (e *Engine) createFolderIMAP(ctx context.Context, acc config.DirectAccount,
 	if err != nil {
 		return err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
+	// Respect the server's hierarchy delimiter (e.g. '.' on Dovecot) when user enters '/'.
+	if strings.Contains(folderPath, "/") {
+		if mboxes, lerr := c.List("", "", nil).Collect(); lerr == nil && len(mboxes) > 0 && mboxes[0].Delim != 0 && mboxes[0].Delim != '/' {
+			folderPath = strings.ReplaceAll(folderPath, "/", string(mboxes[0].Delim))
+		}
+	}
 	if err := c.Create(folderPath, nil).Wait(); err != nil {
 		return fmt.Errorf("IMAP CREATE %q: %w", folderPath, err)
+	}
+	return nil
+}
+
+func (e *Engine) renameFolderIMAP(ctx context.Context, acc config.DirectAccount, oldPath, newPath string) error {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return err
+	}
+	stopWatch := watchIMAPCtx(ctx, c)
+	defer func() {
+		stopWatch()
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	if err := c.Rename(oldPath, newPath, nil).Wait(); err != nil {
+		return fmt.Errorf("IMAP RENAME %q -> %q: %w", oldPath, newPath, err)
+	}
+	return nil
+}
+
+func (e *Engine) deleteFolderIMAP(ctx context.Context, acc config.DirectAccount, folderPath string) error {
+	pass, err := e.accountPassword(acc.ID)
+	if err != nil {
+		return err
+	}
+	c, err := dialIMAP(ctx, acc, pass, nil)
+	if err != nil {
+		return err
+	}
+	stopWatch := watchIMAPCtx(ctx, c)
+	defer func() {
+		stopWatch()
+		_ = c.Logout().Wait()
+		_ = c.Close()
+	}()
+	if err := c.Delete(folderPath).Wait(); err != nil {
+		return fmt.Errorf("IMAP DELETE %q: %w", folderPath, err)
 	}
 	return nil
 }
@@ -1572,8 +1659,11 @@ func (e *Engine) idleOnce(ctx context.Context, acc config.DirectAccount, backfil
 			}
 			if res, err := e.SyncAccount(ctx, acc.ID, false); err == nil {
 				backfillPending = res.BackfillPending
+				lastFull = time.Now()
+			} else {
+				// Retry failed full sync after 30s rather than pushing a full sync interval away.
+				lastFull = time.Now().Add(-nextFullSync(backfillPending) + 30*time.Second)
 			}
-			lastFull = time.Now()
 		case werr := <-doneCh:
 			refreshTimer.Stop()
 			return werr

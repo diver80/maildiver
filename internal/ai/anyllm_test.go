@@ -294,7 +294,7 @@ func TestGeminiEndpointHonouredInChatAndClassify(t *testing.T) {
 	if got := resp.Choices[0].Message.ContentString(); got != "Antwort vom konfigurierten Endpoint" {
 		t.Fatalf("unexpected answer %q", got)
 	}
-	if rec.count() != 1 || !strings.Contains(rec.path(0), "gemini-4-hydrogen") {
+	if rec.count() != 1 || !strings.Contains(rec.path(0), "gemini-2.5-flash") {
 		t.Fatalf("configured gemini endpoint must receive the chat request, got %q", rec.path(0))
 	}
 }
@@ -437,7 +437,7 @@ func TestCLIChatKeepsContentOutOfArgv(t *testing.T) {
 		}
 	}
 	if !strings.Contains(string(stdin), "SECRET-MAIL-BODY") || !strings.Contains(string(stdin), "SECRET-QUESTION") ||
-		!strings.Contains(string(stdin), "<omathunder_instructions>") {
+		!strings.Contains(string(stdin), "<maildiver_instructions>") {
 		t.Fatalf("system and user content must arrive via stdin, got %q", stdin)
 	}
 	for _, flag := range []string{"--tools", "--strict-mcp-config", "mcp__*", "--no-session-persistence"} {

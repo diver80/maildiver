@@ -34,6 +34,7 @@ type ComposeEditorHost interface {
 	Ensure() error
 	LoadContent(initialHTML string, pal ComposeThemePalette, lang string) error
 	UpdateSignature(sigHTML string)
+	UpdateTheme(pal ComposeThemePalette)
 	InsertHTML(fragHTML string)
 	ReadContent(ctx context.Context) (htmlBody string, plainText string, ok bool)
 	Focus()
@@ -354,8 +355,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     <button class="btn" data-cmd="italic" title="%s (⌘I)"><i>I</i></button>
     <button class="btn" data-cmd="underline" title="%s (⌘U)"><u>U</u></button>
     <button class="btn" data-cmd="strikeThrough" title="%s"><s>S</s></button>
-    <input class="clr" type="color" id="fg" value="#e6edf3" title="%s">
-    <input class="clr" type="color" id="bg" value="#f59e0b" title="%s">
+    <input class="clr" type="color" id="fg" value="%s" title="%s">
+    <input class="clr" type="color" id="bg" value="%s" title="%s">
     <button class="btn" data-cmd="removeFormat" title="%s">T<sub>x</sub></button>
     <span class="sep"></span>
     <button class="btn" data-cmd="insertUnorderedList" title="%s">• %s</button>
@@ -674,6 +675,23 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     }
   };
 
+  window.__mdvSetTheme = function(pal) {
+    if (!pal) return;
+    const rs = document.documentElement.style;
+    if (pal.bg) rs.setProperty('--bg', pal.bg);
+    if (pal.surface) rs.setProperty('--surface', pal.surface);
+    if (pal.text) rs.setProperty('--text', pal.text);
+    if (pal.muted) rs.setProperty('--muted', pal.muted);
+    if (pal.border) rs.setProperty('--border', pal.border);
+    if (pal.accent) rs.setProperty('--accent', pal.accent);
+    if (pal.edBg) rs.setProperty('--ed-bg', pal.edBg);
+    if (pal.edFg) rs.setProperty('--ed-fg', pal.edFg);
+    const fgEl = document.getElementById('fg');
+    if (fgEl && pal.edFg) fgEl.value = pal.edFg;
+    const bgEl = document.getElementById('bg');
+    if (bgEl && pal.accent) bgEl.value = pal.accent;
+  };
+
   window.__mdvInsertHTML = function(frag) {
     ed.focus();
     document.execCommand('insertHTML', false, frag);
@@ -721,7 +739,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 		lbl("Kursiv", "Italic"),
 		lbl("Unterstrichen", "Underline"),
 		lbl("Durchgestrichen", "Strikethrough"),
+		editorFg,
 		lbl("Textfarbe", "Text color"),
+		pal.Accent,
 		lbl("Hervorheben", "Highlight"),
 		lbl("Formatierung entfernen", "Clear formatting"),
 		lbl("Aufzählung", "Bullet list"),

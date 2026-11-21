@@ -943,6 +943,27 @@ func (h *mygoComposeHost) UpdateSignature(sigHTML string) {
 	h.evalAsync("window.__mdvSetSig && window.__mdvSetSig(" + string(b) + ")")
 }
 
+func (h *mygoComposeHost) UpdateTheme(pal ComposeThemePalette) {
+	editorFg := "#1f2328"
+	editorBg := pal.Surface
+	if pal.Dark {
+		editorFg = pal.Text
+	} else {
+		editorBg = "#ffffff"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"bg":      pal.Bg,
+		"surface": pal.Surface,
+		"text":    pal.Text,
+		"muted":   pal.Muted,
+		"border":  pal.Border,
+		"accent":  pal.Accent,
+		"edBg":    editorBg,
+		"edFg":    editorFg,
+	})
+	h.evalAsync("window.__mdvSetTheme && window.__mdvSetTheme(" + string(payload) + ")")
+}
+
 func (h *mygoComposeHost) InsertHTML(fragHTML string) {
 	b, _ := json.Marshal(fragHTML)
 	h.evalAsync("window.__mdvInsertHTML && window.__mdvInsertHTML(" + string(b) + ")")

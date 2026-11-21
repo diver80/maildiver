@@ -566,11 +566,30 @@ func (e *Engine) DeleteAccount(ctx context.Context, accountID string) error {
 	// Remove from config first so no new sync can start for this account.
 	e.cfgMu.Lock()
 	cfg := e.loadConfig()
-	filtered := cfg.Direct.Accounts[:0]
+	var removedEmails []string
+	keptEmails := map[string]bool{}
+	filtered := make([]config.DirectAccount, 0, len(cfg.Direct.Accounts))
 	for _, a := range cfg.Direct.Accounts {
-		if a.ID != accountID {
-			filtered = append(filtered, a)
+		if a.ID == accountID {
+			if em := strings.ToLower(strings.TrimSpace(a.Email)); em != "" {
+				removedEmails = append(removedEmails, em)
+			}
+			for _, al := range a.Aliases {
+				if em := strings.ToLower(strings.TrimSpace(al.Email)); em != "" {
+					removedEmails = append(removedEmails, em)
+				}
+			}
+			continue
 		}
+		if em := strings.ToLower(strings.TrimSpace(a.Email)); em != "" {
+			keptEmails[em] = true
+		}
+		for _, al := range a.Aliases {
+			if em := strings.ToLower(strings.TrimSpace(al.Email)); em != "" {
+				keptEmails[em] = true
+			}
+		}
+		filtered = append(filtered, a)
 	}
 	cfg.Direct.Accounts = filtered
 	triageIDs := cfg.Mailbox.TriageAccountIDs[:0]
@@ -591,6 +610,13 @@ func (e *Engine) DeleteAccount(ctx context.Context, accountID string) error {
 	lk.Lock()
 	_ = e.secrets.Delete(e.accountSecretKey(accountID))
 	_ = e.store.DeleteAccountData(ctx, accountID)
+	if e.smime != nil {
+		for _, em := range removedEmails {
+			if !keptEmails[em] {
+				_ = e.smime.DeleteIdentity(em)
+			}
+		}
+	}
 	lk.Unlock()
 
 	e.emitMailSync(accountID)
@@ -838,6 +864,20 @@ func (e *Engine) emitCalendarChanged() {
 		return
 	}
 	e.events.Publish("calendar.changed", map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (e *Engine) emitOutboxChanged() {
+	if e.events == nil {
+		return
+	}
+	count := 0
+	if items, err := e.store.ListOutbox(context.Background()); err == nil {
+		count = len(items)
+	}
+	e.events.Publish("outbox.changed", map[string]any{
+		"count":     count,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -1125,6 +1165,23 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 		return res, nil
 	}
 	if err := SendSMTP(ctx, acc, pass, attendeeEmail, []string{orgEmail}, raw); err != nil {
+		if isTransientNetworkError(err) {
+			obID := "ob-rsvp-" + randomHex(6)
+			if qerr := e.store.EnqueueOutbox(ctx, OutboxItem{
+				ID:         obID,
+				AccountID:  acc.ID,
+				FromEmail:  attendeeEmail,
+				Recipients: []string{orgEmail},
+				Subject:    prefix + summary,
+				Status:     "queued",
+				RawEML:     raw,
+				LastError:  err.Error(),
+			}); qerr == nil {
+				e.emitOutboxChanged()
+				res.ReplyError = "Offline – Antwort in Postausgang eingereiht"
+				return res, nil
+			}
+		}
 		res.ReplyError = err.Error()
 		return res, nil
 	}
@@ -1149,8 +1206,88 @@ func (e *Engine) CreateFolder(ctx context.Context, accountID, name string) error
 	if err := e.createFolderIMAP(ctx, acc, name); err != nil {
 		return err
 	}
-	_, _ = e.SyncAccount(ctx, acc.ID, false)
-	return nil
+	_, err := e.SyncAccount(ctx, acc.ID, false)
+	return err
+}
+
+func isProtectedSpecialFolder(f StoredFolder) bool {
+	switch strings.ToLower(strings.TrimSpace(f.Type)) {
+	case "inbox", "sent", "drafts", "trash", "junk", "archive":
+		return true
+	}
+	for _, su := range f.SpecialUse {
+		switch strings.ToLower(strings.TrimSpace(su)) {
+		case "inbox", "sent", "drafts", "trash", "junk", "archive", "all":
+			return true
+		}
+	}
+	return strings.EqualFold(strings.TrimSpace(f.Path), "INBOX")
+}
+
+// RenameFolder renames an IMAP folder (blocking system Special-Use folders) and syncs the folder tree.
+func (e *Engine) RenameFolder(ctx context.Context, accountID, folderID, newName string) error {
+	newName = strings.TrimSpace(strings.Trim(newName, "/."))
+	if newName == "" {
+		return fmt.Errorf("Neuer Ordnername erforderlich")
+	}
+	acc, ok := e.findAccount(accountID)
+	if !ok {
+		var err error
+		acc, err = e.pickOutgoingAccount(accountID)
+		if err != nil {
+			return err
+		}
+	}
+	f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, folderID)
+	if !ok {
+		return fmt.Errorf("not_found: Ordner %q nicht gefunden", folderID)
+	}
+	if isProtectedSpecialFolder(f) {
+		return fmt.Errorf("Systemordner %q kann nicht umbenannt werden", f.Name)
+	}
+	delim := f.Delimiter
+	if delim == "" {
+		delim = "/"
+	}
+	// Preserve parent prefix when caller provides only the leaf name without delimiter.
+	targetPath := newName
+	if !strings.Contains(newName, delim) && !strings.Contains(newName, "/") {
+		if idx := strings.LastIndex(f.Path, delim); idx >= 0 {
+			targetPath = f.Path[:idx+len(delim)] + newName
+		}
+	} else if delim != "/" {
+		targetPath = strings.ReplaceAll(newName, "/", delim)
+	}
+	if err := e.renameFolderIMAP(ctx, acc, f.Path, targetPath); err != nil {
+		return err
+	}
+	_, err := e.SyncAccount(ctx, acc.ID, false)
+	return err
+}
+
+// DeleteFolder deletes a user IMAP folder (blocking system Special-Use folders) and updates the local cache.
+func (e *Engine) DeleteFolder(ctx context.Context, accountID, folderID string) error {
+	acc, ok := e.findAccount(accountID)
+	if !ok {
+		var err error
+		acc, err = e.pickOutgoingAccount(accountID)
+		if err != nil {
+			return err
+		}
+	}
+	f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, folderID)
+	if !ok {
+		return fmt.Errorf("not_found: Ordner %q nicht gefunden", folderID)
+	}
+	if isProtectedSpecialFolder(f) {
+		return fmt.Errorf("Systemordner %q kann nicht gelöscht werden", f.Name)
+	}
+	if err := e.deleteFolderIMAP(ctx, acc, f.Path); err != nil {
+		return err
+	}
+	_ = e.store.ClearFolderMessages(ctx, f.ID)
+	_, err := e.SyncAccount(ctx, acc.ID, false)
+	return err
 }
 
 // EmptyTrash permanently deletes all messages in the account's Trash folder on IMAP and locally.

@@ -18,7 +18,10 @@ import (
 	"github.com/diver80/maildiver/internal/config"
 )
 
-const indexFileName = ".omathunder-index.json"
+const (
+	indexFileName       = ".maildiver-index.json"
+	legacyIndexFileName = ".omathunder-index.json"
+)
 
 type ExportRequest struct {
 	ArchiveDir      string `json:"archiveDir,omitempty"`
@@ -258,7 +261,11 @@ func loadIndex(indexPath string) map[string]indexEntry {
 	out := map[string]indexEntry{}
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
-		return out
+		// Fall back seamlessly to legacy index filename from earlier builds.
+		legacyPath := filepath.Join(filepath.Dir(indexPath), legacyIndexFileName)
+		if data, err = os.ReadFile(legacyPath); err != nil {
+			return out
+		}
 	}
 	_ = json.Unmarshal(data, &out)
 	if out == nil {
@@ -376,7 +383,7 @@ func Export(req ExportRequest) (ExportResult, error) {
 		return ExportResult{}, err
 	}
 
-	tmpFile, err := os.CreateTemp(parentDir, ".omathunder-*.tmp")
+	tmpFile, err := os.CreateTemp(parentDir, ".maildiver-*.tmp")
 	if err != nil {
 		return ExportResult{}, err
 	}

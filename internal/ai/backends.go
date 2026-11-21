@@ -85,7 +85,7 @@ func wrapProvider[T anyllm.Provider](f func(...anyllm.Option) (T, error)) func(.
 
 // backendRegistry is in display order (SupportedProviders) and must cover config.BackendNames().
 var backendRegistry = []backendSpec{
-	{ID: "gemini-api", Kind: kindAPI, DefaultModel: "gemini-4-hydrogen", EnvKeys: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+	{ID: "gemini-api", Kind: kindAPI, DefaultModel: "gemini-2.5-flash", EnvKeys: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		OfficialURL: "https://generativelanguage.googleapis.com", Timeout: apiTimeout, Streaming: true, Tools: true,
 		RewriteHost: true, newProvider: wrapProvider(gemini.New)},
 	{ID: "claude-api", Kind: kindAPI, DefaultModel: "claude-sonnet-4-5", ClassifierModel: "claude-haiku-4-5",

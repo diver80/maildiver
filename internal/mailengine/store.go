@@ -1418,6 +1418,39 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]backend.Con
 	return s.listContacts(ctx, query, 500)
 }
 
+func (s *Store) GetContact(ctx context.Context, id string) (backend.ContactRecord, error) {
+	var c backend.ContactRecord
+	row := s.db.QueryRowContext(ctx, `SELECT id, address_book_id, display_name, first_name, last_name, email, second_email, phone, mobile, company, job_title, website, address, notes FROM contacts WHERE id=?`, id)
+	err := row.Scan(&c.ID, &c.AddressBookID, &c.DisplayName, &c.FirstName, &c.LastName, &c.Email, &c.SecondEmail, &c.Phone, &c.Mobile, &c.Company, &c.JobTitle, &c.Website, &c.Address, &c.Notes)
+	return c, err
+}
+
+func (s *Store) DeleteContactsByAddressBook(ctx context.Context, bookID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM contacts WHERE address_book_id=?`, bookID)
+	return err
+}
+
+func (s *Store) DeleteMissingAddressBookContacts(ctx context.Context, bookID string, keepIDs map[string]bool) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM contacts WHERE address_book_id=?`, bookID)
+	if err != nil {
+		return err
+	}
+	var toDelete []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil && !keepIDs[id] {
+			toDelete = append(toDelete, id)
+		}
+	}
+	_ = rows.Close()
+	for _, id := range toDelete {
+		if _, derr := s.db.ExecContext(ctx, `DELETE FROM contacts WHERE id=?`, id); derr != nil {
+			return derr
+		}
+	}
+	return nil
+}
+
 // ListAllContacts returns all locally stored contacts without a row cap (used for VCF export).
 func (s *Store) ListAllContacts(ctx context.Context) ([]backend.ContactRecord, error) {
 	return s.listContacts(ctx, "", 0)

@@ -87,7 +87,7 @@ Additional build targets:
 ```bash
 ./build.sh --packages                                                    # .dmg / .deb / .rpm / PKGBUILD / Windows installer
 ./build.sh --android                                                     # Android APK/AAB (requires Android NDK)
-OMATHUNDER_RENDER=/tmp/shots go test ./internal/nativeui -run TestRenderScreens
+MAILDIVER_RENDER=docs/screenshots go test ./internal/nativeui -run TestRenderScreens
 ```
 
 ## Contributing & License

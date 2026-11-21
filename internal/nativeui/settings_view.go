@@ -370,6 +370,36 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		ui.Text(c, text).FontSize(11.5).TextColor(color)
 	}
 
+	a.settingsSection(c, a.tr("Darstellung & Sprache", "Appearance & Language"))
+	field("set-lang", a.tr("Sprache", "Language"), func() {
+		langLbl := a.langLabel
+		if ui.Select(c.Key("set-lang-s"), &langLbl, langChoiceLabels()).Grow(1).Changed() {
+			a.langLabel = langLbl
+			a.applyLanguageChoice(langLbl)
+		}
+	})
+	field("set-theme", a.tr("Design", "Theme"), func() {
+		thLbl := a.themeLabel
+		if ui.Select(c.Key("set-theme-s"), &thLbl, a.themeLabelList()).Grow(1).Changed() {
+			a.applyThemeChoice(thLbl)
+		}
+	})
+	field("set-style-body", a.tr("Mail-Inhalt einfärben", "Recolor mail bodies"), func() {
+		sb := a.cfg.Theme.StyleBody
+		if ui.Checkbox(c.Key("set-style-body-c"), &sb, a.tr("HTML-Mails an App-Theme anpassen", "Adapt HTML emails to app theme")).Changed() {
+			cfg, err := a.opts.ConfigLoader()
+			if err != nil {
+				cfg = a.cfg
+			}
+			cfg.Theme.StyleBody = sb
+			if a.opts.ConfigSaver != nil {
+				_ = a.opts.ConfigSaver(cfg)
+			}
+			a.applyConfig(cfg)
+			a.readerBody = readerBody{}
+		}
+	})
+
 	a.settingsSection(c, a.tr("Lesen", "Reading"))
 	field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {
 		ui.Segmented(c.Key("set-read-s"), &s.markRead, a.tr("Beim Öffnen", "On open"), a.tr("Nach 3 Sekunden", "After 3 seconds"), a.tr("Nie", "Never"))
