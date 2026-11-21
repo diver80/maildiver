@@ -228,3 +228,47 @@ func TestAccountOrderingAndReorderPersistence(t *testing.T) {
 		t.Fatalf("after drag to bottom = [%s, %s, %s]", groups[0].AccountID, groups[1].AccountID, groups[2].AccountID)
 	}
 }
+
+func TestSidebarCollapseAutoPersistsAcrossRestart(t *testing.T) {
+	cfg := config.Default()
+	app := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+	})
+	folders := []backend.Folder{
+		{ID: "1", AccountID: "acc", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "2", AccountID: "acc", Name: "Work", Path: "INBOX/Work"},
+		{ID: "3", AccountID: "acc", Name: "Projects", Path: "INBOX/Work/Projects"},
+	}
+	app.folders = folders
+	_ = app.groupFoldersByAccount()
+
+	// Expanding INBOX/Work in the sidebar should immediately persist to cfg.App.ExpandedFolders.
+	app.toggleFolderCollapsed("acc\x00INBOX/Work")
+	if got := cfg.App.ExpandedFolders["acc"]; len(got) != 2 {
+		t.Fatalf("expected persisted ExpandedFolders [INBOX INBOX/Work], got %v", got)
+	}
+
+	// Collapsing account section should persist in cfg.App.CollapsedAccounts and survive restart.
+	open := app.accountSectionOpen("acc")
+	*open = false
+	app.persistCollapsedAccounts()
+	if len(cfg.App.CollapsedAccounts) != 1 || cfg.App.CollapsedAccounts[0] != "acc" {
+		t.Fatalf("expected CollapsedAccounts=[acc], got %v", cfg.App.CollapsedAccounts)
+	}
+
+	restarted := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+	})
+	restarted.applyConfig(cfg)
+	restarted.folders = folders
+	if got := rowSummary(restarted.groupFoldersByAccount()[0].Rows); got != "INBOX+ .Work+ ..Projects" {
+		t.Fatalf("restarted folder tree = %q, want INBOX/Work still expanded", got)
+	}
+	if *restarted.accountSectionOpen("acc") {
+		t.Fatal("expected account section acc to stay collapsed after restart")
+	}
+}

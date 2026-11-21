@@ -30,8 +30,9 @@ type phoneUI struct {
 	router  *ui.Router
 	list    ui.ListState // the mail list, without the desktop's highlighted row
 	refresh ui.RefreshState
-	more    bool // the open mail's sheet of further actions
-	search  bool // the search field above the list
+	swipes  phoneSwipes // mail rows slid aside
+	more    bool        // the open mail's sheet of further actions
+	search  bool        // the search field above the list
 }
 
 // isPhone reports whether the window shows the phone layout.
@@ -126,6 +127,8 @@ func phoneIconButton(c *ui.Context, svg *ui.SVG, label string, fg ui.Color) ui.E
 // phoneOpenView shows the mails of a view or folder.
 func (a *App) phoneOpenView(nav string) {
 	a.selectedID, a.selectedMsg = "", nil
+	a.ClearMailSelection()
+	a.phone.swipes.closeAll()
 	a.setNav(nav)
 	switch nav {
 	case "calendar", "contacts":
@@ -179,7 +182,7 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 		box.Children(func() {
 			ui.Column(c).FillWidth().Padding(8, 0, 96, 0).Gap(4).Children(func() {
 				mobile.Section(c, a.tr("Arbeitsbereich", "Workspace"), func() {
-					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen)", "Focus (Unread)"), a.unreadCount(), 0)
+					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)"), a.unreadCount(), 0)
 					a.phoneBoxRow(c, "recent", iconMail, a.tr("Aktuelle Mails", "Recent Mail"), 0, 0)
 					a.phoneBoxRow(c, "action", iconBolt, a.tr("Action / Warten", "Action / Waiting"), a.barSummary.ActionCount+a.barSummary.WaitingCount, 0)
 					a.phoneBoxRow(c, "calendar", iconCal, a.tr("Kalender & Termine", "Calendar & Events"), len(a.todayEvents()), 0)
@@ -274,15 +277,44 @@ func (a *App) phoneComposeButton(c *ui.Context) {
 
 func (a *App) renderPhoneList(c *ui.Context) {
 	t := c.Theme()
+	checked := a.CheckedMessages()
+	selecting := len(checked) > 0 && a.navID != "calendar" && a.navID != "contacts"
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		a.phoneBar(c, a.currentViewTitle(), true, func() {
-			if a.navID != "calendar" && a.navID != "contacts" {
-				if phoneIconButton(c.Key("ph-search"), iconSearch, a.tr("Suchen", "Search"), ui.Color{}).Clicked() {
-					a.phone.search = !a.phone.search
-					a.focusSearch = a.phone.search
+		if selecting {
+			bg := t.Surface
+			mobile.TopBar(c, mobile.TopBarOptions{
+				Title:      fmt.Sprintf(a.tr("%d ausgewählt", "%d selected"), len(checked)),
+				Background: &bg,
+				Leading: func() {
+					if phoneIconButton(c.Key("ph-sel-clear"), iconX, a.tr("Auswahl aufheben", "Clear selection"), ui.Color{}).Clicked() {
+						a.ClearMailSelection()
+					}
+				},
+				Trailing: func() {
+					lbl := a.tr("Alle", "All")
+					if len(a.messages) > 0 && len(checked) >= len(a.messages) {
+						lbl = a.tr("Keine", "None")
+					}
+					if ui.Button(c.Key("ph-sel-all"), lbl).Padding(6, 10).Clicked() {
+						if len(a.messages) > 0 && len(checked) >= len(a.messages) {
+							a.ClearMailSelection()
+						} else {
+							a.SelectAllVisibleMails()
+						}
+					}
+				},
+			})
+			ui.Divider(c)
+		} else {
+			a.phoneBar(c, a.currentViewTitle(), true, func() {
+				if a.navID != "calendar" && a.navID != "contacts" {
+					if phoneIconButton(c.Key("ph-search"), iconSearch, a.tr("Suchen", "Search"), ui.Color{}).Clicked() {
+						a.phone.search = !a.phone.search
+						a.focusSearch = a.phone.search
+					}
 				}
-			}
-		})
+			})
+		}
 		switch a.navID {
 		case "calendar":
 			a.renderCalendarWorkspace(c)
@@ -316,7 +348,9 @@ func (a *App) renderPhoneList(c *ui.Context) {
 				ui.Text(c, a.tr("Keine Nachrichten in dieser Ansicht", "No messages in this view")).FontSize(15).Bold()
 				ui.Text(c, a.tr("Zum Aktualisieren nach unten ziehen.", "Pull down to refresh.")).FontSize(13).TextColor(t.TextMuted)
 			})
-			a.phoneComposeButton(c)
+			if !selecting {
+				a.phoneComposeButton(c)
+			}
 			return
 		}
 		ls := a.phoneListState()
@@ -326,77 +360,179 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			if i < 0 || i >= len(a.messages) {
 				return
 			}
-			a.renderPhoneMailRow(c, a.messages[i], crossFolder, outbound)
-		}).Fill()
+			a.renderPhoneMailRow(c, i, a.messages[i], crossFolder, outbound, selecting)
+		}).Grow(1).MinHeight(0).FillWidth()
 		if list.PullToRefresh(&a.phone.refresh) {
 			a.phoneSync()
 		}
-		a.phoneComposeButton(c)
+		if selecting {
+			a.renderPhoneBulkBar(c, checked)
+		} else {
+			a.phoneComposeButton(c)
+		}
 	})
 }
 
-func (a *App) renderPhoneMailRow(c *ui.Context, m backend.MessageHeader, crossFolder, outbound bool) {
+func (a *App) renderPhoneBulkBar(c *ui.Context, checked []backend.MessageHeader) {
+	if a.readOnly || len(checked) == 0 {
+		return
+	}
 	t := c.Theme()
-	var trailing []mobile.SwipeAction
-	if !a.readOnly {
+	ids := make([]string, len(checked))
+	anyUnread := false
+	anyUnflagged := false
+	for i, m := range checked {
+		ids[i] = m.ID
+		if m.Unread {
+			anyUnread = true
+		}
+		if !m.Flagged {
+			anyUnflagged = true
+		}
+	}
+	readLbl, readTarget := a.tr("Gelesen", "Read"), true
+	readIcon := iconMailOpen
+	if !anyUnread {
+		readLbl, readTarget = a.tr("Ungelesen", "Unread"), false
+		readIcon = iconMailUnread
+	}
+	starIcon := iconStar
+	if !anyUnflagged {
+		starIcon = iconStarFilled
+	}
+	bulkBtn := func(key string, svg *ui.SVG, label string, danger bool) ui.Element {
+		fg := t.Text
+		bg := ui.Color{}
+		if danger {
+			fg = t.Danger
+			if a.confirmArmed("trash", ids) {
+				bg = withAlpha(t.Danger, 0.14)
+			}
+		}
+		b := ui.ButtonBase(c.Key(key)).Grow(1).MinHeight(46).Padding(6, 6).Radius(8).Background(bg).Center().Role(ui.RoleButton).Label(label)
+		b.Children(func() {
+			ui.Column(c).Center().Gap(3).Children(func() {
+				ui.Icon(c, svg).Size(19, 19).TextColor(fg)
+				ui.Text(c, label).FontSize(12).TextColor(fg).SingleLine()
+			})
+		})
+		return b
+	}
+	ui.Divider(c)
+	ui.Row(c.Key("ph-bulk-bar")).FillWidth().Padding(4, 8).Gap(4).Background(t.Surface).Justify(ui.SpaceAround).AlignItems(ui.Center).Children(func() {
+		if bulkBtn("ph-bulk-star", starIcon, a.tr("Stern", "Star"), false).Clicked() {
+			target := anyUnflagged
+			a.PerformBatchAction(context.Background(), ids, backend.MessageActionsRequest{Flagged: &target}, a.tr("Markierung aktualisiert", "Star updated"))
+			a.ClearMailSelection()
+		}
+		if bulkBtn("ph-bulk-read", readIcon, readLbl, false).Clicked() {
+			target := readTarget
+			msg := a.tr("Als gelesen markiert", "Marked as read")
+			if !target {
+				msg = a.tr("Als ungelesen markiert", "Marked as unread")
+			}
+			a.PerformBatchAction(context.Background(), ids, backend.MessageActionsRequest{Read: &target}, msg)
+			a.ClearMailSelection()
+		}
+		if bulkBtn("ph-bulk-archive", iconArchive, a.tr("Archiv", "Archive"), false).Clicked() {
+			a.PerformBatchAction(context.Background(), ids, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
+			a.ClearMailSelection()
+		}
+		if bulkBtn("ph-bulk-delete", iconTrash, a.tr("Löschen", "Delete"), true).Clicked() {
+			a.trashMails(context.Background(), ids, "")
+		}
+	})
+}
+
+func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader, crossFolder, outbound, selecting bool) {
+	t := c.Theme()
+	isChecked := selecting && a.IsMailChecked(m.ID)
+	var leading *phoneSwipeAction
+	var trailing []phoneSwipeAction
+	if !a.readOnly && !selecting {
 		id := m.ID
-		trailing = []mobile.SwipeAction{
-			{Label: a.tr("Löschen", "Delete"), Destructive: true, OnTap: func() { a.trashMails(context.Background(), nil, id) }},
-			{Label: a.tr("Archiv", "Archive"), OnTap: func() {
+		readLbl, target := a.tr("Gelesen", "Read"), true
+		if !m.Unread {
+			readLbl, target = a.tr("Ungelesen", "Unread"), false
+		}
+		leading = &phoneSwipeAction{label: readLbl, run: func() {
+			a.PerformMessageAction(context.Background(), id, backend.MessageActionsRequest{Read: &target}, "")
+		}}
+		trailing = []phoneSwipeAction{
+			{label: a.tr("Löschen", "Delete"), destructive: true, run: func() { a.trashMails(context.Background(), nil, id) }},
+			{label: a.tr("Archiv", "Archive"), run: func() {
 				a.performMessageAction(context.Background(), id, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"), "")
 			}},
 		}
 	}
-	readLbl, target := a.tr("Gelesen", "Read"), true
-	if !m.Unread {
-		readLbl, target = a.tr("Ungelesen", "Unread"), false
+	rowBg := t.Background
+	if isChecked {
+		rowBg = withAlpha(t.Accent, 0.14)
 	}
-	var leading []mobile.SwipeAction
-	if !a.readOnly {
-		id := m.ID
-		leading = []mobile.SwipeAction{{Label: readLbl, OnTap: func() {
-			a.PerformMessageAction(context.Background(), id, backend.MessageActionsRequest{Read: &target}, "")
-		}}}
-	}
-	mobile.SwipeRow(c.Key("ph-mail-"+m.ID), nil, mobile.SwipeOptions{Leading: leading, Trailing: trailing}, func() {
-		row := ui.Column(c.Key("ph-mail-body-"+m.ID)).FillWidth().Background(t.Background).Padding(10, 16).Gap(3).
+	a.phoneSwipeRow(c.Key("ph-mail-"+m.ID), m.ID, leading, trailing, func() {
+		row := ui.Row(c.Key("ph-mail-body-"+m.ID)).FillWidth().Background(rowBg).Padding(10, 16).Gap(12).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Role(ui.RoleButton).Label(m.Subject)
 		row.Children(func() {
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				if m.Unread {
-					statusDot(c, t.Accent, 8)
+			if selecting {
+				ring := ui.Box(c.Key("ph-mail-chk-"+m.ID)).Size(22, 22).Radius(11).Center().Shrink(0)
+				if isChecked {
+					ring.Background(t.Accent).Children(func() {
+						ui.Text(c, "✓").FontSize(13).Bold().TextColor(ui.RGB(255, 255, 255))
+					})
+				} else {
+					ring.Border(1.5, t.TextMuted)
 				}
-				peer := shortSender(m.From)
-				if outbound {
-					peer = a.tr("An: ", "To: ") + shortSender(strings.Join(m.To, ", "))
-				}
-				st := ui.Text(c, peer).FontSize(15).Grow(1).MinWidth(0).SingleLine()
-				if m.Unread {
-					st.Bold()
-				}
-				if m.Flagged {
-					ui.Icon(c, iconStarFilled).Size(13, 13).TextColor(t.Warning).Shrink(0)
-				}
-				ui.Text(c, formatRelTimeLang(m.Date, a.uiLang())).FontSize(12.5).TextColor(t.TextMuted).Shrink(0)
-			})
-			subj := m.Subject
-			if subj == "" {
-				subj = a.tr("(Kein Betreff)", "(No Subject)")
 			}
-			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-				st := ui.Text(c, subj).FontSize(14).Grow(1).MinWidth(0).SingleLine()
-				if !m.Unread {
-					st.TextColor(t.TextMuted)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					if m.Unread {
+						statusDot(c, t.Accent, 8)
+					}
+					peer := shortSender(m.From)
+					if outbound {
+						peer = a.tr("An: ", "To: ") + shortSender(strings.Join(m.To, ", "))
+					}
+					st := ui.Text(c, peer).FontSize(15).Grow(1).MinWidth(0).SingleLine()
+					if m.Unread {
+						st.Bold()
+					}
+					if m.Flagged {
+						ui.Icon(c, iconStarFilled).Size(13, 13).TextColor(t.Warning).Shrink(0)
+					}
+					ui.Text(c, formatRelTimeLang(m.Date, a.uiLang())).FontSize(12.5).TextColor(t.TextMuted).Shrink(0)
+				})
+				subj := m.Subject
+				if subj == "" {
+					subj = a.tr("(Kein Betreff)", "(No Subject)")
 				}
-				if m.ThreadCount > 1 {
-					threadBadge(c, m.ThreadCount)
-				}
-				if crossFolder && m.Folder != "" {
-					miniTag(c, m.Folder, t.TextMuted, t.Surface)
-				}
+				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					st := ui.Text(c, subj).FontSize(14).Grow(1).MinWidth(0).SingleLine()
+					if !m.Unread {
+						st.TextColor(t.TextMuted)
+					}
+					if m.ThreadCount > 1 {
+						threadBadge(c, m.ThreadCount)
+					}
+					if crossFolder && m.Folder != "" {
+						miniTag(c, m.Folder, t.TextMuted, t.Surface)
+					}
+				})
 			})
 		})
+		if !a.readOnly && row.LongPressed() {
+			a.phone.swipes.closeAll()
+			if !selecting {
+				a.SetMailChecked(idx, true, false)
+			} else {
+				a.ToggleMailChecked(idx, false)
+			}
+			return
+		}
 		if row.Clicked() {
+			if selecting {
+				a.ToggleMailChecked(idx, false)
+				return
+			}
 			a.SelectMessage(context.Background(), m.ID)
 			a.phone.more = false
 			a.phoneRouter().Push(phoneRouteMail)

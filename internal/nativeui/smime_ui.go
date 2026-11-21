@@ -59,7 +59,7 @@ func (a *App) renderDirectSMIMETab(c *ui.Context) {
 			}
 		}
 
-		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 			if ui.Button(c.Key("sm-p12-pick"), a.tr(".p12/.pfx wählen…", "Choose .p12/.pfx…")).Clicked() {
 				a.pickFile(FilePickRequest{
 					Mode:  "open",
@@ -114,7 +114,7 @@ func (a *App) renderDirectSMIMETab(c *ui.Context) {
 			}
 		}
 
-		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 			if ui.Button(c.Key("sm-ct-pick"), a.tr("Datei wählen…", "Choose file…")).Clicked() {
 				a.pickFile(FilePickRequest{
 					Mode:  "open",

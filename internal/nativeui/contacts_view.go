@@ -316,7 +316,7 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
 		// Top header bar
-		ui.Row(c).FillWidth().Padding(10, 14).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+		ui.Row(c).FillWidth().Padding(10, 14).Gap(8).Wrap().AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 			ui.Icon(c, iconUsers).Size(17, 17).TextColor(t.Accent)
 			ui.Text(c, a.tr("Kontakte", "Contacts")).FontSize(15).Bold().Grow(1)
 			ui.Text(c, a.trf("%d Einträge", "%d entries", len(ct.list))).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
@@ -341,7 +341,7 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 
 		// Optional collapsible vCard (.vcf) bar
 		if ct.vcfOpen {
-			ui.Row(c.Key("ct-vcf-bar")).FillWidth().Padding(8, 14).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			ui.Row(c.Key("ct-vcf-bar")).FillWidth().Padding(8, 14).Gap(8).Wrap().AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 				ui.Text(c, "vCard (.vcf):").FontSize(12).TextColor(t.TextMuted).Shrink(0)
 				if ui.Button(c.Key("ct-vcf-browse"), a.tr("Öffnen…", "Browse…")).Clicked() && !ct.syncBusy {
 					a.pickFile(FilePickRequest{
@@ -400,7 +400,7 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 			})
 		}
 
-		ui.Split(c, &ct.split, func() {
+		renderList := func() {
 			// Left column: search & contact list
 			ui.Column(c).Fill().Background(t.Background).Children(func() {
 				ui.Row(c).FillWidth().Padding(8, 10).Gap(6).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
@@ -457,7 +457,28 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 					})
 				})
 			})
-		}, func() {
+		}
+
+		if a.isPhone() {
+			if ct.editingNew || ct.selectedID != "" {
+				ui.Column(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
+					ui.Row(c).FillWidth().Padding(6, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+						if ui.Button(c.Key("ct-ph-back"), "← "+a.tr("Alle Kontakte", "All Contacts")).Padding(4, 10).Clicked() {
+							ct.selectedID = ""
+							ct.editingNew = false
+						}
+					})
+					ui.Box(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
+						a.renderContactDetail(c)
+					})
+				})
+			} else {
+				ui.Box(c).Grow(1).MinHeight(0).FillWidth().Children(renderList)
+			}
+			return
+		}
+
+		ui.Split(c, &ct.split, renderList, func() {
 			// Right column: detail & editor
 			a.renderContactDetail(c)
 		}).Grow(1).MinHeight(0).FillWidth()
@@ -488,7 +509,7 @@ func (a *App) renderContactDetail(c *ui.Context) {
 			if ct.editingNew {
 				heading = a.tr("Neuer Kontakt", "New Contact")
 			}
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, heading).FontSize(16).Bold().Grow(1)
 				if strings.TrimSpace(ct.editEmail) != "" {
 					if iconLabelBtn(c.Key("ct-mail"), iconMail, a.tr("E-Mail schreiben", "Write Email"), false, a.tr("Neue E-Mail an diesen Kontakt verfassen", "Compose a new email to this contact")).Clicked() {
@@ -512,37 +533,73 @@ func (a *App) renderContactDetail(c *ui.Context) {
 				}
 			})
 
-			field := func(key, label string, val *string, ph string) {
+			rowField := func(label string, inputs func()) {
+				if a.isPhone() {
+					ui.Column(c).FillWidth().Gap(4).Children(func() {
+						ui.Text(c, label).FontSize(12).TextColor(t.TextMuted)
+						ui.Column(c).FillWidth().Gap(6).Children(inputs)
+					})
+					return
+				}
 				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, label).FontSize(12).Width(120).TextColor(t.TextMuted)
-					ui.TextInput(c.Key(key), val).Placeholder(ph).Grow(1)
+					inputs()
+				})
+			}
+			field := func(key, label string, val *string, ph string) {
+				rowField(label, func() {
+					in := ui.TextInput(c.Key(key), val).Placeholder(ph)
+					if a.isPhone() {
+						in.FillWidth()
+					} else {
+						in.Grow(1)
+					}
 				})
 			}
 
 			field("ct-f-disp", a.tr("Anzeigename", "Display Name"), &ct.editDisplay, a.tr("z. B. Max Mustermann", "e.g. Jane Doe"))
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, a.tr("Vor- / Nachname", "First / Last")).FontSize(12).Width(120).TextColor(t.TextMuted)
-				ui.TextInput(c.Key("ct-f-first"), &ct.editFirst).Placeholder(a.tr("Vorname", "First name")).Grow(1)
-				ui.TextInput(c.Key("ct-f-last"), &ct.editLast).Placeholder(a.tr("Nachname", "Last name")).Grow(1)
+			rowField(a.tr("Vor- / Nachname", "First / Last"), func() {
+				if a.isPhone() {
+					ui.TextInput(c.Key("ct-f-first"), &ct.editFirst).Placeholder(a.tr("Vorname", "First name")).FillWidth()
+					ui.TextInput(c.Key("ct-f-last"), &ct.editLast).Placeholder(a.tr("Nachname", "Last name")).FillWidth()
+				} else {
+					ui.TextInput(c.Key("ct-f-first"), &ct.editFirst).Placeholder(a.tr("Vorname", "First name")).Grow(1)
+					ui.TextInput(c.Key("ct-f-last"), &ct.editLast).Placeholder(a.tr("Nachname", "Last name")).Grow(1)
+				}
 			})
 			field("ct-f-em", a.tr("E-Mail", "Email"), &ct.editEmail, "name@domain.de")
 			field("ct-f-em2", a.tr("2. E-Mail", "2nd Email"), &ct.editEmail2, a.tr("optional", "optional"))
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, a.tr("Telefon / Mobil", "Phone / Mobile")).FontSize(12).Width(120).TextColor(t.TextMuted)
-				ui.TextInput(c.Key("ct-f-ph"), &ct.editPhone).Placeholder(a.tr("Telefon", "Phone")).Grow(1)
-				ui.TextInput(c.Key("ct-f-mob"), &ct.editMobile).Placeholder(a.tr("Mobil", "Mobile")).Grow(1)
+			rowField(a.tr("Telefon / Mobil", "Phone / Mobile"), func() {
+				if a.isPhone() {
+					ui.TextInput(c.Key("ct-f-ph"), &ct.editPhone).Placeholder(a.tr("Telefon", "Phone")).FillWidth()
+					ui.TextInput(c.Key("ct-f-mob"), &ct.editMobile).Placeholder(a.tr("Mobil", "Mobile")).FillWidth()
+				} else {
+					ui.TextInput(c.Key("ct-f-ph"), &ct.editPhone).Placeholder(a.tr("Telefon", "Phone")).Grow(1)
+					ui.TextInput(c.Key("ct-f-mob"), &ct.editMobile).Placeholder(a.tr("Mobil", "Mobile")).Grow(1)
+				}
 			})
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, a.tr("Firma / Position", "Company / Role")).FontSize(12).Width(120).TextColor(t.TextMuted)
-				ui.TextInput(c.Key("ct-f-comp"), &ct.editCompany).Placeholder(a.tr("Firma", "Company")).Grow(1)
-				ui.TextInput(c.Key("ct-f-title"), &ct.editTitle).Placeholder(a.tr("Position", "Job title")).Grow(1)
+			rowField(a.tr("Firma / Position", "Company / Role"), func() {
+				if a.isPhone() {
+					ui.TextInput(c.Key("ct-f-comp"), &ct.editCompany).Placeholder(a.tr("Firma", "Company")).FillWidth()
+					ui.TextInput(c.Key("ct-f-title"), &ct.editTitle).Placeholder(a.tr("Position", "Job title")).FillWidth()
+				} else {
+					ui.TextInput(c.Key("ct-f-comp"), &ct.editCompany).Placeholder(a.tr("Firma", "Company")).Grow(1)
+					ui.TextInput(c.Key("ct-f-title"), &ct.editTitle).Placeholder(a.tr("Position", "Job title")).Grow(1)
+				}
 			})
 			field("ct-f-web", "Website", &ct.editWebsite, "https://…")
 			field("ct-f-adr", a.tr("Adresse", "Address"), &ct.editAddress, a.tr("Straße, PLZ Ort", "Street, City"))
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-				ui.Text(c, a.tr("Notizen", "Notes")).FontSize(12).Width(120).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
-				ui.TextArea(c.Key("ct-f-notes"), &ct.editNotes).Placeholder(a.tr("Notizen zum Kontakt…", "Notes about this contact…")).Grow(1).Height(84)
-			})
+			if a.isPhone() {
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					ui.Text(c, a.tr("Notizen", "Notes")).FontSize(12).TextColor(t.TextMuted)
+					ui.TextArea(c.Key("ct-f-notes"), &ct.editNotes).Placeholder(a.tr("Notizen zum Kontakt…", "Notes about this contact…")).FillWidth().Height(84)
+				})
+			} else {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
+					ui.Text(c, a.tr("Notizen", "Notes")).FontSize(12).Width(120).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
+					ui.TextArea(c.Key("ct-f-notes"), &ct.editNotes).Placeholder(a.tr("Notizen zum Kontakt…", "Notes about this contact…")).Grow(1).Height(84)
+				})
+			}
 
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Spacer(c)

@@ -333,8 +333,14 @@ func (a *App) starKey(ctx context.Context) {
 		return
 	}
 	if ids := a.CheckedMessageIDs(); len(ids) > 0 {
-		on := true
-		a.PerformBatchAction(ctx, ids, backend.MessageActionsRequest{Flagged: &on}, a.tr("Mit Stern markiert", "Starred"))
+		anyUnflagged := false
+		for _, m := range a.CheckedMessages() {
+			if !m.Flagged {
+				anyUnflagged = true
+				break
+			}
+		}
+		a.PerformBatchAction(ctx, ids, backend.MessageActionsRequest{Flagged: &anyUnflagged}, a.tr("Markierung aktualisiert", "Star updated"))
 		return
 	}
 	h := a.currentHeader()
@@ -439,6 +445,10 @@ func (a *App) isTrashFolder(folderID string) bool {
 // confirmKey implements "press again to confirm" for key actions on several mails: the first
 // call arms action for exactly these ids and returns false, a second call within
 // batchKeyConfirmWindow returns true and disarms.
+func (a *App) confirmArmed(action string, ids []string) bool {
+	return a.keyArmSig == action+":"+strings.Join(ids, ",") && time.Since(a.keyArmAt) <= batchKeyConfirmWindow
+}
+
 func (a *App) confirmKey(action string, ids []string) bool {
 	sig := action + ":" + strings.Join(ids, ",")
 	now := time.Now()

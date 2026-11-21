@@ -1152,14 +1152,38 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		}
 	})
 
+	formFieldRow := func(label string, body func()) {
+		if a.isPhone() {
+			ui.Column(c).FillWidth().Gap(4).Children(func() {
+				if label != "" {
+					ui.Text(c, label).FontSize(12).TextColor(t.TextMuted)
+				}
+				body()
+			})
+			return
+		}
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, label).FontSize(12).Width(135).TextColor(t.TextMuted)
+			body()
+		})
+	}
+	fieldGrow := func(el ui.Element) {
+		if a.isPhone() {
+			el.FillWidth()
+		} else {
+			el.Grow(1)
+		}
+	}
+
 	presets := config.MailProviderPresets()
 	presetLabels := make([]string, len(presets))
 	for i, p := range presets {
 		presetLabels[i] = p.Label
 	}
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Anbieter-Vorlage", "Provider Preset")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		if ui.Select(c.Key("dir-preset"), &d.presetLabel, presetLabels).Grow(1).Changed() {
+	formFieldRow(a.tr("Anbieter-Vorlage", "Provider Preset"), func() {
+		sel := ui.Select(c.Key("dir-preset"), &d.presetLabel, presetLabels)
+		fieldGrow(sel)
+		if sel.Changed() {
 			for _, p := range presets {
 				if p.Label == d.presetLabel {
 					a.applyDirectPreset(p)
@@ -1169,25 +1193,20 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		}
 	})
 
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("E-Mail-Adresse", "Email Address")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-email"), &d.accEmail).Placeholder("name@domain.de").Grow(1)
+	formFieldRow(a.tr("E-Mail-Adresse", "Email Address"), func() {
+		fieldGrow(ui.TextInput(c.Key("dir-email"), &d.accEmail).Placeholder("name@domain.de"))
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Dein Name", "Your Name")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-sender"), &d.accSender).Placeholder(a.tr("steht als Absender in deinen Mails", "shown as the sender of your emails")).Grow(1)
+	formFieldRow(a.tr("Dein Name", "Your Name"), func() {
+		fieldGrow(ui.TextInput(c.Key("dir-sender"), &d.accSender).Placeholder(a.tr("steht als Absender in deinen Mails", "shown as the sender of your emails")))
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Aliase", "Aliases")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-aliases"), &d.accAliases).Placeholder(a.tr("optional, z. B. info@firma.de, Max <max@firma.de>", "optional, e.g. info@example.com, Max <max@example.com>")).Grow(1)
+	formFieldRow(a.tr("Aliase", "Aliases"), func() {
+		fieldGrow(ui.TextInput(c.Key("dir-aliases"), &d.accAliases).Placeholder(a.tr("optional, z. B. info@firma.de, Max <max@firma.de>", "optional, e.g. info@example.com, Max <max@example.com>")))
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Kontoname", "Account Name")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-name"), &d.accName).Placeholder(a.tr("optional, z. B. IONOS Privat", "optional, e.g. Work")).Grow(1)
+	formFieldRow(a.tr("Kontoname", "Account Name"), func() {
+		fieldGrow(ui.TextInput(c.Key("dir-name"), &d.accName).Placeholder(a.tr("optional, z. B. IONOS Privat", "optional, e.g. Work")))
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Benutzername", "Username")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-user"), &d.accUser).Placeholder(a.tr("leer = E-Mail-Adresse", "empty = email address")).Grow(1)
+	formFieldRow(a.tr("Benutzername", "Username"), func() {
+		fieldGrow(ui.TextInput(c.Key("dir-user"), &d.accUser).Placeholder(a.tr("leer = E-Mail-Adresse", "empty = email address")))
 	})
 	pwHint := a.tr("Passwort / App-Passwort", "Password / App password")
 	if d.editingID != "" {
@@ -1197,35 +1216,32 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 	if d.authType == "" {
 		d.authType = "password"
 	}
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Anmeldung", "Auth Method")).FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.Select(c.Key("dir-auth"), &d.authType, authChoices).Width(130)
-		if d.authType == "xoauth2" {
-			provChoices := []string{"google", "microsoft"}
-			if d.oauthProvider == "" {
-				d.oauthProvider = "google"
+	formFieldRow(a.tr("Anmeldung", "Auth Method"), func() {
+		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+			ui.Select(c.Key("dir-auth"), &d.authType, authChoices).Width(130)
+			if d.authType == "xoauth2" {
+				provChoices := []string{"google", "microsoft"}
+				if d.oauthProvider == "" {
+					d.oauthProvider = "google"
+				}
+				ui.Select(c.Key("dir-oauth-prov"), &d.oauthProvider, provChoices).Width(120)
 			}
-			ui.Select(c.Key("dir-oauth-prov"), &d.oauthProvider, provChoices).Width(120)
-		}
+		})
 	})
 	if d.authType == "xoauth2" {
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "OAuth Client-ID").FontSize(12).Width(135).TextColor(t.TextMuted)
-			ui.TextInput(c.Key("dir-oauth-cid"), &d.oauthClientID).Placeholder("Client-ID (Google Cloud / Entra ID)").Grow(1)
+		formFieldRow("OAuth Client-ID", func() {
+			fieldGrow(ui.TextInput(c.Key("dir-oauth-cid"), &d.oauthClientID).Placeholder("Client-ID (Google Cloud / Entra ID)"))
 		})
 		if d.oauthProvider == "microsoft" {
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "Tenant").FontSize(12).Width(135).TextColor(t.TextMuted)
-				ui.TextInput(c.Key("dir-oauth-ten"), &d.oauthTenant).Placeholder("common").Grow(1)
+			formFieldRow("Tenant", func() {
+				fieldGrow(ui.TextInput(c.Key("dir-oauth-ten"), &d.oauthTenant).Placeholder("common"))
 			})
 		} else {
-			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "Client-Secret").FontSize(12).Width(135).TextColor(t.TextMuted)
-				ui.TextInput(c.Key("dir-oauth-sec"), &d.oauthClientSecret).Password().Placeholder(a.tr("optional (Google Desktop Client)", "optional (Google Desktop Client)")).Grow(1)
+			formFieldRow("Client-Secret", func() {
+				fieldGrow(ui.TextInput(c.Key("dir-oauth-sec"), &d.oauthClientSecret).Password().Placeholder(a.tr("optional (Google Desktop Client)", "optional (Google Desktop Client)")))
 			})
 		}
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "").Width(135)
+		formFieldRow("", func() {
 			if ui.Button(c.Key("dir-oauth-go"), a.tr("Per OAuth2 im Browser anmelden…", "Sign in via OAuth2 in Browser…")).Clicked() && !d.accBusy {
 				acc, _, berr := a.buildDirectAccountFromForm()
 				if berr != nil {
@@ -1270,29 +1286,37 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 			}
 		})
 	} else {
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, a.tr("Passwort", "Password")).FontSize(12).Width(135).TextColor(t.TextMuted)
-			ui.TextInput(c.Key("dir-pw"), &d.accPassword).Password().Placeholder(pwHint).Grow(1)
+		formFieldRow(a.tr("Passwort", "Password"), func() {
+			fieldGrow(ui.TextInput(c.Key("dir-pw"), &d.accPassword).Password().Placeholder(pwHint))
 		})
 	}
 
 	tlsChoices := []string{"tls", "starttls"}
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "IMAP-Server").FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-imap-h"), &d.imapHost).Placeholder("imap.ionos.de").Grow(1)
-		ui.TextInput(c.Key("dir-imap-p"), &d.imapPort).Placeholder("993").Width(68)
-		ui.Select(c.Key("dir-imap-t"), &d.imapTLS, tlsChoices).Width(100)
+	formFieldRow("IMAP-Server", func() {
+		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("dir-imap-h"), &d.imapHost).Placeholder("imap.ionos.de").Grow(1).MinWidth(140)
+			ui.TextInput(c.Key("dir-imap-p"), &d.imapPort).Placeholder("993").Width(68)
+			ui.Select(c.Key("dir-imap-t"), &d.imapTLS, tlsChoices).Width(100)
+		})
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "SMTP-Server").FontSize(12).Width(135).TextColor(t.TextMuted)
-		ui.TextInput(c.Key("dir-smtp-h"), &d.smtpHost).Placeholder("smtp.ionos.de").Grow(1)
-		ui.TextInput(c.Key("dir-smtp-p"), &d.smtpPort).Placeholder("465").Width(68)
-		ui.Select(c.Key("dir-smtp-t"), &d.smtpTLS, tlsChoices).Width(100)
+	formFieldRow("SMTP-Server", func() {
+		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("dir-smtp-h"), &d.smtpHost).Placeholder("smtp.ionos.de").Grow(1).MinWidth(140)
+			ui.TextInput(c.Key("dir-smtp-p"), &d.smtpPort).Placeholder("465").Width(68)
+			ui.Select(c.Key("dir-smtp-t"), &d.smtpTLS, tlsChoices).Width(100)
+		})
 	})
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-		ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
-		ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(68)
-	})
+	if a.isPhone() {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).TextColor(t.TextMuted)
+			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).FillWidth().Height(68)
+		})
+	} else {
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
+			ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
+			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(68)
+		})
+	}
 
 	if d.accStatusMsg != "" {
 		clr := t.Success
@@ -1437,7 +1461,7 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 			}
 		})
 
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr(".ics-Datei", ".ics File")).FontSize(12).Width(135).TextColor(t.TextMuted)
 			if ui.Button(c.Key("dir-ics-browse"), a.tr("Öffnen…", "Browse…")).Clicked() && !d.icsBusy {
 				a.pickFile(FilePickRequest{
@@ -1464,7 +1488,7 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 
 		ui.Divider(c)
 		ui.Text(c, a.tr("Kalender-Abo hinzufügen (https:// oder webcal://)", "Add Calendar Subscription (https:// or webcal://)")).FontSize(12).TextColor(t.TextMuted)
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("dir-feed-name"), &d.icsFeedName).Placeholder(a.tr("Name (z. B. Feiertage)", "Name (e.g. Holidays)")).Width(170)
 			ui.TextInput(c.Key("dir-feed-url"), &d.icsFeedURL).Placeholder("https://…/calendar.ics").Grow(1)
 			addBtn := ui.PrimaryButton(c.Key("dir-feed-add"), a.tr("Abonnieren", "Subscribe"))

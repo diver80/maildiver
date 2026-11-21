@@ -819,17 +819,18 @@ func scanStoredMessage(row interface{ Scan(dest ...any) error }) (StoredMessage,
 
 // ListMessages queries local SQLite (+ FTS5 when Query is set) in milliseconds.
 type MessageQuery struct {
-	AccountID      string
-	FolderID       string
-	Query          string
-	Unread         *bool
-	Days           int
-	BeforeUnix     int64 // when > 0, matches date_unix > 0 AND date_unix <= BeforeUnix
-	OnlyRead       bool
-	ExcludeFlagged bool
-	OldestFirst    bool
-	Limit          int
-	Offset         int
+	AccountID       string
+	FolderID        string
+	Query           string
+	Unread          *bool
+	UnreadOrFlagged bool
+	Days            int
+	BeforeUnix      int64 // when > 0, matches date_unix > 0 AND date_unix <= BeforeUnix
+	OnlyRead        bool
+	ExcludeFlagged  bool
+	OldestFirst     bool
+	Limit           int
+	Offset          int
 	// HeadersOnly leaves bodies, attachments and headers out: lists don't show them, and
 	// loading every body of a page was the slowest part of opening a folder.
 	HeadersOnly bool
@@ -858,11 +859,26 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 			where = append(where, "COALESCE(f.type, '') NOT IN ('trash', 'junk')")
 		}
 	}
-	if q.Unread != nil {
-		if *q.Unread {
-			where = append(where, "m.read = 0")
+	if q.UnreadOrFlagged {
+		if q.Days > 0 {
+			cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
+			where = append(where, "((m.read = 0 AND m.date_unix >= ?) OR m.flagged = 1)")
+			args = append(args, cutoff)
 		} else {
-			where = append(where, "m.read = 1")
+			where = append(where, "(m.read = 0 OR m.flagged = 1)")
+		}
+	} else {
+		if q.Unread != nil {
+			if *q.Unread {
+				where = append(where, "m.read = 0")
+			} else {
+				where = append(where, "m.read = 1")
+			}
+		}
+		if q.Days > 0 {
+			cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
+			where = append(where, "m.date_unix >= ?")
+			args = append(args, cutoff)
 		}
 	}
 	if q.OnlyRead {
@@ -870,11 +886,6 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 	}
 	if q.ExcludeFlagged {
 		where = append(where, "m.flagged = 0")
-	}
-	if q.Days > 0 {
-		cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
-		where = append(where, "m.date_unix >= ?")
-		args = append(args, cutoff)
 	}
 	if q.BeforeUnix > 0 {
 		where = append(where, "m.date_unix > 0 AND m.date_unix <= ?")

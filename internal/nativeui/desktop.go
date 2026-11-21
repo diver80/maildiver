@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/diver80/maildiver/internal/mailengine"
 	"log"
@@ -207,8 +208,16 @@ func (s *desktopShell) ready(opts Options) {
 	if !isMobile && mygo.WebViewAvailable() {
 		previewHost := newMygoPreviewHost(s.mainWin, s.app)
 		s.app.SetWebPreviewHost(previewHost)
+		composeHost := newMygoComposeHost(func() *mygo.Window {
+			if s.app.detachedAuxWindows && s.composeWin != nil && !s.composeWin.IsDestroyed() {
+				return s.composeWin
+			}
+			return s.mainWin
+		}, s.app)
+		s.app.SetComposeEditorHost(composeHost)
 		mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 			previewHost.Destroy()
+			composeHost.Destroy()
 		})
 	}
 
@@ -823,4 +832,172 @@ func (h *mygoPreviewHost) CurrentURL() string {
 		return p.URL()
 	}
 	return ""
+}
+
+// mygoComposeHost embeds a native mygo.WebView for rich HTML WYSIWYG compose editing on desktop.
+type mygoComposeHost struct {
+	mu          sync.Mutex
+	winFn       func() *mygo.Window
+	win         *mygo.Window
+	app         *App
+	wv          *mygo.WebView
+	pendingHTML string
+}
+
+func newMygoComposeHost(winFn func() *mygo.Window, app *App) *mygoComposeHost {
+	return &mygoComposeHost{winFn: winFn, app: app}
+}
+
+func (h *mygoComposeHost) Ensure() error {
+	targetWin := h.winFn()
+	if targetWin == nil || targetWin.IsDestroyed() {
+		return fmt.Errorf("compose window unavailable")
+	}
+	h.mu.Lock()
+	if h.wv != nil && !h.wv.IsDestroyed() && h.win == targetWin {
+		h.mu.Unlock()
+		return nil
+	}
+	oldWV := h.wv
+	h.wv = nil
+	h.win = targetWin
+	h.mu.Unlock()
+
+	if oldWV != nil && !oldWV.IsDestroyed() {
+		oldWV.Destroy()
+	}
+
+	wv, err := targetWin.NewWebView(mygo.WebViewOptions{
+		Page: mygo.PageOptions{Untrusted: true},
+	})
+	if err != nil {
+		return err
+	}
+	p := wv.Page()
+	p.OnWillNavigate(func(e *mygo.NavigateEvent) {
+		if e.URL == "about:blank" || strings.HasPrefix(e.URL, "https://compose.maildiver.local/") {
+			return
+		}
+		e.PreventDefault()
+	})
+	p.OnPageTitleUpdated(func(e *mygo.TitleEvent) {
+		e.PreventDefault()
+		title := e.Title
+		h.app.emitUpdate(func() {
+			switch {
+			case strings.HasPrefix(title, "mdv:dirty:"):
+				h.app.NotifyComposeDirty()
+			case strings.HasPrefix(title, "mdv:send"):
+				h.app.NotifyComposeSend()
+			case strings.HasPrefix(title, "mdv:paste-files"):
+				h.app.NotifyComposePasteFiles()
+			}
+		})
+	})
+
+	h.mu.Lock()
+	h.wv = wv
+	pending := h.pendingHTML
+	h.pendingHTML = ""
+	h.mu.Unlock()
+
+	if pending != "" {
+		p.LoadHTML(pending, "https://compose.maildiver.local/")
+	}
+	return nil
+}
+
+func (h *mygoComposeHost) Widget() ui.NativeWebView {
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv == nil || wv.IsDestroyed() {
+		return nil
+	}
+	return wv
+}
+
+func (h *mygoComposeHost) LoadContent(initialHTML string, pal ComposeThemePalette, lang string) error {
+	doc := composeEditorDocumentHTML(initialHTML, pal, lang)
+	if err := h.Ensure(); err != nil {
+		h.mu.Lock()
+		h.pendingHTML = doc
+		h.mu.Unlock()
+		return err
+	}
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv == nil || wv.IsDestroyed() {
+		return fmt.Errorf("compose webview destroyed")
+	}
+	if pal.Bg != "" {
+		_ = wv.SetBackgroundColor(pal.Bg)
+	}
+	wv.Page().LoadHTML(doc, "https://compose.maildiver.local/")
+	return nil
+}
+
+func (h *mygoComposeHost) UpdateSignature(sigHTML string) {
+	b, _ := json.Marshal(sigHTML)
+	h.evalAsync("window.__mdvSetSig && window.__mdvSetSig(" + string(b) + ")")
+}
+
+func (h *mygoComposeHost) InsertHTML(fragHTML string) {
+	b, _ := json.Marshal(fragHTML)
+	h.evalAsync("window.__mdvInsertHTML && window.__mdvInsertHTML(" + string(b) + ")")
+}
+
+func (h *mygoComposeHost) evalAsync(code string) {
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv == nil || wv.IsDestroyed() {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = wv.Page().EvalContext(ctx, code)
+	}()
+}
+
+func (h *mygoComposeHost) ReadContent(ctx context.Context) (string, string, bool) {
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv == nil || wv.IsDestroyed() {
+		return "", "", false
+	}
+	raw, err := wv.Page().EvalContext(ctx, "window.__mdvRead ? window.__mdvRead() : null")
+	if err != nil || raw == nil {
+		return "", "", false
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return "", "", false
+	}
+	htmlStr, _ := m["html"].(string)
+	textStr, _ := m["text"].(string)
+	return htmlStr, textStr, true
+}
+
+func (h *mygoComposeHost) Focus() {
+	h.mu.Lock()
+	wv := h.wv
+	h.mu.Unlock()
+	if wv != nil && !wv.IsDestroyed() {
+		wv.Focus()
+	}
+}
+
+func (h *mygoComposeHost) Destroy() {
+	h.mu.Lock()
+	wv := h.wv
+	h.wv = nil
+	h.win = nil
+	h.mu.Unlock()
+	if wv != nil && !wv.IsDestroyed() {
+		wv.Destroy()
+	}
 }

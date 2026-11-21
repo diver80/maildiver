@@ -11,6 +11,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -428,6 +429,14 @@ type OutgoingAttachment struct {
 	Data        []byte
 }
 
+// OutgoingInlineImage represents a cid-referenced inline image inside multipart/related HTML.
+type OutgoingInlineImage struct {
+	ContentID   string
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
 // OutgoingMessage describes an email to serialize into RFC 5322 format for SMTP/Draft APPEND.
 type OutgoingMessage struct {
 	FromName         string
@@ -440,10 +449,63 @@ type OutgoingMessage struct {
 	Body             string
 	BodyHTML         string // optional HTML alternative; when set, emits multipart/alternative (plain + HTML)
 	IsHTML           bool
+	InlineImages     []OutgoingInlineImage
 	Attachments      []OutgoingAttachment
 	InReplyTo        string
 	References       string
 	Date             time.Time
+}
+
+var dataURLImageAttrRE = regexp.MustCompile(`(?i)\bsrc\s*=\s*(["'])data:image/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=\r\n\s]+)(["'])`)
+
+// ExtractInlineDataURLImages extracts base64 data:image/* URIs from an HTML body into
+// RFC 2387 cid-referenced OutgoingInlineImage parts so standard mail clients render them inline.
+func ExtractInlineDataURLImages(htmlBody string) (string, []OutgoingInlineImage) {
+	if !strings.Contains(strings.ToLower(htmlBody), "data:image/") {
+		return htmlBody, nil
+	}
+	const maxPerImage = 15 * 1024 * 1024
+	const maxTotalInline = 25 * 1024 * 1024
+	var out []OutgoingInlineImage
+	var total int
+	idx := 0
+	cleaned := dataURLImageAttrRE.ReplaceAllStringFunc(htmlBody, func(match string) string {
+		sub := dataURLImageAttrRE.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		ext := strings.ToLower(sub[2])
+		b64 := strings.Map(func(r rune) rune {
+			if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+				return -1
+			}
+			return r
+		}, sub[3])
+		if base64.StdEncoding.DecodedLen(len(b64)) > maxPerImage {
+			return match
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil || len(raw) == 0 || len(raw) > maxPerImage || total+len(raw) > maxTotalInline {
+			return match
+		}
+		total += len(raw)
+		idx++
+		mimeType := "image/" + ext
+		if ext == "jpg" {
+			mimeType = "image/jpeg"
+		}
+		var rnd [6]byte
+		_, _ = rand.Read(rnd[:])
+		cid := fmt.Sprintf("mdv-img-%d-%s@maildiver.local", idx, hex.EncodeToString(rnd[:]))
+		out = append(out, OutgoingInlineImage{
+			ContentID:   cid,
+			Filename:    fmt.Sprintf("image-%d.%s", idx, ext),
+			ContentType: mimeType,
+			Data:        raw,
+		})
+		return `src="cid:` + cid + `"`
+	})
+	return cleaned, out
 }
 
 func encodeQPBody(body string) string {
@@ -545,11 +607,52 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 			w.WriteString("\r\n")
 		}
 		fmt.Fprintf(w, "--%s\r\n", altBoundary)
-		w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		w.WriteString(qpHTML)
-		if !strings.HasSuffix(qpHTML, "\r\n") {
-			w.WriteString("\r\n")
+		if len(msg.InlineImages) == 0 {
+			w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			w.WriteString(qpHTML)
+			if !strings.HasSuffix(qpHTML, "\r\n") {
+				w.WriteString("\r\n")
+			}
+		} else {
+			var relRnd [12]byte
+			_, _ = rand.Read(relRnd[:])
+			relBnd := "mdv-rel-" + hex.EncodeToString(relRnd[:])
+			fmt.Fprintf(w, "Content-Type: multipart/related; boundary=%q; type=\"text/html\"\r\n\r\n", relBnd)
+			fmt.Fprintf(w, "--%s\r\n", relBnd)
+			w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+			w.WriteString(qpHTML)
+			if !strings.HasSuffix(qpHTML, "\r\n") {
+				w.WriteString("\r\n")
+			}
+			for _, img := range msg.InlineImages {
+				ct := sanitizeMediaType(img.ContentType, img.Filename)
+				safeName := strings.Map(func(r rune) rune {
+					if r == '\r' || r == '\n' || r == '"' || r == '\\' || r < 0x20 {
+						return '_'
+					}
+					return r
+				}, filepath.Base(strings.TrimSpace(img.Filename)))
+				if safeName == "" || safeName == "." {
+					safeName = "image.png"
+				}
+				cid := strings.Trim(img.ContentID, "<> \r\n\t")
+				fmt.Fprintf(w, "--%s\r\n", relBnd)
+				fmt.Fprintf(w, "Content-Type: %s; name=%q\r\n", ct, safeName)
+				w.WriteString("Content-Transfer-Encoding: base64\r\n")
+				fmt.Fprintf(w, "Content-ID: <%s>\r\n", cid)
+				fmt.Fprintf(w, "Content-Disposition: inline; filename=%q\r\n\r\n", safeName)
+				b64 := base64.StdEncoding.EncodeToString(img.Data)
+				for i := 0; i < len(b64); i += 76 {
+					end := i + 76
+					if end > len(b64) {
+						end = len(b64)
+					}
+					w.WriteString(b64[i:end] + "\r\n")
+				}
+			}
+			fmt.Fprintf(w, "--%s--\r\n", relBnd)
 		}
 		fmt.Fprintf(w, "--%s--\r\n", altBoundary)
 	}

@@ -44,3 +44,43 @@ func TestPipeTextWithoutSeparatorIsNoTable(t *testing.T) {
 		t.Fatalf("markdown link: %s", h)
 	}
 }
+
+func TestExtractInlineDataURLImagesAndBuildRelatedMIME(t *testing.T) {
+	// 1x1 transparent PNG in base64
+	const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+	htmlIn := `<p>Hallo,</p><p><img src="data:image/png;base64,` + tinyPNG + `" alt="shot"></p>`
+	cleaned, inline := ExtractInlineDataURLImages(htmlIn)
+	if len(inline) != 1 || inline[0].ContentType != "image/png" || len(inline[0].Data) == 0 {
+		t.Fatalf("expected 1 extracted inline PNG, got %+v", inline)
+	}
+	if !strings.Contains(cleaned, `src="cid:`+inline[0].ContentID+`"`) || strings.Contains(cleaned, "data:image/") {
+		t.Fatalf("expected cid reference replacing data URL, got %s", cleaned)
+	}
+
+	_, raw := BuildRawMessage(OutgoingMessage{
+		FromEmail:    "sender@example.com",
+		To:           []string{"rcpt@example.com"},
+		Subject:      "Inline Bild",
+		Body:         "Hallo",
+		BodyHTML:     cleaned,
+		InlineImages: inline,
+	})
+	rawStr := string(raw)
+	for _, want := range []string{
+		"multipart/alternative",
+		"multipart/related",
+		"Content-ID: <" + inline[0].ContentID + ">",
+		"Content-Disposition: inline",
+	} {
+		if !strings.Contains(rawStr, want) {
+			t.Fatalf("missing %q in raw MIME:\n%s", want, rawStr)
+		}
+	}
+	parsed, err := ParseRawMessage(raw)
+	if err != nil {
+		t.Fatalf("ParseRawMessage failed: %v", err)
+	}
+	if !strings.Contains(parsed.BodyHTML, "cid:"+inline[0].ContentID) {
+		t.Fatalf("parsed BodyHTML lost cid reference: %s", parsed.BodyHTML)
+	}
+}

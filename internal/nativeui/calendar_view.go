@@ -452,107 +452,120 @@ func (a *App) renderCalendarMonthGrid(c *ui.Context, byDay map[string][]backend.
 		weekdays = weekdayShortEN
 	}
 
-	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(10, 14).Gap(6).Children(func() {
-		// 7-column weekday header
-		ui.Row(c).FillWidth().Gap(6).Children(func() {
-			for i, wd := range weekdays {
-				clr := t.TextMuted
-				if i >= 5 {
-					clr = withAlpha(t.TextMuted, 0.75)
-				}
-				ui.Box(c.Key("cal-wd-"+wd)).Grow(1).MinWidth(0).Padding(2, 6).Children(func() {
-					ui.Text(c, wd).FontSize(11.5).Bold().TextColor(clr)
-				})
-			}
-		})
-
-		// Scrollable week rows
-		ui.Scroll(c.Key("cal-month-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Gap(6).Children(func() {
-				for w := 0; w < numWeeks; w++ {
-					weekIdx := w
-					ui.Row(c.Key(fmt.Sprintf("cal-wk-%d", weekIdx))).FillWidth().Gap(6).Children(func() {
-						for d := 0; d < 7; d++ {
-							day := gridStart.AddDate(0, 0, weekIdx*7+d)
-							dk := day.Format("2006-01-02")
-							inMonth := day.Month() == cur.Month()
-							isToday := dk == todayKey
-							dayEvents := byDay[dk]
-
-							cellBg := t.Surface
-							if !inMonth {
-								cellBg = withAlpha(t.Surface, 0.45)
-							}
-							cellBorder := t.Border
-							if isToday {
-								cellBorder = t.Accent
-							}
-
-							ui.Column(c.Key("cal-cell-"+dk)).Grow(1).MinWidth(0).MinHeight(106).Padding(6).Radius(8).Background(cellBg).Border(1, cellBorder).Gap(4).Children(func() {
-								// Day header row: day number + quick "+" button
-								ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-									numText := fmt.Sprintf("%d", day.Day())
-									if isToday {
-										ui.Box(c).Padding(1, 7).Radius(10).Background(t.Accent).Children(func() {
-											ui.Text(c, numText).FontSize(11.5).Bold().TextColor(ui.RGB(255, 255, 255))
-										})
-									} else {
-										numClr := t.Text
-										if !inMonth {
-											numClr = t.TextMuted
-										}
-										ui.Text(c, numText).FontSize(12).Bold().TextColor(numClr)
-									}
-									ui.Spacer(c)
-									if !a.readOnly || a.isDirectMode() {
-										dayCopy := day
-										if ui.Button(c.Key("cal-add-"+dk), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
-											a.OpenNewEventOnDate(dayCopy)
-										}
-									}
-								})
-
-								// Up to 3 event chips per cell
-								const maxChips = 3
-								for idx, ev := range dayEvents {
-									if idx >= maxChips {
-										extra := len(dayEvents) - maxChips
-										if ui.Button(c.Key("cal-more-"+dk), a.trf("+%d weitere", "+%d more", extra)).Padding(1, 4).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.Accent).Clicked() {
-											a.calCursor = day
-											a.calViewMode = 1 // Jump straight to Week view for this day
-											a.RefreshAll(context.Background())
-										}
-										break
-									}
-									evCopy := ev
-									evClr := a.calColorForEvent(evCopy, t.Accent)
-									lbl := evCopy.Title
-									if !evCopy.AllDay {
-										if st, err := parseEventTime(evCopy.Start); err == nil {
-											lbl = st.Local().Format("15:04") + " " + lbl
-										}
-									}
-									if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
-										lbl = "↻ " + lbl
-									}
-									chip := ui.Button(c.Key(fmt.Sprintf("cal-chip-%s-%d", dk, idx)), truncateText(lbl, 30)).
-										FillWidth().
-										Padding(2, 5).
-										Radius(4).
-										Background(withAlpha(evClr, 0.16)).
-										Border(1, withAlpha(evClr, 0.45)).
-										TextColor(t.Text)
-									if chip.Clicked() {
-										a.OpenEventDetails(evCopy)
-									}
-								}
-							})
-						}
+	monthGrid := func() {
+		col := ui.Column(c).Gap(6)
+		if a.isPhone() {
+			col.MinWidth(700).Grow(1).MinHeight(0)
+		} else {
+			col.Grow(1).MinHeight(0).FillWidth()
+		}
+		col.Children(func() {
+			// 7-column weekday header
+			ui.Row(c).FillWidth().Gap(6).Children(func() {
+				for i, wd := range weekdays {
+					clr := t.TextMuted
+					if i >= 5 {
+						clr = withAlpha(t.TextMuted, 0.75)
+					}
+					ui.Box(c.Key("cal-wd-"+wd)).Grow(1).MinWidth(0).Padding(2, 6).Children(func() {
+						ui.Text(c, wd).FontSize(11.5).Bold().TextColor(clr)
 					})
 				}
 			})
+
+			// Scrollable week rows
+			ui.Scroll(c.Key("cal-month-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+				ui.Column(c).FillWidth().Gap(6).Children(func() {
+					for w := 0; w < numWeeks; w++ {
+						weekIdx := w
+						ui.Row(c.Key(fmt.Sprintf("cal-wk-%d", weekIdx))).FillWidth().Gap(6).Children(func() {
+							for d := 0; d < 7; d++ {
+								day := gridStart.AddDate(0, 0, weekIdx*7+d)
+								dk := day.Format("2006-01-02")
+								inMonth := day.Month() == cur.Month()
+								isToday := dk == todayKey
+								dayEvents := byDay[dk]
+
+								cellBg := t.Surface
+								if !inMonth {
+									cellBg = withAlpha(t.Surface, 0.45)
+								}
+								cellBorder := t.Border
+								if isToday {
+									cellBorder = t.Accent
+								}
+
+								ui.Column(c.Key("cal-cell-"+dk)).Grow(1).MinWidth(0).MinHeight(106).Padding(6).Radius(8).Background(cellBg).Border(1, cellBorder).Gap(4).Children(func() {
+									// Day header row: day number + quick "+" button
+									ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+										numText := fmt.Sprintf("%d", day.Day())
+										if isToday {
+											ui.Box(c).Padding(1, 7).Radius(10).Background(t.Accent).Children(func() {
+												ui.Text(c, numText).FontSize(11.5).Bold().TextColor(ui.RGB(255, 255, 255))
+											})
+										} else {
+											numClr := t.Text
+											if !inMonth {
+												numClr = t.TextMuted
+											}
+											ui.Text(c, numText).FontSize(12).Bold().TextColor(numClr)
+										}
+										ui.Spacer(c)
+										if !a.readOnly || a.isDirectMode() {
+											dayCopy := day
+											if ui.Button(c.Key("cal-add-"+dk), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
+												a.OpenNewEventOnDate(dayCopy)
+											}
+										}
+									})
+
+									// Up to 3 event chips per cell
+									const maxChips = 3
+									for idx, ev := range dayEvents {
+										if idx >= maxChips {
+											extra := len(dayEvents) - maxChips
+											if ui.Button(c.Key("cal-more-"+dk), a.trf("+%d weitere", "+%d more", extra)).Padding(1, 4).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.Accent).Clicked() {
+												a.calCursor = day
+												a.calViewMode = 1 // Jump straight to Week view for this day
+												a.RefreshAll(context.Background())
+											}
+											break
+										}
+										evCopy := ev
+										evClr := a.calColorForEvent(evCopy, t.Accent)
+										lbl := evCopy.Title
+										if !evCopy.AllDay {
+											if st, err := parseEventTime(evCopy.Start); err == nil {
+												lbl = st.Local().Format("15:04") + " " + lbl
+											}
+										}
+										if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+											lbl = "↻ " + lbl
+										}
+										chip := ui.Button(c.Key(fmt.Sprintf("cal-chip-%s-%d", dk, idx)), truncateText(lbl, 30)).
+											FillWidth().
+											Padding(2, 5).
+											Radius(4).
+											Background(withAlpha(evClr, 0.16)).
+											Border(1, withAlpha(evClr, 0.45)).
+											TextColor(t.Text)
+										if chip.Clicked() {
+											a.OpenEventDetails(evCopy)
+										}
+									}
+								})
+							}
+						})
+					}
+				})
+			})
 		})
-	})
+	}
+	if a.isPhone() {
+		ui.ScrollHorizontal(c.Key("cal-month-hscroll")).Grow(1).MinHeight(0).FillWidth().Padding(8, 10).Children(monthGrid)
+		return
+	}
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(10, 14).Children(monthGrid)
 }
 
 func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
@@ -597,95 +610,108 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 		}
 	}
 
-	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, 14).Gap(6).Children(func() {
-		// Day column headers
-		ui.Row(c).FillWidth().Gap(6).Children(func() {
-			ui.Box(c).Width(48).Shrink(0)
-			for d := 0; d < 7; d++ {
-				dayCopy := days[d]
-				isToday := dayKeys[d] == todayKey
-				hdrBg := t.Surface
-				hdrBorder := t.Border
-				if isToday {
-					hdrBg = withAlpha(t.Accent, 0.14)
-					hdrBorder = t.Accent
-				}
-				ui.Row(c.Key("cal-wkhdr-"+dayKeys[d])).Grow(1).MinWidth(0).Padding(5, 8).Radius(6).Background(hdrBg).Border(1, hdrBorder).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, fmt.Sprintf("%s %02d.%02d.", weekdays[d], dayCopy.Day(), int(dayCopy.Month()))).FontSize(12).Bold().TextColor(func() ui.Color {
-						if isToday {
-							return t.Accent
-						}
-						return t.Text
-					}())
-					ui.Spacer(c)
-					if !a.readOnly || a.isDirectMode() {
-						if ui.Button(c.Key("cal-wkadd-"+dayKeys[d]), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
-							a.OpenNewEventOnDate(dayCopy)
-						}
-					}
-				})
-			}
-		})
-
-		// All-day strip (shown if any all-day event exists in this week)
-		hasAllDay := false
-		for d := 0; d < 7; d++ {
-			if len(allDay[d]) > 0 {
-				hasAllDay = true
-				break
-			}
+	weekGrid := func() {
+		col := ui.Column(c).Gap(6)
+		if a.isPhone() {
+			col.MinWidth(740).Grow(1).MinHeight(0)
+		} else {
+			col.Grow(1).MinHeight(0).FillWidth()
 		}
-		if hasAllDay {
-			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
-				ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(10.5).TextColor(t.TextMuted).Width(48).Shrink(0)
+		col.Children(func() {
+			// Day column headers
+			ui.Row(c).FillWidth().Gap(6).Children(func() {
+				ui.Box(c).Width(48).Shrink(0)
 				for d := 0; d < 7; d++ {
-					ui.Column(c.Key(fmt.Sprintf("cal-wkad-%d", d))).Grow(1).MinWidth(0).Gap(3).Children(func() {
-						for idx, ev := range allDay[d] {
-							evCopy := ev
-							evClr := a.calColorForEvent(evCopy, t.Accent)
-							if ui.Button(c.Key(fmt.Sprintf("cal-wkad-ev-%d-%d", d, idx)), truncateText(evCopy.Title, 20)).
-								FillWidth().Padding(2, 6).Radius(4).Background(withAlpha(evClr, 0.22)).Border(1, withAlpha(evClr, 0.5)).TextColor(t.Text).Clicked() {
-								a.OpenEventDetails(evCopy)
+					dayCopy := days[d]
+					isToday := dayKeys[d] == todayKey
+					hdrBg := t.Surface
+					hdrBorder := t.Border
+					if isToday {
+						hdrBg = withAlpha(t.Accent, 0.14)
+						hdrBorder = t.Accent
+					}
+					ui.Row(c.Key("cal-wkhdr-"+dayKeys[d])).Grow(1).MinWidth(0).Padding(5, 8).Radius(6).Background(hdrBg).Border(1, hdrBorder).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, fmt.Sprintf("%s %02d.%02d.", weekdays[d], dayCopy.Day(), int(dayCopy.Month()))).FontSize(12).Bold().TextColor(func() ui.Color {
+							if isToday {
+								return t.Accent
+							}
+							return t.Text
+						}())
+						ui.Spacer(c)
+						if !a.readOnly || a.isDirectMode() {
+							if ui.Button(c.Key("cal-wkadd-"+dayKeys[d]), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
+								a.OpenNewEventOnDate(dayCopy)
 							}
 						}
 					})
 				}
 			})
-		}
 
-		// Scrollable hourly rows 07:00 – 21:00
-		ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Gap(4).Children(func() {
-				for h := 7; h <= 21; h++ {
-					hour := h
-					ui.Row(c.Key(fmt.Sprintf("cal-wkh-%02d", hour))).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
-						ui.Text(c, fmt.Sprintf("%02d:00", hour)).FontSize(11).TextColor(t.TextMuted).Width(48).Shrink(0)
-						for d := 0; d < 7; d++ {
-							slotKey := fmt.Sprintf("%d-%d", d, hour)
-							evs := bySlot[slotKey]
-							ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, withAlpha(t.Border, 0.7)).Gap(3).Children(func() {
-								for idx, ev := range evs {
-									evCopy := ev
-									evClr := a.calColorForEvent(evCopy, t.Accent)
-									lbl := evCopy.Title
-									if st, err := parseEventTime(evCopy.Start); err == nil {
-										lbl = st.Local().Format("15:04") + " " + lbl
-									}
-									if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
-										lbl = "↻ " + lbl
-									}
-									if ui.Button(c.Key(fmt.Sprintf("cal-wkev-%s-%d", slotKey, idx)), truncateText(lbl, 30)).
-										FillWidth().Padding(3, 5).Radius(4).Background(withAlpha(evClr, 0.18)).Border(1, withAlpha(evClr, 0.45)).TextColor(t.Text).Clicked() {
-										a.OpenEventDetails(evCopy)
-									}
-								}
-							})
-						}
-					})
+			// All-day strip (shown if any all-day event exists in this week)
+			hasAllDay := false
+			for d := 0; d < 7; d++ {
+				if len(allDay[d]) > 0 {
+					hasAllDay = true
+					break
 				}
+			}
+			if hasAllDay {
+				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+					ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(10.5).TextColor(t.TextMuted).Width(48).Shrink(0)
+					for d := 0; d < 7; d++ {
+						ui.Column(c.Key(fmt.Sprintf("cal-wkad-%d", d))).Grow(1).MinWidth(0).Gap(3).Children(func() {
+							for idx, ev := range allDay[d] {
+								evCopy := ev
+								evClr := a.calColorForEvent(evCopy, t.Accent)
+								if ui.Button(c.Key(fmt.Sprintf("cal-wkad-ev-%d-%d", d, idx)), truncateText(evCopy.Title, 20)).
+									FillWidth().Padding(2, 6).Radius(4).Background(withAlpha(evClr, 0.22)).Border(1, withAlpha(evClr, 0.5)).TextColor(t.Text).Clicked() {
+									a.OpenEventDetails(evCopy)
+								}
+							}
+						})
+					}
+				})
+			}
+
+			// Scrollable hourly rows 07:00 – 21:00
+			ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					for h := 7; h <= 21; h++ {
+						hour := h
+						ui.Row(c.Key(fmt.Sprintf("cal-wkh-%02d", hour))).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
+							ui.Text(c, fmt.Sprintf("%02d:00", hour)).FontSize(11).TextColor(t.TextMuted).Width(48).Shrink(0)
+							for d := 0; d < 7; d++ {
+								slotKey := fmt.Sprintf("%d-%d", d, hour)
+								evs := bySlot[slotKey]
+								ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, withAlpha(t.Border, 0.7)).Gap(3).Children(func() {
+									for idx, ev := range evs {
+										evCopy := ev
+										evClr := a.calColorForEvent(evCopy, t.Accent)
+										lbl := evCopy.Title
+										if st, err := parseEventTime(evCopy.Start); err == nil {
+											lbl = st.Local().Format("15:04") + " " + lbl
+										}
+										if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+											lbl = "↻ " + lbl
+										}
+										if ui.Button(c.Key(fmt.Sprintf("cal-wkev-%s-%d", slotKey, idx)), truncateText(lbl, 30)).
+											FillWidth().Padding(3, 5).Radius(4).Background(withAlpha(evClr, 0.18)).Border(1, withAlpha(evClr, 0.45)).TextColor(t.Text).Clicked() {
+											a.OpenEventDetails(evCopy)
+										}
+									}
+								})
+							}
+						})
+					}
+				})
 			})
 		})
-	})
+	}
+	if a.isPhone() {
+		ui.ScrollHorizontal(c.Key("cal-week-hscroll")).Grow(1).MinHeight(0).FillWidth().Padding(8, 10).Children(weekGrid)
+		return
+	}
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, 14).Children(weekGrid)
 }
 
 func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
@@ -725,11 +751,13 @@ func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend
 						expanded := a.calExpanded[evKey]
 						joinURL, joinLabel := a.eventJoinLink(evCopy)
 						ui.Column(c.Key("cal-ev-"+evKey)).FillWidth().Padding(10, 12).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
-							ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-								ui.Box(c).Size(4, 34).Radius(2).Background(evClr).Shrink(0)
-								ui.Text(c, formatEventRangeLang(evCopy.AllDay, evCopy.Start, evCopy.End, a.uiLang())).FontSize(12).Bold().TextColor(t.Accent).Width(110).Shrink(0)
+							timeText := formatEventRangeLang(evCopy.AllDay, evCopy.Start, evCopy.End, a.uiLang())
+							infoCol := func() {
 								ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+									if a.isPhone() {
+										ui.Text(c, timeText).FontSize(12).Bold().TextColor(t.Accent)
+									}
+									ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 										ui.Text(c, evCopy.Title).FontSize(13).Bold()
 										if evCopy.IsRecurring || evCopy.RecurrenceID != "" || evCopy.RecurrenceRule != "" {
 											pillBadge(c, a.recurrenceBadgeText(evCopy), t.Background, t.TextMuted)
@@ -751,6 +779,8 @@ func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend
 										}
 									}
 								}).OnClick(func() { a.toggleCalEventExpanded(evKey) })
+							}
+							actionsRow := func() {
 								if joinURL != "" {
 									if iconLabelBtn(c.Key("ev-join-"+evKey), iconLink, joinLabel, true, a.tr("Online-Besprechung im Browser öffnen", "Open online meeting in browser")).Clicked() {
 										_ = openExternalURL(joinURL)
@@ -773,9 +803,29 @@ func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend
 										a.RequestDeleteCalendarEvent(evCopy)
 									}
 								}
-							})
+							}
+							if a.isPhone() {
+								ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Start).Children(func() {
+									ui.Box(c).Size(4, 38).Radius(2).Background(evClr).Shrink(0)
+									ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
+										infoCol()
+										ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(actionsRow)
+									})
+								})
+							} else {
+								ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+									ui.Box(c).Size(4, 34).Radius(2).Background(evClr).Shrink(0)
+									ui.Text(c, timeText).FontSize(12).Bold().TextColor(t.Accent).Width(110).Shrink(0)
+									infoCol()
+									actionsRow()
+								})
+							}
 							if expanded {
-								ui.Column(c).FillWidth().Padding(0, 0, 0, 138).Gap(8).Children(func() {
+								indent := float32(138)
+								if a.isPhone() {
+									indent = 14
+								}
+								ui.Column(c).FillWidth().Padding(0, 0, 0, indent).Gap(8).Children(func() {
 									a.renderEventDetails(c, evCopy, "agenda-"+evKey, false)
 								})
 							}

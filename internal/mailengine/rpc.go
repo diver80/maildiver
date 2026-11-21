@@ -160,13 +160,14 @@ func (e *Engine) rpcFoldersList(ctx context.Context, params any) (json.RawMessag
 
 func (e *Engine) rpcMessagesList(ctx context.Context, params any) (json.RawMessage, error) {
 	var p struct {
-		AccountID string `json:"accountId"`
-		FolderID  string `json:"folderId"`
-		Query     string `json:"q"`
-		Unread    *bool  `json:"unread"`
-		Days      int    `json:"days"`
-		Limit     int    `json:"limit"`
-		Cursor    string `json:"cursor"`
+		AccountID       string `json:"accountId"`
+		FolderID        string `json:"folderId"`
+		Query           string `json:"q"`
+		Unread          *bool  `json:"unread"`
+		UnreadOrFlagged bool   `json:"unreadOrFlagged"`
+		Days            int    `json:"days"`
+		Limit           int    `json:"limit"`
+		Cursor          string `json:"cursor"`
 	}
 	_ = decodeParams(params, &p)
 	offset := 0
@@ -180,14 +181,15 @@ func (e *Engine) rpcMessagesList(ctx context.Context, params any) (json.RawMessa
 		limit = 80
 	}
 	list, total, err := e.store.ListMessages(ctx, MessageQuery{
-		AccountID:   p.AccountID,
-		FolderID:    p.FolderID,
-		Query:       p.Query,
-		Unread:      p.Unread,
-		Days:        p.Days,
-		Limit:       limit,
-		Offset:      offset,
-		HeadersOnly: true,
+		AccountID:       p.AccountID,
+		FolderID:        p.FolderID,
+		Query:           p.Query,
+		Unread:          p.Unread,
+		UnreadOrFlagged: p.UnreadOrFlagged,
+		Days:            p.Days,
+		Limit:           limit,
+		Offset:          offset,
+		HeadersOnly:     true,
 	})
 	if err != nil {
 		return nil, err
@@ -1119,6 +1121,10 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 	if strings.TrimSpace(bodyHTML) == "" && !req.IsHTML && strings.TrimSpace(req.Body) != "" {
 		bodyHTML = BuildStyledEmailHTML(req.Body)
 	}
+	var inlineImgs []OutgoingInlineImage
+	if strings.TrimSpace(bodyHTML) != "" {
+		bodyHTML, inlineImgs = ExtractInlineDataURLImages(bodyHTML)
+	}
 	msgID, raw = BuildRawMessage(OutgoingMessage{
 		FromName:         fromName,
 		FromEmail:        fromEmail,
@@ -1130,6 +1136,7 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 		Body:             req.Body,
 		BodyHTML:         bodyHTML,
 		IsHTML:           req.IsHTML,
+		InlineImages:     inlineImgs,
 		Attachments:      atts,
 		InReplyTo:        inReplyTo,
 		References:       refs,

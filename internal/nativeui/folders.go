@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -402,6 +403,57 @@ func (a *App) toggleFolderCollapsed(key string) {
 	} else {
 		a.collapsedFolders[key] = true
 	}
+	if accID, _, ok := strings.Cut(key, "\x00"); ok && accID != "" {
+		a.persistExpandedFoldersForAccount(accID)
+	}
+}
+
+func (a *App) persistExpandedFoldersForAccount(accID string) {
+	paths := a.currentExpandedFolderPaths(accID)
+	if a.cfg.App.ExpandedFolders == nil {
+		a.cfg.App.ExpandedFolders = make(map[string][]string)
+	}
+	a.cfg.App.ExpandedFolders[accID] = paths
+	if a.opts.ConfigSaver == nil {
+		return
+	}
+	cfg := a.cfg
+	if a.opts.ConfigLoader != nil {
+		if loaded, err := a.opts.ConfigLoader(); err == nil {
+			cfg = loaded
+		}
+	}
+	if cfg.App.ExpandedFolders == nil {
+		cfg.App.ExpandedFolders = make(map[string][]string)
+	}
+	cfg.App.ExpandedFolders[accID] = paths
+	cfg = config.Normalize(cfg)
+	_ = a.opts.ConfigSaver(cfg)
+	a.cfg = cfg
+}
+
+func (a *App) persistCollapsedAccounts() {
+	var collapsed []string
+	for id, ptr := range a.secAccountOpen {
+		if ptr != nil && !*ptr {
+			collapsed = append(collapsed, id)
+		}
+	}
+	slices.Sort(collapsed)
+	a.cfg.App.CollapsedAccounts = collapsed
+	if a.opts.ConfigSaver == nil {
+		return
+	}
+	cfg := a.cfg
+	if a.opts.ConfigLoader != nil {
+		if loaded, err := a.opts.ConfigLoader(); err == nil {
+			cfg = loaded
+		}
+	}
+	cfg.App.CollapsedAccounts = collapsed
+	cfg = config.Normalize(cfg)
+	_ = a.opts.ConfigSaver(cfg)
+	a.cfg = cfg
 }
 
 // accountSectionOpen returns the stable open flag of an account's sidebar section.
@@ -411,7 +463,7 @@ func (a *App) accountSectionOpen(accountID string) *bool {
 	}
 	p, ok := a.secAccountOpen[accountID]
 	if !ok {
-		open := true
+		open := !slices.Contains(a.cfg.App.CollapsedAccounts, accountID)
 		p = &open
 		a.secAccountOpen[accountID] = p
 	}
@@ -502,6 +554,7 @@ func (a *App) renderFolderSections(c *ui.Context) {
 			})
 			if hdr.Clicked() {
 				*open = !*open
+				a.persistCollapsedAccounts()
 			}
 			if *open {
 				renderRows(gCopy)

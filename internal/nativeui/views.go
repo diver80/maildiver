@@ -112,7 +112,7 @@ func (a *App) renderSidebar(c *ui.Context) {
 		})
 		sb := ui.Sidebar(c, &a.navID, func() {
 			ui.SidebarSection(c, a.tr("Arbeitsbereich", "Workspace"), &a.secViewsOpen, func() {
-				ui.SidebarItem(c, "focus", iconFocus, a.tr("Fokus (Ungelesen)", "Focus (Unread)")).Children(func() {
+				ui.SidebarItem(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)")).Children(func() {
 					if n := a.unreadCount(); n > 0 {
 						ui.Badge(c, fmt.Sprintf("%d", n))
 					}
@@ -314,6 +314,21 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						readTrue := true
 						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
 					}
+					anyUnflagged := false
+					for _, cm := range a.CheckedMessages() {
+						if !cm.Flagged {
+							anyUnflagged = true
+							break
+						}
+					}
+					starIcon, starClr, starTip := iconStarFilled, t.Warning, a.tr("Markierung entfernen (s)", "Remove star (s)")
+					if anyUnflagged {
+						starIcon, starClr, starTip = iconStar, ui.Color{}, a.tr("Markierte mit Stern markieren (s)", "Star selected (s)")
+					}
+					if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
+						flagVal := anyUnflagged
+						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
+					}
 					if !a.readOnly {
 						if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {
 							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
@@ -384,6 +399,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 
 					// Two lines, as dense as Omamail's: sender + time, then subject with small tags.
 					// The folder tag only shows in views that span several folders.
+					starClicked := false
 					row := ui.Column(c.Key("mail-body-"+m.ID)).Grow(1).MinWidth(0).Padding(8, 12, 8, 6).Gap(3).Children(func() {
 						ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 							if m.Unread {
@@ -404,7 +420,21 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 							} else if !selected {
 								st.TextColor(t.TextMuted)
 							}
-							if m.Flagged {
+							if !a.readOnly {
+								sIcon, sClr := iconStar, withAlpha(t.TextMuted, 0.45)
+								sTip := a.tr("Mit Stern markieren (s)", "Star (s)")
+								if m.Flagged {
+									sIcon, sClr = iconStarFilled, t.Warning
+									sTip = a.tr("Markierung entfernen (s)", "Remove star (s)")
+								}
+								sb := ui.ButtonBase(c.Key("row-star-" + m.ID)).Padding(2).Radius(4).Shrink(0).Label(sTip).Tooltip(sTip)
+								sb.Children(func() { ui.Icon(c, sIcon).Size(12, 12).TextColor(sClr) })
+								if sb.Clicked() {
+									starClicked = true
+									flagVal := !m.Flagged
+									a.PerformMessageAction(context.Background(), m.ID, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
+								}
+							} else if m.Flagged {
 								ui.Icon(c, iconStarFilled).Size(11, 11).TextColor(t.Warning).Shrink(0)
 							}
 							tm := ui.Text(c, formatRelTimeLang(m.Date, a.uiLang())).FontSize(11).Shrink(0)
@@ -432,7 +462,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 							}
 						})
 					})
-					if row.Clicked() {
+					if row.Clicked() && !starClicked {
 						mods := c.Modifiers()
 						if mods&(ui.Cmd|ui.Ctrl|ui.Shift) != 0 {
 							a.ToggleMailChecked(i, mods&ui.Shift != 0)
@@ -843,235 +873,286 @@ func (a *App) renderComposeModal(c *ui.Context) {
 func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 	t := c.Theme()
 	title := a.ComposeWindowTitle()
-	if !inWindow {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(15).Bold().Grow(1)
-			if ui.Button(c.Key("cmp-x"), "✕").Tooltip(a.tr("Schließen (esc)", "Close (esc)")).Clicked() {
-				a.composeOpen = false
-			}
-		})
+	cmpWrap := ui.Column(c.Key("cmp-wrap")).FillWidth().Gap(8)
+	if inWindow {
+		cmpWrap.Fill()
 	}
-	if a.composeCloseAsk {
-		ui.Row(c.Key("cmp-close-ask")).FillWidth().Padding(8, 10).Gap(8).AlignItems(ui.Center).Radius(8).
-			Background(withAlpha(t.Warning, 0.16)).Border(1, withAlpha(t.Warning, 0.5)).Children(func() {
-			ui.Text(c, a.tr("Nicht gesendet.", "Not sent.")).FontSize(12.5).Bold().Grow(1).MinWidth(0).SingleLine()
-			if !a.readOnly && ui.PrimaryButton(c.Key("cmp-ask-save"), a.tr("Als Entwurf speichern", "Save as draft")).Clicked() {
-				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+	if dropped := cmpWrap.DroppedFiles(); len(dropped) > 0 && !a.readOnly {
+		added := 0
+		for _, p := range dropped {
+			before := len(a.composeAttachments)
+			a.addComposeAttachment(p)
+			if len(a.composeAttachments) > before {
+				added++
 			}
-			if ui.Button(c.Key("cmp-ask-discard"), a.tr("Verwerfen", "Discard")).Clicked() {
-				a.closeCompose()
-			}
-			if ui.Button(c.Key("cmp-ask-keep"), a.tr("Weiter schreiben", "Keep writing")).Clicked() {
-				a.composeCloseAsk = false
-			}
-		})
-	}
-
-	// Sender account / alias identity selector when multiple identities exist
-	if choices := a.composeIdentityChoices(); len(choices) > 1 {
-		labels := make([]string, 0, len(choices))
-		choiceByLabel := make(map[string]composeIdentityChoice, len(choices))
-		for _, ch := range choices {
-			labels = append(labels, ch.Label)
-			choiceByLabel[ch.Label] = ch
 		}
-		if _, ok := choiceByLabel[a.composeAccountLabel]; !ok && len(choices) > 0 {
-			a.composeAccountLabel = choices[0].Label
-			a.composeAccountID = choices[0].AccountID
-			a.composeIdentityID = choices[0].IdentityID
-			a.composeFromEmail = choices[0].Email
-			a.composeFromName = choices[0].Name
-		}
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, a.tr("Von:", "From:")).FontSize(12).Width(42).TextColor(t.TextMuted)
-			if ui.Select(c.Key("cmp-from"), &a.composeAccountLabel, labels).Grow(1).Changed() {
-				oldSig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
-				ch := choiceByLabel[a.composeAccountLabel]
-				a.composeAccountID = ch.AccountID
-				a.composeIdentityID = ch.IdentityID
-				a.composeFromEmail = ch.Email
-				a.composeFromName = ch.Name
-				newSig := stripSignatureDelim(ch.Signature)
-				if newSig == "" {
-					newSig = stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
-				}
-				if oldSig != "" && strings.Contains(a.composeBody, "-- \n"+oldSig) {
-					if newSig != "" {
-						a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "-- \n"+newSig, 1)
-					} else {
-						a.composeBody = strings.Replace(a.composeBody, "\n\n-- \n"+oldSig, "", 1)
-						a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "", 1)
-					}
-				} else if oldSig == "" && newSig != "" {
-					a.composeBody = appendAccountSignature(a.composeBody, newSig)
-				}
-			}
-		})
-	}
-
-	// To field + autocomplete suggestions
-	ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).FillWidth()
-	a.refreshComposeSuggestions("to", a.composeTo)
-	a.renderComposeSuggestions(c, "to", a.composeSuggestTo)
-
-	// CC & BCC row + autocomplete suggestions
-	ui.Row(c).FillWidth().Gap(8).Children(func() {
-		ui.TextInput(c.Key("cmp-cc"), &a.composeCC).Placeholder(a.tr("CC (optional)…", "CC (optional)…")).Grow(1)
-		ui.TextInput(c.Key("cmp-bcc"), &a.composeBCC).Placeholder(a.tr("BCC (optional)…", "BCC (optional)…")).Grow(1)
-	})
-	a.refreshComposeSuggestions("cc", a.composeCC)
-	a.renderComposeSuggestions(c, "cc", a.composeSuggestCC)
-	a.refreshComposeSuggestions("bcc", a.composeBCC)
-	a.renderComposeSuggestions(c, "bcc", a.composeSuggestBCC)
-
-	ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
-	ui.Row(c.Key("cmp-fmt-bar")).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, a.tr("Format:", "Format:")).FontSize(11).TextColor(t.TextMuted)
-		if ui.Button(c.Key("cmp-fmt-b"), "B").Padding(1, 7).Tooltip(a.tr("Fett (**Text**)", "Bold (**text**)")).Clicked() {
-			a.composeBody = insertComposeSnippet(a.composeBody, "**fett**")
-		}
-		if ui.Button(c.Key("cmp-fmt-i"), "I").Padding(1, 7).Tooltip(a.tr("Kursiv (*Text*)", "Italic (*text*)")).Clicked() {
-			a.composeBody = insertComposeSnippet(a.composeBody, "*kursiv*")
-		}
-		if ui.Button(c.Key("cmp-fmt-code"), "</>").Padding(1, 7).Tooltip(a.tr("Code (`code`)", "Code (`code`)")).Clicked() {
-			a.composeBody = insertComposeSnippet(a.composeBody, "`code`")
-		}
-		if ui.Button(c.Key("cmp-fmt-ul"), "• Liste").Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
-			a.composeBody = insertComposeSnippet(a.composeBody, "\n- Punkt 1\n- Punkt 2")
-		}
-		if ui.Button(c.Key("cmp-fmt-table"), a.tr("▦ Tabelle", "▦ Table")).Padding(1, 7).Tooltip(a.tr(
-			"Tabelle einfügen: übernimmt eine kopierte Tabelle (Confluence, Excel, Webseite) mit Links, sonst eine leere Vorlage. Wird als echte Tabelle gesendet.",
-			"Insert table: takes a copied table (Confluence, Excel, web page) with its links, or an empty template. Sent as a real table.")).Clicked() {
-			a.insertComposeTable()
-		}
-	})
-	bodyArea := ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext (⌘↩ zum Senden)…", "Message body (⌘↩ to send)…")).FillWidth()
-	switch {
-	case inWindow:
-		bodyArea.Grow(1).MinHeight(180)
-	case a.isPhone():
-		bodyArea.MinHeight(max(240, a.winH-380))
-	default:
-		bodyArea.Height(190)
-	}
-	if !a.readOnly && !a.composeBusy && (bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) || c.Shortcut(ui.Cmd, ui.KeyEnter)) {
-		if !a.composeConfirm {
-			a.composeConfirm = true
-			a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
-		} else {
-			a.SendCompose(context.Background(), a.buildComposeReq(false))
+		if added > 0 {
+			a.toast(a.trf("%d Datei(en) als Anhang hinzugefügt", "%d file(s) attached", added), "success")
 		}
 	}
-
-	if a.composeForwardHTML != "" {
-		ui.Checkbox(c.Key("cmp-keep-html"), &a.composeKeepHTML, a.tr("Original-Formatierung (HTML) beim Weiterleiten beibehalten", "Keep original HTML formatting when forwarding"))
+	if !a.readOnly && !a.isPhone() && !c.FocusTakesText() && c.Shortcut(ui.Cmd, ui.KeyV) {
+		a.pasteClipboardIntoCompose(true)
 	}
-
-	// Outgoing attachments bar (native file picker + manual path input + carried-over draft/forward attachments)
-	ui.Column(c).FillWidth().Gap(6).Children(func() {
-		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, iconPaperclip).Size(14, 14).TextColor(t.TextMuted)
-			if ui.Button(c.Key("cmp-att-browse"), a.tr("Datei wählen…", "Browse…")).Clicked() {
-				a.pickFile(FilePickRequest{
-					Mode:  "open-multi",
-					Title: a.tr("Anhänge auswählen", "Select Attachments"),
-				}, func(paths []string) {
-					for _, p := range paths {
-						a.addComposeAttachment(p)
-					}
-				})
-			}
-			attIn := ui.TextInput(c.Key("cmp-att-in"), &a.composeAttachInput).Placeholder(a.tr("Oder Pfad eingeben (z. B. ~/Downloads/datei.pdf)…", "Or type path (e.g. ~/Downloads/file.pdf)…")).Grow(1)
-			addClicked := ui.Button(c.Key("cmp-att-add"), a.tr("Anhängen", "Attach")).Clicked()
-			if (addClicked || attIn.Submitted()) && strings.TrimSpace(a.composeAttachInput) != "" {
-				a.addComposeAttachment(a.composeAttachInput)
-			}
-		})
-		if len(a.composeSourceAttachments) > 0 || len(a.composeAttachments) > 0 {
-			removeSrcIdx := -1
-			removeIdx := -1
-			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-				for i, sa := range a.composeSourceAttachments {
-					idx := i
-					name := sa.Name
-					if name == "" {
-						name = "attachment"
-					}
-					ui.Row(c.Key(fmt.Sprintf("cmp-src-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
-						ui.Text(c, name).FontSize(11.5).SingleLine()
-						if ui.Button(c.Key(fmt.Sprintf("cmp-src-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
-							removeSrcIdx = idx
-						}
-					})
-				}
-				for i, p := range a.composeAttachments {
-					idx := i
-					name := filepath.Base(p)
-					ui.Row(c.Key(fmt.Sprintf("cmp-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
-						ui.Text(c, name).FontSize(11.5).SingleLine()
-						if ui.Button(c.Key(fmt.Sprintf("cmp-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
-							removeIdx = idx
-						}
-					})
+	cmpWrap.Children(func() {
+		if !inWindow {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, title).FontSize(15).Bold().Grow(1)
+				if ui.Button(c.Key("cmp-x"), "✕").Tooltip(a.tr("Schließen (esc)", "Close (esc)")).Clicked() {
+					a.composeOpen = false
 				}
 			})
-			if removeSrcIdx >= 0 {
-				a.removeComposeSourceAttachment(removeSrcIdx)
-			}
-			if removeIdx >= 0 {
-				a.removeComposeAttachment(removeIdx)
-			}
 		}
-	})
+		if a.composeCloseAsk {
+			ui.Row(c.Key("cmp-close-ask")).FillWidth().Padding(8, 10).Gap(8).AlignItems(ui.Center).Radius(8).
+				Background(withAlpha(t.Warning, 0.16)).Border(1, withAlpha(t.Warning, 0.5)).Children(func() {
+				ui.Text(c, a.tr("Nicht gesendet.", "Not sent.")).FontSize(12.5).Bold().Grow(1).MinWidth(0).SingleLine()
+				if !a.readOnly && ui.PrimaryButton(c.Key("cmp-ask-save"), a.tr("Als Entwurf speichern", "Save as draft")).Clicked() {
+					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+				}
+				if ui.Button(c.Key("cmp-ask-discard"), a.tr("Verwerfen", "Discard")).Clicked() {
+					a.closeCompose()
+				}
+				if ui.Button(c.Key("cmp-ask-keep"), a.tr("Weiter schreiben", "Keep writing")).Clicked() {
+					a.composeCloseAsk = false
+				}
+			})
+		}
 
-	if a.composeReplyEncrypted {
-		ui.Text(c, a.tr(
-			"Hinweis: Die Original-Mail war verschlüsselt. Aktiviere unten „S/MIME verschlüsseln“, falls das Empfänger-Zertifikat vorhanden ist.",
-			"Note: the original email was encrypted. Enable “S/MIME encrypt” below if the recipient certificate is available.",
-		)).FontSize(11.5).TextColor(t.Warning)
-	}
+		// Sender account / alias identity selector when multiple identities exist
+		if choices := a.composeIdentityChoices(); len(choices) > 1 {
+			labels := make([]string, 0, len(choices))
+			choiceByLabel := make(map[string]composeIdentityChoice, len(choices))
+			for _, ch := range choices {
+				labels = append(labels, ch.Label)
+				choiceByLabel[ch.Label] = ch
+			}
+			if _, ok := choiceByLabel[a.composeAccountLabel]; !ok && len(choices) > 0 {
+				a.composeAccountLabel = choices[0].Label
+				a.composeAccountID = choices[0].AccountID
+				a.composeIdentityID = choices[0].IdentityID
+				a.composeFromEmail = choices[0].Email
+				a.composeFromName = choices[0].Name
+			}
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.tr("Von:", "From:")).FontSize(12).Width(42).TextColor(t.TextMuted)
+				if ui.Select(c.Key("cmp-from"), &a.composeAccountLabel, labels).Grow(1).Changed() {
+					oldSig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+					ch := choiceByLabel[a.composeAccountLabel]
+					a.composeAccountID = ch.AccountID
+					a.composeIdentityID = ch.IdentityID
+					a.composeFromEmail = ch.Email
+					a.composeFromName = ch.Name
+					newSig := stripSignatureDelim(ch.Signature)
+					if newSig == "" {
+						newSig = stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+					}
+					if oldSig != "" && strings.Contains(a.composeBody, "-- \n"+oldSig) {
+						if newSig != "" {
+							a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "-- \n"+newSig, 1)
+						} else {
+							a.composeBody = strings.Replace(a.composeBody, "\n\n-- \n"+oldSig, "", 1)
+							a.composeBody = strings.Replace(a.composeBody, "-- \n"+oldSig, "", 1)
+						}
+					} else if oldSig == "" && newSig != "" {
+						a.composeBody = appendAccountSignature(a.composeBody, newSig)
+					}
+					if a.composeUsingWYSIWYG() && a.composeEditor.Widget() != nil {
+						a.composeEditor.UpdateSignature(composeSignatureBlockHTML(newSig))
+					}
+				}
+			})
+		}
 
-	if a.isDirectMode() && !a.readOnly {
-		ui.Row(c.Key("cmp-smime-bar")).FillWidth().Gap(10).Wrap().AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
-			ui.Text(c, "S/MIME:").FontSize(11.5).TextColor(t.TextMuted)
-			ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Auto", "Auto"), a.tr("Signieren", "Sign"), a.tr("Ohne", "Off"))
-			ui.Checkbox(c.Key("cmp-enc"), &a.composeEncrypt, a.tr("Verschlüsseln", "Encrypt"))
+		// To field + autocomplete suggestions
+		ui.TextInput(c.Key("cmp-to"), &a.composeTo).Placeholder(a.tr("An (Komma-getrennt)…", "To (comma-separated)…")).FillWidth()
+		a.refreshComposeSuggestions("to", a.composeTo)
+		a.renderComposeSuggestions(c, "to", a.composeSuggestTo)
+
+		// CC & BCC row + autocomplete suggestions
+		ui.Row(c).FillWidth().Gap(8).Children(func() {
+			ui.TextInput(c.Key("cmp-cc"), &a.composeCC).Placeholder(a.tr("CC (optional)…", "CC (optional)…")).Grow(1)
+			ui.TextInput(c.Key("cmp-bcc"), &a.composeBCC).Placeholder(a.tr("BCC (optional)…", "BCC (optional)…")).Grow(1)
 		})
-	}
+		a.refreshComposeSuggestions("cc", a.composeCC)
+		a.renderComposeSuggestions(c, "cc", a.composeSuggestCC)
+		a.refreshComposeSuggestions("bcc", a.composeBCC)
+		a.renderComposeSuggestions(c, "bcc", a.composeSuggestBCC)
 
-	if a.readOnly {
-		ui.Text(c, a.tr("Bitte zuerst ein IMAP/SMTP-Konto verbinden, um E-Mails zu senden.", "Please connect an IMAP/SMTP account first to send emails.")).FontSize(11.5).TextColor(t.Warning)
-	}
-
-	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		if inWindow {
-			if ui.Button(c.Key("cmp-win-close"), a.tr("Schließen", "Close")).Clicked() {
-				a.TryCloseComposeWindow()
+		ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
+		if a.composeUsingWYSIWYG() {
+			if a.composeEditor.Widget() == nil {
+				_ = a.composeEditor.Ensure()
+			}
+			if w := a.composeEditor.Widget(); w != nil {
+				if a.composeEditorLoadedGen != a.composeEditorGen {
+					if err := a.composeEditor.LoadContent(a.composeBodyHTML, a.composeThemePalette(), a.uiLang()); err == nil {
+						a.composeEditorLoadedGen = a.composeEditorGen
+					}
+				}
+				wvEl := ui.WebView(c, w).FillWidth()
+				if inWindow {
+					wvEl.Grow(1).MinHeight(240)
+				} else {
+					wvEl.Height(290)
+				}
+				goto afterComposeEditor
 			}
 		}
-		ui.Spacer(c)
-		if !a.readOnly {
-			if ui.Button(c.Key("cmp-draft"), a.tr("Entwurf speichern", "Save Draft")).Clicked() {
-				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+		ui.Row(c.Key("cmp-fmt-bar")).FillWidth().Gap(4).Wrap().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.tr("Format:", "Format:")).FontSize(11).TextColor(t.TextMuted)
+			if ui.Button(c.Key("cmp-fmt-b"), "B").Padding(1, 7).Tooltip(a.tr("Fett (**Text**)", "Bold (**text**)")).Clicked() {
+				a.composeBody = insertComposeSnippet(a.composeBody, "**fett**")
 			}
-			sendLabel := a.tr("Senden", "Send")
-			if a.composeConfirm {
-				sendLabel = a.tr("Wirklich senden?", "Confirm Send?")
+			if ui.Button(c.Key("cmp-fmt-i"), "I").Padding(1, 7).Tooltip(a.tr("Kursiv (*Text*)", "Italic (*text*)")).Clicked() {
+				a.composeBody = insertComposeSnippet(a.composeBody, "*kursiv*")
 			}
-			if a.composeBusy {
-				sendLabel = a.tr("Sende…", "Sending…")
+			if ui.Button(c.Key("cmp-fmt-code"), "</>").Padding(1, 7).Tooltip(a.tr("Code (`code`)", "Code (`code`)")).Clicked() {
+				a.composeBody = insertComposeSnippet(a.composeBody, "`code`")
 			}
-			if ui.PrimaryButton(c.Key("cmp-send"), sendLabel).Tooltip(a.tr("Senden (⌘↩)", "Send (⌘↩)")).Clicked() && !a.composeBusy {
+			if ui.Button(c.Key("cmp-fmt-ul"), "• Liste").Padding(1, 7).Tooltip(a.tr("Aufzählung (- Punkt)", "Bullet list (- item)")).Clicked() {
+				a.composeBody = insertComposeSnippet(a.composeBody, "\n- Punkt 1\n- Punkt 2")
+			}
+			if ui.Button(c.Key("cmp-fmt-table"), a.tr("▦ Tabelle", "▦ Table")).Padding(1, 7).Tooltip(a.tr(
+				"Tabelle einfügen: übernimmt eine kopierte Tabelle (Confluence, Excel, Webseite) mit Links, sonst eine leere Vorlage. Wird als echte Tabelle gesendet.",
+				"Insert table: takes a copied table (Confluence, Excel, web page) with its links, or an empty template. Sent as a real table.")).Clicked() {
+				a.insertComposeTable()
+			}
+		})
+		{
+			bodyArea := ui.TextArea(c.Key("cmp-body"), &a.composeBody).Placeholder(a.tr("Nachrichtentext (⌘↩ zum Senden)…", "Message body (⌘↩ to send)…")).FillWidth()
+			switch {
+			case inWindow:
+				bodyArea.Grow(1).MinHeight(180)
+			case a.isPhone():
+				bodyArea.MinHeight(max(240, a.winH-380))
+			default:
+				bodyArea.Height(190)
+			}
+			if !a.readOnly && !a.composeBusy && (bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) || c.Shortcut(ui.Cmd, ui.KeyEnter)) {
 				if !a.composeConfirm {
 					a.composeConfirm = true
+					a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
 				} else {
 					a.SendCompose(context.Background(), a.buildComposeReq(false))
 				}
 			}
 		}
+	afterComposeEditor:
+		if a.composeForwardHTML != "" && (!a.composeUsingWYSIWYG() || a.composeEditor.Widget() == nil) {
+			ui.Checkbox(c.Key("cmp-keep-html"), &a.composeKeepHTML, a.tr("Original-Formatierung (HTML) beim Weiterleiten beibehalten", "Keep original HTML formatting when forwarding"))
+		}
+
+		// Outgoing attachments bar (native file picker + clipboard paste + manual path input + carried-over draft/forward attachments)
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconPaperclip).Size(14, 14).TextColor(t.TextMuted)
+				if ui.Button(c.Key("cmp-att-browse"), a.tr("Datei wählen…", "Browse…")).Clicked() {
+					a.pickFile(FilePickRequest{
+						Mode:  "open-multi",
+						Title: a.tr("Anhänge auswählen", "Select Attachments"),
+					}, func(paths []string) {
+						for _, p := range paths {
+							a.addComposeAttachment(p)
+						}
+					})
+				}
+				if !a.isPhone() {
+					if ui.Button(c.Key("cmp-att-paste"), a.tr("Einfügen (Zwischenablage)", "Paste Clipboard")).Tooltip(a.tr("Kopierte Dateien oder Bilder als Anhang einfügen (oder Dateien hierher ziehen)", "Attach copied files or images from clipboard (or drag & drop files)")).Clicked() {
+						a.pasteClipboardIntoCompose(false)
+					}
+				}
+				attIn := ui.TextInput(c.Key("cmp-att-in"), &a.composeAttachInput).Placeholder(a.tr("Oder Pfad eingeben (z. B. ~/Downloads/datei.pdf)…", "Or type path (e.g. ~/Downloads/file.pdf)…")).Grow(1)
+				addClicked := ui.Button(c.Key("cmp-att-add"), a.tr("Anhängen", "Attach")).Clicked()
+				if (addClicked || attIn.Submitted()) && strings.TrimSpace(a.composeAttachInput) != "" {
+					a.addComposeAttachment(a.composeAttachInput)
+				}
+			})
+			if len(a.composeSourceAttachments) > 0 || len(a.composeAttachments) > 0 {
+				removeSrcIdx := -1
+				removeIdx := -1
+				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+					for i, sa := range a.composeSourceAttachments {
+						idx := i
+						name := sa.Name
+						if name == "" {
+							name = "attachment"
+						}
+						ui.Row(c.Key(fmt.Sprintf("cmp-src-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
+							ui.Text(c, name).FontSize(11.5).SingleLine()
+							if ui.Button(c.Key(fmt.Sprintf("cmp-src-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
+								removeSrcIdx = idx
+							}
+						})
+					}
+					for i, p := range a.composeAttachments {
+						idx := i
+						name := filepath.Base(p)
+						ui.Row(c.Key(fmt.Sprintf("cmp-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
+							ui.Text(c, name).FontSize(11.5).SingleLine()
+							if ui.Button(c.Key(fmt.Sprintf("cmp-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
+								removeIdx = idx
+							}
+						})
+					}
+				})
+				if removeSrcIdx >= 0 {
+					a.removeComposeSourceAttachment(removeSrcIdx)
+				}
+				if removeIdx >= 0 {
+					a.removeComposeAttachment(removeIdx)
+				}
+			}
+		})
+
+		if a.composeReplyEncrypted {
+			ui.Text(c, a.tr(
+				"Hinweis: Die Original-Mail war verschlüsselt. Aktiviere unten „S/MIME verschlüsseln“, falls das Empfänger-Zertifikat vorhanden ist.",
+				"Note: the original email was encrypted. Enable “S/MIME encrypt” below if the recipient certificate is available.",
+			)).FontSize(11.5).TextColor(t.Warning)
+		}
+
+		if a.isDirectMode() && !a.readOnly {
+			ui.Row(c.Key("cmp-smime-bar")).FillWidth().Gap(10).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
+				ui.Text(c, "S/MIME:").FontSize(11.5).TextColor(t.TextMuted)
+				ui.Segmented(c.Key("cmp-sign"), &a.composeSign, a.tr("Auto", "Auto"), a.tr("Signieren", "Sign"), a.tr("Ohne", "Off"))
+				ui.Checkbox(c.Key("cmp-enc"), &a.composeEncrypt, a.tr("Verschlüsseln", "Encrypt"))
+			})
+		}
+
+		if a.readOnly {
+			ui.Text(c, a.tr("Bitte zuerst ein IMAP/SMTP-Konto verbinden, um E-Mails zu senden.", "Please connect an IMAP/SMTP account first to send emails.")).FontSize(11.5).TextColor(t.Warning)
+		}
+
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			if inWindow {
+				if ui.Button(c.Key("cmp-win-close"), a.tr("Schließen", "Close")).Clicked() {
+					a.TryCloseComposeWindow()
+				}
+			}
+			ui.Spacer(c)
+			if !a.readOnly {
+				if ui.Button(c.Key("cmp-draft"), a.tr("Entwurf speichern", "Save Draft")).Clicked() {
+					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+				}
+				sendLabel := a.tr("Senden", "Send")
+				if a.composeConfirm {
+					sendLabel = a.tr("Wirklich senden?", "Confirm Send?")
+				}
+				if a.composeBusy {
+					sendLabel = a.tr("Sende…", "Sending…")
+				}
+				if ui.PrimaryButton(c.Key("cmp-send"), sendLabel).Tooltip(a.tr("Senden (⌘↩)", "Send (⌘↩)")).Clicked() && !a.composeBusy {
+					if !a.composeConfirm {
+						a.composeConfirm = true
+					} else {
+						a.SendCompose(context.Background(), a.buildComposeReq(false))
+					}
+				}
+			}
+		})
 	})
 }
 
@@ -1126,7 +1207,7 @@ func (a *App) buildComposeReq(openWindow bool) backend.ComposeRequest {
 func (a *App) currentViewTitle() string {
 	switch a.navID {
 	case "focus":
-		return a.tr("Fokus (Ungelesen)", "Focus (Unread)")
+		return a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)")
 	case "recent":
 		return a.tr("Aktuelle Mails", "Recent Mail")
 	case "action":

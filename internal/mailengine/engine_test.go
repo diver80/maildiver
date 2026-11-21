@@ -635,3 +635,46 @@ func TestExtractAttachmentByPartName(t *testing.T) {
 		t.Fatalf("unexpected extracted attachment: name=%q ct=%q data=%q", name, ct, string(data))
 	}
 }
+
+func TestFocusUnreadOrFlaggedQuery(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenStore(filepath.Join(t.TempDir(), "focus.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.UpsertFolder(ctx, StoredFolder{ID: "inbox", AccountID: "acc1", Name: "INBOX", Path: "INBOX", Type: "inbox"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertFolder(ctx, StoredFolder{ID: "trash", AccountID: "acc1", Name: "Trash", Path: "Trash", Type: "trash"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	old := time.Now().AddDate(0, 0, -40).Unix()
+	seed := []StoredMessage{
+		{ID: "m-unread-new", AccountID: "acc1", FolderID: "inbox", FolderPath: "INBOX", UID: 1, Subject: "Neu", DateUnix: now, Read: false, Flagged: false},
+		{ID: "m-read-flagged-old", AccountID: "acc1", FolderID: "inbox", FolderPath: "INBOX", UID: 2, Subject: "Wichtig alt", DateUnix: old, Read: true, Flagged: true},
+		{ID: "m-read-plain", AccountID: "acc1", FolderID: "inbox", FolderPath: "INBOX", UID: 3, Subject: "Erledigt", DateUnix: now, Read: true, Flagged: false},
+		{ID: "m-unread-old", AccountID: "acc1", FolderID: "inbox", FolderPath: "INBOX", UID: 4, Subject: "Alt ungelesen", DateUnix: old, Read: false, Flagged: false},
+		{ID: "m-trash-flagged", AccountID: "acc1", FolderID: "trash", FolderPath: "Trash", UID: 5, Subject: "Papierkorb", DateUnix: now, Read: true, Flagged: true},
+	}
+	for _, m := range seed {
+		if err := st.UpsertMessage(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, total, err := st.ListMessages(ctx, MessageQuery{UnreadOrFlagged: true, Days: 14, HeadersOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("expected 2 focus messages, got total=%d len=%d (%+v)", total, len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if !ids["m-unread-new"] || !ids["m-read-flagged-old"] {
+		t.Fatalf("unexpected focus IDs: %+v", ids)
+	}
+}

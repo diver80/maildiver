@@ -183,6 +183,9 @@ func (c *Client) Messages(ctx context.Context, f MessagesFilter) (MessagesPage, 
 	if f.Unread != nil {
 		params["unread"] = *f.Unread
 	}
+	if f.UnreadOrFlagged {
+		params["unreadOrFlagged"] = true
+	}
 	if f.Days > 0 {
 		params["days"] = f.Days
 	}

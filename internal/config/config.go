@@ -53,6 +53,8 @@ type AppConfig struct {
 	// sidebar (all other expandable folders in that account start collapsed).
 	// Absent accountID uses the built-in default (INBOX expanded to level 2; level 2+ & Archives collapsed).
 	ExpandedFolders map[string][]string `json:"expandedFolders,omitempty"`
+	// CollapsedAccounts stores accountIDs whose top-level sidebar folder section is collapsed.
+	CollapsedAccounts []string `json:"collapsedAccounts,omitempty"`
 	// HiddenCalendars stores calendar IDs unchecked in the multi-select calendar filter.
 	HiddenCalendars []string `json:"hiddenCalendars,omitempty"`
 	// AllowedImageSenders stores lowercase sender emails whose remote images load automatically.

@@ -159,6 +159,12 @@ type composeState struct {
 	composeBCC               string
 	composeSubject           string
 	composeBody              string
+	composeBodyHTML          string
+	composeEditor            ComposeEditorHost
+	composeEditorGen         int
+	composeEditorLoadedGen   int
+	composeEditorDirty       bool
+	composeSyncSeq           uint64
 	composeForwardHTML       string
 	composeForwardMsgID      string
 	composeForwardFrom       string
@@ -1024,8 +1030,7 @@ func (a *App) viewLoad() messageLoad {
 		// "Recent mail" across all folders; searches and folders reach back to the first mail.
 		req.filter.Days = 30
 	case req.navID == "focus":
-		unread := true
-		req.filter.Unread = &unread
+		req.filter.UnreadOrFlagged = true
 		req.filter.Days = 14
 	case req.navID == "action":
 		req.actionIDs = make(map[string]bool)
@@ -1693,10 +1698,19 @@ func (a *App) SaveDraft(ctx context.Context, req backend.ComposeRequest, success
 	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
 	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
 	dc := a.opts.Direct
+	ed := a.composeEditor
+	usingWYSIWYG := a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
 	a.composeBusy = true
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
+		if usingWYSIWYG {
+			if htmlOut, textOut, ok := ed.ReadContent(c); ok {
+				req.BodyHTML = htmlOut
+				req.Body = textOut
+				req.IsHTML = true
+			}
+		}
 		if keepHTML && fwdHTML != "" && req.BodyHTML == "" {
 			var inlineImgs map[string]mailengine.InlineImage
 			if dc != nil && fwdMsgID != "" {
@@ -1753,21 +1767,26 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 	for _, sa := range req.SourceAttachments {
 		srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
 	}
-	req.IdempotencyKey = backend.ContentIdempotencyKey(a.composeNonce, "send",
-		req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
-		strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
-		req.Subject, req.Body, req.ReplyToMessageID, req.ReplyType, req.Sign,
-		strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
+	composeNonce := a.composeNonce
 	fwdMsgID := a.composeForwardMsgID
 	fwdHTML := a.composeForwardHTML
 	keepHTML := a.composeKeepHTML
 	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
 	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
 	dc := a.opts.Direct
+	ed := a.composeEditor
+	usingWYSIWYG := a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
 	a.composeBusy = true
 	go func() {
 		c, cancel := context.WithTimeout(ctx, backend.ComposeSendTimeout)
 		defer cancel()
+		if usingWYSIWYG {
+			if htmlOut, textOut, ok := ed.ReadContent(c); ok {
+				req.BodyHTML = htmlOut
+				req.Body = textOut
+				req.IsHTML = true
+			}
+		}
 		if keepHTML && fwdHTML != "" && req.BodyHTML == "" {
 			var inlineImgs map[string]mailengine.InlineImage
 			if dc != nil && fwdMsgID != "" {
@@ -1775,6 +1794,11 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 			}
 			req.BodyHTML = BuildForwardHTML(extractUserTopText(req.Body, fwdSep), fwdTitle, fwdFrom, fwdDate, fwdSubj, fwdHTML, inlineImgs)
 		}
+		req.IdempotencyKey = backend.ContentIdempotencyKey(composeNonce, "send",
+			req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
+			strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
+			req.Subject, req.Body, req.BodyHTML, req.ReplyToMessageID, req.ReplyType, req.Sign,
+			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
 		raw, err := bc.ComposeSend(c, req)
 		a.emitUpdate(func() {
 			a.composeBusy = false
@@ -2532,6 +2556,9 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeEncrypt = false
 	a.composeReplyEncrypted = false
 	a.composeBaseline, a.composeCloseAsk = "", false
+	a.composeBodyHTML = ""
+	a.composeEditorDirty = false
+	a.composeEditorGen++
 	a.composeOpen = true
 	a.composeWindowSeq++
 	a.syncAuxWindows()
@@ -2543,7 +2570,11 @@ func (a *App) composeSnapshot() string {
 	for i, sa := range a.composeSourceAttachments {
 		srcNames[i] = sa.MessageID + ":" + sa.PartName + ":" + sa.Name
 	}
-	return strings.Join([]string{a.composeTo, a.composeCC, a.composeBCC, a.composeSubject, a.composeBody,
+	dirtyFlag := ""
+	if a.composeEditorDirty {
+		dirtyFlag = "dirty"
+	}
+	return strings.Join([]string{a.composeTo, a.composeCC, a.composeBCC, a.composeSubject, a.composeBody, a.composeBodyHTML, dirtyFlag,
 		strings.Join(a.composeAttachments, "\x00"), strings.Join(srcNames, "\x00")}, "\x01")
 }
 
@@ -2556,6 +2587,8 @@ func (a *App) closeCompose() {
 	a.composeForwardHTML = ""
 	a.composeForwardMsgID = ""
 	a.composeKeepHTML = false
+	a.composeBodyHTML = ""
+	a.composeEditorDirty = false
 	a.syncAuxWindows()
 }
 
@@ -2582,7 +2615,10 @@ func (a *App) OpenComposeNew() {
 	a.composeCC = ""
 	a.composeBCC = ""
 	a.composeSubject = ""
-	a.composeBody = appendAccountSignature("", a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+	sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+	a.composeBody = appendAccountSignature("", sig)
+	a.composeBodyHTML = buildComposeEditorInitialHTML("", stripSignatureDelim(sig), "", "", nil, "")
+	a.composeEditorGen++
 }
 
 // OpenComposeFromMailto opens the compose dialog prefilled from a mailto: URI (UI thread).
@@ -2597,7 +2633,10 @@ func (a *App) OpenComposeFromMailto(rawURL string) {
 	a.composeBCC = f.BCC
 	a.composeSubject = f.Subject
 	if f.Body != "" {
-		a.composeBody = appendAccountSignature(f.Body, a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+		sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+		a.composeBody = appendAccountSignature(f.Body, sig)
+		a.composeBodyHTML = buildComposeEditorInitialHTML(f.Body, stripSignatureDelim(sig), "", "", nil, "")
+		a.composeEditorGen++
 	}
 }
 
@@ -2634,6 +2673,12 @@ func (a *App) OpenComposeFromDraft(msg *backend.MessageDetail) {
 		body, _ = htmlMailMarkdown(msg.BodyHtml)
 	}
 	a.composeBody = body
+	if strings.TrimSpace(msg.BodyHtml) != "" {
+		a.composeBodyHTML = SanitizeEmailHTML(msg.BodyHtml, nil, false)
+	} else {
+		a.composeBodyHTML = buildComposeEditorInitialHTML(body, "", "", "", nil, "")
+	}
+	a.composeEditorGen++
 }
 
 // isDraftsMessage reports whether msg resides in a Drafts folder.
@@ -2680,7 +2725,11 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 		subj = "Re: " + subj
 	}
 	a.composeSubject = subj
-	a.composeBody = appendAccountSignature(body, a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)) + a.replyQuote(msg)
+	sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+	quote := a.replyQuote(msg)
+	a.composeBody = appendAccountSignature(body, sig) + quote
+	a.composeBodyHTML = buildComposeEditorInitialHTML(body, stripSignatureDelim(sig), "", "", nil, quote)
+	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
 }
 
@@ -2819,7 +2868,12 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeForwardSubj = msg.Subject
 		a.composeForwardSep = sep
 		a.composeKeepHTML = true
+		fwdMeta := fmt.Sprintf("%s\n%s %s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
+		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, fwdMeta, msg.BodyHtml, nil, "")
+	} else {
+		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, "", "", nil, header)
 	}
+	a.composeEditorGen++
 }
 
 func lastRecipientToken(raw string) string {

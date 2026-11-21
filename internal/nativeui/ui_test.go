@@ -333,7 +333,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatalf("expected language switched to en, got ui=%q cfg=%q", app.uiLang(), cur.Language)
 	}
 	tt.Frame()
-	if !tt.HasText("AI Assistant") || !tt.HasText("Focus (Unread)") || !tt.HasText("Summarize") || !tt.HasText("Contacts") {
+	if !tt.HasText("AI Assistant") || !tt.HasText("Focus (Unread & ★)") || !tt.HasText("Summarize") || !tt.HasText("Contacts") {
 		t.Fatalf("expected English main view labels; texts=%v", tt.Texts())
 	}
 	if !tt.HasText("Complete Missing Fields") || !tt.HasText("Import Contact") {

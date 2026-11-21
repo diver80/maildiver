@@ -1,9 +1,12 @@
 package nativeui
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -51,9 +54,17 @@ type settingsUI struct {
 	newImageSender      string
 
 	agentBackend, agentModel, agentEndpoint string
+	agentModels                             []string
+	agentModelsKey                          string
+	agentModelsLoading                      bool
+	agentModelCustom                        bool
 
 	classifyAI                        bool
 	clfBackend, clfModel, clfEndpoint string
+	clfModels                         []string
+	clfModelsKey                      string
+	clfModelsLoading                  bool
+	clfModelCustom                    bool
 	maxCalls                          string
 	allowCLI                          bool
 
@@ -539,17 +550,7 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		note(a.tr("Der KI-Assistent ist in config.json ausgeschaltet.", "The AI assistant is switched off in config.json."), t.Warning)
 	}
 	field("set-ag-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1) })
-	agHint, agIsCLI := ai.CLIModelHints(s.agentBackend)
-	field("set-ag-m", a.tr("Modell", "Model"), func() {
-		ph := a.tr("leer = Standard des Anbieters", "empty = provider default")
-		if agIsCLI {
-			ph = a.tr(agHint.PlaceholderDE, agHint.PlaceholderEN)
-		}
-		ui.TextInput(c.Key("set-ag-mi"), &s.agentModel).Placeholder(ph).Grow(1)
-	})
-	if agIsCLI {
-		a.renderCLIModelHintChips(c, "set-ag-cli", &s.agentModel, agHint)
-	}
+	a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
 	field("set-ag-e", "Endpoint", func() {
 		ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 	})
@@ -562,17 +563,7 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
 	if s.classifyAI {
 		field("set-clf-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1) })
-		clfHint, clfIsCLI := ai.CLIModelHints(s.clfBackend)
-		field("set-clf-m", a.tr("Modell", "Model"), func() {
-			ph := a.tr("leer = günstiges Standardmodell", "empty = cheap default model")
-			if clfIsCLI {
-				ph = a.tr(clfHint.PlaceholderDE, clfHint.PlaceholderEN)
-			}
-			ui.TextInput(c.Key("set-clf-mi"), &s.clfModel).Placeholder(ph).Grow(1)
-		})
-		if clfIsCLI {
-			a.renderCLIModelHintChips(c, "set-clf-cli", &s.clfModel, clfHint)
-		}
+		a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
 		field("set-clf-e", "Endpoint", func() {
 			ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 		})
@@ -610,4 +601,111 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	}
 
 	a.renderSettingsLANQRSection(c)
+}
+
+func (a *App) renderSettingsModelField(
+	c *ui.Context,
+	field func(string, string, func()),
+	keyPrefix string,
+	backendName string,
+	modelVal *string,
+	endpointVal string,
+	models *[]string,
+	loadedKey *string,
+	loading *bool,
+	customMode *bool,
+	fallbackPH string,
+) {
+	wantKey := backendName + "|" + strings.TrimSpace(endpointVal)
+	hint, isCLI := ai.CLIModelHints(backendName)
+	if !isCLI && *loadedKey != wantKey && !*loading {
+		*loadedKey = wantKey
+		a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, wantKey)
+	}
+	field(keyPrefix+"-m", a.tr("Modell", "Model"), func() {
+		if !isCLI && len(*models) > 0 && !*customMode {
+			defLbl := a.tr("Standard (Anbieter)", "Default (Provider)")
+			customLbl := a.tr("Eigene Modell-ID…", "Custom model ID…")
+			choices := make([]string, 0, len(*models)+3)
+			choices = append(choices, defLbl)
+			cur := strings.TrimSpace(*modelVal)
+			if cur != "" && !slices.Contains(*models, cur) {
+				choices = append(choices, cur)
+			}
+			choices = append(choices, *models...)
+			choices = append(choices, customLbl)
+			sel := cur
+			if sel == "" {
+				sel = defLbl
+			}
+			if ui.Select(c.Key(keyPrefix+"-ms"), &sel, choices).Grow(1).Changed() {
+				switch sel {
+				case defLbl:
+					*modelVal = ""
+				case customLbl:
+					*customMode = true
+				default:
+					*modelVal = sel
+				}
+			}
+		} else {
+			ph := fallbackPH
+			if isCLI {
+				ph = a.tr(hint.PlaceholderDE, hint.PlaceholderEN)
+			}
+			ui.TextInput(c.Key(keyPrefix+"-mi"), modelVal).Placeholder(ph).Grow(1)
+		}
+		if !isCLI {
+			if len(*models) > 0 {
+				toggleTip := a.tr("Modell-ID frei eingeben", "Enter custom model ID")
+				if *customMode {
+					toggleTip = a.tr("Aus Modell-Liste wählen", "Choose from model list")
+				}
+				if iconBtn(c.Key(keyPrefix+"-mc"), iconPen, toggleTip, ui.Color{}, *customMode).Clicked() {
+					*customMode = !*customMode
+				}
+			}
+			refBtn := iconBtn(c.Key(keyPrefix+"-mr"), iconRefresh, a.tr("Modelle neu laden", "Reload models"), ui.Color{}, false)
+			if *loading {
+				refBtn.Disabled(true)
+			}
+			if refBtn.Clicked() && !*loading {
+				a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, wantKey)
+			}
+		}
+	})
+	if isCLI {
+		a.renderCLIModelHintChips(c, keyPrefix+"-cli", modelVal, hint)
+	}
+}
+
+func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, loadedKey *string, loading *bool, wantKey string) {
+	*loading = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		cfg := a.cfg
+		if a.opts.ConfigLoader != nil {
+			if loaded, err := a.opts.ConfigLoader(); err == nil {
+				cfg = loaded
+			}
+		}
+		prov := ai.ProviderForBackend(cfg.AI, backendName)
+		if strings.TrimSpace(endpoint) != "" {
+			prov.Endpoint = strings.TrimSpace(endpoint)
+		}
+		list, _ := ai.ListModels(ctx, prov, a.opts.AnyLLMOpts...)
+		names := make([]string, 0, len(list))
+		for _, m := range list {
+			if m.ID != "" {
+				names = append(names, m.ID)
+			}
+		}
+		a.emitUpdate(func() {
+			*loading = false
+			if *loadedKey == wantKey {
+				*dst = names
+			}
+		})
+	}()
 }

@@ -203,13 +203,14 @@ func (s MessageSecurity) Readable() bool {
 }
 
 type MessagesFilter struct {
-	AccountID string
-	FolderID  string
-	Query     string
-	Unread    *bool
-	Days      int
-	Limit     int
-	Cursor    string
+	AccountID       string
+	FolderID        string
+	Query           string
+	Unread          *bool
+	UnreadOrFlagged bool
+	Days            int
+	Limit           int
+	Cursor          string
 }
 
 type MessagesPage struct {

@@ -8,6 +8,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -891,12 +892,26 @@ func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName,
 		return "", err
 	}
 	safeName := sanitizeDownloadFilename(name)
-	downloadsDir := os.TempDir()
-	if home, err := os.UserHomeDir(); err == nil {
-		downloadsDir = filepath.Join(home, "Downloads")
+	var downloadsDir string
+	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
+		// On mobile platforms app cache storage is writable and covered by FileProvider.
+		if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+			downloadsDir = filepath.Join(cache, "maildiver-attachments")
+		} else {
+			downloadsDir = filepath.Join(os.TempDir(), "maildiver-attachments")
+		}
+	} else {
+		downloadsDir = os.TempDir()
+		if home, err := os.UserHomeDir(); err == nil {
+			downloadsDir = filepath.Join(home, "Downloads")
+		}
 	}
 	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
-		return "", err
+		fallback := filepath.Join(os.TempDir(), "maildiver-attachments")
+		if ferr := os.MkdirAll(fallback, 0o755); ferr != nil {
+			return "", err
+		}
+		downloadsDir = fallback
 	}
 	target, f, err := createUniqueFile(downloadsDir, safeName)
 	if err != nil {

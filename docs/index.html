@@ -369,9 +369,9 @@
           <article class="card">
             <div class="icon">✦</div>
             <h3 data-i18n="f1.title">Flexible AI — Local &amp; Cloud</h3>
-            <p data-i18n="f1.desc">Run completely offline with Ollama, llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.</p>
+            <p data-i18n="f1.desc">Run completely offline with Ollama (e.g. Inkling 2 Mini via ollama run inkling-2-mini on 32GB+ Apple Silicon), llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.</p>
             <div class="tags">
-              <span class="tag">Ollama</span>
+              <span class="tag">Ollama / Inkling 2</span>
               <span class="tag">Claude / Gemini</span>
               <span class="tag">CLI Agents</span>
               <span class="tag" data-i18n="f1.tag">0-Token Rules</span>
@@ -381,7 +381,7 @@
           <article class="card">
             <div class="icon">⚡</div>
             <h3 data-i18n="f2.title">Native Performance</h3>
-            <p data-i18n="f2.desc">Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search across your entire mailbox history, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c), and detached compose &amp; event windows.</p>
+            <p data-i18n="f2.desc">Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search, Focus view keeping Unread &amp; ★ Starred mails pinned, persistent folder trees, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c/s), and detached compose &amp; event windows.</p>
             <div class="tags">
               <span class="tag">Go + mygo GPU</span>
               <span class="tag">SQLite FTS5</span>
@@ -405,7 +405,7 @@
           <article class="card">
             <div class="icon">📅</div>
             <h3 data-i18n="f4.title">Complete Suite: Mail, Calendar &amp; Contacts</h3>
-            <p data-i18n="f4.desc">Multi-account IMAP/SMTP (incl. Gmail &amp; Microsoft 365 XOAUTH2) with newest-on-top conversations, offline outbox queue, inline .ics RSVP, Month/Week/Agenda calendar with Google Calendar &amp; CalDAV sync, 1-click Teams/Meet/Zoom links, and local + Google + CardDAV Contacts.</p>
+            <p data-i18n="f4.desc">Multi-account IMAP/SMTP (incl. Gmail &amp; Microsoft 365 XOAUTH2) with desktop HTML WYSIWYG compose (inline pasted images, editable tables, drag &amp; drop attachments), offline outbox, inline .ics RSVP, Month/Week/Agenda calendar with Google &amp; CalDAV sync, and local + Google + CardDAV Contacts.</p>
             <div class="tags">
               <span class="tag">XOAUTH2</span>
               <span class="tag">CalDAV / CardDAV</span>
@@ -515,10 +515,10 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
           </div>
           <div class="card">
             <h3 data-i18n="plat.road">Release Highlights &amp; Roadmap</h3>
-            <p data-i18n="plat.road1">✓ <strong>S/MIME:</strong> .p12/.pfx import (OS Keychain), verify, decrypt, sign &amp; AES-256 encrypt</p>
-            <p data-i18n="plat.road2">✓ <strong>OAuth2 &amp; DAV:</strong> Gmail &amp; Microsoft 365 XOAUTH2 + CalDAV / CardDAV sync</p>
-            <p data-i18n="plat.road3">✓ <strong>Mobility &amp; Compose:</strong> AES-256-GCM LAN QR setup transfer, offline outbox &amp; rich-text bar</p>
-            <p data-i18n="plat.road4">→ <strong>Next:</strong> Native OpenPGP (PGP/MIME) &amp; Android APK/Play releases</p>
+            <p data-i18n="plat.road1">✓ <strong>S/MIME &amp; Security:</strong> .p12/.pfx import (OS Keychain), verify, decrypt, sign &amp; AES-256 encrypt</p>
+            <p data-i18n="plat.road2">✓ <strong>Compose &amp; Focus:</strong> Desktop HTML WYSIWYG editor, inline pasted images, editable tables, ★ Focus view</p>
+            <p data-i18n="plat.road3">✓ <strong>Mobile &amp; AI:</strong> Android multi-select &amp; swipe actions, LAN QR transfer, Ollama (Inkling 2 Mini) dropdowns</p>
+            <p data-i18n="plat.road4">→ <strong>Next:</strong> Native OpenPGP (PGP/MIME) &amp; Google Play Store distribution</p>
           </div>
         </div>
       </div>
@@ -570,15 +570,15 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "feat.title": "Built for speed, privacy, and real daily work",
         "feat.sub": "Everything lives in one native binary: direct IMAP/SMTP engine, local SQLite cache, calendar, contacts, and an opt-in AI copilot you stay in control of.",
         "f1.title": "Flexible AI — Local & Cloud",
-        "f1.desc": "Run completely offline with Ollama, llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.",
+        "f1.desc": "Run completely offline with Ollama (e.g. Inkling 2 Mini via ollama run inkling-2-mini on 32GB+ Apple Silicon), llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.",
         "f1.tag": "0-Token Rules",
         "f2.title": "Native Performance",
-        "f2.desc": "Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search across your entire mailbox history, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c), and detached compose & event windows.",
+        "f2.desc": "Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 full-text search, Focus view keeping Unread & ★ Starred mails pinned, persistent folder trees, real-time IMAP IDLE sync, keyboard-first navigation (j/k/r/e/v/c/s), and detached compose & event windows.",
         "f3.title": "Security & S/MIME / PGP",
         "f3.desc": "Full S/MIME support (.p12 import with OS Keychain keys, signature verification, decryption, signing & AES-256 encryption), remote images blocked by default with per-sender allowlist, strict HTML sanitizer, pixel-bomb & SSRF guards, TLS/STARTTLS-only transport, and risky attachment protection.",
         "f3.tag": "Tracker Blocking",
         "f4.title": "Complete Suite: Mail, Calendar & Contacts",
-        "f4.desc": "Multi-account IMAP/SMTP (incl. Gmail & Microsoft 365 XOAUTH2) with newest-on-top conversations, offline outbox queue, inline .ics RSVP, Month/Week/Agenda calendar with Google Calendar & CalDAV sync, 1-click Teams/Meet/Zoom links, and local + Google + CardDAV Contacts.",
+        "f4.desc": "Multi-account IMAP/SMTP (incl. Gmail & Microsoft 365 XOAUTH2) with desktop HTML WYSIWYG compose (inline pasted images, editable tables, drag & drop attachments), offline outbox, inline .ics RSVP, Month/Week/Agenda calendar with Google & CalDAV sync, and local + Google + CardDAV Contacts.",
         "f4.t1": "Email",
         "f4.t2": "Calendar & .ics",
         "f4.t3": "Contacts",
@@ -608,10 +608,10 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "plat.quick": "Homebrew & Quick Build",
         "plat.android": "Android builds use ./build.sh --android (requires Android NDK). Prebuilt macOS Universal .dmg and desktop binaries are attached to every GitHub Release.",
         "plat.road": "Release Highlights & Roadmap",
-        "plat.road1": "✓ S/MIME: .p12/.pfx import (OS Keychain), verify, decrypt, sign & AES-256 encrypt",
-        "plat.road2": "✓ OAuth2 & DAV: Gmail & Microsoft 365 XOAUTH2 + CalDAV / CardDAV sync",
-        "plat.road3": "✓ Mobility & Compose: AES-256-GCM LAN QR setup transfer, offline outbox & rich-text bar",
-        "plat.road4": "→ Next: Native OpenPGP (PGP/MIME) & Android APK/Play releases",
+        "plat.road1": "✓ S/MIME & Security: .p12/.pfx import (OS Keychain), verify, decrypt, sign & AES-256 encrypt",
+        "plat.road2": "✓ Compose & Focus: Desktop HTML WYSIWYG editor, inline pasted images, editable tables, ★ Focus view",
+        "plat.road3": "✓ Mobile & AI: Android multi-select & swipe actions, LAN QR transfer, Ollama (Inkling 2 Mini) dropdowns",
+        "plat.road4": "→ Next: Native OpenPGP (PGP/MIME) & Google Play Store distribution",
         "open.title": "Daily-driven on macOS · Testers & Pull Requests Welcome!",
         "open.desc": "MailDiver is actively developed and used every day on macOS. Feedback, bug reports, platform tests on Linux/Windows/Android, and Pull Requests are warmly welcome. Released under the MIT License.",
         "open.issues": "Report Issue / Feedback",
@@ -632,15 +632,15 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "feat.title": "Gebaut für Tempo, Sicherheit und den echten Arbeitsalltag",
         "feat.sub": "Alles in einem nativen Programm: direkte IMAP/SMTP-Engine, lokaler SQLite-Cache, Kalender, Kontakte und ein optionaler KI-Copilot, bei dem du die volle Kontrolle behältst.",
         "f1.title": "KI flexibel — Lokal & Cloud",
-        "f1.desc": "Komplett lokal mit Ollama, llama.cpp oder llamafile – oder flexibel mit Anthropic Claude, Google Gemini, OpenAI und CLI-Agenten (claude-cli, gemini-cli, opencode-cli). Lokale Filterregeln verbrauchen 0 Tokens, und der KI-Copilot schlägt Aktionen nur vor – nichts läuft ohne deinen Klick.",
+        "f1.desc": "Komplett lokal mit Ollama (z. B. Inkling 2 Mini über ollama run inkling-2-mini auf Macs ab 32 GB RAM), llama.cpp oder llamafile – oder flexibel mit Anthropic Claude, Google Gemini, OpenAI und CLI-Agenten (claude-cli, gemini-cli, opencode-cli). Lokale Filterregeln verbrauchen 0 Tokens, und der KI-Copilot schlägt Aktionen nur vor – nichts läuft ohne deinen Klick.",
         "f1.tag": "0-Token-Regeln",
         "f2.title": "Native Performance",
-        "f2.desc": "Kompiliertes Go-Backend und GPU-beschleunigte mygo-Oberfläche in einem Prozess. Sofortige lokale SQLite-FTS5-Volltextsuche über das gesamte Postfach, Echtzeit-IMAP-IDLE, Tastatur-Bedienung (j/k/r/e/v/c) und eigene Fenster für Verfassen & Termine.",
+        "f2.desc": "Kompiliertes Go-Backend und GPU-beschleunigte mygo-Oberfläche in einem Prozess. Sofortige SQLite-FTS5-Suche, Fokus-Ansicht mit Ungelesenen & ★ Markierten, dauerhaft gespeicherte Ordnerbäume, IMAP IDLE, Tastatur-Bedienung (j/k/r/e/v/c/s) und eigene Fenster für Verfassen & Termine.",
         "f3.title": "Sicherheit & S/MIME / PGP",
         "f3.desc": "Vollständiges S/MIME (.p12-Import mit Schlüsseln im OS-Schlüsselbund, Signaturprüfung, Entschlüsselung, Signieren & AES-256-Verschlüsselung), externe Bilder standardmäßig blockiert (mit Absender-Allowlist), strikter HTML-Sanitizer, Pixel-Bomb- & SSRF-Schutz, nur TLS/STARTTLS sowie Anhang-Schutz.",
         "f3.tag": "Tracker-Schutz",
         "f4.title": "Komplette Suite: E-Mail, Kalender & Kontakte",
-        "f4.desc": "Multi-Konto IMAP/SMTP (inkl. Gmail & Microsoft 365 XOAUTH2) mit Unterhaltungen (neueste oben), Offline-Postausgang, .ics-RSVP, Monats-/Wochen-/Agenda-Kalender mit Google Kalender & CalDAV, 1-Klick-Links zu Teams/Meet/Zoom sowie lokale, Google- & CardDAV-Kontakte.",
+        "f4.desc": "Multi-Konto IMAP/SMTP (inkl. Gmail & Microsoft 365 XOAUTH2) mit Desktop-HTML-WYSIWYG-Editor (Bilder per ⌘V einfügen, bearbeitbare Tabellen, Drag & Drop-Anhänge), Offline-Postausgang, .ics-RSVP, Monats-/Wochen-/Agenda-Kalender mit Google & CalDAV sowie lokale, Google- & CardDAV-Kontakte.",
         "f4.t1": "E-Mail",
         "f4.t2": "Kalender & .ics",
         "f4.t3": "Kontakte",
@@ -670,10 +670,10 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "plat.quick": "Homebrew & Schnell-Build",
         "plat.android": "Android-Builds laufen über ./build.sh --android (Android NDK benötigt). Ein fertiges macOS-Universal-.dmg und Desktop-Binaries hängen an jedem GitHub Release.",
         "plat.road": "Release-Highlights & Roadmap",
-        "plat.road1": "✓ S/MIME: .p12/.pfx-Import (Schlüsselbund), Prüfen, Entschlüsseln, Signieren & AES-256-Verschlüsselung",
-        "plat.road2": "✓ OAuth2 & DAV: Gmail & Microsoft 365 XOAUTH2 + CalDAV / CardDAV Sync",
-        "plat.road3": "✓ Mobilität & Verfassen: AES-256-GCM LAN-QR-Code-Transfer, Offline-Postausgang & Rich-Text-Leiste",
-        "plat.road4": "→ Als Nächstes: Natives OpenPGP (PGP/MIME) & Android-APK-Releases",
+        "plat.road1": "✓ S/MIME & Sicherheit: .p12/.pfx-Import (Schlüsselbund), Prüfen, Entschlüsseln, Signieren & AES-256",
+        "plat.road2": "✓ Verfassen & Fokus: Desktop HTML-WYSIWYG-Editor, Bilder per Copy&Paste, Tabellen-Editor, ★ Fokus",
+        "plat.road3": "✓ Mobil & KI: Android-Mehrfachauswahl & Swipe, LAN-QR-Transfer, Ollama (Inkling 2 Mini) Modellwahl",
+        "plat.road4": "→ Als Nächstes: Natives OpenPGP (PGP/MIME) & Play-Store-Verteilung",
         "open.title": "Täglich auf macOS im Einsatz · Tester & Pull-Requests willkommen!",
         "open.desc": "MailDiver ist aktiv in Entwicklung und bereits jeden Tag auf macOS im produktiven Einsatz. Feedback, Fehlerberichte, Tests auf Linux/Windows/Android und Pull-Requests sind herzlich willkommen! Veröffentlicht unter der MIT-Lizenz.",
         "open.issues": "Issue / Feedback melden",
