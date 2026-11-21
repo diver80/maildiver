@@ -92,6 +92,7 @@ func (a *App) openRuleEditor(existing *triage.NativeFilter) {
 	d.ruleEditPreviewCount = 0
 	d.ruleEditPreviewTotal = 0
 	d.ruleEditPreviewHits = nil
+	d.ruleEditPreviewNote = ""
 	d.ruleEditAccountMap = make(map[string]string)
 	var accLabels []string
 	for _, acc := range a.accounts {
@@ -227,6 +228,7 @@ func (a *App) sanitizedRuleConditions() []triage.NativeCondition {
 func (a *App) runRuleEditorPreview() {
 	d := &a.direct
 	conds := a.sanitizedRuleConditions()
+	d.ruleEditPreviewNote = ""
 	if len(conds) == 0 {
 		d.ruleEditPreviewDone = true
 		d.ruleEditPreviewCount = 0
@@ -234,19 +236,26 @@ func (a *App) runRuleEditorPreview() {
 		d.ruleEditPreviewHits = nil
 		return
 	}
+	for _, cd := range conds {
+		switch strings.ToLower(strings.TrimSpace(cd.Field)) {
+		case "body", "header", "attachment", "attachments":
+			d.ruleEditPreviewNote = a.tr(
+				"Hinweis: Die Live-Vorschau prüft nur geladene Listen-Header — Bedingungen auf Text/Header/Anhänge werden erst beim Ausführen vollständig geprüft.",
+				"Note: Preview checks loaded list headers only — body/header/attachment conditions are fully evaluated when running the rule.",
+			)
+		}
+	}
 	accID := d.ruleEditAccountMap[d.ruleEditAccountLbl]
 	if accID == "" {
 		accID = d.ruleEditOrigAccID
 	}
 	inputs := make([]triage.MessageInput, 0, len(a.messages))
 	marked := make(map[string]bool, len(a.messages))
-	byID := make(map[string]backend.MessageHeader, len(a.messages))
 	for _, m := range a.messages {
 		if accID != "" && m.AccountID != accID {
 			continue
 		}
 		marked[m.ID] = true
-		byID[m.ID] = m
 		inputs = append(inputs, triage.MessageInput{
 			ID:        m.ID,
 			AccountID: m.AccountID,
@@ -259,7 +268,7 @@ func (a *App) runRuleEditorPreview() {
 			Unread:    m.Unread,
 		})
 	}
-	rep := triage.EvaluateQuickRulePreview(conds, d.ruleEditMatchMode == 0, marked, inputs, accID)
+	rep := triage.EvaluateQuickRulePreview(conds, d.ruleEditMatchMode == 0, marked, inputs, "")
 	d.ruleEditPreviewDone = true
 	d.ruleEditPreviewCount = rep.MarkedMatched
 	d.ruleEditPreviewTotal = rep.MarkedTotal
@@ -332,8 +341,12 @@ func (a *App) buildRuleEditorRequest() (backend.FilterUpsertRequest, error) {
 	if len(actions) == 0 {
 		return backend.FilterUpsertRequest{}, fmt.Errorf("%s", a.tr("Bitte mindestens eine Aktion auswählen.", "Please select at least one action."))
 	}
+	if len(conds) > 0 {
+		// Normalize first condition's BooleanAnd to match mode so explicit grouping never desyncs.
+		conds[0].BooleanAnd = d.ruleEditMatchMode == 0
+	}
 	mode := "create"
-	if d.ruleEditOrigName != "" && strings.EqualFold(d.ruleEditOrigName, name) && d.ruleEditOrigAccID == accID {
+	if d.ruleEditOrigName != "" && d.ruleEditOrigAccID == accID {
 		mode = "update"
 	}
 	return backend.FilterUpsertRequest{
@@ -362,7 +375,7 @@ func (a *App) saveRuleEditor(ctx context.Context) {
 	}
 	origName := d.ruleEditOrigName
 	origAcc := d.ruleEditOrigAccID
-	renamed := origName != "" && (!strings.EqualFold(origName, req.Name) || origAcc != req.AccountID)
+	movedAccount := origName != "" && origAcc != "" && origAcc != req.AccountID
 
 	d.rulesBusy = true
 	d.rulesErr = ""
@@ -370,7 +383,7 @@ func (a *App) saveRuleEditor(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		_, uerr := bc.FilterUpsert(c, req)
-		if uerr == nil && renamed && a.opts.Direct != nil {
+		if uerr == nil && movedAccount && a.opts.Direct != nil {
 			_ = a.opts.Direct.DeleteFilter(c, origAcc, origName)
 		}
 		a.emitUpdate(func() {
@@ -446,7 +459,14 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr("Verknüpfung:", "Match:")).FontSize(11.5).TextColor(t.TextMuted)
+			prevMode := d.ruleEditMatchMode
 			ui.Segmented(c.Key("re-match"), &d.ruleEditMatchMode, a.tr("Alle Bedingungen (UND)", "All conditions (AND)"), a.tr("Mind. eine (ODER)", "Any condition (OR)"))
+			if d.ruleEditMatchMode != prevMode {
+				isAnd := d.ruleEditMatchMode == 0
+				for idx := range d.ruleEditConds {
+					d.ruleEditConds[idx].BooleanAnd = isAnd
+				}
+			}
 		})
 
 		ui.Column(c.Key("re-conds")).FillWidth().Gap(5).Children(func() {
@@ -513,6 +533,9 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 			ui.Column(c.Key("re-pv-box")).FillWidth().Padding(8, 10).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(3).Children(func() {
 				ui.Text(c, a.trf("Vorschau: %d von %d geladenen Mails getroffen", "Preview: %d of %d loaded emails matched", d.ruleEditPreviewCount, d.ruleEditPreviewTotal)).
 					FontSize(11.5).Bold().TextColor(t.Accent)
+				if d.ruleEditPreviewNote != "" {
+					ui.Text(c, d.ruleEditPreviewNote).FontSize(11).TextColor(t.Warning)
+				}
 				for _, hit := range d.ruleEditPreviewHits {
 					ui.Text(c, "• "+hit).FontSize(11).TextColor(t.TextMuted).SingleLine()
 				}

@@ -167,6 +167,7 @@ type composeState struct {
 	composeEditorLoadedGen   int
 	composeEditorDirty       bool
 	composeSyncSeq           uint64
+	composeSessionSeq        uint64
 	composeForwardHTML       string
 	composeForwardMsgID      string
 	composeForwardFrom       string
@@ -355,11 +356,11 @@ type App struct {
 	serverSearchDoneKey   string
 	serverSearchCount     int
 
-	// Reversible action Undo state (⌘Z) and timed Undo Send
-	undo        *undoAction
-	undoBusy    bool
-	pendingSend *pendingComposeSend
-	attPreview  attachmentPreviewState
+	// Reversible action Undo state (⌘Z) and timed Undo Send queue
+	undo         *undoAction
+	undoBusy     bool
+	pendingSends []*pendingComposeSend
+	attPreview   attachmentPreviewState
 
 	// Pending mailto: URI received before UI finished startup
 	pendingMailto string
@@ -1773,6 +1774,7 @@ func (a *App) SaveDraft(ctx context.Context, req backend.ComposeRequest, success
 	dc := a.opts.Direct
 	ed := a.composeEditor
 	usingWYSIWYG := a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
+	sessSeq := a.composeSessionSeq
 	a.composeBusy = true
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1804,7 +1806,9 @@ func (a *App) SaveDraft(ctx context.Context, req backend.ComposeRequest, success
 				a.selectedMsg = nil
 				a.syncPreviewForMessage(nil)
 			}
-			a.closeCompose()
+			if a.composeOpen && a.composeSessionSeq == sessSeq {
+				a.closeCompose()
+			}
 			a.toast(successMsg, "success")
 			a.startMessageLoad(ctx)
 			a.refreshFoldersBackground(ctx)
@@ -1829,16 +1833,19 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 		a.composeNonce = backend.NewIdempotencyKey()
 	}
 	a.sendPreparedCompose(ctx, req, a.composeNonce, a.composeForwardMsgID, a.composeForwardHTML, a.composeKeepHTML,
-		a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep)
+		a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep, a.composeSessionSeq, nil)
 }
 
-func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeRequest, composeNonce, fwdMsgID, fwdHTML string, keepHTML bool, fwdFrom, fwdDate, fwdSubj, fwdSep string) {
-	if a.composeBusy {
+func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeRequest, composeNonce, fwdMsgID, fwdHTML string, keepHTML bool, fwdFrom, fwdDate, fwdSubj, fwdSep string, fromSessionSeq uint64, restoreOnErr *composeDraftBackup) {
+	if fromSessionSeq != 0 && a.composeBusy {
 		return
 	}
 	bc, err := a.client()
 	if err != nil || a.readOnly {
 		a.toast(a.tr("Senden nicht erlaubt (Read-Only oder Offline)", "Sending not allowed (read-only or offline)"), "error")
+		if restoreOnErr != nil && !a.composeOpen {
+			a.restoreComposeFromBackup(*restoreOnErr)
+		}
 		return
 	}
 	if composeNonce == "" {
@@ -1851,8 +1858,10 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
 	dc := a.opts.Direct
 	ed := a.composeEditor
-	usingWYSIWYG := !req.IsHTML && a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
-	a.composeBusy = true
+	usingWYSIWYG := fromSessionSeq != 0 && !req.IsHTML && a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
+	if fromSessionSeq != 0 {
+		a.composeBusy = true
+	}
 	go func() {
 		c, cancel := context.WithTimeout(ctx, backend.ComposeSendTimeout)
 		defer cancel()
@@ -1877,10 +1886,29 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
 		raw, err := bc.ComposeSend(c, req)
 		a.emitUpdate(func() {
-			a.composeBusy = false
+			if fromSessionSeq != 0 {
+				a.composeBusy = false
+			}
 			if err != nil {
-				if !backend.IsOutcomeUnknown(err) {
+				if fromSessionSeq != 0 && !backend.IsOutcomeUnknown(err) {
 					a.composeNonce = backend.NewIdempotencyKey()
+				}
+				if restoreOnErr != nil {
+					if !a.composeOpen {
+						a.restoreComposeFromBackup(*restoreOnErr)
+						a.toast(a.tr("Senden fehlgeschlagen — E-Mail wieder im Editor: ", "Send failed — email restored in compose: ")+a.errText(err), "error")
+					} else {
+						// Another compose window is currently open; save failed email as Draft so nothing is lost.
+						draftReq := req
+						draftReq.IdempotencyKey = backend.NewIdempotencyKey()
+						go func() {
+							dctx, dcancel := context.WithTimeout(context.Background(), 15*time.Second)
+							defer dcancel()
+							_, _ = bc.ComposeDraft(dctx, draftReq)
+						}()
+						a.toast(a.tr("Senden fehlgeschlagen — als Entwurf gesichert: ", "Send failed — saved as draft: ")+a.errText(err), "error")
+					}
+					return
 				}
 				a.toast(a.tr("Senden fehlgeschlagen: ", "Send failed: ")+a.errText(err), "error")
 				return
@@ -1890,10 +1918,12 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 				a.selectedMsg = nil
 				a.syncPreviewForMessage(nil)
 			}
-			if a.composeOpen {
+			if fromSessionSeq != 0 && a.composeOpen && a.composeSessionSeq == fromSessionSeq {
 				a.closeCompose()
 			}
-			a.composeConfirm = false
+			if fromSessionSeq != 0 {
+				a.composeConfirm = false
+			}
 			res := backend.ParseComposeResult(raw)
 			if req.DraftMessageID != "" {
 				a.startMessageLoad(ctx)
@@ -2735,8 +2765,10 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeTplOpen = false
 	a.composeTplName = ""
 	a.composeEditorGen++
+	a.composeSessionSeq++
 	a.composeOpen = true
 	a.composeWindowSeq++
+	a.startComposeAutoSaveTicker(a.composeSessionSeq)
 	a.syncAuxWindows()
 }
 
@@ -2756,6 +2788,7 @@ func (a *App) composeSnapshot() string {
 
 // closeCompose closes the compose window on purpose (sent, saved, discarded).
 func (a *App) closeCompose() {
+	a.composeSessionSeq++
 	a.composeOpen, a.composeCloseAsk, a.composeBaseline = false, false, ""
 	a.composeDraftID = ""
 	a.composeInReplyTo = ""

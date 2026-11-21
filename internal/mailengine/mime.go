@@ -814,6 +814,7 @@ func ExtractAttachment(raw []byte, partName, filename string) (name, contentType
 	}
 	var foundName, foundCT string
 	var foundData []byte
+	var extractErr error
 	var walk func(e *message.Entity, prefix string, depth int) bool
 	walk = func(e *message.Entity, prefix string, depth int) bool {
 		if e == nil || depth > 12 {
@@ -860,26 +861,36 @@ func ExtractAttachment(raw []byte, partName, filename string) (name, contentType
 		if partID == "" {
 			partID = "1"
 		}
+		const maxAttachmentExtractBytes = 32 * 1024 * 1024
 		matchPart := partName != "" && partID == partName
 		matchName := partName == "" && filename != "" && strings.EqualFold(fn, filename)
-		fallbackName := filename != "" && strings.EqualFold(fn, filename)
-		if matchPart || matchName || (foundData == nil && fallbackName) {
-			buf, rerr := io.ReadAll(io.LimitReader(e.Body, 32*1024*1024))
+		if matchPart || matchName {
+			buf, rerr := io.ReadAll(io.LimitReader(e.Body, maxAttachmentExtractBytes+1))
 			if rerr != nil {
-				return false
+				extractErr = fmt.Errorf("Anhang %q lesen: %w", fn, rerr)
+				return true
+			}
+			if len(buf) > maxAttachmentExtractBytes {
+				extractErr = fmt.Errorf("Anhang %q überschreitet das Limit von %d MB", fn, maxAttachmentExtractBytes/(1024*1024))
+				return true
 			}
 			foundName = fn
 			foundCT = ct
 			foundData = buf
-			if matchPart {
-				return true
-			}
+			return true
 		}
 		return false
 	}
 	walk(entity, "", 0)
+	if extractErr != nil {
+		return "", "", nil, extractErr
+	}
 	if foundData == nil {
-		return "", "", nil, fmt.Errorf("Anhang %q nicht gefunden", filename)
+		target := filename
+		if target == "" {
+			target = partName
+		}
+		return "", "", nil, fmt.Errorf("Anhang %q nicht gefunden", target)
 	}
 	return foundName, foundCT, foundData, nil
 }

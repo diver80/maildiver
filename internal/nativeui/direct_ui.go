@@ -174,6 +174,7 @@ type directUI struct {
 	ruleEditPreviewCount int
 	ruleEditPreviewTotal int
 	ruleEditPreviewHits  []string
+	ruleEditPreviewNote  string
 
 	// Read-only Thunderbird profile importer
 	tbInitDone      bool
@@ -193,6 +194,8 @@ type directUI struct {
 
 	// S/MIME certificates & OpenPGP keys (Phase 2)
 	secSubTab       int // 0 = S/MIME, 1 = OpenPGP
+	smimeLoaded     bool
+	smimeBusy       bool
 	smimeIdentities []smime.CertInfo
 	smimeContacts   []smime.CertInfo
 	smimeP12Path    string
@@ -201,6 +204,7 @@ type directUI struct {
 	smimeMsg        string
 	smimeErr        bool
 
+	pgpLoaded     bool
 	pgpIdentities []pgp.KeyInfo
 	pgpContacts   []pgp.KeyInfo
 	pgpImpPath    string
@@ -208,6 +212,7 @@ type directUI struct {
 	pgpPasteArmor string
 	pgpGenName    string
 	pgpGenEmail   string
+	pgpGenPass    string
 	pgpFetchEmail string
 	pgpBusy       bool
 	pgpMsg        string
@@ -1780,8 +1785,18 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 			ui.Text(c, a.tr("Aktiviere unten eine 1-Klick-Vorlage oder markiere Mails in der Liste → „Quick-Regel“.", "Enable a 1-click preset below or select emails in the list → “Quick Rule”.")).FontSize(12).TextColor(t.TextMuted)
 		})
 	} else {
+		accFirst := map[string]int{}
+		accLast := map[string]int{}
+		for idx, r := range d.rules {
+			if _, ok := accFirst[r.AccountID]; !ok {
+				accFirst[r.AccountID] = idx
+			}
+			accLast[r.AccountID] = idx
+		}
 		for i, flt := range d.rules {
 			fCopy := flt
+			isFirstForAcc := i == accFirst[fCopy.AccountID]
+			isLastForAcc := i == accLast[fCopy.AccountID]
 			condSummary := triage.FormatConditionChain(fCopy.Conditions, fCopy.MatchAll, a.uiLang())
 			var acts []string
 			for _, ac := range fCopy.Actions {
@@ -1802,10 +1817,10 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 					} else {
 						pillBadge(c, a.tr("Pausiert", "Paused"), t.Surface, t.TextMuted)
 					}
-					if ui.Button(c.Key(fmt.Sprintf("dir-rup-%d", i)), "↑").Tooltip(a.tr("Nach oben", "Move up")).Padding(2, 6).Disabled(i == 0).Clicked() {
+					if ui.Button(c.Key(fmt.Sprintf("dir-rup-%d", i)), "↑").Tooltip(a.tr("Nach oben", "Move up")).Padding(2, 6).Disabled(isFirstForAcc).Clicked() {
 						a.moveDirectRule(context.Background(), fCopy.AccountID, fCopy.Name, -1)
 					}
-					if ui.Button(c.Key(fmt.Sprintf("dir-rdn-%d", i)), "↓").Tooltip(a.tr("Nach unten", "Move down")).Padding(2, 6).Disabled(i == len(d.rules)-1).Clicked() {
+					if ui.Button(c.Key(fmt.Sprintf("dir-rdn-%d", i)), "↓").Tooltip(a.tr("Nach unten", "Move down")).Padding(2, 6).Disabled(isLastForAcc).Clicked() {
 						a.moveDirectRule(context.Background(), fCopy.AccountID, fCopy.Name, 1)
 					}
 					toggleLbl := a.tr("Pausieren", "Pause")

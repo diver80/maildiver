@@ -181,6 +181,26 @@ func (a *App) captureComposeBackup() composeDraftBackup {
 	}
 }
 
+var (
+	htmlBodyOpenRE  = regexp.MustCompile(`(?is)^.*<body\b[^>]*>`)
+	htmlBodyCloseRE = regexp.MustCompile(`(?is)</body\s*>.*$`)
+)
+
+// extractHTMLBodyInner strips full-document <html><head><body> wrappers so restored HTML
+// can be safely injected into the WYSIWYG editor's innerHTML without nesting documents.
+func extractHTMLBodyInner(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if htmlBodyOpenRE.MatchString(s) {
+		s = htmlBodyOpenRE.ReplaceAllString(s, "")
+		s = htmlBodyCloseRE.ReplaceAllString(s, "")
+		return strings.TrimSpace(s)
+	}
+	return s
+}
+
 func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.initComposeCommon(b.AccountID)
 	a.composeAccountID = b.AccountID
@@ -198,7 +218,7 @@ func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.composeBCC = b.BCC
 	a.composeSubject = b.Subject
 	a.composeBody = b.Body
-	a.composeBodyHTML = b.BodyHTML
+	a.composeBodyHTML = extractHTMLBodyInner(b.BodyHTML)
 	a.composeForwardHTML = b.ForwardHTML
 	a.composeForwardMsgID = b.ForwardMsgID
 	a.composeForwardFrom = b.ForwardFrom
@@ -214,6 +234,8 @@ func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.composeReplyEncrypted = b.ReplyEncrypted
 	a.composeEditorDirty = true
 	a.composeDirtyAt = time.Now()
+	// Mark baseline distinct from current snapshot so closing asks before discarding unsent mail.
+	a.composeBaseline = "__restored__"
 	a.composeEditorGen++
 }
 
@@ -230,72 +252,78 @@ func (a *App) checkComposeMissingAttachment(req backend.ComposeRequest) bool {
 }
 
 // requestComposeSend runs missing-attachment guard and either starts the Undo-Send countdown
-// or sends immediately when UndoSendSeconds == 0.
+// or sends immediately when UndoSendSeconds == 0. Never blocks the UI thread on WebView JS eval.
 func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest) {
 	if a.composeBusy {
 		return
 	}
-	bc, err := a.client()
+	_, err := a.client()
 	if err != nil || a.readOnly {
 		a.toast(a.tr("Senden nicht erlaubt (Read-Only oder Offline)", "Sending not allowed (read-only or offline)"), "error")
 		return
 	}
-	_ = bc
 
+	sessSeq := a.composeSessionSeq
 	dc := a.opts.Direct
 	ed := a.composeEditor
 	usingWYSIWYG := a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
+	needFwdImgs := a.composeKeepHTML && a.composeForwardHTML != "" && req.BodyHTML == "" && dc != nil && a.composeForwardMsgID != ""
+	fwdMsgID := a.composeForwardMsgID
+	fwdHTML := a.composeForwardHTML
+	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
+	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
 
-	delaySec := a.cfg.App.EffectiveUndoSendSeconds()
-	if !a.composeMissingAttAck && len(req.Attachments) == 0 && len(req.SourceAttachments) == 0 {
-		// Check current editor text synchronously if WYSIWYG is active so we catch recent edits.
-		bodyToCheck := req.Body
-		if usingWYSIWYG {
-			rctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-			if htmlOut, textOut, ok := ed.ReadContent(rctx); ok {
-				req.BodyHTML = htmlOut
-				req.Body = textOut
-				req.IsHTML = true
-				bodyToCheck = textOut
+	if usingWYSIWYG || needFwdImgs {
+		a.composeBusy = true
+		go func() {
+			if usingWYSIWYG {
+				rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				if htmlOut, textOut, ok := ed.ReadContent(rctx); ok {
+					req.BodyHTML = htmlOut
+					req.Body = textOut
+					req.IsHTML = true
+				}
+				cancel()
 			}
-			cancel()
-		}
-		if kw := detectMissingAttachmentKeyword(extractComposeUserTextOnly(bodyToCheck)); kw != "" {
+			if needFwdImgs && req.BodyHTML == "" {
+				fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				inlineImgs, _ := dc.ReadAllInlineImages(fctx, fwdMsgID)
+				cancel()
+				req.BodyHTML = BuildForwardHTML(
+					extractUserTopText(req.Body, fwdSep),
+					fwdTitle, fwdFrom, fwdDate, fwdSubj, fwdHTML, inlineImgs,
+				)
+			}
+			a.emitUpdate(func() {
+				a.composeBusy = false
+				if !a.composeOpen || a.composeSessionSeq != sessSeq {
+					return
+				}
+				a.finalizeComposeSend(ctx, sessSeq, req)
+			})
+		}()
+		return
+	}
+	a.finalizeComposeSend(ctx, sessSeq, req)
+}
+
+func (a *App) finalizeComposeSend(ctx context.Context, sessSeq uint64, req backend.ComposeRequest) {
+	if !a.composeMissingAttAck && len(req.Attachments) == 0 && len(req.SourceAttachments) == 0 {
+		if kw := detectMissingAttachmentKeyword(extractComposeUserTextOnly(req.Body)); kw != "" {
 			a.composeMissingAttWarn = kw
 			return
 		}
 	}
 
+	delaySec := a.cfg.App.EffectiveUndoSendSeconds()
 	if delaySec <= 0 {
 		a.SendCompose(ctx, req)
 		return
 	}
 
-	// Read WYSIWYG contents into req + backup before closing compose for the Undo-Send grace window.
-	if usingWYSIWYG && !req.IsHTML {
-		rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		if htmlOut, textOut, ok := ed.ReadContent(rctx); ok {
-			req.BodyHTML = htmlOut
-			req.Body = textOut
-			req.IsHTML = true
-		}
-		cancel()
-	}
 	if a.composeNonce == "" {
 		a.composeNonce = backend.NewIdempotencyKey()
 	}
-	if a.composeKeepHTML && a.composeForwardHTML != "" && req.BodyHTML == "" && dc != nil && a.composeForwardMsgID != "" {
-		fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		inlineImgs, _ := dc.ReadAllInlineImages(fctx, a.composeForwardMsgID)
-		cancel()
-		req.BodyHTML = BuildForwardHTML(
-			extractUserTopText(req.Body, a.composeForwardSep),
-			a.tr("Weitergeleitete Nachricht", "Forwarded message"),
-			a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj,
-			a.composeForwardHTML, inlineImgs,
-		)
-	}
-
 	backup := a.captureComposeBackup()
 	backup.Body = req.Body
 	if req.BodyHTML != "" {
@@ -309,7 +337,7 @@ func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest
 		CreatedAt: now,
 		Deadline:  now.Add(time.Duration(delaySec) * time.Second),
 	}
-	a.pendingSend = ps
+	a.pendingSends = append(a.pendingSends, ps)
 	a.composeConfirm = false
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
@@ -321,13 +349,14 @@ func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest
 		for range ticker.C {
 			done := false
 			a.emitUpdate(func() {
-				if a.pendingSend == nil || a.pendingSend.Nonce != nonce {
+				ps := a.findPendingSend(nonce)
+				if ps == nil {
 					done = true
 					return
 				}
 				if !time.Now().Before(deadline) {
 					done = true
-					a.commitPendingSend(context.Background())
+					a.commitPendingSend(context.Background(), nonce)
 				}
 			})
 			if done {
@@ -337,28 +366,121 @@ func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest
 	}(ps.Nonce, ps.Deadline)
 }
 
-func (a *App) cancelPendingSend() {
-	ps := a.pendingSend
+func (a *App) findPendingSend(nonce string) *pendingComposeSend {
+	if len(a.pendingSends) == 0 {
+		return nil
+	}
+	if nonce == "" {
+		return a.pendingSends[0]
+	}
+	for _, ps := range a.pendingSends {
+		if ps != nil && ps.Nonce == nonce {
+			return ps
+		}
+	}
+	return nil
+}
+
+func (a *App) popPendingSend(nonce string) *pendingComposeSend {
+	for i, ps := range a.pendingSends {
+		if ps != nil && (nonce == "" || ps.Nonce == nonce) {
+			a.pendingSends = append(a.pendingSends[:i], a.pendingSends[i+1:]...)
+			return ps
+		}
+	}
+	return nil
+}
+
+func (a *App) cancelPendingSend(nonces ...string) {
+	nonce := ""
+	if len(nonces) > 0 {
+		nonce = nonces[0]
+	}
+	ps := a.findPendingSend(nonce)
 	if ps == nil || ps.Busy {
 		return
 	}
-	a.pendingSend = nil
+	a.popPendingSend(ps.Nonce)
 	a.restoreComposeFromBackup(ps.Restore)
 	a.toast(a.tr("Senden abgebrochen — E-Mail wieder im Editor", "Send cancelled — email restored in compose"), "info")
 }
 
-func (a *App) commitPendingSend(ctx context.Context) {
-	ps := a.pendingSend
+func (a *App) commitPendingSend(ctx context.Context, nonces ...string) {
+	nonce := ""
+	if len(nonces) > 0 {
+		nonce = nonces[0]
+	}
+	ps := a.findPendingSend(nonce)
 	if ps == nil || ps.Busy {
 		return
 	}
 	ps.Busy = true
-	a.pendingSend = nil
+	a.popPendingSend(ps.Nonce)
+	restoreCopy := ps.Restore
 	a.sendPreparedCompose(ctx, ps.Req, ps.Nonce, ps.Restore.ForwardMsgID, ps.Restore.ForwardHTML, ps.Restore.KeepHTML,
-		ps.Restore.ForwardFrom, ps.Restore.ForwardDate, ps.Restore.ForwardSubj, ps.Restore.ForwardSep)
+		ps.Restore.ForwardFrom, ps.Restore.ForwardDate, ps.Restore.ForwardSubj, ps.Restore.ForwardSep, 0, &restoreCopy)
 }
 
-// maybeAutoSaveComposeDraft runs from desktop/phone compose rendering to silently save dirty drafts.
+// FlushPendingSendsOnQuit synchronously dispatches any queued Undo-Send emails (or saves them as
+// drafts on failure) before the app exits so no email is silently dropped during shutdown.
+func (a *App) FlushPendingSendsOnQuit() {
+	if len(a.pendingSends) == 0 {
+		return
+	}
+	bc, err := a.client()
+	if err != nil || a.readOnly {
+		return
+	}
+	queue := a.pendingSends
+	a.pendingSends = nil
+	for _, ps := range queue {
+		if ps == nil || ps.Busy {
+			continue
+		}
+		ps.Busy = true
+		c, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		req := ps.Req
+		var srcAttKeys []string
+		for _, sa := range req.SourceAttachments {
+			srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
+		}
+		req.IdempotencyKey = backend.ContentIdempotencyKey(ps.Nonce, "send",
+			req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
+			strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
+			req.Subject, req.Body, req.BodyHTML, req.ReplyToMessageID, req.ReplyType, req.Sign,
+			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
+		if _, serr := bc.ComposeSend(c, req); serr != nil {
+			req.IdempotencyKey = backend.NewIdempotencyKey()
+			_, _ = bc.ComposeDraft(c, req)
+		}
+		cancel()
+	}
+}
+
+func (a *App) startComposeAutoSaveTicker(sessSeq uint64) {
+	if a.updateUI == nil || a.cfg.App.EffectiveDraftAutoSaveSeconds() <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			stop := false
+			a.emitUpdate(func() {
+				if !a.composeOpen || a.composeSessionSeq != sessSeq {
+					stop = true
+					return
+				}
+				a.maybeAutoSaveComposeDraft()
+			})
+			if stop {
+				return
+			}
+		}
+	}()
+}
+
+// maybeAutoSaveComposeDraft runs from desktop/phone compose rendering and the idle ticker to silently save dirty drafts.
 func (a *App) maybeAutoSaveComposeDraft() {
 	if !a.composeOpen || a.readOnly || a.composeBusy || a.composeAutoSaveBusy {
 		return
@@ -393,6 +515,7 @@ func (a *App) autoSaveDraft(ctx context.Context, snapAtStart string) {
 	if err != nil {
 		return
 	}
+	sessSeq := a.composeSessionSeq
 	req := a.buildComposeReq(false)
 	req.IdempotencyKey = backend.NewIdempotencyKey()
 	a.composeAutoSaveBusy = true
@@ -429,48 +552,55 @@ func (a *App) autoSaveDraft(ctx context.Context, snapAtStart string) {
 			if err != nil {
 				return
 			}
+			// Guard against stale in-flight auto-saves from a previous/closed compose session.
+			if !a.composeOpen || a.composeSessionSeq != sessSeq {
+				return
+			}
 			res := backend.ParseComposeResult(raw)
-			if a.composeOpen {
-				if res.DraftID != "" {
-					a.composeDraftID = res.DraftID
-				}
-				a.composeAutoSaveSnap = snapAtStart
-				a.composeAutoSaveSavedAt = time.Now()
-				if a.composeSnapshot() == snapAtStart {
-					a.composeBaseline = snapAtStart
-				}
+			if res.DraftID != "" {
+				a.composeDraftID = res.DraftID
+			}
+			a.composeAutoSaveSnap = snapAtStart
+			a.composeAutoSaveSavedAt = time.Now()
+			if a.composeSnapshot() == snapAtStart {
+				a.composeBaseline = snapAtStart
 			}
 		})
 	}()
 }
 
-// renderUndoSendBar displays the timed Undo-Send banner with Cancel & Send-Now buttons.
+// renderUndoSendBar displays timed Undo-Send banners for all queued outgoing emails.
 func (a *App) renderUndoSendBar(c *ui.Context) {
-	ps := a.pendingSend
-	if ps == nil {
+	if len(a.pendingSends) == 0 {
 		return
 	}
 	t := c.Theme()
-	rem := int(time.Until(ps.Deadline).Seconds()) + 1
-	if rem < 0 {
-		rem = 0
-	}
-	subj := strings.TrimSpace(ps.Req.Subject)
-	if subj == "" {
-		subj = a.tr("(Kein Betreff)", "(No Subject)")
-	}
-	msg := a.trf("Sende „%s“ in %d s…", "Sending “%s” in %d s…", subj, rem)
-	ui.Row(c.Key("undo-send-bar")).FillWidth().Padding(7, 12).Gap(8).AlignItems(ui.Center).
-		Background(withAlpha(t.Accent, 0.14)).BorderWidth(0, 0, 1, 0).BorderColor(withAlpha(t.Accent, 0.55)).Children(func() {
-		ui.Icon(c, iconSend).Size(14, 14).TextColor(t.Accent).Shrink(0)
-		ui.Text(c, msg).FontSize(12).Bold().Grow(1).MinWidth(0).SingleLine()
-		if ui.Button(c.Key("undo-send-now"), a.tr("Jetzt senden", "Send now")).Padding(3, 9).Clicked() && !ps.Busy {
-			a.commitPendingSend(context.Background())
+	for i, ps := range a.pendingSends {
+		if ps == nil {
+			continue
 		}
-		if ui.PrimaryButton(c.Key("undo-send-cancel"), a.tr("Senden abbrechen", "Undo send")).Clicked() && !ps.Busy {
-			a.cancelPendingSend()
+		psCopy := ps
+		rem := int(time.Until(psCopy.Deadline).Seconds()) + 1
+		if rem < 0 {
+			rem = 0
 		}
-	})
+		subj := strings.TrimSpace(psCopy.Req.Subject)
+		if subj == "" {
+			subj = a.tr("(Kein Betreff)", "(No Subject)")
+		}
+		msg := a.trf("Sende „%s“ in %d s…", "Sending “%s” in %d s…", subj, rem)
+		ui.Row(c.Key(fmt.Sprintf("undo-send-bar-%d-%s", i, psCopy.Nonce))).FillWidth().Padding(7, 12).Gap(8).AlignItems(ui.Center).
+			Background(withAlpha(t.Accent, 0.14)).BorderWidth(0, 0, 1, 0).BorderColor(withAlpha(t.Accent, 0.55)).Children(func() {
+			ui.Icon(c, iconSend).Size(14, 14).TextColor(t.Accent).Shrink(0)
+			ui.Text(c, msg).FontSize(12).Bold().Grow(1).MinWidth(0).SingleLine()
+			if ui.Button(c.Key("undo-send-now-"+psCopy.Nonce), a.tr("Jetzt senden", "Send now")).Padding(3, 9).Clicked() && !psCopy.Busy {
+				a.commitPendingSend(context.Background(), psCopy.Nonce)
+			}
+			if ui.PrimaryButton(c.Key("undo-send-cancel-"+psCopy.Nonce), a.tr("Senden abbrechen", "Undo send")).Clicked() && !psCopy.Busy {
+				a.cancelPendingSend(psCopy.Nonce)
+			}
+		})
+	}
 }
 
 func (a *App) insertComposeTemplate(tpl config.ComposeTemplate) {

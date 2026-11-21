@@ -95,3 +95,30 @@ func TestThunderbirdFilterSubject(t *testing.T) {
 		t.Fatalf("StripSubjectPrefixes: got %q", got)
 	}
 }
+
+func TestBodyHTMLFallbackAndGroupingEvaluation(t *testing.T) {
+	msg := MessageInput{
+		From:     "shop@example.com",
+		Subject:  "Order 123",
+		BodyHTML: "<html><body><p>Vielen Dank für Ihre <b>Bestellung</b> #98765</p></body></html>",
+	}
+	if ok, _ := evalConditionAgainstMessage(NativeCondition{Field: "body", Op: "contains", Value: "Bestellung #98765"}, msg); !ok {
+		t.Fatalf("expected body condition to fall back to stripped BodyHTML when BodyText is empty")
+	}
+	if ok, _ := evalConditionAgainstMessage(NativeCondition{Field: "body", Op: "regex", Value: `#\d{5}`}, msg); !ok {
+		t.Fatalf("expected regex body condition to match stripped BodyHTML")
+	}
+
+	// (A OR B) AND C -> (false OR true) AND true = true; (false OR true) AND false = false
+	conds := []NativeCondition{
+		{Field: "from", Op: "contains", Value: "x", BeginsGrouping: true},
+		{Field: "from", Op: "contains", Value: "y", BooleanAnd: false, EndsGrouping: true},
+		{Field: "subject", Op: "contains", Value: "z", BooleanAnd: true},
+	}
+	if !evaluateConditionChain([]bool{false, true, true}, conds, false) {
+		t.Fatalf("expected (false OR true) AND true to be true")
+	}
+	if evaluateConditionChain([]bool{false, true, false}, conds, false) {
+		t.Fatalf("expected (false OR true) AND false to be false")
+	}
+}

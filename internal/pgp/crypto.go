@@ -11,11 +11,18 @@ import (
 	"mime/multipart"
 	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
+	"github.com/emersion/go-message"
+)
+
+const (
+	maxPGPPayloadBytes   = 50 * 1024 * 1024
+	maxPGPSignatureBytes = 1024 * 1024
 )
 
 // VerifyResult describes the outcome of verifying an OpenPGP signature.
@@ -190,21 +197,95 @@ func verifyResultFromEntity(ent *openpgp.Entity, valid bool, fromEmail string, e
 	vr.SignerFingerprint = strings.ToUpper(hex.EncodeToString(ent.PrimaryKey.Fingerprint[:]))
 	vr.SignerKeyID = strings.ToUpper(ent.PrimaryKey.KeyIdShortString())
 	if valid {
-		vr.Trusted = true
+		if bad, reason := isEntityRevokedOrExpired(ent, time.Now()); bad {
+			vr.Valid = false
+			vr.Trusted = false
+			vr.Error = reason
+			return vr
+		}
+		matched := fromEmail == ""
 		if fromEmail != "" {
-			matched := false
 			for _, em := range emails {
 				if strings.EqualFold(em, fromEmail) {
 					matched = true
 					break
 				}
 			}
-			if !matched && len(emails) > 0 {
+			if !matched {
 				vr.SignerAddressMismatch = true
 			}
 		}
+		vr.Trusted = matched && !vr.SignerAddressMismatch
 	}
 	return vr
+}
+
+func readBoundedPGP(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("OpenPGP-Nutzlast überschreitet Limit von %d MB", limit/(1024*1024))
+	}
+	return b, nil
+}
+
+// extractDecodedTextParts decodes MIME transfer-encodings (quoted-printable/base64) for all text/plain parts.
+func extractDecodedTextParts(raw []byte) [][]byte {
+	entity, err := message.Read(bytes.NewReader(raw))
+	if err != nil && !message.IsUnknownCharset(err) {
+		return nil
+	}
+	var out [][]byte
+	var walk func(e *message.Entity, depth int)
+	walk = func(e *message.Entity, depth int) {
+		if e == nil || depth > 8 {
+			return
+		}
+		ct, _, _ := e.Header.ContentType()
+		ct = strings.ToLower(strings.TrimSpace(ct))
+		if strings.HasPrefix(ct, "multipart/") {
+			mr := e.MultipartReader()
+			if mr == nil {
+				return
+			}
+			for {
+				p, perr := mr.NextPart()
+				if perr != nil {
+					break
+				}
+				walk(p, depth+1)
+			}
+			return
+		}
+		if ct == "" || ct == "text/plain" {
+			if b, rerr := readBoundedPGP(e.Body, maxPGPPayloadBytes); rerr == nil && len(b) > 0 {
+				out = append(out, b)
+			}
+		}
+	}
+	walk(entity, 0)
+	return out
+}
+
+// HasInlinePGP reports whether raw (or its MIME-decoded text/plain parts) contains an inline PGP block.
+func HasInlinePGP(raw []byte) (hasEncrypted bool, hasClearsigned bool) {
+	scan := func(b []byte) {
+		if bytes.Contains(b, []byte("-----BEGIN PGP MESSAGE-----")) {
+			hasEncrypted = true
+		}
+		if bytes.Contains(b, []byte("-----BEGIN PGP SIGNED MESSAGE-----")) {
+			hasClearsigned = true
+		}
+	}
+	for _, part := range extractDecodedTextParts(raw) {
+		scan(part)
+	}
+	if !hasEncrypted && !hasClearsigned {
+		scan(raw)
+	}
+	return hasEncrypted, hasClearsigned
 }
 
 func extractMultipartSignedRawParts(raw []byte) (part1 []byte, sigAsc []byte, ok bool) {
@@ -253,29 +334,29 @@ func extractMultipartSignedRawParts(raw []byte) (part1 []byte, sigAsc []byte, ok
 	if err != nil {
 		return nil, nil, false
 	}
-	sigBytes, err := io.ReadAll(io.LimitReader(p2, 1024*1024))
+	sigBytes, err := readBoundedPGP(p2, maxPGPSignatureBytes)
 	if err != nil {
 		return nil, nil, false
 	}
 	return signedRaw, sigBytes, true
 }
 
-func findMultipartEncryptedArmor(raw []byte) ([]byte, bool) {
+func findMultipartEncryptedArmor(raw []byte) ([]byte, bool, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	ct := msg.Header.Get("Content-Type")
 	mt, params, err := mime.ParseMediaType(ct)
 	if err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	if !strings.EqualFold(mt, "multipart/encrypted") || !strings.Contains(strings.ToLower(params["protocol"]), "pgp-encrypted") {
-		return nil, false
+		return nil, false, nil
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return nil, false
+		return nil, false, nil
 	}
 	mr := multipart.NewReader(msg.Body, boundary)
 	for {
@@ -283,23 +364,62 @@ func findMultipartEncryptedArmor(raw []byte) ([]byte, bool) {
 		if perr != nil {
 			break
 		}
-		b, _ := io.ReadAll(io.LimitReader(p, 50*1024*1024))
+		b, rerr := readBoundedPGP(p, maxPGPPayloadBytes)
+		if rerr != nil {
+			return nil, true, rerr
+		}
 		if bytes.Contains(b, []byte("-----BEGIN PGP MESSAGE-----")) {
-			return b, true
+			return b, true, nil
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
-// DecryptMIME decrypts PGP/MIME (multipart/encrypted) OR Inline PGP ("-----BEGIN PGP MESSAGE-----").
+// DecryptMIME decrypts PGP/MIME (multipart/encrypted, including nested/sign-then-encrypt) OR
+// Inline PGP ("-----BEGIN PGP MESSAGE-----" in MIME-decoded text/plain parts).
 func DecryptMIME(raw []byte, keyring openpgp.EntityList, fromEmail string) (plaintext []byte, vr *VerifyResult, isInline bool, isEncrypted bool, err error) {
-	if armored, ok := findMultipartEncryptedArmor(raw); ok {
-		isEncrypted = true
+	if armored, ok, ferr := findMultipartEncryptedArmor(raw); ok {
+		if ferr != nil {
+			return nil, nil, false, true, ferr
+		}
 		plain, vRes, derr := decryptArmoredBlock(armored, keyring, fromEmail)
-		return plain, vRes, false, true, derr
+		if derr != nil {
+			return nil, nil, false, true, derr
+		}
+		// Handle nested multipart/encrypted (up to depth 3) and sign-then-encrypt (inner multipart/signed).
+		for depth := 0; depth < 3; depth++ {
+			if innerArm, innerOK, ierr := findMultipartEncryptedArmor(plain); innerOK {
+				if ierr != nil {
+					return nil, nil, false, true, ierr
+				}
+				innerPlain, innerVR, iderr := decryptArmoredBlock(innerArm, keyring, fromEmail)
+				if iderr != nil {
+					return nil, nil, false, true, iderr
+				}
+				plain = innerPlain
+				if innerVR != nil {
+					vRes = innerVR
+				}
+				continue
+			}
+			break
+		}
+		if vRes == nil {
+			if innerVR, _, innerSigned := VerifyMIME(plain, fromEmail, keyring); innerSigned && innerVR != nil {
+				vRes = innerVR
+			}
+		}
+		return plain, vRes, false, true, nil
+	}
+
+	// Scan MIME-decoded text/plain parts first so base64/quoted-printable inline PGP works reliably.
+	for _, part := range extractDecodedTextParts(raw) {
+		if idx := bytes.Index(part, []byte("-----BEGIN PGP MESSAGE-----")); idx >= 0 {
+			plain, vRes, derr := decryptArmoredBlock(part[idx:], keyring, fromEmail)
+			return plain, vRes, true, true, derr
+		}
 	}
 	if idx := bytes.Index(raw, []byte("-----BEGIN PGP MESSAGE-----")); idx >= 0 {
-		isEncrypted = true
 		plain, vRes, derr := decryptArmoredBlock(raw[idx:], keyring, fromEmail)
 		return plain, vRes, true, true, derr
 	}
@@ -315,7 +435,7 @@ func decryptArmoredBlock(armored []byte, keyring openpgp.EntityList, fromEmail s
 	if err != nil {
 		return nil, nil, fmt.Errorf("PGP-Entschlüsselung fehlgeschlagen: %w", err)
 	}
-	plain, rerr := io.ReadAll(io.LimitReader(md.UnverifiedBody, 50*1024*1024))
+	plain, rerr := readBoundedPGP(md.UnverifiedBody, maxPGPPayloadBytes)
 	if rerr != nil {
 		return nil, nil, fmt.Errorf("PGP-Inhalt lesen: %w", rerr)
 	}
@@ -352,8 +472,12 @@ func VerifyMIME(raw []byte, fromEmail string, keyring openpgp.EntityList) (vr *V
 		return verifyResultFromEntity(ent, true, fromEmail, ""), nil, true
 	}
 
-	if idx := bytes.Index(raw, []byte("-----BEGIN PGP SIGNED MESSAGE-----")); idx >= 0 {
-		blk, _ := clearsign.Decode(raw[idx:])
+	checkClearsign := func(src []byte) (*VerifyResult, []byte, bool) {
+		idx := bytes.Index(src, []byte("-----BEGIN PGP SIGNED MESSAGE-----"))
+		if idx < 0 {
+			return nil, nil, false
+		}
+		blk, _ := clearsign.Decode(src[idx:])
 		if blk == nil {
 			return &VerifyResult{Valid: false, Error: "Clearsigned-PGP-Block beschädigt"}, nil, true
 		}
@@ -363,5 +487,11 @@ func VerifyMIME(raw []byte, fromEmail string, keyring openpgp.EntityList) (vr *V
 		}
 		return verifyResultFromEntity(ent, true, fromEmail, ""), blk.Plaintext, true
 	}
-	return nil, nil, false
+
+	for _, part := range extractDecodedTextParts(raw) {
+		if res, plain, ok := checkClearsign(part); ok {
+			return res, plain, true
+		}
+	}
+	return checkClearsign(raw)
 }

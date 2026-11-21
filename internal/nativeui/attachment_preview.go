@@ -19,6 +19,7 @@ const maxTextPreviewBytes = 128 * 1024
 type attachmentPreviewState struct {
 	open        bool
 	loading     bool
+	seq         uint64
 	errMsg      string
 	msgID       string
 	partName    string
@@ -34,6 +35,28 @@ type attachmentPreviewState struct {
 	isPDF       bool
 }
 
+func truncateUTF8Bytes(b []byte, maxBytes int) ([]byte, bool) {
+	if len(b) <= maxBytes {
+		return b, false
+	}
+	cut := b[:maxBytes]
+	// Walk back at most 3 bytes if we sliced in the middle of a multi-byte UTF-8 rune.
+	for len(cut) > 0 && !utf8.Valid(cut) && len(b[:maxBytes])-len(cut) < 4 {
+		cut = cut[:len(cut)-1]
+	}
+	return cut, true
+}
+
+func (p *attachmentPreviewState) resetMedia() {
+	p.imgSrc = nil
+	p.imgW = 0
+	p.imgH = 0
+	p.textContent = ""
+	p.parsedEML = nil
+	p.isPDF = false
+	p.truncated = false
+}
+
 // OpenAttachmentPreview loads attachment bytes in memory and displays images, plain/code files,
 // or nested .eml messages inside an in-app modal (with Download & Open button).
 func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filename string) {
@@ -41,14 +64,16 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 	if dc == nil || msgID == "" {
 		return
 	}
+	nextSeq := a.attPreview.seq + 1
 	a.attPreview = attachmentPreviewState{
 		open:     true,
 		loading:  true,
+		seq:      nextSeq,
 		msgID:    msgID,
 		partName: partName,
 		filename: filename,
 	}
-	go func() {
+	go func(reqSeq uint64) {
 		c, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		data, err := dc.ReadAttachmentPreview(c, msgID, partName, filename)
@@ -57,6 +82,7 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 		var txt string
 		var truncated bool
 		var isPDF bool
+		var decodeErr string
 
 		if err == nil {
 			ext := strings.ToLower(filepath.Ext(data.Name))
@@ -65,6 +91,8 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 			case strings.HasPrefix(ct, "image/") || ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".webp":
 				if src, derr := ui.DecodeImage(data.Data); derr == nil {
 					imgSrc = src
+				} else {
+					decodeErr = fmt.Sprintf("Bildformat konnte nicht dekodiert werden (%v) — bitte über „Speichern & Öffnen“ anzeigen.", derr)
 				}
 				if cfgImg, _, cerr := image.DecodeConfig(strings.NewReader(string(data.Data))); cerr == nil {
 					imgW, imgH = cfgImg.Width, cfgImg.Height
@@ -74,21 +102,18 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 			case ext == ".pdf" || strings.Contains(ct, "pdf"):
 				isPDF = true
 			default:
-				raw := data.Data
-				if len(raw) > maxTextPreviewBytes {
-					raw = raw[:maxTextPreviewBytes]
-					truncated = true
-				}
+				raw, wasCut := truncateUTF8Bytes(data.Data, maxTextPreviewBytes)
+				truncated = wasCut
 				if utf8.Valid(raw) {
 					txt = string(raw)
 				} else {
-					txt = string([]rune(string(raw)))
+					txt = strings.ToValidUTF8(string(raw), "")
 				}
 			}
 		}
 
 		a.emitUpdate(func() {
-			if !a.attPreview.open || a.attPreview.msgID != msgID || a.attPreview.partName != partName {
+			if !a.attPreview.open || a.attPreview.seq != reqSeq {
 				return
 			}
 			a.attPreview.loading = false
@@ -99,6 +124,10 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 			a.attPreview.filename = data.Name
 			a.attPreview.contentType = data.ContentType
 			a.attPreview.sizeBytes = len(data.Data)
+			if decodeErr != "" {
+				a.attPreview.errMsg = decodeErr
+				return
+			}
 			a.attPreview.imgSrc = imgSrc
 			a.attPreview.imgW = imgW
 			a.attPreview.imgH = imgH
@@ -107,34 +136,42 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 			a.attPreview.parsedEML = data.ParsedEML
 			a.attPreview.isPDF = isPDF
 		})
-	}()
+	}(nextSeq)
 }
 
 func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 	p := &a.attPreview
 	if !p.open {
+		if p.imgSrc != nil || p.parsedEML != nil || p.textContent != "" {
+			p.resetMedia()
+		}
 		return
 	}
 	t := c.Theme()
 	ui.Modal(c, &p.open, func() {
 		ui.Column(c).Width(a.modalW(720)).MaxHeight(720).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-				ui.Icon(c, iconPaperclip).Size(17, 17).TextColor(t.Accent)
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
+				ui.Icon(c, iconPaperclip).Size(17, 17).TextColor(t.Accent).Shrink(0)
 				title := p.filename
 				if title == "" {
 					title = a.tr("Anhang-Vorschau", "Attachment Preview")
 				}
-				ui.Text(c, title).FontSize(15).Bold().Grow(1).MinWidth(0).SingleLine()
+				ui.Text(c, title).FontSize(15).Bold().Grow(1).MinWidth(120).SingleLine()
 				if p.sizeBytes > 0 {
 					pillBadge(c, fmt.Sprintf("%d KB", max(1, p.sizeBytes/1024)), t.Background, t.TextMuted)
 				}
 				if p.msgID != "" {
-					if iconLabelBtn(c.Key("attpv-dl"), iconDownload, a.tr("Speichern & Öffnen", "Save & Open"), true, "").Clicked() {
+					dlLabel := a.tr("Speichern & Öffnen", "Save & Open")
+					if a.isPhone() {
+						dlLabel = a.tr("Öffnen", "Open")
+					}
+					if iconLabelBtn(c.Key("attpv-dl"), iconDownload, dlLabel, true, "").Clicked() {
 						a.DownloadAndOpenAttachment(context.Background(), p.msgID, p.partName, p.filename)
 					}
 				}
 				if ui.Button(c.Key("attpv-x"), "✕").Clicked() {
 					p.open = false
+					p.resetMedia()
 				}
 			})
 
@@ -216,4 +253,7 @@ func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 			}
 		})
 	})
+	if !p.open && (p.imgSrc != nil || p.parsedEML != nil || p.textContent != "") {
+		p.resetMedia()
+	}
 }

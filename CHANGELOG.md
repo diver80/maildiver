@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.5 (2026-11-21)
+
+### Security-Hardening & OpenPGP / S/MIME
+- **WKD/VKS SSRF-, Redirect- & Key-Poisoning-Schutz (`internal/pgp`):** Strikte E-Mail-/Domain-Validierung, URL-Escaping, HTTPS-only-Redirects, Blockierung privater/lokaler IPs (`newSafePGPHTTPClient`) sowie Prüfung, dass online geladene Keys keine Privatschlüssel enthalten, weder abgelaufen noch widerrufen sind und exakt zur angefragten E-Mail-Adresse passen.
+- **Krypto Fail-Closed (`applyOutgoingSecurity` & `resolveOutgoingCryptoTech`):** Verschlüsselung oder explizites Signieren fällt niemals still auf Klartext oder eine andere Technologie zurück; sinnvolle Auto-Priorisierung anhand eigener Identitäten und Empfänger-Schlüssel.
+- **OpenPGP-Compliance & Passphrasen:** Passphrase-Verschlüsselung privater Schlüssel im `secretstore` (inkl. optionalem Passwortfeld bei Schlüsselerzeugung), Key-Expiration-/Revocation-/Subkey-Prüfung, deterministische UserID-Reihenfolge, vollständiges Löschen aller Alias-Keychain-Einträge, `Trusted=false` bei Absender-Mismatch, MIME-dekodiertes Inline-PGP (Base64/Quoted-Printable), Sign-then-Encrypt-Prüfung (inneres `multipart/signed`), Schutz vor HTML-Spoofing bei Inline-PGP und asynchrone Key-/Zertifikatsimporte ohne UI-Blockade.
+
+### Zuverlässigkeit, Filter-Engine & IMAP/SQLite
+- **Undo Send & Draft Auto-Save:** Mehrfache gleichzeitige Undo-Send-Queue (kein Überschreiben), automatischer Flush/Draft-Backup beim Beenden der App, Wiederherstellung im Editor (oder Entwurfs-Backup) bei Sendefehlern, Session-Guard (`composeSessionSeq`) gegen Auto-Save-Races, Idle-Auto-Save-Ticker sowie nicht-blockierendes Auslesen des WebView-Editors.
+- **Filter-Engine & Regeleditor:** Atomares In-Place-Umbenennen mit Erhalt der Regel-Priorität und Duplikatschutz, SQLite-Transaktionen (`BeginTx`) für `UpsertFilter`/`ReorderFilter`, Live-Filter-Unterstützung für `copyToFolder`, `junk` und Body-/Header-Prefetch bei neuen Mails, paginierter Filterlauf (>500 Mails) mit mehreren Kopierzielen, sicheres `uidExpungeIMAP` ohne blindes Löschen fremder `\Deleted`-Mails, HTML-Body-Fallback, Regex-Cache, `BeginsGrouping`/`EndsGrouping`-Auswertung, per-Account ↑/↓-Sortierung sowie Vorschau-Hinweis bei Body-/Header-/Anhang-Regeln.
+- **Anhänge, `.eml` & Preview:** `UIDVALIDITY`- & 50-MB-Größenprüfung beim Body-Abruf/EML-Export, expliziter Fehler statt stiller 32-MB-Kürzung und striktes `partName`-Matching in `ExtractAttachment`, UTF-8-sicheres Kürzen von Dateinamen & Textvorschauen, Request-`seq`-Guard & Texture-Cleanup sowie Fehleranzeige und Mobil-Header-Fix im Vorschau-Modal.
+
+### Compose WYSIWYG Polish
+- **Gehärteter Paste-Sanitizer & Clipboard:** Entfernt `on*`-Handler, `javascript:`-URLs, `iframe`/`svg`/`object`/`form` und `data-mdv-*`, bevorzugt strukturierte HTML-Tabellen (Excel/Confluence) vor Begleit-PNGs und erkennt Finder-Datei-Pastes zuverlässig.
+- **Editor- & Signatur-Feinschliff:** Bild-Selektion (`selImg`) wird beim Tippen/Cursorwechsel sauber aufgehoben, `⌘A`+Backspace schützt die Signatur, eigene Tabellen-Styles in Signaturen/Forwards bleiben erhalten und helle Dark-Mode-Schriftfarben werden für helle Empfänger-Postfächer bereinigt.
+
 ## 0.7.4 (2026-11-21)
 
 ### Natives OpenPGP (PGP/MIME & Inline PGP)

@@ -743,11 +743,27 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   function sanitizePastedHTML(raw) {
     const tmp = document.createElement('div');
     tmp.innerHTML = raw;
-    tmp.querySelectorAll('script,style,meta,link,title,xml').forEach((n) => n.remove());
+    tmp.querySelectorAll('script,style,meta,link,title,xml,iframe,object,embed,svg,math,form,input,button,textarea,select,base,template,noscript').forEach((n) => n.remove());
+    const safeUrl = (val, isImg) => {
+      const s = String(val || '').replace(/[\u0000-\u001F\s]+/g, '').toLowerCase();
+      if (!s) return false;
+      if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('mailto:') || s.startsWith('#')) return true;
+      if (isImg && s.startsWith('data:image/') && !s.startsWith('data:image/svg')) return true;
+      return false;
+    };
     tmp.querySelectorAll('*').forEach((el) => {
-      el.removeAttribute('class');
-      if (el.hasAttribute('color')) el.removeAttribute('color');
-      if (el.hasAttribute('face')) el.removeAttribute('face');
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || name.startsWith('data-mdv-') || name === 'class' || name === 'color' || name === 'face' || name === 'srcdoc' || name === 'formaction' || name === 'contenteditable') {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+        if (name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action') {
+          if (!safeUrl(attr.value, el.tagName === 'IMG' && name === 'src')) {
+            el.removeAttribute(attr.name);
+          }
+        }
+      }
       if (el.style) {
         el.style.background = '';
         el.style.backgroundColor = '';
@@ -792,6 +808,13 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   }
   document.addEventListener('selectionchange', () => {
     if (ed.contains(document.activeElement) || document.activeElement === ed) {
+      const sel = window.getSelection();
+      if (selImg && sel && sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0);
+        if (!r.intersectsNode || !r.intersectsNode(selImg)) {
+          clearImageSelection();
+        }
+      }
       updateTblBar();
       updateFormatStates();
     }
@@ -849,10 +872,48 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       notify('mdv:send');
       return;
     }
-    if (selImg && (e.key === 'Backspace' || e.key === 'Delete')) {
-      e.preventDefault();
-      deleteSelectedImage();
-      return;
+    if (selImg) {
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        deleteSelectedImage();
+        return;
+      }
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key.startsWith('Arrow') || (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey)) {
+        clearImageSelection();
+      }
+    }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      const sel = window.getSelection();
+      const sig = ed.querySelector('[data-mdv-sig="1"]');
+      if (sig && sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+        const r = sel.getRangeAt(0);
+        if (r.intersectsNode && r.intersectsNode(sig)) {
+          e.preventDefault();
+          const userBox = ed.querySelector('[data-mdv-user="1"]');
+          if (userBox) {
+            userBox.innerHTML = '<p><br></p>';
+            const nr = document.createRange();
+            nr.setStart(userBox.firstChild, 0);
+            nr.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(nr);
+          } else {
+            Array.from(ed.childNodes).forEach((n) => {
+              if (n !== sig && !n.contains(sig)) n.remove();
+            });
+            const p = document.createElement('p');
+            p.innerHTML = '<br>';
+            sig.before(p);
+            const nr = document.createRange();
+            nr.setStart(p, 0);
+            nr.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(nr);
+          }
+          notify('mdv:dirty');
+          return;
+        }
+      }
     }
     if (e.key === 'Tab') {
       const cell = activeCell();
@@ -890,6 +951,38 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   ed.addEventListener('paste', (e) => {
     const cd = e.clipboardData;
     if (!cd) return;
+    const types = cd.types ? Array.from(cd.types) : [];
+    const hasHTML = types.includes('text/html');
+    const htmlRaw = hasHTML ? cd.getData('text/html') : '';
+    const hasStructuredHTML = hasHTML && /<(table|tr|td|th|ul|ol|li|p|div|h[1-6]|blockquote|pre|a)\b/i.test(htmlRaw);
+
+    // Prefer structured HTML (Excel/Confluence tables, formatted text) over companion preview PNGs.
+    if (hasStructuredHTML) {
+      const cleaned = sanitizePastedHTML(htmlRaw);
+      if (cleaned) {
+        e.preventDefault();
+        document.execCommand('insertHTML', false, cleaned);
+        notify('mdv:dirty');
+        return;
+      }
+    }
+
+    // Finder/Explorer file paste (often populates text/plain with the filename too).
+    if (cd.files && cd.files.length > 0 && !hasHTML) {
+      let allImages = true;
+      for (const f of cd.files) {
+        if (!f.type || !f.type.startsWith('image/')) {
+          allImages = false;
+          break;
+        }
+      }
+      if (!allImages) {
+        e.preventDefault();
+        notify('mdv:paste-files');
+        return;
+      }
+    }
+
     if (cd.items) {
       for (const it of cd.items) {
         if (it.type && it.type.startsWith('image/')) {
@@ -903,14 +996,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
         }
       }
     }
-    const hasHTML = cd.types && Array.from(cd.types).includes('text/html');
-    if (cd.files && cd.files.length > 0 && !hasHTML && !cd.getData('text/plain')) {
-      e.preventDefault();
-      notify('mdv:paste-files');
-      return;
-    }
+
     if (hasHTML) {
-      const cleaned = sanitizePastedHTML(cd.getData('text/html'));
+      const cleaned = sanitizePastedHTML(htmlRaw);
       if (cleaned) {
         e.preventDefault();
         document.execCommand('insertHTML', false, cleaned);
@@ -978,14 +1066,46 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     clone.querySelectorAll('[contenteditable]').forEach((el) => {
       el.removeAttribute('contenteditable');
     });
+    // Strip dark-mode default foreground colors generated by execCommand so outgoing HTML stays
+    // legible on white recipient backgrounds.
+    const isNearWhite = (c) => {
+      const s = String(c || '').trim().toLowerCase();
+      if (!s) return false;
+      const m = s.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+      if (m) {
+        const lum = Number(m[1]) * 299 + Number(m[2]) * 587 + Number(m[3]) * 114;
+        return lum > 205000;
+      }
+      if (s.startsWith('#') && (s.length === 7 || s.length === 4)) {
+        const hex = s.length === 4 ? s[1]+s[1]+s[2]+s[2]+s[3]+s[3] : s.slice(1);
+        const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+        return (r * 299 + g * 587 + b * 114) > 205000;
+      }
+      return s === 'white';
+    };
+    clone.querySelectorAll('*').forEach((el) => {
+      if (el.closest('[data-mdv-sig="1"]') || el.closest('[data-mdv-fwd="1"]')) return;
+      if (el.style && el.style.color && isNearWhite(el.style.color) && !el.style.backgroundColor) {
+        el.style.color = '';
+        if (!el.getAttribute('style')) el.removeAttribute('style');
+      }
+      if (el.tagName === 'FONT' && el.hasAttribute('color') && isNearWhite(el.getAttribute('color'))) {
+        el.removeAttribute('color');
+      }
+    });
     clone.querySelectorAll('table').forEach((t) => {
+      if (t.closest('[data-mdv-sig="1"]') || t.closest('[data-mdv-fwd="1"]') || t.getAttribute('style')) return;
       t.setAttribute('style', 'border-collapse:collapse;border:1px solid #d0d7de;margin:8px 0;font-size:13.5px;');
-    });
-    clone.querySelectorAll('th').forEach((th) => {
-      th.setAttribute('style', 'border:1px solid #d0d7de;padding:6px 10px;background:#f6f8fa;text-align:left;font-weight:600;color:#1f2328;');
-    });
-    clone.querySelectorAll('td').forEach((td) => {
-      td.setAttribute('style', 'border:1px solid #d0d7de;padding:6px 10px;vertical-align:top;color:#1f2328;');
+      t.querySelectorAll('th').forEach((th) => {
+        if (!th.getAttribute('style')) {
+          th.setAttribute('style', 'border:1px solid #d0d7de;padding:6px 10px;background:#f6f8fa;text-align:left;font-weight:600;color:#1f2328;');
+        }
+      });
+      t.querySelectorAll('td').forEach((td) => {
+        if (!td.getAttribute('style')) {
+          td.setAttribute('style', 'border:1px solid #d0d7de;padding:6px 10px;vertical-align:top;color:#1f2328;');
+        }
+      });
     });
     clone.querySelectorAll('blockquote').forEach((bq) => {
       if (!bq.getAttribute('style')) {

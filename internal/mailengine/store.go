@@ -1579,7 +1579,38 @@ func (s *Store) ListFilters(ctx context.Context, accountID string) ([]StoredFilt
 }
 
 func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertRequest) (StoredFilter, error) {
-	existing, err := s.ListFilters(ctx, req.AccountID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StoredFilter{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	listInTx := func() ([]StoredFilter, error) {
+		rows, qerr := tx.QueryContext(ctx, `
+			SELECT id, account_id, name, enabled, match_all, conditions_json, actions_json, position
+			FROM filters WHERE account_id=? ORDER BY position ASC, name ASC`, req.AccountID)
+		if qerr != nil {
+			return nil, qerr
+		}
+		defer rows.Close()
+		var out []StoredFilter
+		for rows.Next() {
+			var f StoredFilter
+			var en, ma int
+			var cj, aj string
+			if serr := rows.Scan(&f.ID, &f.AccountID, &f.Name, &en, &ma, &cj, &aj, &f.Position); serr != nil {
+				return nil, serr
+			}
+			f.Enabled = en != 0
+			f.MatchAll = ma != 0
+			_ = json.Unmarshal([]byte(cj), &f.Conditions)
+			_ = json.Unmarshal([]byte(aj), &f.Actions)
+			out = append(out, f)
+		}
+		return out, rows.Err()
+	}
+
+	existing, err := listInTx()
 	if err != nil {
 		return StoredFilter{}, err
 	}
@@ -1596,8 +1627,10 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 		for _, f := range existing {
 			if strings.EqualFold(f.Name, target) {
 				f.Enabled = req.Enabled
-				_, err := s.db.ExecContext(ctx, `UPDATE filters SET enabled=? WHERE id=?`, boolInt(f.Enabled), f.ID)
-				return f, err
+				if _, err := tx.ExecContext(ctx, `UPDATE filters SET enabled=? WHERE id=?`, boolInt(f.Enabled), f.ID); err != nil {
+					return StoredFilter{}, err
+				}
+				return f, tx.Commit()
 			}
 		}
 		return StoredFilter{}, fmt.Errorf("not_found: filter %q", target)
@@ -1608,6 +1641,14 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 		}
 		for _, f := range existing {
 			if strings.EqualFold(f.Name, target) {
+				// Prevent colliding with another filter's name on rename.
+				if !strings.EqualFold(f.Name, name) {
+					for _, other := range existing {
+						if other.ID != f.ID && strings.EqualFold(other.Name, name) {
+							return StoredFilter{}, fmt.Errorf("eine Filterregel mit dem Namen %q existiert bereits in diesem Konto", name)
+						}
+					}
+				}
 				f.Name = name
 				f.Enabled = req.Enabled
 				f.MatchAll = req.MatchAll
@@ -1615,9 +1656,11 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 				f.Actions = req.Actions
 				cj, _ := json.Marshal(f.Conditions)
 				aj, _ := json.Marshal(f.Actions)
-				_, err := s.db.ExecContext(ctx, `UPDATE filters SET name=?, enabled=?, match_all=?, conditions_json=?, actions_json=? WHERE id=?`,
-					f.Name, boolInt(f.Enabled), boolInt(f.MatchAll), string(cj), string(aj), f.ID)
-				return f, err
+				if _, err := tx.ExecContext(ctx, `UPDATE filters SET name=?, enabled=?, match_all=?, conditions_json=?, actions_json=? WHERE id=?`,
+					f.Name, boolInt(f.Enabled), boolInt(f.MatchAll), string(cj), string(aj), f.ID); err != nil {
+					return StoredFilter{}, err
+				}
+				return f, tx.Commit()
 			}
 		}
 	case "append_conditions":
@@ -1633,8 +1676,10 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 					}
 				}
 				cj, _ := json.Marshal(f.Conditions)
-				_, err := s.db.ExecContext(ctx, `UPDATE filters SET conditions_json=? WHERE id=?`, string(cj), f.ID)
-				return f, err
+				if _, err := tx.ExecContext(ctx, `UPDATE filters SET conditions_json=? WHERE id=?`, string(cj), f.ID); err != nil {
+					return StoredFilter{}, err
+				}
+				return f, tx.Commit()
 			}
 		}
 	}
@@ -1664,12 +1709,14 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 	}
 	cj, _ := json.Marshal(f.Conditions)
 	aj, _ := json.Marshal(f.Actions)
-	_, err = s.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO filters(id, account_id, name, enabled, match_all, conditions_json, actions_json, position)
 		VALUES(?,?,?,?,?,?,?,?)`,
 		f.ID, f.AccountID, f.Name, boolInt(f.Enabled), boolInt(f.MatchAll), string(cj), string(aj), f.Position,
-	)
-	return f, err
+	); err != nil {
+		return StoredFilter{}, err
+	}
+	return f, tx.Commit()
 }
 
 func (s *Store) DeleteFilter(ctx context.Context, accountID, name string) error {
@@ -1682,13 +1729,36 @@ func (s *Store) ReorderFilter(ctx context.Context, accountID, name string, delta
 	if delta == 0 {
 		return nil
 	}
-	list, err := s.ListFilters(ctx, accountID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, name FROM filters WHERE account_id=? ORDER BY position ASC, name ASC`, accountID)
+	if err != nil {
+		return err
+	}
+	type item struct{ id, name string }
+	var list []item
+	for rows.Next() {
+		var it item
+		if serr := rows.Scan(&it.id, &it.name); serr != nil {
+			_ = rows.Close()
+			return serr
+		}
+		list = append(list, it)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
 	idx := -1
 	for i, f := range list {
-		if strings.EqualFold(f.Name, name) {
+		if strings.EqualFold(f.name, name) {
 			idx = i
 			break
 		}
@@ -1705,11 +1775,11 @@ func (s *Store) ReorderFilter(ctx context.Context, accountID, name string, delta
 	}
 	list[idx], list[target] = list[target], list[idx]
 	for pos, f := range list {
-		if _, uerr := s.db.ExecContext(ctx, `UPDATE filters SET position=? WHERE id=?`, pos, f.ID); uerr != nil {
+		if _, uerr := tx.ExecContext(ctx, `UPDATE filters SET position=? WHERE id=?`, pos, f.id); uerr != nil {
 			return uerr
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // --- Idempotency Keys ---

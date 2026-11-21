@@ -2,15 +2,18 @@ package triage
 
 import (
 	"fmt"
+	"html"
 	"net/mail"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 type NativeCondition struct {
-	Field          string `json:"field"`                // "from", "to", "cc", "toOrCc", "allAddresses", "subject", "body", "header", "custom", "other"
+	Field          string `json:"field"`                // "from", "to", "cc", "toOrCc", "allAddresses", "subject", "body", "attachment", "header", "custom", "other"
 	HeaderName     string `json:"headerName,omitempty"` // e.g. "x-mailer"
-	Op             string `json:"op"`                   // "contains", "doesNotContain", "is", "isNot", "beginsWith", "endsWith", "matches", "doesNotMatch"
+	Op             string `json:"op"`                   // "contains", "doesNotContain", "is", "isNot", "beginsWith", "endsWith", "regex", "notRegex", "isEmpty", "isNotEmpty"
 	Value          string `json:"value"`
 	BooleanAnd     bool   `json:"booleanAnd"`
 	MatchAll       bool   `json:"matchAll,omitempty"`
@@ -115,6 +118,52 @@ func canonicalFilterOp(op string) (canon string, ok bool) {
 	}
 }
 
+const (
+	maxFilterRegexLen   = 2048
+	maxFilterRegexCache = 512
+)
+
+var (
+	filterRegexCache   sync.Map
+	filterRegexEntries atomic.Int64
+	simpleHTMLTagRE    = regexp.MustCompile(`<[^>]+>`)
+)
+
+func compileFilterRegex(pattern string) (*regexp.Regexp, error) {
+	pat := strings.TrimSpace(pattern)
+	if pat == "" || len(pat) > maxFilterRegexLen {
+		return nil, fmt.Errorf("invalid regex length")
+	}
+	if cached, ok := filterRegexCache.Load(pat); ok {
+		if re, ok := cached.(*regexp.Regexp); ok && re != nil {
+			return re, nil
+		}
+		return nil, fmt.Errorf("invalid regex")
+	}
+	re, err := regexp.Compile("(?is)" + pat)
+	if filterRegexEntries.Load() >= maxFilterRegexCache {
+		filterRegexCache.Range(func(k, _ any) bool {
+			filterRegexCache.Delete(k)
+			return true
+		})
+		filterRegexEntries.Store(0)
+	}
+	if err != nil {
+		filterRegexCache.Store(pat, (*regexp.Regexp)(nil))
+		filterRegexEntries.Add(1)
+		return nil, err
+	}
+	filterRegexCache.Store(pat, re)
+	filterRegexEntries.Add(1)
+	return re, nil
+}
+
+func stripSimpleHTMLTags(src string) string {
+	s := simpleHTMLTagRE.ReplaceAllString(src, " ")
+	s = html.UnescapeString(s)
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
 // isNegativeFilterOp reports operators that must hold for EVERY address/part of a header
 // (Thunderbird's "match all before deciding" semantics).
 func isNegativeFilterOp(canon string) bool {
@@ -148,13 +197,13 @@ func matchFilterString(candidate, canon, needle string) bool {
 	case "endsWith":
 		return strings.HasSuffix(c, n)
 	case "regex":
-		re, err := regexp.Compile("(?is)" + strings.TrimSpace(needle))
+		re, err := compileFilterRegex(needle)
 		if err != nil {
 			return false
 		}
 		return re.MatchString(candidate)
 	case "notRegex":
-		re, err := regexp.Compile("(?is)" + strings.TrimSpace(needle))
+		re, err := compileFilterRegex(needle)
 		if err != nil {
 			return false
 		}
@@ -303,7 +352,11 @@ func evalConditionAgainstMessage(cond NativeCondition, msg MessageInput) (matche
 		}
 		return ok, ""
 	case "body":
-		return matchFilterString(msg.BodyText, canon, cond.Value), ""
+		body := msg.BodyText
+		if strings.TrimSpace(body) == "" && strings.TrimSpace(msg.BodyHTML) != "" {
+			body = stripSimpleHTMLTags(msg.BodyHTML)
+		}
+		return matchFilterString(body, canon, cond.Value), ""
 	case "attachment", "attachments":
 		if canon == "isEmpty" {
 			return len(msg.Attachments) == 0, ""
@@ -345,15 +398,15 @@ func evaluateConditionChain(results []bool, conds []NativeCondition, matchAll bo
 	if len(results) == 0 {
 		return false
 	}
-	if matchAll {
-		for _, ok := range results {
-			if !ok {
-				return false
+	if len(results) == 1 || len(conds) != len(results) {
+		if matchAll {
+			for _, ok := range results {
+				if !ok {
+					return false
+				}
 			}
+			return true
 		}
-		return true
-	}
-	if !hasExplicitGrouping(conds) {
 		for _, ok := range results {
 			if ok {
 				return true
@@ -361,7 +414,46 @@ func evaluateConditionChain(results []bool, conds []NativeCondition, matchAll bo
 		}
 		return false
 	}
-	// Mixed AND/OR evaluation (Thunderbird evaluates OR-terms and AND-terms sequentially).
+	hasParens := false
+	for _, c := range conds {
+		if c.BeginsGrouping || c.EndsGrouping {
+			hasParens = true
+			break
+		}
+	}
+	if hasParens {
+		val, _ := evalGroupedConditions(results, conds, 0, matchAll)
+		return val
+	}
+	if matchAll {
+		// Plain AND unless conditions[1:] explicitly mix AND and OR.
+		if !hasMixedOperators(conds) {
+			for _, ok := range results {
+				if !ok {
+					return false
+				}
+			}
+			return true
+		}
+	} else {
+		// Plain OR unless any condition after the first explicitly requests AND.
+		anyAnd := false
+		for _, c := range conds[1:] {
+			if c.BooleanAnd {
+				anyAnd = true
+				break
+			}
+		}
+		if !anyAnd {
+			for _, ok := range results {
+				if ok {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	// Mixed AND/OR evaluation (sequential left-to-right, matching Thunderbird semantics).
 	acc := results[0]
 	for i := 1; i < len(results); i++ {
 		if conds[i].BooleanAnd {
@@ -373,17 +465,68 @@ func evaluateConditionChain(results []bool, conds []NativeCondition, matchAll bo
 	return acc
 }
 
+func evalGroupedConditions(results []bool, conds []NativeCondition, start int, defaultAnd bool) (bool, int) {
+	acc := false
+	haveAcc := false
+	i := start
+	for i < len(results) {
+		c := conds[i]
+		joinAnd := c.BooleanAnd
+		if i > start && !hasMixedOperators(conds) && !c.BooleanAnd && defaultAnd {
+			joinAnd = true
+		}
+		var term bool
+		if c.BeginsGrouping {
+			// Evaluate inner group starting at current element (strip BeginsGrouping conceptually).
+			innerConds := append([]NativeCondition(nil), conds...)
+			innerConds[i].BeginsGrouping = false
+			subVal, nextIdx := evalGroupedConditions(results, innerConds, i, defaultAnd)
+			term = subVal
+			i = nextIdx
+		} else {
+			term = results[i]
+			i++
+		}
+		if !haveAcc {
+			acc = term
+			haveAcc = true
+		} else if joinAnd {
+			acc = acc && term
+		} else {
+			acc = acc || term
+		}
+		if c.EndsGrouping {
+			return acc, i
+		}
+	}
+	return acc, i
+}
+
+func hasMixedOperators(conds []NativeCondition) bool {
+	if len(conds) <= 2 {
+		return false
+	}
+	hasTrue, hasFalse := false, false
+	for _, c := range conds[1:] {
+		if c.BooleanAnd {
+			hasTrue = true
+		} else {
+			hasFalse = true
+		}
+	}
+	return hasTrue && hasFalse
+}
+
 func hasExplicitGrouping(conds []NativeCondition) bool {
 	if len(conds) <= 1 {
 		return false
 	}
-	first := conds[0].BooleanAnd
-	for _, c := range conds[1:] {
-		if c.BooleanAnd != first {
+	for _, c := range conds {
+		if c.BeginsGrouping || c.EndsGrouping {
 			return true
 		}
 	}
-	return false
+	return hasMixedOperators(conds)
 }
 
 func summarizeFilterActions(actions []NativeAction) (targetFolder, summary string) {

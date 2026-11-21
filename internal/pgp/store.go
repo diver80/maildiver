@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/mail"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +26,11 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 
 	"github.com/diver80/maildiver/internal/secretstore"
+)
+
+const (
+	maxPGPImportBytes      = 4 * 1024 * 1024
+	maxPGPOnlineFetchBytes = 512 * 1024
 )
 
 // KeyInfo is non-secret metadata for a personal OpenPGP secret key or contact public key.
@@ -125,16 +133,72 @@ func secretKeyForIdentity(email string) string {
 	return "pgp:id:" + strings.ToLower(strings.TrimSpace(email))
 }
 
+func secretPassForIdentity(email string) string {
+	return "pgp:pass:" + strings.ToLower(strings.TrimSpace(email))
+}
+
+func isEntityExpired(ent *openpgp.Entity, now time.Time) bool {
+	if ent == nil || ent.PrimaryKey == nil {
+		return true
+	}
+	sig, _ := ent.PrimarySelfSignature()
+	if sig != nil && sig.KeyLifetimeSecs != nil && *sig.KeyLifetimeSecs > 0 {
+		exp := ent.PrimaryKey.CreationTime.Add(time.Duration(*sig.KeyLifetimeSecs) * time.Second)
+		if now.After(exp) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEntityRevokedOrExpired(ent *openpgp.Entity, now time.Time) (bool, string) {
+	if ent == nil || ent.PrimaryKey == nil {
+		return true, "ungültiger OpenPGP-Schlüssel"
+	}
+	if ent.Revoked(now) {
+		return true, "OpenPGP-Schlüssel wurde widerrufen (revoked)"
+	}
+	if isEntityExpired(ent, now) {
+		return true, "OpenPGP-Schlüssel ist abgelaufen (expired)"
+	}
+	return false, ""
+}
+
 func entityEmails(ent *openpgp.Entity) (primaryEmail string, emails []string, userID string) {
 	if ent == nil {
 		return "", nil, ""
 	}
+	// Deterministic ordering: primary identity first, then sorted by identity name.
+	var ordered []*openpgp.Identity
+	prim := ent.PrimaryIdentity()
+	if prim != nil {
+		ordered = append(ordered, prim)
+	}
+	names := make([]string, 0, len(ent.Identities))
+	for name := range ent.Identities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		id := ent.Identities[name]
+		if id == nil || id == prim {
+			continue
+		}
+		ordered = append(ordered, id)
+	}
+
 	seen := map[string]bool{}
-	for _, id := range ent.Identities {
-		if userID == "" && id != nil && id.Name != "" {
+	for _, id := range ordered {
+		if id == nil {
+			continue
+		}
+		if len(id.Revocations) > 0 {
+			continue
+		}
+		if userID == "" && id.Name != "" {
 			userID = id.Name
 		}
-		if id == nil || id.UserId == nil {
+		if id.UserId == nil {
 			continue
 		}
 		em := strings.ToLower(strings.TrimSpace(id.UserId.Email))
@@ -211,15 +275,26 @@ func serializeEntityPublicArmor(ent *openpgp.Entity) (string, error) {
 	return buf.String(), nil
 }
 
-func serializeEntityPrivateArmor(ent *openpgp.Entity) (string, error) {
+func serializeEntityPrivateArmor(ent *openpgp.Entity, passphrase string) (string, error) {
+	if passphrase != "" {
+		if err := ent.EncryptPrivateKeys([]byte(passphrase), nil); err != nil {
+			return "", fmt.Errorf("Privatschlüssel verschlüsseln: %w", err)
+		}
+	}
 	var buf bytes.Buffer
 	w, err := armor.Encode(&buf, openpgp.PrivateKeyType, nil)
 	if err != nil {
 		return "", err
 	}
-	if err := ent.SerializePrivate(w, nil); err != nil {
+	var serr error
+	if passphrase != "" {
+		serr = ent.SerializePrivateWithoutSigning(w, nil)
+	} else {
+		serr = ent.SerializePrivate(w, nil)
+	}
+	if serr != nil {
 		_ = w.Close()
-		return "", err
+		return "", serr
 	}
 	if err := w.Close(); err != nil {
 		return "", err
@@ -228,29 +303,31 @@ func serializeEntityPrivateArmor(ent *openpgp.Entity) (string, error) {
 }
 
 func decryptEntityPrivateKeys(ent *openpgp.Entity, passphrase string) error {
-	pw := []byte(passphrase)
-	if ent.PrivateKey != nil && ent.PrivateKey.Encrypted {
-		if passphrase == "" {
-			return fmt.Errorf("Passwort für OpenPGP-Privatschlüssel erforderlich")
-		}
-		if err := ent.PrivateKey.Decrypt(pw); err != nil {
-			return fmt.Errorf("falsches Passwort für OpenPGP-Privatschlüssel: %w", err)
+	needsDecrypt := ent.PrivateKey != nil && ent.PrivateKey.Encrypted
+	if !needsDecrypt {
+		for _, sub := range ent.Subkeys {
+			if sub.PrivateKey != nil && sub.PrivateKey.Encrypted {
+				needsDecrypt = true
+				break
+			}
 		}
 	}
-	for _, sub := range ent.Subkeys {
-		if sub.PrivateKey != nil && sub.PrivateKey.Encrypted {
-			if passphrase == "" {
-				return fmt.Errorf("Passwort für OpenPGP-Subkey erforderlich")
-			}
-			if err := sub.PrivateKey.Decrypt(pw); err != nil {
-				return fmt.Errorf("falsches Passwort für OpenPGP-Subkey: %w", err)
-			}
-		}
+	if !needsDecrypt {
+		return nil
+	}
+	if passphrase == "" {
+		return fmt.Errorf("Passwort für OpenPGP-Privatschlüssel erforderlich")
+	}
+	if err := ent.DecryptPrivateKeys([]byte(passphrase)); err != nil {
+		return fmt.Errorf("falsches Passwort für OpenPGP-Privatschlüssel: %w", err)
 	}
 	return nil
 }
 
 func parseKeyRingAny(raw []byte) (openpgp.EntityList, error) {
+	if len(raw) > maxPGPImportBytes {
+		return nil, fmt.Errorf("OpenPGP-Schlüsseldaten überschreiten Limit von %d MB", maxPGPImportBytes/(1024*1024))
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return nil, fmt.Errorf("leerer OpenPGP-Schlüssel")
@@ -270,7 +347,7 @@ func parseKeyRingAny(raw []byte) (openpgp.EntityList, error) {
 }
 
 // ImportKeys imports one or more ASCII-armored or binary OpenPGP public or private keys.
-// Private keys are unlocked with passphrase (if encrypted) and saved into secretstore.
+// Private keys are validated with passphrase (if encrypted) and saved into secretstore.
 func (m *Manager) ImportKeys(raw []byte, passphrase string) ([]KeyInfo, error) {
 	entities, err := parseKeyRingAny(raw)
 	if err != nil {
@@ -285,31 +362,44 @@ func (m *Manager) ImportKeys(raw []byte, passphrase string) ([]KeyInfo, error) {
 			if err := decryptEntityPrivateKeys(ent, passphrase); err != nil {
 				return nil, err
 			}
-			privArmor, err := serializeEntityPrivateArmor(ent)
-			if err != nil {
-				return nil, fmt.Errorf("Privatschlüssel serialisieren: %w", err)
-			}
 			pubArmor, err := serializeEntityPublicArmor(ent)
 			if err != nil {
 				return nil, fmt.Errorf("Public Key serialisieren: %w", err)
 			}
 			info := buildKeyInfo(ent, true)
+			privArmor, err := serializeEntityPrivateArmor(ent, passphrase)
+			if err != nil {
+				return nil, fmt.Errorf("Privatschlüssel serialisieren: %w", err)
+			}
+			keys := info.Emails
+			if len(keys) == 0 {
+				keys = []string{strings.ToLower(info.Email)}
+			}
 			m.mu.Lock()
-			for _, em := range info.Emails {
-				_ = m.secrets.Set(secretKeyForIdentity(em), privArmor)
+			var setErr error
+			for _, em := range keys {
+				if err := m.secrets.Set(secretKeyForIdentity(em), privArmor); err != nil {
+					setErr = fmt.Errorf("Keychain speichern (%s): %w", em, err)
+					break
+				}
+				if passphrase != "" {
+					if err := m.secrets.Set(secretPassForIdentity(em), passphrase); err != nil {
+						setErr = fmt.Errorf("Passwort speichern (%s): %w", em, err)
+						break
+					}
+				} else {
+					_ = m.secrets.Delete(secretPassForIdentity(em))
+				}
 				rec := info
 				rec.Email = em
 				m.state.Identities[em] = storedKeyRecord{Info: rec, PublicArmor: pubArmor}
 			}
-			if len(info.Emails) == 0 {
-				key := strings.ToLower(info.Email)
-				_ = m.secrets.Set(secretKeyForIdentity(key), privArmor)
-				m.state.Identities[key] = storedKeyRecord{Info: info, PublicArmor: pubArmor}
+			if setErr == nil {
+				setErr = m.saveDiskLocked()
 			}
-			err = m.saveDiskLocked()
 			m.mu.Unlock()
-			if err != nil {
-				return nil, err
+			if setErr != nil {
+				return nil, setErr
 			}
 			imported = append(imported, info)
 			continue
@@ -340,7 +430,7 @@ func (m *Manager) ImportKeys(raw []byte, passphrase string) ([]KeyInfo, error) {
 }
 
 // GenerateIdentity creates a new 3072-bit RSA OpenPGP keypair for name/email and stores it in secretstore.
-func (m *Manager) GenerateIdentity(name, email, _ string) (KeyInfo, error) {
+func (m *Manager) GenerateIdentity(name, email, passphrase string) (KeyInfo, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
 	if email == "" || !strings.Contains(email, "@") {
@@ -362,19 +452,27 @@ func (m *Manager) GenerateIdentity(name, email, _ string) (KeyInfo, error) {
 	if err != nil {
 		return KeyInfo{}, fmt.Errorf("OpenPGP-Schlüssel erzeugen: %w", err)
 	}
-	privArmor, err := serializeEntityPrivateArmor(ent)
-	if err != nil {
-		return KeyInfo{}, err
-	}
 	pubArmor, err := serializeEntityPublicArmor(ent)
 	if err != nil {
 		return KeyInfo{}, err
 	}
 	info := buildKeyInfo(ent, true)
+	privArmor, err := serializeEntityPrivateArmor(ent, passphrase)
+	if err != nil {
+		return KeyInfo{}, err
+	}
 	m.mu.Lock()
 	if err := m.secrets.Set(secretKeyForIdentity(email), privArmor); err != nil {
 		m.mu.Unlock()
 		return KeyInfo{}, fmt.Errorf("Keychain speichern: %w", err)
+	}
+	if passphrase != "" {
+		if err := m.secrets.Set(secretPassForIdentity(email), passphrase); err != nil {
+			m.mu.Unlock()
+			return KeyInfo{}, fmt.Errorf("Passwort speichern: %w", err)
+		}
+	} else {
+		_ = m.secrets.Delete(secretPassForIdentity(email))
 	}
 	m.state.Identities[email] = storedKeyRecord{Info: info, PublicArmor: pubArmor}
 	err = m.saveDiskLocked()
@@ -425,8 +523,25 @@ func (m *Manager) DeleteIdentity(email string) error {
 	em := strings.ToLower(strings.TrimSpace(email))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_ = m.secrets.Delete(secretKeyForIdentity(em))
-	delete(m.state.Identities, em)
+	toRemove := map[string]bool{em: true}
+	if rec, ok := m.state.Identities[em]; ok {
+		fp := rec.Info.Fingerprint
+		for _, alias := range rec.Info.Emails {
+			toRemove[strings.ToLower(strings.TrimSpace(alias))] = true
+		}
+		if fp != "" {
+			for k, other := range m.state.Identities {
+				if other.Info.Fingerprint == fp {
+					toRemove[k] = true
+				}
+			}
+		}
+	}
+	for k := range toRemove {
+		_ = m.secrets.Delete(secretKeyForIdentity(k))
+		_ = m.secrets.Delete(secretPassForIdentity(k))
+		delete(m.state.Identities, k)
+	}
 	return m.saveDiskLocked()
 }
 
@@ -442,17 +557,21 @@ func (m *Manager) HasIdentity(email string) bool {
 	em := strings.ToLower(strings.TrimSpace(email))
 	m.mu.RLock()
 	_, ok := m.state.Identities[em]
-	m.mu.RUnlock()
 	if !ok {
+		m.mu.RUnlock()
 		return false
 	}
 	raw, err := m.secrets.Get(secretKeyForIdentity(em))
+	m.mu.RUnlock()
 	return err == nil && strings.TrimSpace(raw) != ""
 }
 
 func (m *Manager) LoadIdentity(email string) (*openpgp.Entity, error) {
 	em := strings.ToLower(strings.TrimSpace(email))
+	m.mu.RLock()
 	raw, err := m.secrets.Get(secretKeyForIdentity(em))
+	pass, _ := m.secrets.Get(secretPassForIdentity(em))
+	m.mu.RUnlock()
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return nil, fmt.Errorf("kein OpenPGP-Privatschlüssel für %s gespeichert", em)
 	}
@@ -460,10 +579,17 @@ func (m *Manager) LoadIdentity(email string) (*openpgp.Entity, error) {
 	if err != nil || len(el) == 0 {
 		return nil, fmt.Errorf("OpenPGP-Identität %s nicht lesbar: %w", em, err)
 	}
-	if el[0].PrivateKey == nil {
+	ent := el[0]
+	if ent.PrivateKey == nil {
 		return nil, fmt.Errorf("OpenPGP-Schlüssel für %s enthält keinen Privatschlüssel", em)
 	}
-	return el[0], nil
+	if err := decryptEntityPrivateKeys(ent, pass); err != nil {
+		return nil, err
+	}
+	if bad, reason := isEntityRevokedOrExpired(ent, time.Now()); bad {
+		return nil, fmt.Errorf("OpenPGP-Identität %s ungültig: %s", em, reason)
+	}
+	return ent, nil
 }
 
 // AllIdentities returns all unlocked personal OpenPGP entities from secretstore.
@@ -526,9 +652,11 @@ func (m *Manager) AllEntities() openpgp.EntityList {
 	return all
 }
 
-// LookupRecipientKeys finds public OpenPGP entities for all recipient emails and lists missing ones.
+// LookupRecipientKeys finds valid, non-expired, non-revoked encryption-capable public OpenPGP entities
+// for all recipient emails and lists missing or unusable ones.
 func (m *Manager) LookupRecipientKeys(emails []string) (keys []*openpgp.Entity, missing []string) {
 	seenFP := map[string]bool{}
+	now := time.Now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, rawEm := range emails {
@@ -551,32 +679,200 @@ func (m *Manager) LookupRecipientKeys(emails []string) (keys []*openpgp.Entity, 
 			missing = append(missing, em)
 			continue
 		}
-		fp := hex.EncodeToString(el[0].PrimaryKey.Fingerprint[:])
+		ent := el[0]
+		if bad, _ := isEntityRevokedOrExpired(ent, now); bad {
+			missing = append(missing, em)
+			continue
+		}
+		if _, canEnc := ent.EncryptionKey(now); !canEnc {
+			missing = append(missing, em)
+			continue
+		}
+		fp := hex.EncodeToString(ent.PrimaryKey.Fingerprint[:])
 		if !seenFP[fp] {
 			seenFP[fp] = true
-			keys = append(keys, el[0])
+			keys = append(keys, ent)
 		}
 	}
 	return keys, missing
 }
 
+var blockedOnlinePrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+func isBlockedOnlineIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return true
+	}
+	for _, pfx := range blockedOnlinePrefixes {
+		if pfx.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSafePublicDomain(dom string) bool {
+	dom = strings.ToLower(strings.TrimSpace(dom))
+	if dom == "" || len(dom) > 253 || strings.ContainsAny(dom, ":/\\ \t\r\n?#@[]") {
+		return false
+	}
+	if net.ParseIP(dom) != nil {
+		return false
+	}
+	if dom == "localhost" || strings.HasSuffix(dom, ".localhost") || strings.HasSuffix(dom, ".local") || strings.HasSuffix(dom, ".internal") {
+		return false
+	}
+	labels := strings.Split(dom, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			ch := l[i]
+			if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func newSafePGPHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 8 * time.Second}
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ipa := range ips {
+				if isBlockedOnlineIP(ipa.IP) {
+					return nil, fmt.Errorf("Keyserver-Ziel blockiert (private/lokale IP %s)", ipa.IP.String())
+				}
+			}
+			for _, ipa := range ips {
+				conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ipa.IP.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				err = derr
+			}
+			return nil, err
+		},
+	}
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("zu viele Weiterleitungen beim Keyserver-Abruf")
+			}
+			if !strings.EqualFold(req.URL.Scheme, "https") {
+				return fmt.Errorf("unsichere Weiterleitung auf %s blockiert (nur HTTPS erlaubt)", req.URL.Scheme)
+			}
+			return nil
+		},
+	}
+}
+
+func (m *Manager) importValidatedOnlinePublicKey(raw []byte, expectedEmail string) ([]KeyInfo, error) {
+	entities, err := parseKeyRingAny(raw)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	var imported []KeyInfo
+	for _, ent := range entities {
+		// Never import private keys returned by an untrusted online keyserver.
+		if ent.PrivateKey != nil {
+			continue
+		}
+		if bad, _ := isEntityRevokedOrExpired(ent, now); bad {
+			continue
+		}
+		_, emails, _ := entityEmails(ent)
+		matched := false
+		for _, em := range emails {
+			if strings.EqualFold(em, expectedEmail) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		pubArmor, err := serializeEntityPublicArmor(ent)
+		if err != nil {
+			continue
+		}
+		info := buildKeyInfo(ent, false)
+		info.Email = expectedEmail
+		info.Emails = []string{expectedEmail}
+		m.mu.Lock()
+		m.state.Contacts[expectedEmail] = storedKeyRecord{Info: info, PublicArmor: pubArmor}
+		err = m.saveDiskLocked()
+		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		imported = append(imported, info)
+	}
+	if len(imported) == 0 {
+		return nil, fmt.Errorf("Online-Antwort enthielt keinen gültigen Public Key für %s", expectedEmail)
+	}
+	return imported, nil
+}
+
 // FetchOnlinePublicKey queries WKD first, then keys.openpgp.org VKS by email over HTTPS
-// (only called on explicit user request) and imports the retrieved public key into Contacts.
+// (only called on explicit user request) and imports the validated public key into Contacts.
 func (m *Manager) FetchOnlinePublicKey(ctx context.Context, rawEmail string) ([]KeyInfo, error) {
 	addr, err := mail.ParseAddress(strings.TrimSpace(rawEmail))
-	var em string
-	if err == nil {
-		em = strings.ToLower(strings.TrimSpace(addr.Address))
-	} else {
-		em = strings.ToLower(strings.TrimSpace(rawEmail))
+	if err != nil || addr == nil {
+		return nil, fmt.Errorf("gültige E-Mail-Adresse erforderlich")
+	}
+	em := strings.ToLower(strings.TrimSpace(addr.Address))
+	if strings.ContainsAny(em, " \t\r\n/\\?#") {
+		return nil, fmt.Errorf("gültige E-Mail-Adresse erforderlich")
 	}
 	at := strings.IndexByte(em, '@')
 	if at <= 0 || at == len(em)-1 {
 		return nil, fmt.Errorf("gültige E-Mail-Adresse erforderlich")
 	}
 	local, dom := em[:at], em[at+1:]
+	if !isSafePublicDomain(dom) {
+		return nil, fmt.Errorf("ungültige oder nicht-öffentliche Domain %q für Online-Schlüsselsuche", dom)
+	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newSafePGPHTTPClient()
 	fetchBounded := func(u string) ([]byte, error) {
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if rerr != nil {
@@ -590,25 +886,32 @@ func (m *Manager) FetchOnlinePublicKey(ctx context.Context, rawEmail string) ([]
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
-		return io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxPGPOnlineFetchBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) > maxPGPOnlineFetchBytes {
+			return nil, fmt.Errorf("Antwort vom Keyserver zu groß")
+		}
+		return raw, nil
 	}
 
 	// Try RFC/draft WKD direct URL first, then keys.openpgp.org VKS.
 	h := sha1.Sum([]byte(local))
 	zHash := zBase32Encode(h[:])
-	wkdURL := fmt.Sprintf("https://%s/.well-known/openpgpkey/hu/%s?l=%s", dom, zHash, local)
+	wkdURL := fmt.Sprintf("https://%s/.well-known/openpgpkey/hu/%s?l=%s", dom, zHash, url.QueryEscape(local))
 	if raw, werr := fetchBounded(wkdURL); werr == nil && len(raw) > 0 {
-		if infos, ierr := m.ImportKeys(raw, ""); ierr == nil && len(infos) > 0 {
+		if infos, ierr := m.importValidatedOnlinePublicKey(raw, em); ierr == nil && len(infos) > 0 {
 			return infos, nil
 		}
 	}
 
-	vksURL := "https://keys.openpgp.org/vks/v1/by-email/" + em
+	vksURL := "https://keys.openpgp.org/vks/v1/by-email/" + url.PathEscape(em)
 	raw, verr := fetchBounded(vksURL)
 	if verr != nil {
 		return nil, fmt.Errorf("kein Schlüssel über WKD oder keys.openpgp.org gefunden (%v)", verr)
 	}
-	return m.ImportKeys(raw, "")
+	return m.importValidatedOnlinePublicKey(raw, em)
 }
 
 // zBase32Encode implements Phil Zimmermann's human-oriented base32 encoding used by OpenPGP WKD.

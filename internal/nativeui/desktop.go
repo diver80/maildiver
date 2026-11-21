@@ -56,7 +56,10 @@ func Run(ctx context.Context, opts Options) error {
 	if !isMobile {
 		mygo.App.SetMenu(s.appMenu())
 	}
-	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { s.quitting = true })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		s.quitting = true
+		app.FlushPendingSendsOnQuit()
+	})
 	// With a tray the app keeps running in the menu bar; without one (--no-tray or tray
 	// creation failed) closing the last window must quit instead of leaving an invisible process.
 	mygo.App.OnWindowAllClosed(func() {
@@ -111,6 +114,7 @@ func Run(ctx context.Context, opts Options) error {
 		<-ctx.Done()
 		mygo.RunOnMain(func() {
 			s.quitting = true
+			app.FlushPendingSendsOnQuit()
 			if s.tray != nil {
 				s.tray.Destroy()
 			}

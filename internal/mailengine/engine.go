@@ -1087,6 +1087,8 @@ func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName,
 	return writeBytesToDownloads(sanitizeDownloadFilename(name), data)
 }
 
+const maxExportEMLBytes = 50 << 20
+
 // SaveMessageEMLToDownloads exports the raw RFC 5322 message as an .eml file into ~/Downloads.
 func (e *Engine) SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error) {
 	m, err := e.getOrFetchStoredMessage(ctx, msgID)
@@ -1095,6 +1097,9 @@ func (e *Engine) SaveMessageEMLToDownloads(ctx context.Context, msgID string) (s
 	}
 	if len(m.RawEML) == 0 {
 		return "", fmt.Errorf("keine Rohdaten (.eml) für diese Nachricht verfügbar")
+	}
+	if len(m.RawEML) > maxExportEMLBytes {
+		return "", fmt.Errorf("Nachricht überschreitet das Export-Limit von %d MB", maxExportEMLBytes>>20)
 	}
 	base := strings.TrimSpace(m.Subject)
 	if base == "" {
@@ -1164,7 +1169,15 @@ func sanitizeDownloadFilename(raw string) string {
 			maxBase = 1
 		}
 		if len(base) > maxBase {
-			base = base[:maxBase]
+			// Truncate at UTF-8 rune boundaries so multi-byte characters are never split.
+			var tb strings.Builder
+			for _, r := range base {
+				if tb.Len()+len(string(r)) > maxBase {
+					break
+				}
+				tb.WriteRune(r)
+			}
+			base = tb.String()
 		}
 		clean = base + ext
 	}

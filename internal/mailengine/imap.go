@@ -571,7 +571,12 @@ func (e *Engine) prefetchFolderBodies(ctx context.Context, c *imapclient.Client,
 	}
 }
 
+const maxFetchRawEMLBytes = 50 << 20
+
 func (e *Engine) fetchMessageBodyIMAP(ctx context.Context, acc config.DirectAccount, m StoredMessage) (StoredMessage, error) {
+	if m.Size > maxFetchRawEMLBytes {
+		return m, fmt.Errorf("Nachricht überschreitet das Größenlimit von %d MB", maxFetchRawEMLBytes>>20)
+	}
 	pass, err := e.accountPassword(acc.ID)
 	if err != nil {
 		return m, err
@@ -584,8 +589,12 @@ func (e *Engine) fetchMessageBodyIMAP(ctx context.Context, acc config.DirectAcco
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
-	if _, err := c.Select(m.FolderPath, nil).Wait(); err != nil {
+	sel, err := c.Select(m.FolderPath, nil).Wait()
+	if err != nil {
 		return m, fmt.Errorf("IMAP SELECT %q: %w", m.FolderPath, err)
+	}
+	if f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, m.FolderPath); ok && f.UIDValidity > 0 && sel.UIDValidity > 0 && sel.UIDValidity != f.UIDValidity {
+		return m, fmt.Errorf("UIDVALIDITY für %q hat sich geändert (lokal %d, Server %d) – bitte zuerst synchronisieren", m.FolderPath, f.UIDValidity, sel.UIDValidity)
 	}
 	bodySec := &imap.FetchItemBodySection{Peek: true}
 	var uidSet imap.UIDSet
@@ -593,6 +602,7 @@ func (e *Engine) fetchMessageBodyIMAP(ctx context.Context, acc config.DirectAcco
 	fetched, err := c.Fetch(uidSet, &imap.FetchOptions{
 		UID:         true,
 		Flags:       true,
+		RFC822Size:  true,
 		BodySection: []*imap.FetchItemBodySection{bodySec},
 	}).Collect()
 	if err != nil || len(fetched) == 0 {
@@ -602,6 +612,9 @@ func (e *Engine) fetchMessageBodyIMAP(ctx context.Context, acc config.DirectAcco
 		return m, err
 	}
 	raw := fetched[0].FindBodySection(bodySec)
+	if len(raw) > maxFetchRawEMLBytes {
+		return m, fmt.Errorf("Nachricht überschreitet das Größenlimit von %d MB", maxFetchRawEMLBytes>>20)
+	}
 	mergeParsedIntoStored(&m, raw)
 	_ = e.store.UpsertMessage(ctx, m)
 	return m, nil
@@ -683,6 +696,17 @@ func uidExpungeIMAP(c *imapclient.Client, uidSet imap.UIDSet) error {
 		}
 		return nil
 	}
+	// Without UIDPLUS/IMAP4rev2, only run EXPUNGE if no unrelated messages are marked \Deleted.
+	data, err := c.UIDSearch(&imap.SearchCriteria{Flag: []imap.Flag{imap.FlagDeleted}}, nil).Wait()
+	if err != nil {
+		return nil
+	}
+	for _, u := range data.AllUIDs() {
+		if !uidSet.Contains(u) {
+			// Unrelated \Deleted message exists in this mailbox — never purge it via blind EXPUNGE.
+			return nil
+		}
+	}
 	if err := c.Expunge().Close(); err != nil {
 		return fmt.Errorf("IMAP EXPUNGE: %w", err)
 	}
@@ -706,30 +730,52 @@ func moveMessagesIMAP(c *imapclient.Client, uidSet imap.UIDSet, targetPath strin
 	return uidExpungeIMAP(c, uidSet)
 }
 
-func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expectedUIDValidity uint32, uids []imap.UID, read, flagged *bool, moveTargetPath string, permanentDelete bool, copyTargetPaths ...string) error {
-	copyTargetPath := ""
-	if len(copyTargetPaths) > 0 {
-		copyTargetPath = copyTargetPaths[0]
+func chunkUIDSlices(uids []imap.UID, size int) [][]imap.UID {
+	if size <= 0 {
+		size = imapUIDChunkSize
 	}
-	chunks := chunkUIDs(uids, imapUIDChunkSize)
-	if len(chunks) == 0 {
+	valid := make([]imap.UID, 0, len(uids))
+	for _, u := range uids {
+		if u > 0 {
+			valid = append(valid, u)
+		}
+	}
+	if len(valid) == 0 {
 		return nil
+	}
+	var out [][]imap.UID
+	for i := 0; i < len(valid); i += size {
+		end := min(i+size, len(valid))
+		out = append(out, valid[i:end])
+	}
+	return out
+}
+
+func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expectedUIDValidity uint32, uids []imap.UID, read, flagged *bool, moveTargetPath string, permanentDelete bool, copyTargetPaths ...string) (map[uint32]bool, error) {
+	chunks := chunkUIDSlices(uids, imapUIDChunkSize)
+	if len(chunks) == 0 {
+		return nil, nil
 	}
 	sel, err := c.Select(folderPath, nil).Wait()
 	if err != nil {
-		return fmt.Errorf("IMAP SELECT %q: %w", folderPath, err)
+		return nil, fmt.Errorf("IMAP SELECT %q: %w", folderPath, err)
 	}
 	if expectedUIDValidity > 0 && sel.UIDValidity > 0 && sel.UIDValidity != expectedUIDValidity {
-		return fmt.Errorf("UIDVALIDITY für %q hat sich geändert (lokal %d, Server %d) – bitte zuerst synchronisieren", folderPath, expectedUIDValidity, sel.UIDValidity)
+		return nil, fmt.Errorf("UIDVALIDITY für %q hat sich geändert (lokal %d, Server %d) – bitte zuerst synchronisieren", folderPath, expectedUIDValidity, sel.UIDValidity)
 	}
-	for _, uidSet := range chunks {
+	succeeded := make(map[uint32]bool, len(uids))
+	for _, chunk := range chunks {
+		var uidSet imap.UIDSet
+		for _, u := range chunk {
+			uidSet.AddNum(u)
+		}
 		if read != nil {
 			op := imap.StoreFlagsAdd
 			if !*read {
 				op = imap.StoreFlagsDel
 			}
 			if err := c.Store(uidSet, &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close(); err != nil {
-				return fmt.Errorf("IMAP STORE \\Seen: %w", err)
+				return succeeded, fmt.Errorf("IMAP STORE \\Seen: %w", err)
 			}
 		}
 		if flagged != nil {
@@ -738,28 +784,33 @@ func applyFlagsAndMoveOnClient(c *imapclient.Client, folderPath string, expected
 				op = imap.StoreFlagsDel
 			}
 			if err := c.Store(uidSet, &imap.StoreFlags{Op: op, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close(); err != nil {
-				return fmt.Errorf("IMAP STORE \\Flagged: %w", err)
+				return succeeded, fmt.Errorf("IMAP STORE \\Flagged: %w", err)
 			}
 		}
-		if copyTargetPath != "" && !strings.EqualFold(copyTargetPath, folderPath) {
-			if _, err := c.Copy(uidSet, copyTargetPath).Wait(); err != nil {
-				return fmt.Errorf("IMAP COPY %q: %w", copyTargetPath, err)
+		for _, copyTargetPath := range copyTargetPaths {
+			if copyTargetPath != "" && !strings.EqualFold(copyTargetPath, folderPath) {
+				if _, err := c.Copy(uidSet, copyTargetPath).Wait(); err != nil {
+					return succeeded, fmt.Errorf("IMAP COPY %q: %w", copyTargetPath, err)
+				}
 			}
 		}
 		if moveTargetPath != "" && !strings.EqualFold(moveTargetPath, folderPath) {
 			if err := moveMessagesIMAP(c, uidSet, moveTargetPath); err != nil {
-				return err
+				return succeeded, err
 			}
 		} else if permanentDelete {
 			if err := c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
-				return fmt.Errorf("IMAP STORE \\Deleted: %w", err)
+				return succeeded, fmt.Errorf("IMAP STORE \\Deleted: %w", err)
 			}
 			if err := uidExpungeIMAP(c, uidSet); err != nil {
-				return err
+				return succeeded, err
 			}
 		}
+		for _, u := range chunk {
+			succeeded[uint32(u)] = true
+		}
 	}
-	return nil
+	return succeeded, nil
 }
 
 func (e *Engine) applyMessageActionIMAP(ctx context.Context, acc config.DirectAccount, m StoredMessage, read, flagged *bool, moveTargetPath string, permanentDelete bool) error {
@@ -782,7 +833,8 @@ func (e *Engine) applyMessageActionIMAP(ctx context.Context, acc config.DirectAc
 	if f, ok := e.store.FindFolderByIDOrPath(ctx, acc.ID, m.FolderPath); ok {
 		expectedValidity = f.UIDValidity
 	}
-	return applyFlagsAndMoveOnClient(c, m.FolderPath, expectedValidity, []imap.UID{imap.UID(m.UID)}, read, flagged, moveTargetPath, permanentDelete)
+	_, err = applyFlagsAndMoveOnClient(c, m.FolderPath, expectedValidity, []imap.UID{imap.UID(m.UID)}, read, flagged, moveTargetPath, permanentDelete)
+	return err
 }
 
 type folderBatchOp struct {
@@ -790,31 +842,36 @@ type folderBatchOp struct {
 	Messages        []StoredMessage
 	Read            *bool
 	Flagged         *bool
-	CopyTargetPath  string
+	CopyTargetPaths []string
 	MoveTargetPath  string
 	PermanentDelete bool
 }
 
+type batchOpResult struct {
+	SucceededUIDs map[uint32]bool
+	Err           error
+}
+
 // applyBatchActionsIMAP executes multiple folder batches for one account over a single IMAP connection.
-// Returns the per-batch error (nil on success).
-func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAccount, ops []folderBatchOp) []error {
-	errs := make([]error, len(ops))
+// Returns per-batch results including partial UID successes when a later chunk fails.
+func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAccount, ops []folderBatchOp) []batchOpResult {
+	results := make([]batchOpResult, len(ops))
 	if len(ops) == 0 {
-		return errs
+		return results
 	}
 	pass, err := e.accountPassword(acc.ID)
 	if err != nil {
-		for i := range errs {
-			errs[i] = err
+		for i := range results {
+			results[i].Err = err
 		}
-		return errs
+		return results
 	}
 	c, err := dialIMAP(ctx, acc, pass, nil)
 	if err != nil {
-		for i := range errs {
-			errs[i] = err
+		for i := range results {
+			results[i].Err = err
 		}
-		return errs
+		return results
 	}
 	defer func() {
 		_ = c.Logout().Wait()
@@ -841,9 +898,10 @@ func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAcc
 			}
 			validityByPath[op.FolderPath] = expVal
 		}
-		errs[i] = applyFlagsAndMoveOnClient(c, op.FolderPath, expVal, uids, op.Read, op.Flagged, op.MoveTargetPath, op.PermanentDelete, op.CopyTargetPath)
+		succ, aerr := applyFlagsAndMoveOnClient(c, op.FolderPath, expVal, uids, op.Read, op.Flagged, op.MoveTargetPath, op.PermanentDelete, op.CopyTargetPaths...)
+		results[i] = batchOpResult{SucceededUIDs: succ, Err: aerr}
 	}
-	return errs
+	return results
 }
 
 // markFoldersReadIMAP marks all \Unseen messages in the given folders as \Seen over a single IMAP connection.
@@ -1356,6 +1414,26 @@ func isFilterSourceFolder(f StoredFolder) bool {
 	return true
 }
 
+func filtersNeedFullBody(filters []StoredFilter) bool {
+	for _, flt := range filters {
+		if !flt.Enabled {
+			continue
+		}
+		for _, cd := range flt.Conditions {
+			switch strings.ToLower(strings.TrimSpace(cd.Field)) {
+			case "body", "attachment", "attachments":
+				return true
+			case "header":
+				h := strings.ToLower(strings.TrimSpace(cd.HeaderName))
+				if h != "message-id" && h != "in-reply-to" && h != "references" && h != "list-id" && h != "list-unsubscribe" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // applyLocalFiltersOnNewMessages evaluates enabled MailDiver filter rules directly on newly
 // arrived INBOX / INBOX/* messages (using the active IMAP connection) and returns remaining messages.
 func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, folder StoredFolder, msgs []StoredMessage) []StoredMessage {
@@ -1363,6 +1441,53 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 	if err != nil || len(filters) == 0 {
 		return msgs
 	}
+	// If any enabled filter inspects body, attachments, or custom headers, fetch bodies for new
+	// messages before evaluating rules so those conditions work reliably on incoming mail.
+	if filtersNeedFullBody(filters) {
+		var needUIDs []imap.UID
+		byUID := map[uint32]int{}
+		for i, m := range msgs {
+			if !m.BodyFetched && m.UID > 0 && (m.Size == 0 || m.Size <= maxFetchRawEMLBytes) {
+				needUIDs = append(needUIDs, imap.UID(m.UID))
+				byUID[m.UID] = i
+			}
+		}
+		if len(needUIDs) > 0 {
+			bodySec := &imap.FetchItemBodySection{Peek: true}
+			for _, chunk := range chunkUIDs(needUIDs, 10) {
+				if ctx.Err() != nil {
+					break
+				}
+				fetched, ferr := c.Fetch(chunk, &imap.FetchOptions{
+					UID:         true,
+					BodySection: []*imap.FetchItemBodySection{bodySec},
+				}).Collect()
+				if ferr != nil {
+					break
+				}
+				for _, fm := range fetched {
+					idx, ok := byUID[uint32(fm.UID)]
+					if !ok {
+						continue
+					}
+					raw := fm.FindBodySection(bodySec)
+					if len(raw) == 0 || len(raw) > maxFetchRawEMLBytes {
+						continue
+					}
+					mergeParsedIntoStored(&msgs[idx], raw)
+					_ = e.store.UpsertMessage(ctx, msgs[idx])
+				}
+			}
+		}
+	}
+
+	junkFolderPath := ""
+	if jf, ok := e.store.FindFolderByType(ctx, acc.ID, "junk"); ok {
+		junkFolderPath = jf.Path
+	} else {
+		junkFolderPath = e.resolveTargetFolderPath(ctx, acc.ID, "Junk")
+	}
+
 	var remaining []StoredMessage
 	for _, m := range msgs {
 		removed := false
@@ -1388,6 +1513,19 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 					t := true
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, nil, &t, nil, nil)
 					m.Flagged = true
+				case "copyToFolder":
+					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
+					if target != "" && !strings.EqualFold(target, folder.Path) {
+						_, _ = c.Copy(uidSet, target).Wait()
+					}
+				case "junk":
+					if junkFolderPath != "" && !strings.EqualFold(junkFolderPath, folder.Path) {
+						if err := moveMessagesIMAP(c, uidSet, junkFolderPath); err == nil {
+							_ = e.store.DeleteMessage(ctx, m.ID)
+							removed = true
+							stop = true
+						}
+					}
 				case "moveToFolder":
 					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
 					if target != "" && !strings.EqualFold(target, folder.Path) {
@@ -1439,6 +1577,7 @@ func matchFilterAgainstMessage(flt StoredFilter, m StoredMessage) bool {
 		Date:        m.DateISO,
 		Headers:     m.Headers,
 		BodyText:    m.BodyText,
+		BodyHTML:    m.BodyHTML,
 		Unread:      !m.Read,
 		Attachments: attNames,
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/emersion/go-imap/v2"
 
 	"github.com/diver80/maildiver/internal/backend"
@@ -387,8 +388,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
 		fromAddr = strings.ToLower(strings.TrimSpace(addrs[0]))
 	}
-	hasInlinePGPEnc := strings.Contains(string(rawEML), "-----BEGIN PGP MESSAGE-----")
-	hasInlinePGPSig := strings.Contains(string(rawEML), "-----BEGIN PGP SIGNED MESSAGE-----")
+	hasInlinePGPEnc, hasInlinePGPSig := pgp.HasInlinePGP(rawEML)
 	if parsed.IsPGP || hasInlinePGPEnc || hasInlinePGPSig {
 		detail.Security.PGP = true
 		if parsed.Encrypted || hasInlinePGPEnc {
@@ -415,10 +415,14 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 				detail.Security.Decryption = "success"
 				if isInline {
 					detail.BodyText = string(decrypted)
+					detail.BodyHtml = ""
+					detail.Attachments = nil
 				} else if dp, perr := ParseRawMessage(decrypted); perr == nil {
 					e.applyDecryptedPayload(dp, format, detail)
 				} else {
 					detail.BodyText = string(decrypted)
+					detail.BodyHtml = ""
+					detail.Attachments = nil
 				}
 				if vr != nil {
 					applyPGPVerifyToSecurity(vr, &detail.Security)
@@ -435,6 +439,8 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 				}
 				if len(plain) > 0 {
 					detail.BodyText = string(plain)
+					detail.BodyHtml = ""
+					detail.Attachments = nil
 				}
 				return
 			}
@@ -687,6 +693,14 @@ func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMe
 			if err := e.createFolderIMAP(ctx, acc, "Archive"); err != nil {
 				return nil, fmt.Errorf("Archiv-Ordner anlegen fehlgeschlagen: %w", err)
 			}
+			_ = e.store.UpsertFolder(ctx, StoredFolder{
+				ID:         FolderID(acc.ID, "Archive"),
+				AccountID:  acc.ID,
+				Name:       "Archive",
+				Path:       "Archive",
+				Type:       "archive",
+				SpecialUse: []string{"archive"},
+			})
 			moveTarget = "Archive"
 		}
 	case p.MoveToFolderID != "":
@@ -800,6 +814,14 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 						recordErr(fmt.Errorf("Archiv-Ordner anlegen fehlgeschlagen: %w", err))
 						continue
 					}
+					_ = e.store.UpsertFolder(ctx, StoredFolder{
+						ID:         FolderID(acc.ID, "Archive"),
+						AccountID:  acc.ID,
+						Name:       "Archive",
+						Path:       "Archive",
+						Type:       "archive",
+						SpecialUse: []string{"archive"},
+					})
 					archiveCreated[m.AccountID] = true
 				}
 				moveTarget = "Archive"
@@ -845,22 +867,21 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 
 	for _, accID := range accOrder {
 		g := groups[accID]
-		var errs []error
+		var results []batchOpResult
 		if g.hasAcc && (p.Read != nil || p.Flagged != nil || p.RemovesFromFolder()) {
-			errs = e.applyBatchActionsIMAP(ctx, g.acc, g.ops)
+			results = e.applyBatchActionsIMAP(ctx, g.acc, g.ops)
 		} else {
-			errs = make([]error, len(g.ops))
+			results = make([]batchOpResult, len(g.ops))
 		}
 		anyOK := false
 		for i, op := range g.ops {
-			if errs[i] != nil {
-				for range op.Messages {
-					recordErr(errs[i])
-				}
-				continue
-			}
+			res := results[i]
 			moved := op.MoveTargetPath != "" && !strings.EqualFold(op.MoveTargetPath, op.FolderPath)
 			for _, m := range op.Messages {
+				if res.Err != nil && (m.UID == 0 || !res.SucceededUIDs[m.UID]) {
+					recordErr(res.Err)
+					continue
+				}
 				if moved || op.PermanentDelete {
 					_ = e.store.DeleteMessage(ctx, m.ID)
 					if moved {
@@ -1321,10 +1342,34 @@ func (e *Engine) resolveOutgoingCryptoTech(fromEmail string, req backend.Compose
 	}
 	hasPGP := e.pgp != nil && e.pgp.HasIdentity(fromEmail)
 	hasSMIME := e.smime != nil && e.smime.HasIdentity(fromEmail)
-	if req.Encrypt && e.pgp != nil {
+	if req.Encrypt {
 		rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
 		if len(rcptAddrs) > 0 {
-			if _, missing := e.pgp.LookupRecipientKeys(rcptAddrs); len(missing) == 0 {
+			smimeReady := false
+			if e.smime != nil {
+				if _, missing := e.smime.LookupRecipientCerts(rcptAddrs); len(missing) == 0 {
+					smimeReady = true
+				}
+			}
+			pgpReady := false
+			if e.pgp != nil {
+				if _, missing := e.pgp.LookupRecipientKeys(rcptAddrs); len(missing) == 0 {
+					pgpReady = true
+				}
+			}
+			if smimeReady && pgpReady {
+				if hasSMIME {
+					return "smime"
+				}
+				if hasPGP {
+					return "pgp"
+				}
+				return "smime"
+			}
+			if smimeReady {
+				return "smime"
+			}
+			if pgpReady {
 				return "pgp"
 			}
 		}
@@ -1340,17 +1385,28 @@ func (e *Engine) resolveOutgoingCryptoTech(fromEmail string, req backend.Compose
 
 func (e *Engine) applyOutgoingSecurity(fromEmail string, req backend.ComposeRequest, raw []byte) ([]byte, *backend.ComposeSecurity, error) {
 	tech := e.resolveOutgoingCryptoTech(fromEmail, req)
-	if tech == "pgp" && e.pgp != nil {
+	explicitTech := strings.TrimSpace(req.CryptoTech) != ""
+	if tech == "pgp" {
+		if e.pgp == nil {
+			if req.Encrypt || req.Sign == "on" || explicitTech {
+				return nil, nil, fmt.Errorf("OpenPGP ist nicht initialisiert")
+			}
+			return raw, nil, nil
+		}
 		wantSign := req.Sign == "on" || (req.Sign == "" && e.pgp.HasIdentity(fromEmail))
-		signer, _ := e.pgp.LoadIdentity(fromEmail)
-		if wantSign && signer == nil && req.Sign == "on" {
-			return nil, nil, fmt.Errorf("kein OpenPGP-Privatschlüssel für %s gefunden", fromEmail)
+		var signer *openpgp.Entity
+		if wantSign {
+			var lerr error
+			signer, lerr = e.pgp.LoadIdentity(fromEmail)
+			if lerr != nil {
+				return nil, nil, lerr
+			}
 		}
 		if req.Encrypt {
 			rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
 			keys, missing := e.pgp.LookupRecipientKeys(rcptAddrs)
 			if len(missing) > 0 {
-				return nil, nil, fmt.Errorf("OpenPGP-Verschlüsselung nicht möglich — fehlender Public Key für: %s", strings.Join(missing, ", "))
+				return nil, nil, fmt.Errorf("OpenPGP-Verschlüsselung nicht möglich — fehlender oder ungültiger Public Key für: %s", strings.Join(missing, ", "))
 			}
 			if selfKeys, _ := e.pgp.LookupRecipientKeys([]string{fromEmail}); len(selfKeys) > 0 {
 				keys = append(keys, selfKeys...)
@@ -1375,42 +1431,43 @@ func (e *Engine) applyOutgoingSecurity(fromEmail string, req backend.ComposeRequ
 		return raw, nil, nil
 	}
 
-	if e.smime != nil {
-		wantSign := req.Sign == "on" || (req.Sign == "" && e.smime.HasIdentity(fromEmail))
-		signed := false
-		if wantSign {
-			id, lerr := e.smime.LoadIdentity(fromEmail)
-			if lerr != nil {
-				if req.Sign == "on" {
-					return nil, nil, lerr
-				}
-			} else {
-				signedRaw, serr := smime.SignMIME(raw, id)
-				if serr != nil {
-					return nil, nil, serr
-				}
-				raw = signedRaw
-				signed = true
-			}
+	if e.smime == nil {
+		if req.Encrypt || req.Sign == "on" || explicitTech {
+			return nil, nil, fmt.Errorf("S/MIME ist nicht initialisiert")
 		}
-		if req.Encrypt {
-			rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
-			certs, missing := e.smime.LookupRecipientCerts(rcptAddrs)
-			if len(missing) > 0 {
-				return nil, nil, fmt.Errorf("S/MIME-Verschlüsselung nicht möglich — fehlendes Zertifikat für: %s", strings.Join(missing, ", "))
-			}
-			if selfCerts, _ := e.smime.LookupRecipientCerts([]string{fromEmail}); len(selfCerts) > 0 {
-				certs = append(certs, selfCerts...)
-			}
-			encRaw, eerr := smime.EncryptMIME(raw, certs)
-			if eerr != nil {
-				return nil, nil, eerr
-			}
-			raw = encRaw
+		return raw, nil, nil
+	}
+	wantSign := req.Sign == "on" || (req.Sign == "" && e.smime.HasIdentity(fromEmail))
+	signed := false
+	if wantSign {
+		id, lerr := e.smime.LoadIdentity(fromEmail)
+		if lerr != nil {
+			return nil, nil, lerr
 		}
-		if signed || req.Encrypt {
-			return raw, &backend.ComposeSecurity{Technology: "S/MIME", Signed: signed, Encrypted: req.Encrypt}, nil
+		signedRaw, serr := smime.SignMIME(raw, id)
+		if serr != nil {
+			return nil, nil, serr
 		}
+		raw = signedRaw
+		signed = true
+	}
+	if req.Encrypt {
+		rcptAddrs := ExtractAddresses(req.To, req.CC, req.BCC)
+		certs, missing := e.smime.LookupRecipientCerts(rcptAddrs)
+		if len(missing) > 0 {
+			return nil, nil, fmt.Errorf("S/MIME-Verschlüsselung nicht möglich — fehlendes Zertifikat für: %s", strings.Join(missing, ", "))
+		}
+		if selfCerts, _ := e.smime.LookupRecipientCerts([]string{fromEmail}); len(selfCerts) > 0 {
+			certs = append(certs, selfCerts...)
+		}
+		encRaw, eerr := smime.EncryptMIME(raw, certs)
+		if eerr != nil {
+			return nil, nil, eerr
+		}
+		raw = encRaw
+	}
+	if signed || req.Encrypt {
+		return raw, &backend.ComposeSecurity{Technology: "S/MIME", Signed: signed, Encrypted: req.Encrypt}, nil
 	}
 	return raw, nil, nil
 }
@@ -1996,12 +2053,12 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 		nameSet[strings.ToLower(strings.TrimSpace(n))] = true
 	}
 	type fltKey struct {
-		folderPath string
-		read       bool
-		flagged    bool
-		copyTarget string
-		moveTarget string
-		permDel    bool
+		folderPath  string
+		read        bool
+		flagged     bool
+		copyTargets string
+		moveTarget  string
+		permDel     bool
 	}
 	var ops []folderBatchOp
 	opIdx := map[fltKey]int{}
@@ -2012,116 +2069,144 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 		junkFolderPath = e.resolveTargetFolderPath(ctx, acc.ID, "Junk")
 	}
 
+	const filterRunPageSize = 500
+	const filterRunMaxPerFolder = 10000
 	for _, sf := range sourceFolders {
-		msgs, _, merr := e.store.ListMessages(ctx, MessageQuery{
-			AccountID: acc.ID,
-			FolderID:  sf.ID,
-			Limit:     500,
-		})
-		if merr != nil {
-			return nil, merr
-		}
-		for _, m := range msgs {
-			var readSet, flagSet bool
-			var copyTarget, moveTarget string
-			var permDel bool
-			matchedAny := false
-			for _, flt := range filters {
-				if !flt.Enabled {
-					continue
-				}
-				if len(nameSet) > 0 && !nameSet[strings.ToLower(flt.Name)] {
-					continue
-				}
-				if !matchFilterAgainstMessage(flt, m) {
-					continue
-				}
-				stop := false
-				for _, act := range flt.Actions {
-					switch act.Type {
-					case "markRead":
-						readSet = true
-						matchedAny = true
-					case "addStar":
-						flagSet = true
-						matchedAny = true
-					case "copyToFolder":
-						copyTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
-						matchedAny = true
-					case "junk":
-						if junkFolderPath != "" {
-							moveTarget = junkFolderPath
+		for offset := 0; offset < filterRunMaxPerFolder; offset += filterRunPageSize {
+			msgs, _, merr := e.store.ListMessages(ctx, MessageQuery{
+				AccountID: acc.ID,
+				FolderID:  sf.ID,
+				Limit:     filterRunPageSize,
+				Offset:    offset,
+			})
+			if merr != nil {
+				return nil, merr
+			}
+			if len(msgs) == 0 {
+				break
+			}
+			for _, m := range msgs {
+				var readSet, flagSet bool
+				var copyTargets []string
+				copySeen := map[string]bool{}
+				var moveTarget string
+				var permDel bool
+				matchedAny := false
+				for _, flt := range filters {
+					if !flt.Enabled {
+						continue
+					}
+					if len(nameSet) > 0 && !nameSet[strings.ToLower(flt.Name)] {
+						continue
+					}
+					if !matchFilterAgainstMessage(flt, m) {
+						continue
+					}
+					stop := false
+					for _, act := range flt.Actions {
+						switch act.Type {
+						case "markRead":
+							readSet = true
+							matchedAny = true
+						case "addStar":
+							flagSet = true
+							matchedAny = true
+						case "copyToFolder":
+							ct := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
+							if ct != "" && !strings.EqualFold(ct, m.FolderPath) {
+								low := strings.ToLower(ct)
+								if !copySeen[low] {
+									copySeen[low] = true
+									copyTargets = append(copyTargets, ct)
+								}
+								matchedAny = true
+							}
+						case "junk":
+							if junkFolderPath != "" {
+								moveTarget = junkFolderPath
+								matchedAny = true
+								stop = true
+							}
+						case "moveToFolder":
+							moveTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
 							matchedAny = true
 							stop = true
+						case "delete":
+							permDel = true
+							matchedAny = true
+							stop = true
+						case "stopExecution":
+							stop = true
 						}
-					case "moveToFolder":
-						moveTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
-						matchedAny = true
-						stop = true
-					case "delete":
-						permDel = true
-						matchedAny = true
-						stop = true
-					case "stopExecution":
-						stop = true
+						if stop {
+							break
+						}
 					}
 					if stop {
 						break
 					}
 				}
-				if stop {
-					break
+				copied := len(copyTargets) > 0
+				moved := moveTarget != "" && !strings.EqualFold(moveTarget, m.FolderPath)
+				if !matchedAny || (!readSet && !flagSet && !copied && !moved && !permDel) {
+					continue
 				}
-			}
-			copied := copyTarget != "" && !strings.EqualFold(copyTarget, m.FolderPath)
-			moved := moveTarget != "" && !strings.EqualFold(moveTarget, m.FolderPath)
-			if !matchedAny || (!readSet && !flagSet && !copied && !moved && !permDel) {
-				continue
-			}
-			// Skip no-op read/flag updates when message is not moving/copying/deleting and already has those flags.
-			if !copied && !moved && !permDel && (!readSet || m.Read) && (!flagSet || m.Flagged) {
-				continue
-			}
-			k := fltKey{folderPath: m.FolderPath, read: readSet, flagged: flagSet, copyTarget: copyTarget, moveTarget: moveTarget, permDel: permDel}
-			idx, ok := opIdx[k]
-			if !ok {
-				idx = len(ops)
-				opIdx[k] = idx
-				var rPtr, fPtr *bool
-				if readSet {
-					t := true
-					rPtr = &t
+				// Skip no-op read/flag updates when message is not moving/copying/deleting and already has those flags.
+				if !copied && !moved && !permDel && (!readSet || m.Read) && (!flagSet || m.Flagged) {
+					continue
 				}
-				if flagSet {
-					t := true
-					fPtr = &t
+				k := fltKey{
+					folderPath:  m.FolderPath,
+					read:        readSet,
+					flagged:     flagSet,
+					copyTargets: strings.Join(copyTargets, "\x00"),
+					moveTarget:  moveTarget,
+					permDel:     permDel,
 				}
-				ops = append(ops, folderBatchOp{
-					FolderPath:      m.FolderPath,
-					Read:            rPtr,
-					Flagged:         fPtr,
-					CopyTargetPath:  copyTarget,
-					MoveTargetPath:  moveTarget,
-					PermanentDelete: permDel,
-				})
+				idx, ok := opIdx[k]
+				if !ok {
+					idx = len(ops)
+					opIdx[k] = idx
+					var rPtr, fPtr *bool
+					if readSet {
+						t := true
+						rPtr = &t
+					}
+					if flagSet {
+						t := true
+						fPtr = &t
+					}
+					ops = append(ops, folderBatchOp{
+						FolderPath:      m.FolderPath,
+						Read:            rPtr,
+						Flagged:         fPtr,
+						CopyTargetPaths: copyTargets,
+						MoveTargetPath:  moveTarget,
+						PermanentDelete: permDel,
+					})
+				}
+				ops[idx].Messages = append(ops[idx].Messages, m)
 			}
-			ops[idx].Messages = append(ops[idx].Messages, m)
+			if len(msgs) < filterRunPageSize {
+				break
+			}
 		}
 	}
 
 	executed := 0
 	var firstErr error
 	if len(ops) > 0 {
-		errs := e.applyBatchActionsIMAP(ctx, acc, ops)
+		results := e.applyBatchActionsIMAP(ctx, acc, ops)
 		for i, op := range ops {
-			if errs[i] != nil {
-				if firstErr == nil {
-					firstErr = errs[i]
-				}
-				continue
+			res := results[i]
+			if res.Err != nil && firstErr == nil {
+				firstErr = res.Err
 			}
 			moved := op.MoveTargetPath != "" && !strings.EqualFold(op.MoveTargetPath, op.FolderPath)
 			for _, m := range op.Messages {
+				if res.Err != nil && (m.UID == 0 || !res.SucceededUIDs[m.UID]) {
+					continue
+				}
 				if moved || op.PermanentDelete {
 					_ = e.store.DeleteMessage(ctx, m.ID)
 				} else {

@@ -34,6 +34,7 @@ type MessageInput struct {
 	Date        string            `json:"date"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	BodyText    string            `json:"bodyText"`
+	BodyHTML    string            `json:"bodyHtml,omitempty"`
 	Snippet     string            `json:"snippet,omitempty"`
 	Unread      bool              `json:"unread"`
 	Attachments []string          `json:"attachments,omitempty"`

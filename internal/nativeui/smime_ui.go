@@ -14,6 +14,7 @@ func (a *App) reloadSMIMECerts() {
 	if a.opts.Direct == nil {
 		return
 	}
+	a.direct.smimeLoaded = true
 	a.direct.smimeIdentities = a.opts.Direct.ListSMIMEIdentities()
 	a.direct.smimeContacts = a.opts.Direct.ListSMIMEContacts()
 }
@@ -22,6 +23,7 @@ func (a *App) reloadPGPKeys() {
 	if a.opts.Direct == nil {
 		return
 	}
+	a.direct.pgpLoaded = true
 	a.direct.pgpIdentities = a.opts.Direct.ListPGPIdentities()
 	a.direct.pgpContacts = a.opts.Direct.ListPGPContacts()
 	if a.direct.pgpGenEmail == "" && len(a.cfg.Direct.Accounts) > 0 {
@@ -32,10 +34,10 @@ func (a *App) reloadPGPKeys() {
 
 func (a *App) renderDirectSMIMETab(c *ui.Context) {
 	d := &a.direct
-	if len(d.smimeIdentities) == 0 && len(d.smimeContacts) == 0 && a.opts.Direct != nil {
+	if !d.smimeLoaded && a.opts.Direct != nil {
 		a.reloadSMIMECerts()
 	}
-	if len(d.pgpIdentities) == 0 && len(d.pgpContacts) == 0 && a.opts.Direct != nil {
+	if !d.pgpLoaded && a.opts.Direct != nil {
 		a.reloadPGPKeys()
 	}
 
@@ -105,18 +107,29 @@ func (a *App) renderDirectSMIMESection(c *ui.Context) {
 			}
 			ui.TextInput(c.Key("sm-p12-path"), &d.smimeP12Path).Placeholder("~/cert.p12").Grow(1)
 			ui.TextInput(c.Key("sm-p12-pass"), &d.smimeP12Pass).Password().Placeholder(a.tr("Passwort", "Password")).Width(135)
-			if ui.PrimaryButton(c.Key("sm-p12-imp"), a.tr("Importieren", "Import")).Clicked() && strings.TrimSpace(d.smimeP12Path) != "" {
-				info, err := a.opts.Direct.ImportSMIMEP12File(strings.TrimSpace(d.smimeP12Path), d.smimeP12Pass)
-				if err != nil {
-					d.smimeMsg = err.Error()
-					d.smimeErr = true
-				} else {
-					d.smimeP12Path = ""
-					d.smimeP12Pass = ""
-					d.smimeMsg = a.trf("S/MIME-Identität für %s importiert", "Imported S/MIME identity for %s", info.Email)
-					d.smimeErr = false
-					a.reloadSMIMECerts()
-				}
+			impBtn := ui.PrimaryButton(c.Key("sm-p12-imp"), a.tr("Importieren", "Import"))
+			if d.smimeBusy {
+				impBtn.Disabled(true)
+			}
+			if impBtn.Clicked() && !d.smimeBusy && strings.TrimSpace(d.smimeP12Path) != "" {
+				path, pass := strings.TrimSpace(d.smimeP12Path), d.smimeP12Pass
+				d.smimeBusy = true
+				go func() {
+					info, err := a.opts.Direct.ImportSMIMEP12File(path, pass)
+					a.emitUpdate(func() {
+						d.smimeBusy = false
+						if err != nil {
+							d.smimeMsg = err.Error()
+							d.smimeErr = true
+							return
+						}
+						d.smimeP12Path = ""
+						d.smimeP12Pass = ""
+						d.smimeMsg = a.trf("S/MIME-Identität für %s importiert", "Imported S/MIME identity for %s", info.Email)
+						d.smimeErr = false
+						a.reloadSMIMECerts()
+					})
+				}()
 			}
 		})
 	})
@@ -159,17 +172,28 @@ func (a *App) renderDirectSMIMESection(c *ui.Context) {
 				})
 			}
 			ui.TextInput(c.Key("sm-ct-path"), &d.smimeCertPath).Placeholder("~/contact.pem").Grow(1)
-			if ui.Button(c.Key("sm-ct-imp"), a.tr("Importieren", "Import")).Clicked() && strings.TrimSpace(d.smimeCertPath) != "" {
-				info, err := a.opts.Direct.ImportSMIMECertFile(strings.TrimSpace(d.smimeCertPath))
-				if err != nil {
-					d.smimeMsg = err.Error()
-					d.smimeErr = true
-				} else {
-					d.smimeCertPath = ""
-					d.smimeMsg = a.trf("Empfänger-Zertifikat für %s gespeichert", "Saved recipient certificate for %s", info.Email)
-					d.smimeErr = false
-					a.reloadSMIMECerts()
-				}
+			ctImpBtn := ui.Button(c.Key("sm-ct-imp"), a.tr("Importieren", "Import"))
+			if d.smimeBusy {
+				ctImpBtn.Disabled(true)
+			}
+			if ctImpBtn.Clicked() && !d.smimeBusy && strings.TrimSpace(d.smimeCertPath) != "" {
+				path := strings.TrimSpace(d.smimeCertPath)
+				d.smimeBusy = true
+				go func() {
+					info, err := a.opts.Direct.ImportSMIMECertFile(path)
+					a.emitUpdate(func() {
+						d.smimeBusy = false
+						if err != nil {
+							d.smimeMsg = err.Error()
+							d.smimeErr = true
+							return
+						}
+						d.smimeCertPath = ""
+						d.smimeMsg = a.trf("Empfänger-Zertifikat für %s gespeichert", "Saved recipient certificate for %s", info.Email)
+						d.smimeErr = false
+						a.reloadSMIMECerts()
+					})
+				}()
 			}
 		})
 	})
@@ -225,8 +249,9 @@ func (a *App) renderDirectPGPTab(c *ui.Context) {
 		ui.Divider(c)
 		ui.Text(c, a.tr("Neuen OpenPGP-Schlüssel erzeugen (RSA-3072):", "Generate new OpenPGP keypair (RSA-3072):")).FontSize(11.5).Bold()
 		ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("pgp-gen-name"), &d.pgpGenName).Placeholder(a.tr("Name", "Name")).Width(170)
+			ui.TextInput(c.Key("pgp-gen-name"), &d.pgpGenName).Placeholder(a.tr("Name", "Name")).Width(150)
 			ui.TextInput(c.Key("pgp-gen-email"), &d.pgpGenEmail).Placeholder("mail@domain.de").Grow(1)
+			ui.TextInput(c.Key("pgp-gen-pass"), &d.pgpGenPass).Password().Placeholder(a.tr("Passwort (optional)", "Passphrase (optional)")).Width(150)
 			btn := ui.PrimaryButton(c.Key("pgp-gen-go"), a.tr("Schlüssel erzeugen", "Generate Key"))
 			if d.pgpBusy {
 				btn.Disabled(true)
@@ -235,9 +260,9 @@ func (a *App) renderDirectPGPTab(c *ui.Context) {
 				d.pgpBusy = true
 				d.pgpMsg = a.tr("Erzeuge OpenPGP-Schlüsselpaar…", "Generating OpenPGP keypair…")
 				d.pgpErr = false
-				name, email := d.pgpGenName, d.pgpGenEmail
+				name, email, pass := d.pgpGenName, d.pgpGenEmail, d.pgpGenPass
 				go func() {
-					info, err := a.opts.Direct.GeneratePGPKey(name, email, "")
+					info, err := a.opts.Direct.GeneratePGPKey(name, email, pass)
 					a.emitUpdate(func() {
 						d.pgpBusy = false
 						if err != nil {
@@ -245,6 +270,7 @@ func (a *App) renderDirectPGPTab(c *ui.Context) {
 							d.pgpErr = true
 							return
 						}
+						d.pgpGenPass = ""
 						d.pgpMsg = a.trf("Schlüssel für %s erzeugt (KeyID %s)", "Generated key for %s (KeyID %s)", info.Email, info.KeyID)
 						d.pgpErr = false
 						a.reloadPGPKeys()
@@ -270,34 +296,56 @@ func (a *App) renderDirectPGPTab(c *ui.Context) {
 			}
 			ui.TextInput(c.Key("pgp-imp-path"), &d.pgpImpPath).Placeholder("~/key.asc").Grow(1)
 			ui.TextInput(c.Key("pgp-imp-pass"), &d.pgpImpPass).Password().Placeholder(a.tr("Passwort (falls geschützt)", "Passphrase (optional)")).Width(155)
-			if ui.PrimaryButton(c.Key("pgp-imp-file"), a.tr("Importieren", "Import")).Clicked() && strings.TrimSpace(d.pgpImpPath) != "" {
-				infos, err := a.opts.Direct.ImportPGPKeyFile(strings.TrimSpace(d.pgpImpPath), d.pgpImpPass)
-				if err != nil {
-					d.pgpMsg = err.Error()
-					d.pgpErr = true
-				} else {
-					d.pgpImpPath = ""
-					d.pgpImpPass = ""
-					d.pgpMsg = a.trf("%d OpenPGP-Schlüssel importiert", "Imported %d OpenPGP key(s)", len(infos))
-					d.pgpErr = false
-					a.reloadPGPKeys()
-				}
+			impFileBtn := ui.PrimaryButton(c.Key("pgp-imp-file"), a.tr("Importieren", "Import"))
+			if d.pgpBusy {
+				impFileBtn.Disabled(true)
+			}
+			if impFileBtn.Clicked() && !d.pgpBusy && strings.TrimSpace(d.pgpImpPath) != "" {
+				path, pass := strings.TrimSpace(d.pgpImpPath), d.pgpImpPass
+				d.pgpBusy = true
+				go func() {
+					infos, err := a.opts.Direct.ImportPGPKeyFile(path, pass)
+					a.emitUpdate(func() {
+						d.pgpBusy = false
+						if err != nil {
+							d.pgpMsg = err.Error()
+							d.pgpErr = true
+							return
+						}
+						d.pgpImpPath = ""
+						d.pgpImpPass = ""
+						d.pgpMsg = a.trf("%d OpenPGP-Schlüssel importiert", "Imported %d OpenPGP key(s)", len(infos))
+						d.pgpErr = false
+						a.reloadPGPKeys()
+					})
+				}()
 			}
 		})
 		ui.TextArea(c.Key("pgp-paste-arm"), &d.pgpPasteArmor).Placeholder(a.tr("Oder -----BEGIN PGP PUBLIC/PRIVATE KEY BLOCK----- direkt hier einfügen…", "Or paste -----BEGIN PGP PUBLIC/PRIVATE KEY BLOCK----- here…")).FillWidth().Height(64)
 		ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
-			if ui.Button(c.Key("pgp-imp-arm"), a.tr("Textblock importieren", "Import Armored Block")).Clicked() && strings.TrimSpace(d.pgpPasteArmor) != "" {
-				infos, err := a.opts.Direct.ImportPGPArmor(d.pgpPasteArmor, d.pgpImpPass)
-				if err != nil {
-					d.pgpMsg = err.Error()
-					d.pgpErr = true
-				} else {
-					d.pgpPasteArmor = ""
-					d.pgpImpPass = ""
-					d.pgpMsg = a.trf("%d OpenPGP-Schlüssel importiert", "Imported %d OpenPGP key(s)", len(infos))
-					d.pgpErr = false
-					a.reloadPGPKeys()
-				}
+			impArmBtn := ui.Button(c.Key("pgp-imp-arm"), a.tr("Textblock importieren", "Import Armored Block"))
+			if d.pgpBusy {
+				impArmBtn.Disabled(true)
+			}
+			if impArmBtn.Clicked() && !d.pgpBusy && strings.TrimSpace(d.pgpPasteArmor) != "" {
+				arm, pass := d.pgpPasteArmor, d.pgpImpPass
+				d.pgpBusy = true
+				go func() {
+					infos, err := a.opts.Direct.ImportPGPArmor(arm, pass)
+					a.emitUpdate(func() {
+						d.pgpBusy = false
+						if err != nil {
+							d.pgpMsg = err.Error()
+							d.pgpErr = true
+							return
+						}
+						d.pgpPasteArmor = ""
+						d.pgpImpPass = ""
+						d.pgpMsg = a.trf("%d OpenPGP-Schlüssel importiert", "Imported %d OpenPGP key(s)", len(infos))
+						d.pgpErr = false
+						a.reloadPGPKeys()
+					})
+				}()
 			}
 		})
 	})

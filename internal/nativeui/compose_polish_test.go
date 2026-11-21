@@ -99,8 +99,8 @@ func TestUndoSendRestoreAndCommit(t *testing.T) {
 	app.composeBody = "Hallo Bob,\nhier das Update."
 
 	app.requestComposeSend(context.Background(), app.buildComposeReq(false))
-	if app.pendingSend == nil || app.composeOpen {
-		t.Fatalf("expected compose closed and send queued in undo window (pending=%v open=%v)", app.pendingSend != nil, app.composeOpen)
+	if len(app.pendingSends) != 1 || app.composeOpen {
+		t.Fatalf("expected compose closed and send queued in undo window (pending=%d open=%v)", len(app.pendingSends), app.composeOpen)
 	}
 	rpc.mu.Lock()
 	if len(rpc.sent) != 0 {
@@ -110,8 +110,11 @@ func TestUndoSendRestoreAndCommit(t *testing.T) {
 	rpc.mu.Unlock()
 
 	app.cancelPendingSend()
-	if app.pendingSend != nil || !app.composeOpen || app.composeSubject != "Projekt-Update" || app.composeTo != "bob@example.com" {
+	if len(app.pendingSends) != 0 || !app.composeOpen || app.composeSubject != "Projekt-Update" || app.composeTo != "bob@example.com" {
 		t.Fatalf("expected cancelled send to restore compose state, open=%v subj=%q to=%q", app.composeOpen, app.composeSubject, app.composeTo)
+	}
+	if app.composeBaseline == app.composeSnapshot() {
+		t.Fatalf("expected restored compose baseline to keep dirty/unsaved guard active")
 	}
 	rpc.mu.Lock()
 	if len(rpc.sent) != 0 {
@@ -120,12 +123,21 @@ func TestUndoSendRestoreAndCommit(t *testing.T) {
 	}
 	rpc.mu.Unlock()
 
+	// Queue TWO emails back-to-back and verify neither overwrites the other.
 	app.composeMissingAttAck = true
 	app.requestComposeSend(context.Background(), app.buildComposeReq(false))
-	if app.pendingSend == nil {
-		t.Fatalf("expected pendingSend queued before commit")
+	app.OpenComposeNew()
+	app.composeTo = "carol@example.com"
+	app.composeSubject = "Zweite Mail"
+	app.composeBody = "Hallo Carol!"
+	app.requestComposeSend(context.Background(), app.buildComposeReq(false))
+	if len(app.pendingSends) != 2 {
+		t.Fatalf("expected 2 concurrent pending sends in undo queue, got %d", len(app.pendingSends))
 	}
-	app.commitPendingSend(context.Background())
+	firstNonce := app.pendingSends[0].Nonce
+	secondNonce := app.pendingSends[1].Nonce
+	app.commitPendingSend(context.Background(), firstNonce)
+	app.commitPendingSend(context.Background(), secondNonce)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -136,7 +148,7 @@ func TestUndoSendRestoreAndCommit(t *testing.T) {
 			rpc.mu.Lock()
 			n := len(rpc.sent)
 			rpc.mu.Unlock()
-			if n >= 1 {
+			if n >= 2 {
 				goto done
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -145,8 +157,21 @@ func TestUndoSendRestoreAndCommit(t *testing.T) {
 done:
 	rpc.mu.Lock()
 	defer rpc.mu.Unlock()
-	if len(rpc.sent) != 1 || rpc.sent[0].Subject != "Projekt-Update" {
-		t.Fatalf("expected committed pending send to invoke compose.send once, got %+v", rpc.sent)
+	if len(rpc.sent) != 2 {
+		t.Fatalf("expected both committed pending sends to invoke compose.send, got %+v", rpc.sent)
+	}
+}
+
+func TestExtractHTMLBodyInnerAndTruncateUTF8(t *testing.T) {
+	full := `<!doctype html><html><head><meta charset="utf-8"></head><body style="color:#111;"><p>Hallo Welt</p></body></html>`
+	got := extractHTMLBodyInner(full)
+	if got != `<p>Hallo Welt</p>` {
+		t.Fatalf("extractHTMLBodyInner got %q", got)
+	}
+	raw := []byte("äöü€€")
+	cut, truncated := truncateUTF8Bytes(raw, 7) // lands mid-'€'
+	if !truncated || string(cut) != "äöü" {
+		t.Fatalf("truncateUTF8Bytes mid-rune failed: truncated=%v got=%q", truncated, string(cut))
 	}
 }
 
