@@ -189,6 +189,16 @@ type composeState struct {
 	composeConfirm           bool
 	composeNonce             string // per compose session; send idempotency key = nonce + content hash
 	composeSign              int    // 0: default, 1: sign, 2: don't sign
+	composeDirtyAt           time.Time
+	composePrevSnap          string
+	composeAutoSaveLast      time.Time
+	composeAutoSaveSavedAt   time.Time
+	composeAutoSaveBusy      bool
+	composeAutoSaveSnap      string
+	composeMissingAttWarn    string
+	composeMissingAttAck     bool
+	composeTplOpen           bool
+	composeTplName           string
 	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
 	scanRunning bool
 	arch        archiveUI
@@ -343,9 +353,11 @@ type App struct {
 	serverSearchDoneKey   string
 	serverSearchCount     int
 
-	// Reversible action Undo state (⌘Z)
-	undo     *undoAction
-	undoBusy bool
+	// Reversible action Undo state (⌘Z) and timed Undo Send
+	undo        *undoAction
+	undoBusy    bool
+	pendingSend *pendingComposeSend
+	attPreview  attachmentPreviewState
 
 	// Pending mailto: URI received before UI finished startup
 	pendingMailto string
@@ -1811,6 +1823,14 @@ func extractUserTopText(body, sep string) string {
 // derived from the compose session and the content: a retry of the same content can never
 // send twice, while edited content gets a new key.
 func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
+	if a.composeNonce == "" {
+		a.composeNonce = backend.NewIdempotencyKey()
+	}
+	a.sendPreparedCompose(ctx, req, a.composeNonce, a.composeForwardMsgID, a.composeForwardHTML, a.composeKeepHTML,
+		a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep)
+}
+
+func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeRequest, composeNonce, fwdMsgID, fwdHTML string, keepHTML bool, fwdFrom, fwdDate, fwdSubj, fwdSep string) {
 	if a.composeBusy {
 		return
 	}
@@ -1819,22 +1839,17 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 		a.toast(a.tr("Senden nicht erlaubt (Read-Only oder Offline)", "Sending not allowed (read-only or offline)"), "error")
 		return
 	}
-	if a.composeNonce == "" {
-		a.composeNonce = backend.NewIdempotencyKey()
+	if composeNonce == "" {
+		composeNonce = backend.NewIdempotencyKey()
 	}
 	var srcAttKeys []string
 	for _, sa := range req.SourceAttachments {
 		srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
 	}
-	composeNonce := a.composeNonce
-	fwdMsgID := a.composeForwardMsgID
-	fwdHTML := a.composeForwardHTML
-	keepHTML := a.composeKeepHTML
 	fwdTitle := a.tr("Weitergeleitete Nachricht", "Forwarded message")
-	fwdFrom, fwdDate, fwdSubj, fwdSep := a.composeForwardFrom, a.composeForwardDate, a.composeForwardSubj, a.composeForwardSep
 	dc := a.opts.Direct
 	ed := a.composeEditor
-	usingWYSIWYG := a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
+	usingWYSIWYG := !req.IsHTML && a.composeUsingWYSIWYG() && ed != nil && ed.Widget() != nil
 	a.composeBusy = true
 	go func() {
 		c, cancel := context.WithTimeout(ctx, backend.ComposeSendTimeout)
@@ -1873,7 +1888,9 @@ func (a *App) SendCompose(ctx context.Context, req backend.ComposeRequest) {
 				a.selectedMsg = nil
 				a.syncPreviewForMessage(nil)
 			}
-			a.closeCompose()
+			if a.composeOpen {
+				a.closeCompose()
+			}
 			a.composeConfirm = false
 			res := backend.ParseComposeResult(raw)
 			if req.DraftMessageID != "" {
@@ -2704,6 +2721,16 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeBaseline, a.composeCloseAsk = "", false
 	a.composeBodyHTML = ""
 	a.composeEditorDirty = false
+	a.composeDirtyAt = time.Time{}
+	a.composePrevSnap = ""
+	a.composeAutoSaveLast = time.Time{}
+	a.composeAutoSaveSavedAt = time.Time{}
+	a.composeAutoSaveBusy = false
+	a.composeAutoSaveSnap = ""
+	a.composeMissingAttWarn = ""
+	a.composeMissingAttAck = false
+	a.composeTplOpen = false
+	a.composeTplName = ""
 	a.composeEditorGen++
 	a.composeOpen = true
 	a.composeWindowSeq++
@@ -2735,6 +2762,16 @@ func (a *App) closeCompose() {
 	a.composeKeepHTML = false
 	a.composeBodyHTML = ""
 	a.composeEditorDirty = false
+	a.composeDirtyAt = time.Time{}
+	a.composePrevSnap = ""
+	a.composeAutoSaveLast = time.Time{}
+	a.composeAutoSaveSavedAt = time.Time{}
+	a.composeAutoSaveBusy = false
+	a.composeAutoSaveSnap = ""
+	a.composeMissingAttWarn = ""
+	a.composeMissingAttAck = false
+	a.composeTplOpen = false
+	a.composeTplName = ""
 	a.composeContactPickerOpen = false
 	a.composeContactFilter = ""
 	a.syncAuxWindows()
@@ -2763,9 +2800,9 @@ func (a *App) OpenComposeNew() {
 	a.composeCC = ""
 	a.composeBCC = ""
 	a.composeSubject = ""
-	sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+	sig, sigHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 	a.composeBody = appendAccountSignature("", sig)
-	a.composeBodyHTML = buildComposeEditorInitialHTML("", stripSignatureDelim(sig), "", "", nil, "")
+	a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig("", composeSignatureBlockHTMLFromParts(sig, sigHTML), sigBelow, "", "", nil, "")
 	a.composeEditorGen++
 }
 
@@ -2781,9 +2818,9 @@ func (a *App) OpenComposeFromMailto(rawURL string) {
 	a.composeBCC = f.BCC
 	a.composeSubject = f.Subject
 	if f.Body != "" {
-		sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+		sig, sigHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 		a.composeBody = appendAccountSignature(f.Body, sig)
-		a.composeBodyHTML = buildComposeEditorInitialHTML(f.Body, stripSignatureDelim(sig), "", "", nil, "")
+		a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig(f.Body, composeSignatureBlockHTMLFromParts(sig, sigHTML), sigBelow, "", "", nil, "")
 		a.composeEditorGen++
 	}
 }
@@ -2828,7 +2865,7 @@ func (a *App) OpenComposeFromDraft(msg *backend.MessageDetail) {
 	}
 	a.composeEditorGen++
 	if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {
-		a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, "", "", a.composeEditorGen)
+		a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, "", "", false, a.composeEditorGen)
 	}
 }
 
@@ -2876,10 +2913,10 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 		subj = "Re: " + subj
 	}
 	a.composeSubject = subj
-	sig := a.composeSignatureFor(a.composeAccountID, a.composeFromEmail)
+	sig, sigHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 	quote := a.replyQuote(msg)
-	a.composeBody = appendAccountSignature(body, sig) + quote
-	a.composeBodyHTML = buildComposeEditorInitialHTML(body, stripSignatureDelim(sig), "", "", nil, quote)
+	a.composeBody = appendAccountSignatureWithQuote(body, sig, quote, sigBelow)
+	a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig(body, composeSignatureBlockHTMLFromParts(sig, sigHTML), sigBelow, "", "", nil, quote)
 	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
 	if msg.Security.Encrypted && a.opts.Direct != nil {
@@ -3029,12 +3066,14 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.tr("Betreff:", "Subject:"), msg.Subject,
 		strings.TrimSpace(msg.BodyText),
 	)
-	sig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+	sigPlain, sigCustomHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
+	sig := stripSignatureDelim(sigPlain)
 	if sig != "" {
 		a.composeBody = "\n\n-- \n" + sig + header
 	} else {
 		a.composeBody = header
 	}
+	sigBlock := composeSignatureBlockHTMLFromParts(sigPlain, sigCustomHTML)
 	// Preserve original attachments when forwarding (user can remove individual ones in the compose modal).
 	for _, att := range msg.Attachments {
 		a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
@@ -3053,19 +3092,19 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeForwardSep = sep
 		a.composeKeepHTML = true
 		fwdMeta := fmt.Sprintf("%s\n%s %s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
-		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, fwdMeta, msg.BodyHtml, nil, "")
+		a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig("", sigBlock, sigBelow, fwdMeta, msg.BodyHtml, nil, "")
 		a.composeEditorGen++
 		if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {
-			a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, fwdMeta, sig, a.composeEditorGen)
+			a.loadInlineImagesForCompose(msg.ID, msg.BodyHtml, fwdMeta, sigBlock, sigBelow, a.composeEditorGen)
 		}
 		return
 	} else {
-		a.composeBodyHTML = buildComposeEditorInitialHTML("", sig, "", "", nil, header)
+		a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig("", sigBlock, sigBelow, "", "", nil, header)
 	}
 	a.composeEditorGen++
 }
 
-func (a *App) loadInlineImagesForCompose(msgID, rawHTML, fwdMeta, sig string, gen int) {
+func (a *App) loadInlineImagesForCompose(msgID, rawHTML, fwdMeta, sigBlock string, sigBelow bool, gen int) {
 	dc := a.opts.Direct
 	if dc == nil || msgID == "" || strings.TrimSpace(rawHTML) == "" {
 		return
@@ -3079,7 +3118,7 @@ func (a *App) loadInlineImagesForCompose(msgID, rawHTML, fwdMeta, sig string, ge
 		}
 		var updatedHTML string
 		if fwdMeta != "" {
-			updatedHTML = buildComposeEditorInitialHTML("", sig, fwdMeta, rawHTML, imgs, "")
+			updatedHTML = buildComposeEditorInitialHTMLWithSig("", sigBlock, sigBelow, fwdMeta, rawHTML, imgs, "")
 		} else {
 			updatedHTML = SanitizeEmailHTML(rawHTML, imgs, false)
 		}

@@ -158,6 +158,7 @@ func (a *App) renderDialogs(c *ui.Context) {
 	a.renderQuickRuleModal(c)
 	a.renderCalDeleteModal(c)
 	a.renderMovePicker(c)
+	a.renderAttachmentPreviewModal(c)
 	a.renderArchiveModal(c)
 	a.renderOutboxModal(c)
 	a.renderSettingsModal(c)
@@ -355,6 +356,8 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 					}
 				})
 			}
+
+			a.renderUndoSendBar(c)
 
 			// Inline Undo bar for recent reversible mail actions (Archive, Move, Trash, Read, Star).
 			if a.undo != nil && time.Since(a.undo.CreatedAt) <= undoExpiry {
@@ -715,6 +718,11 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 						if iconBtn(c.Key("act-print"), iconPrinter, a.tr("Mail drucken (⌘P)", "Print email (⌘P)"), ui.Color{}, false).Clicked() {
 							a.PrintSelectedMessage(context.Background())
 						}
+						if a.isDirectMode() {
+							if iconBtn(c.Key("act-save-eml"), iconDownload, a.tr("Als .eml speichern (~/Downloads)", "Save as .eml (~/Downloads)"), ui.Color{}, false).Clicked() {
+								a.SaveSelectedMessageEML(context.Background())
+							}
+						}
 						prevLbl := a.tr("Web-Vorschau", "Web Preview")
 						if len(a.preview.links) > 0 && !a.preview.open {
 							prevLbl = fmt.Sprintf("%s (%d)", prevLbl, len(a.preview.links))
@@ -903,7 +911,16 @@ func (a *App) renderAttachments(c *ui.Context, msg *backend.MessageDetail) {
 					attCopy := att
 					lbl := fmt.Sprintf("%s (%d KB)", attCopy.Name, max(1, attCopy.Size/1024))
 					if a.isDirectMode() {
-						if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
+						if isPreviewableAttachmentName(attCopy.Name) {
+							ui.Row(c.Key(fmt.Sprintf("att-pair-%d", i))).Gap(2).AlignItems(ui.Center).Children(func() {
+								if iconLabelBtn(c.Key(fmt.Sprintf("att-pv-%d", i)), iconBookOpen, lbl, false, a.tr("Anhang direkt in der App ansehen", "Preview attachment in app")).Clicked() {
+									a.OpenAttachmentPreview(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
+								}
+								if iconBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open"), ui.Color{}, false).Clicked() {
+									a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
+								}
+							})
+						} else if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
 							a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
 						}
 					} else {
@@ -949,6 +966,13 @@ func (a *App) renderComposeModal(c *ui.Context) {
 func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 	t := c.Theme()
 	title := a.ComposeWindowTitle()
+	if snap := a.composeSnapshot(); snap != a.composePrevSnap {
+		if a.composePrevSnap != "" {
+			a.composeDirtyAt = time.Now()
+		}
+		a.composePrevSnap = snap
+	}
+	a.maybeAutoSaveComposeDraft()
 	cmpWrap := ui.Column(c.Key("cmp-wrap")).FillWidth().Gap(8)
 	if inWindow {
 		cmpWrap.Fill()
@@ -1012,15 +1036,19 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("Von:", "From:")).FontSize(12).Width(42).TextColor(t.TextMuted)
 				if ui.Select(c.Key("cmp-from"), &a.composeAccountLabel, labels).Grow(1).Changed() {
-					oldSig := stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+					oldPlain, _, _ := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
+					oldSig := stripSignatureDelim(oldPlain)
 					ch := choiceByLabel[a.composeAccountLabel]
 					a.composeAccountID = ch.AccountID
 					a.composeIdentityID = ch.IdentityID
 					a.composeFromEmail = ch.Email
 					a.composeFromName = ch.Name
+					newPlain, newHTML, _ := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 					newSig := stripSignatureDelim(ch.Signature)
 					if newSig == "" {
-						newSig = stripSignatureDelim(a.composeSignatureFor(a.composeAccountID, a.composeFromEmail))
+						newSig = stripSignatureDelim(newPlain)
+					} else {
+						newPlain = ch.Signature
 					}
 					if oldSig != "" && strings.Contains(a.composeBody, "-- \n"+oldSig) {
 						if newSig != "" {
@@ -1033,7 +1061,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 						a.composeBody = appendAccountSignature(a.composeBody, newSig)
 					}
 					if a.composeUsingWYSIWYG() && a.composeEditor.Widget() != nil {
-						a.composeEditor.UpdateSignature(composeSignatureBlockHTML(newSig))
+						a.composeEditor.UpdateSignature(composeSignatureBlockHTMLFromParts(newPlain, newHTML))
 					}
 				}
 			})
@@ -1067,7 +1095,49 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 		a.refreshComposeSuggestions("bcc", a.composeBCC)
 		a.renderComposeSuggestions(c, "bcc", a.composeSuggestBCC)
 
-		ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).FillWidth()
+		ui.Row(c.Key("cmp-sub-row")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).Grow(1)
+			tplLabel := a.tr("Vorlagen ▾", "Templates ▾")
+			if n := len(a.cfg.App.ComposeTemplates); n > 0 {
+				tplLabel = fmt.Sprintf("%s (%d) ▾", a.tr("Vorlagen", "Templates"), n)
+			}
+			if ui.Button(c.Key("cmp-tpl-btn"), tplLabel).Padding(5, 9).Clicked() {
+				a.composeTplOpen = !a.composeTplOpen
+			}
+		})
+		if a.composeTplOpen {
+			ui.Column(c.Key("cmp-tpl-box")).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+				if len(a.cfg.App.ComposeTemplates) == 0 {
+					ui.Text(c, a.tr("Noch keine Textbausteine gespeichert.", "No templates saved yet.")).FontSize(11.5).TextColor(t.TextMuted)
+				} else {
+					for _, tpl := range a.cfg.App.ComposeTemplates {
+						tp := tpl
+						ui.Row(c.Key("cmp-tpl-r-" + tp.ID)).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+							lbl := tp.Name
+							if tp.Subject != "" {
+								lbl += " · " + tp.Subject
+							}
+							if ui.Button(c.Key("cmp-tpl-ins-"+tp.ID), lbl).Grow(1).Padding(3, 8).Clicked() {
+								a.insertComposeTemplate(tp)
+							}
+							if ui.Button(c.Key("cmp-tpl-rm-"+tp.ID), "✕").Padding(2, 6).Clicked() {
+								a.deleteComposeTemplate(tp.ID)
+							}
+						})
+					}
+				}
+				ui.Divider(c)
+				ui.Row(c.Key("cmp-tpl-save-row")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.TextInput(c.Key("cmp-tpl-name"), &a.composeTplName).Placeholder(a.tr("Name für neuen Textbaustein (übernimmt aktuellen Text)…", "Name for new snippet (saves current body)…")).Grow(1)
+					if ui.Button(c.Key("cmp-tpl-save"), a.tr("+ Als Vorlage speichern", "+ Save as template")).Padding(3, 8).Clicked() {
+						bodyTxt := extractComposeUserTextOnly(a.composeBody)
+						if a.saveNewComposeTemplate(a.composeTplName, a.composeSubject, bodyTxt) {
+							a.composeTplName = ""
+						}
+					}
+				})
+			})
+		}
 		if a.composeUsingWYSIWYG() {
 			if a.composeEditor.Widget() == nil {
 				_ = a.composeEditor.Ensure()
@@ -1122,7 +1192,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 					a.composeConfirm = true
 					a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
 				} else {
-					a.SendCompose(context.Background(), a.buildComposeReq(false))
+					a.requestComposeSend(context.Background(), a.buildComposeReq(false))
 				}
 			}
 		}
@@ -1215,11 +1285,43 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			ui.Text(c, a.tr("Bitte zuerst ein IMAP/SMTP-Konto verbinden, um E-Mails zu senden.", "Please connect an IMAP/SMTP account first to send emails.")).FontSize(11.5).TextColor(t.Warning)
 		}
 
+		if a.composeMissingAttWarn != "" {
+			ui.Row(c.Key("cmp-att-warn")).FillWidth().Padding(8, 10).Radius(8).Gap(8).AlignItems(ui.Center).
+				Background(withAlpha(t.Warning, 0.16)).Border(1, withAlpha(t.Warning, 0.5)).Children(func() {
+				ui.Text(c, a.trf("Anhang vergessen? Im Text steht „%s“, es ist aber keine Datei angehängt.", "Forgot attachment? Body mentions “%s”, but no file is attached.", a.composeMissingAttWarn)).
+					FontSize(12).Bold().Grow(1).MinWidth(0)
+				if ui.Button(c.Key("cmp-attw-pick"), a.tr("Datei wählen…", "Browse…")).Clicked() {
+					a.composeMissingAttWarn = ""
+					a.pickFile(FilePickRequest{
+						Mode:  "open-multi",
+						Title: a.tr("Anhänge auswählen", "Select Attachments"),
+					}, func(paths []string) {
+						for _, p := range paths {
+							a.addComposeAttachment(p)
+						}
+					})
+				}
+				if ui.PrimaryButton(c.Key("cmp-attw-send"), a.tr("Trotzdem senden", "Send anyway")).Clicked() {
+					a.composeMissingAttAck = true
+					a.composeMissingAttWarn = ""
+					a.requestComposeSend(context.Background(), a.buildComposeReq(false))
+				}
+				if ui.Button(c.Key("cmp-attw-x"), "✕").Padding(2, 6).Clicked() {
+					a.composeMissingAttWarn = ""
+				}
+			})
+		}
+
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			if inWindow {
 				if ui.Button(c.Key("cmp-win-close"), a.tr("Schließen", "Close")).Clicked() {
 					a.TryCloseComposeWindow()
 				}
+			}
+			if a.composeAutoSaveBusy {
+				ui.Text(c, a.tr("Speichere Entwurf…", "Saving draft…")).FontSize(11).TextColor(t.TextMuted)
+			} else if !a.composeAutoSaveSavedAt.IsZero() {
+				ui.Text(c, a.trf("Entwurf auto-gespeichert (%s)", "Draft auto-saved (%s)", a.composeAutoSaveSavedAt.Format("15:04"))).FontSize(11).TextColor(t.TextMuted)
 			}
 			ui.Spacer(c)
 			if !a.readOnly {
@@ -1237,7 +1339,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 					if !a.composeConfirm {
 						a.composeConfirm = true
 					} else {
-						a.SendCompose(context.Background(), a.buildComposeReq(false))
+						a.requestComposeSend(context.Background(), a.buildComposeReq(false))
 					}
 				}
 			}

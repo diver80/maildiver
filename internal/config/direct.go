@@ -10,9 +10,10 @@ const EngineDirect = "direct"
 
 // AccountAlias is an additional sender identity (alias) for a DirectAccount.
 type AccountAlias struct {
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName,omitempty"`
-	Signature   string `json:"signature,omitempty"`
+	Email         string `json:"email"`
+	DisplayName   string `json:"displayName,omitempty"`
+	Signature     string `json:"signature,omitempty"`
+	SignatureHTML string `json:"signatureHtml,omitempty"`
 }
 
 // DirectAccount configures a standalone IMAP/SMTP mailbox. Passwords are NEVER
@@ -39,10 +40,12 @@ type DirectAccount struct {
 	OAuthClientID string `json:"oauthClientId,omitempty"`
 	OAuthTenant   string `json:"oauthTenant,omitempty"` // Microsoft tenant (default "common")
 
-	SyncDays  int    `json:"syncDays,omitempty"`  // default 60
-	SyncLimit int    `json:"syncLimit,omitempty"` // newest INBOX mails compared on every sync (default 500); older ones are backfilled
-	Signature string `json:"signature,omitempty"` // optional plain-text signature appended when composing
-	Enabled   bool   `json:"enabled"`
+	SyncDays          int    `json:"syncDays,omitempty"`          // default 60
+	SyncLimit         int    `json:"syncLimit,omitempty"`         // newest INBOX mails compared on every sync (default 500); older ones are backfilled
+	Signature         string `json:"signature,omitempty"`         // optional plain-text signature appended when composing
+	SignatureHTML     string `json:"signatureHtml,omitempty"`     // optional HTML signature for desktop WYSIWYG compose
+	SignaturePosition string `json:"signaturePosition,omitempty"` // "" / "above" (above reply quote) or "below" (after quote)
+	Enabled           bool   `json:"enabled"`
 }
 
 // EffectiveUsername returns Username if set, otherwise Email.

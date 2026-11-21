@@ -43,6 +43,14 @@ func DefaultLinkPreviewRules() []LinkPreviewRule {
 	}
 }
 
+// ComposeTemplate stores a reusable text/HTML snippet for quick insertion while composing.
+type ComposeTemplate struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Subject string `json:"subject,omitempty"`
+	Body    string `json:"body"`
+}
+
 // AppConfig holds preferences of the MailDiver app.
 type AppConfig struct {
 	// MarkRead: when the app marks an opened unread mail as read – "" (at once),
@@ -59,6 +67,11 @@ type AppConfig struct {
 	HiddenCalendars []string `json:"hiddenCalendars,omitempty"`
 	// AllowedImageSenders stores lowercase sender emails whose remote images load automatically.
 	AllowedImageSenders []string `json:"allowedImageSenders,omitempty"`
+	// UndoSendSeconds sets the cancellation grace window before SMTP send (nil defaults to 5s; 0 sends immediately).
+	UndoSendSeconds *int `json:"undoSendSeconds,omitempty"`
+	// DraftAutoSaveSeconds sets the compose auto-save interval (nil defaults to 25s; 0 disables auto-save).
+	DraftAutoSaveSeconds *int              `json:"draftAutoSaveSeconds,omitempty"`
+	ComposeTemplates     []ComposeTemplate `json:"composeTemplates,omitempty"`
 	// Persisted desktop panel/window layout preferences.
 	HideSidebar   *bool   `json:"hideSidebar,omitempty"`
 	ShowCopilot   *bool   `json:"showCopilot,omitempty"`
@@ -66,6 +79,36 @@ type AppConfig struct {
 	SidebarSplit  float32 `json:"sidebarSplit,omitempty"`
 	MailSplit     float32 `json:"mailSplit,omitempty"`
 	CopilotSplit  float32 `json:"copilotSplit,omitempty"`
+}
+
+// EffectiveUndoSendSeconds returns the configured undo-send grace period in seconds (default 5, 0..30).
+func (a AppConfig) EffectiveUndoSendSeconds() int {
+	if a.UndoSendSeconds == nil {
+		return 5
+	}
+	v := *a.UndoSendSeconds
+	if v < 0 {
+		return 0
+	}
+	if v > 30 {
+		return 30
+	}
+	return v
+}
+
+// EffectiveDraftAutoSaveSeconds returns the compose draft auto-save interval in seconds (default 25, 0..300).
+func (a AppConfig) EffectiveDraftAutoSaveSeconds() int {
+	if a.DraftAutoSaveSeconds == nil {
+		return 25
+	}
+	v := *a.DraftAutoSaveSeconds
+	if v < 0 {
+		return 0
+	}
+	if v > 300 {
+		return 300
+	}
+	return v
 }
 
 // Values of AppConfig.MarkRead.

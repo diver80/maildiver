@@ -40,6 +40,8 @@ type DirectController interface {
 	DeleteFilter(ctx context.Context, accountID, name string) error
 	ToggleFilter(ctx context.Context, accountID, name string, enabled bool) error
 	SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error)
+	SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error)
+	ReadAttachmentPreview(ctx context.Context, msgID, partName, filename string) (mailengine.AttachmentPreviewData, error)
 	ReadInlineImage(ctx context.Context, msgID, cid string) (string, []byte, error)
 	ReadAllInlineImages(ctx context.Context, msgID string) (map[string]mailengine.InlineImage, error)
 	ImportMessageICS(ctx context.Context, msgID, calendarID string) (int, error)
@@ -90,6 +92,8 @@ type directUI struct {
 	accUser           string
 	accPassword       string
 	accSignature      string
+	accSignatureHTML  string
+	accSigPos         int // 0 = above reply quote, 1 = below quote
 	imapHost          string
 	imapPort          string
 	imapTLS           string
@@ -266,6 +270,8 @@ func (a *App) resetDirectAccountForm() {
 	d.accUser = ""
 	d.accPassword = ""
 	d.accSignature = ""
+	d.accSignatureHTML = ""
+	d.accSigPos = 0
 	d.authType = "password"
 	d.oauthProvider = ""
 	d.oauthClientID = ""
@@ -292,6 +298,11 @@ func (a *App) editDirectAccount(accountID string) {
 			d.accUser = acc.Username
 			d.accPassword = ""
 			d.accSignature = acc.Signature
+			d.accSignatureHTML = acc.SignatureHTML
+			d.accSigPos = 0
+			if strings.EqualFold(acc.SignaturePosition, "below") {
+				d.accSigPos = 1
+			}
 			d.imapHost = acc.IMAPHost
 			d.imapPort = strconv.Itoa(acc.IMAPPort)
 			d.imapTLS = acc.IMAPTLS
@@ -382,25 +393,31 @@ func (a *App) buildDirectAccountFromForm() (config.DirectAccount, string, error)
 	if authType != "xoauth2" {
 		authType = ""
 	}
+	sigPos := "above"
+	if d.accSigPos == 1 {
+		sigPos = "below"
+	}
 	acc := config.DirectAccount{
-		ID:            d.editingID,
-		Name:          name,
-		DisplayName:   strings.TrimSpace(d.accSender),
-		Email:         email,
-		Aliases:       parseAliasesInput(d.accAliases),
-		Username:      strings.TrimSpace(d.accUser),
-		Signature:     strings.TrimRight(d.accSignature, " \t\r\n"),
-		IMAPHost:      imapHost,
-		IMAPPort:      imapPort,
-		IMAPTLS:       d.imapTLS,
-		SMTPHost:      strings.TrimSpace(d.smtpHost),
-		SMTPPort:      smtpPort,
-		SMTPTLS:       d.smtpTLS,
-		AuthType:      authType,
-		OAuthProvider: strings.TrimSpace(d.oauthProvider),
-		OAuthClientID: strings.TrimSpace(d.oauthClientID),
-		OAuthTenant:   strings.TrimSpace(d.oauthTenant),
-		Enabled:       true,
+		ID:                d.editingID,
+		Name:              name,
+		DisplayName:       strings.TrimSpace(d.accSender),
+		Email:             email,
+		Aliases:           parseAliasesInput(d.accAliases),
+		Username:          strings.TrimSpace(d.accUser),
+		Signature:         strings.TrimRight(d.accSignature, " \t\r\n"),
+		SignatureHTML:     strings.TrimSpace(d.accSignatureHTML),
+		SignaturePosition: sigPos,
+		IMAPHost:          imapHost,
+		IMAPPort:          imapPort,
+		IMAPTLS:           d.imapTLS,
+		SMTPHost:          strings.TrimSpace(d.smtpHost),
+		SMTPPort:          smtpPort,
+		SMTPTLS:           d.smtpTLS,
+		AuthType:          authType,
+		OAuthProvider:     strings.TrimSpace(d.oauthProvider),
+		OAuthClientID:     strings.TrimSpace(d.oauthClientID),
+		OAuthTenant:       strings.TrimSpace(d.oauthTenant),
+		Enabled:           true,
 	}
 	return acc, d.accPassword, nil
 }
@@ -1317,14 +1334,32 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		})
 	})
 	if a.isPhone() {
-		ui.Column(c).FillWidth().Gap(4).Children(func() {
-			ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).TextColor(t.TextMuted)
-			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).FillWidth().Height(68)
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Text(c, a.tr("Signatur (Text)", "Signature (plain text)")).FontSize(12).TextColor(t.TextMuted)
+			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).FillWidth().Height(64)
+			ui.Text(c, a.tr("HTML-Signatur (optional)", "HTML signature (optional)")).FontSize(12).TextColor(t.TextMuted)
+			ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("leer = automatisch aus Text-Signatur formatiert; sonst eigenes HTML…", "empty = auto-styled from plain signature; else custom HTML…")).FillWidth().Height(64)
+			ui.Text(c, a.tr("Signatur-Position bei Antworten", "Signature position in replies")).FontSize(12).TextColor(t.TextMuted)
+			ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat", "Above quote"), a.tr("Unter Zitat", "Below quote"))
 		})
 	} else {
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-			ui.Text(c, a.tr("Signatur", "Signature")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
-			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(68)
+			ui.Text(c, a.tr("Signatur (Text)", "Signature (plain)")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
+			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(64)
+		})
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
+			ui.Column(c).Width(135).Gap(4).Padding(4, 0, 0, 0).Children(func() {
+				ui.Text(c, a.tr("HTML-Signatur", "HTML signature")).FontSize(12).TextColor(t.TextMuted)
+				if strings.TrimSpace(d.accSignature) != "" {
+					if ui.Button(c.Key("dir-sig-gen"), a.tr("Aus Text erzeugen", "Generate from text")).Padding(2, 6).Clicked() {
+						d.accSignatureHTML = composeSignatureBlockHTML(stripSignatureDelim(d.accSignature))
+					}
+				}
+			})
+			ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("optional (leer = wird automatisch aus Text-Signatur hübsch formatiert; oder eigenes HTML z. B. <p><b>Name</b></p>)", "optional (empty = auto-styled from plain signature; or custom HTML e.g. <p><b>Name</b></p>)")).Grow(1).Height(64)
+		})
+		formFieldRow(a.tr("Signatur-Position", "Signature position"), func() {
+			ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat (Standard)", "Above quote (default)"), a.tr("Unter Zitat (ganz unten)", "Below quote (bottom)"))
 		})
 	}
 
@@ -1792,6 +1827,28 @@ func (a *App) DownloadAndOpenAttachment(ctx context.Context, msgID, partName, fi
 				return
 			}
 			a.toast(a.trf("Gespeichert & geöffnet: %s", "Saved & opened: %s", filepath.Base(savedPath)), "success")
+		})
+	}()
+}
+
+// SaveSelectedMessageEML exports the currently selected message as an .eml file to ~/Downloads.
+func (a *App) SaveSelectedMessageEML(ctx context.Context) {
+	dc := a.opts.Direct
+	msg := a.selectedMsg
+	if dc == nil || msg == nil || msg.ID == "" {
+		return
+	}
+	msgID := msg.ID
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		savedPath, err := dc.SaveMessageEMLToDownloads(c, msgID)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.toast(a.tr("EML-Export fehlgeschlagen: ", "EML export failed: ")+err.Error(), "error")
+				return
+			}
+			a.toast(a.trf("Als .eml gespeichert: %s", "Saved as .eml: %s", filepath.Base(savedPath)), "success")
 		})
 	}()
 }

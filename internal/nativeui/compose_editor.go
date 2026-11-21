@@ -117,13 +117,19 @@ func plainBlockToEditableHTML(plain string) string {
 
 // buildComposeEditorInitialHTML builds editable HTML for new mails, drafts, replies, and forwards.
 func buildComposeEditorInitialHTML(topPlain, sigPlain, fwdHeader, fwdHTML string, inlineImgs map[string]mailengine.InlineImage, replyQuotePlain string) string {
+	return buildComposeEditorInitialHTMLWithSig(topPlain, composeSignatureBlockHTML(sigPlain), false, fwdHeader, fwdHTML, inlineImgs, replyQuotePlain)
+}
+
+// buildComposeEditorInitialHTMLWithSig builds editable HTML using an already formatted [data-mdv-sig="1"] block
+// and supports placing the signature above or below quoted replies.
+func buildComposeEditorInitialHTMLWithSig(topPlain, sigBlockHTML string, sigBelow bool, fwdHeader, fwdHTML string, inlineImgs map[string]mailengine.InlineImage, replyQuotePlain string) string {
 	var b strings.Builder
 	b.WriteString(`<div data-mdv-user="1">`)
 	b.WriteString(plainBlockToEditableHTML(topPlain))
 	b.WriteString(`</div>`)
 
-	if sigHTML := composeSignatureBlockHTML(sigPlain); sigHTML != "" {
-		b.WriteString(sigHTML)
+	if !sigBelow && sigBlockHTML != "" {
+		b.WriteString(sigBlockHTML)
 	}
 
 	if strings.TrimSpace(fwdHTML) != "" {
@@ -144,12 +150,17 @@ func buildComposeEditorInitialHTML(topPlain, sigPlain, fwdHeader, fwdHTML string
 		b.WriteString(strings.ReplaceAll(html.EscapeString(norm), "\n", "<br>"))
 		b.WriteString(`</blockquote>`)
 	}
+
+	if sigBelow && sigBlockHTML != "" {
+		b.WriteString(sigBlockHTML)
+	}
 	return b.String()
 }
 
 // NotifyComposeDirty schedules a debounced read of the HTML editor so composeSnapshot & Draft guards stay fresh.
 func (a *App) NotifyComposeDirty() {
 	a.composeEditorDirty = true
+	a.composeDirtyAt = time.Now()
 	a.composeSyncSeq++
 	seq := a.composeSyncSeq
 	ed := a.composeEditor
@@ -184,7 +195,7 @@ func (a *App) NotifyComposeSend() {
 		a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
 		return
 	}
-	a.SendCompose(context.Background(), a.buildComposeReq(false))
+	a.requestComposeSend(context.Background(), a.buildComposeReq(false))
 }
 
 // NotifyComposePasteFiles attaches copied files from Finder/Explorer when pasted inside the compose editor.

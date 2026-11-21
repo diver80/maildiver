@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.3 (2026-11-21)
+
+### Verfassen, Anhänge & Konten-Komfort
+- **Draft Auto-Save:** Geänderte Entwürfe werden automatisch im konfigurierbaren Intervall (Standard 25 s; 15 s / 25 s / 60 s / Aus) still in den Entwürfe-Ordner gesichert, ohne das Compose-Fenster zu schließen.
+- **Senden rückgängig machen (Undo Send):** Konfigurierbare Sendeverzögerung (Standard 5 s; Sofort / 5 s / 10 s / 20 s) mit Countdown-Leiste inkl. *„Senden abbrechen“* (stellt den vollständigen Entwurf wieder im Editor her) und *„Jetzt senden“*.
+- **„Anhang vergessen?“-Warnung:** Prüft beim Senden den neu geschriebenen Text (ohne Zitate und Signatur) auf Stichworte wie *Anhang / anbei / attached*, solange keine Datei angehängt ist, und bietet direkt *„Datei wählen…“* oder *„Trotzdem senden“*.
+- **Textbausteine / Vorlagen:** Wiederverwendbare Snippets (optional mit Betreff) in den Einstellungen verwalten sowie im Compose-Fenster direkt aus aktuellem Text speichern und am Cursor einfügen.
+- **HTML-Signatur & Position:** Optionale eigene HTML-Signatur pro Konto (inkl. Button *„Aus Text erzeugen“* & Sanitizer) sowie Wahl der Signatur-Position bei Antworten (*Über Zitat* vs. *Unter Zitat*).
+- **In-App-Anhang-Vorschau & `.eml`-Export:** Bilder, Text-/Code-/CSV-/JSON-/`.ics`-Dateien und eingebettete `.eml`-Nachrichten (`message/rfc822`) direkt in der App ansehen, PDFs schnell öffnen und komplette Mails in Leseansicht (Desktop & Phone) als `.eml` in `~/Downloads` sichern.
+
 ## 0.7.2 (2026-11-21)
 
 ### Desktop WYSIWYG Compose-Editor

@@ -37,6 +37,13 @@ type settingsUI struct {
 
 	markRead int // 0: at once, 1: after 3 s, 2: never
 
+	undoSendOpt int // 0: off, 1: 5s, 2: 10s, 3: 20s
+	autoSaveOpt int // 0: off, 1: 15s, 2: 25s, 3: 60s
+	templates   []config.ComposeTemplate
+	newTplName  string
+	newTplSubj  string
+	newTplBody  string
+
 	// Per-mailbox startup folder expansion preferences
 	folderAccLabels []string
 	folderAccByLbl  map[string]string
@@ -117,6 +124,27 @@ func (a *App) OpenSettings() {
 		scanDays:            strconv.Itoa(cfg.Mailbox.ScanDays),
 		archiveDir:          cfg.Mailbox.ArchiveDir,
 	}
+	switch cfg.App.EffectiveUndoSendSeconds() {
+	case 0:
+		s.undoSendOpt = 0
+	case 10:
+		s.undoSendOpt = 2
+	case 20:
+		s.undoSendOpt = 3
+	default:
+		s.undoSendOpt = 1
+	}
+	switch cfg.App.EffectiveDraftAutoSaveSeconds() {
+	case 0:
+		s.autoSaveOpt = 0
+	case 15:
+		s.autoSaveOpt = 1
+	case 60:
+		s.autoSaveOpt = 3
+	default:
+		s.autoSaveOpt = 2
+	}
+	s.templates = append([]config.ComposeTemplate(nil), cfg.App.ComposeTemplates...)
 	switch cfg.App.MarkRead {
 	case config.MarkReadDelay:
 		s.markRead = 1
@@ -228,6 +256,20 @@ func (a *App) SaveSettings() bool {
 	cfg.Mailbox.ScanDays = days
 	cfg.Mailbox.ArchiveDir = strings.TrimSpace(s.archiveDir)
 	cfg.App.MarkRead = [...]string{config.MarkReadOnOpen, config.MarkReadDelay, config.MarkReadNever}[min(max(s.markRead, 0), 2)]
+	undoSec := [...]int{0, 5, 10, 20}[min(max(s.undoSendOpt, 0), 3)]
+	autoSec := [...]int{0, 15, 25, 60}[min(max(s.autoSaveOpt, 0), 3)]
+	cfg.App.UndoSendSeconds = &undoSec
+	cfg.App.DraftAutoSaveSeconds = &autoSec
+	tpls := make([]config.ComposeTemplate, 0, len(s.templates))
+	for _, tpl := range s.templates {
+		tpl.Name = strings.TrimSpace(tpl.Name)
+		tpl.Subject = strings.TrimSpace(tpl.Subject)
+		tpl.Body = strings.TrimSpace(tpl.Body)
+		if tpl.Name != "" && tpl.Body != "" {
+			tpls = append(tpls, tpl)
+		}
+	}
+	cfg.App.ComposeTemplates = tpls
 	layout := "side"
 	if s.linkPreviewLayout == 1 {
 		layout = "bottom"
@@ -407,6 +449,57 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	if a.readOnly {
 		note(a.tr("„Nur lesen“ ist in config.json aktiviert: Mails bleiben ungelesen.", "Read-only is enabled in config.json: emails stay unread."), t.Warning)
 	}
+
+	a.settingsSection(c, a.tr("Verfassen, Undo-Send & Textbausteine", "Compose, Undo Send & Templates"))
+	field("set-undo-send", a.tr("Senden rückgängig (Verzögerung)", "Undo Send delay"), func() {
+		ui.Segmented(c.Key("set-undo-sends"), &s.undoSendOpt, a.tr("Sofort", "Off (0s)"), "5 s", "10 s", "20 s")
+	})
+	field("set-auto-save", a.tr("Entwurf Auto-Save", "Draft auto-save"), func() {
+		ui.Segmented(c.Key("set-auto-saves"), &s.autoSaveOpt, a.tr("Aus", "Off"), "15 s", "25 s", "60 s")
+	})
+	ui.Column(c.Key("set-tpl-box")).FillWidth().Gap(6).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+		ui.Text(c, a.tr("Textbausteine / Vorlagen (im Verfassen-Fenster einfügbar)", "Snippets / Templates (insertable while composing)")).FontSize(11.5).Bold()
+		if len(s.templates) == 0 {
+			ui.Text(c, a.tr("Noch keine Vorlagen angelegt.", "No templates added yet.")).FontSize(11.5).TextColor(t.TextMuted)
+		} else {
+			delIdx := -1
+			for i, tpl := range s.templates {
+				ui.Row(c.Key(fmt.Sprintf("set-tpl-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, tpl.Name).FontSize(12).Bold().Width(140).SingleLine()
+					ui.Text(c, strings.ReplaceAll(tpl.Body, "\n", " ")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
+					if ui.Button(c.Key(fmt.Sprintf("set-tpl-del-%d", i)), "✕").Padding(1, 6).Clicked() {
+						delIdx = i
+					}
+				})
+			}
+			if delIdx >= 0 {
+				s.templates = append(s.templates[:delIdx], s.templates[delIdx+1:]...)
+			}
+		}
+		ui.Divider(c)
+		ui.Row(c.Key("set-tpl-add-hdr")).FillWidth().Gap(6).Children(func() {
+			ui.TextInput(c.Key("set-tpl-nn"), &s.newTplName).Placeholder(a.tr("Vorlagenname…", "Template name…")).Width(160)
+			ui.TextInput(c.Key("set-tpl-ns"), &s.newTplSubj).Placeholder(a.tr("Betreff (optional)…", "Subject (optional)…")).Grow(1)
+		})
+		ui.Row(c.Key("set-tpl-add-b")).FillWidth().Gap(6).AlignItems(ui.End).Children(func() {
+			ui.TextArea(c.Key("set-tpl-nb"), &s.newTplBody).Placeholder(a.tr("Vorlagentext…", "Template text…")).Grow(1).Height(54)
+			if ui.Button(c.Key("set-tpl-add"), a.tr("+ Vorlage", "+ Template")).Padding(4, 9).Clicked() {
+				name := strings.TrimSpace(s.newTplName)
+				body := strings.TrimSpace(s.newTplBody)
+				if name != "" && body != "" {
+					s.templates = append(s.templates, config.ComposeTemplate{
+						ID:      fmt.Sprintf("tpl-%d", time.Now().UnixNano()),
+						Name:    name,
+						Subject: strings.TrimSpace(s.newTplSubj),
+						Body:    body,
+					})
+					s.newTplName = ""
+					s.newTplSubj = ""
+					s.newTplBody = ""
+				}
+			}
+		})
+	})
 
 	if len(s.folderAccLabels) > 0 {
 		a.settingsSection(c, a.tr("Ordner beim Start (pro Postfach)", "Startup folders (per mailbox)"))

@@ -508,15 +508,26 @@ func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, pass
 			}
 			if len(prev.Aliases) > 0 && len(acc.Aliases) > 0 {
 				prevSig := map[string]string{}
+				prevSigHTML := map[string]string{}
 				for _, pa := range prev.Aliases {
-					if sig := strings.TrimSpace(pa.Signature); sig != "" {
-						prevSig[strings.ToLower(strings.TrimSpace(pa.Email))] = pa.Signature
+					em := strings.ToLower(strings.TrimSpace(pa.Email))
+					if strings.TrimSpace(pa.Signature) != "" {
+						prevSig[em] = pa.Signature
+					}
+					if strings.TrimSpace(pa.SignatureHTML) != "" {
+						prevSigHTML[em] = pa.SignatureHTML
 					}
 				}
 				for j := range acc.Aliases {
+					em := strings.ToLower(strings.TrimSpace(acc.Aliases[j].Email))
 					if strings.TrimSpace(acc.Aliases[j].Signature) == "" {
-						if sig, ok := prevSig[strings.ToLower(strings.TrimSpace(acc.Aliases[j].Email))]; ok {
+						if sig, ok := prevSig[em]; ok {
 							acc.Aliases[j].Signature = sig
+						}
+					}
+					if strings.TrimSpace(acc.Aliases[j].SignatureHTML) == "" {
+						if sh, ok := prevSigHTML[em]; ok {
+							acc.Aliases[j].SignatureHTML = sh
 						}
 					}
 				}
@@ -909,32 +920,36 @@ func (e *Engine) resolveTargetFolderPath(ctx context.Context, accountID, target 
 	return t
 }
 
-// SaveAttachmentToDownloads extracts an attachment from a message (fetching raw EML over IMAP
-// if not yet cached) and saves it to ~/Downloads without overwriting existing files.
-func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error) {
+// AttachmentPreviewData carries decoded attachment bytes for in-app preview.
+type AttachmentPreviewData struct {
+	Name        string
+	ContentType string
+	Data        []byte
+	ParsedEML   *ParsedMessage
+}
+
+func (e *Engine) getOrFetchStoredMessage(ctx context.Context, msgID string) (StoredMessage, error) {
 	m, err := e.store.GetMessage(ctx, msgID)
 	if err != nil {
-		return "", fmt.Errorf("not_found: Nachricht %q", msgID)
+		return StoredMessage{}, fmt.Errorf("not_found: Nachricht %q", msgID)
 	}
 	if len(m.RawEML) == 0 {
 		acc, ok := e.findAccount(m.AccountID)
 		if !ok {
-			return "", fmt.Errorf("Konto nicht gefunden")
+			return StoredMessage{}, fmt.Errorf("Konto nicht gefunden")
 		}
 		fetched, ferr := e.fetchMessageBodyIMAP(ctx, acc, m)
 		if ferr != nil {
-			return "", ferr
+			return StoredMessage{}, ferr
 		}
 		m = fetched
 	}
-	name, _, data, err := ExtractAttachment(m.RawEML, partName, filename)
-	if err != nil {
-		return "", err
-	}
-	safeName := sanitizeDownloadFilename(name)
+	return m, nil
+}
+
+func writableDownloadsDir() (string, error) {
 	var downloadsDir string
 	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
-		// On mobile platforms app cache storage is writable and covered by FileProvider.
 		if cache, err := os.UserCacheDir(); err == nil && cache != "" {
 			downloadsDir = filepath.Join(cache, "maildiver-attachments")
 		} else {
@@ -953,20 +968,88 @@ func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName,
 		}
 		downloadsDir = fallback
 	}
-	target, f, err := createUniqueFile(downloadsDir, safeName)
+	return downloadsDir, nil
+}
+
+func writeBytesToDownloads(safeName string, data []byte) (string, error) {
+	dir, err := writableDownloadsDir()
 	if err != nil {
-		return "", fmt.Errorf("Anhang speichern: %w", err)
+		return "", err
+	}
+	target, f, err := createUniqueFile(dir, safeName)
+	if err != nil {
+		return "", fmt.Errorf("Datei speichern: %w", err)
 	}
 	if _, werr := f.Write(data); werr != nil {
 		_ = f.Close()
 		_ = os.Remove(target)
-		return "", fmt.Errorf("Anhang speichern: %w", werr)
+		return "", fmt.Errorf("Datei speichern: %w", werr)
 	}
 	if cerr := f.Close(); cerr != nil {
 		_ = os.Remove(target)
-		return "", fmt.Errorf("Anhang speichern: %w", cerr)
+		return "", fmt.Errorf("Datei speichern: %w", cerr)
 	}
 	return target, nil
+}
+
+// SaveAttachmentToDownloads extracts an attachment from a message (fetching raw EML over IMAP
+// if not yet cached) and saves it to ~/Downloads without overwriting existing files.
+func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error) {
+	m, err := e.getOrFetchStoredMessage(ctx, msgID)
+	if err != nil {
+		return "", err
+	}
+	name, _, data, err := ExtractAttachment(m.RawEML, partName, filename)
+	if err != nil {
+		return "", err
+	}
+	return writeBytesToDownloads(sanitizeDownloadFilename(name), data)
+}
+
+// SaveMessageEMLToDownloads exports the raw RFC 5322 message as an .eml file into ~/Downloads.
+func (e *Engine) SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error) {
+	m, err := e.getOrFetchStoredMessage(ctx, msgID)
+	if err != nil {
+		return "", err
+	}
+	if len(m.RawEML) == 0 {
+		return "", fmt.Errorf("keine Rohdaten (.eml) für diese Nachricht verfügbar")
+	}
+	base := strings.TrimSpace(m.Subject)
+	if base == "" {
+		base = "email"
+	}
+	if !strings.EqualFold(filepath.Ext(base), ".eml") {
+		base += ".eml"
+	}
+	return writeBytesToDownloads(sanitizeDownloadFilename(base), m.RawEML)
+}
+
+// ReadAttachmentPreview loads attachment bytes in memory (capped at 16 MiB) for in-app preview.
+func (e *Engine) ReadAttachmentPreview(ctx context.Context, msgID, partName, filename string) (AttachmentPreviewData, error) {
+	m, err := e.getOrFetchStoredMessage(ctx, msgID)
+	if err != nil {
+		return AttachmentPreviewData{}, err
+	}
+	name, ct, data, err := ExtractAttachment(m.RawEML, partName, filename)
+	if err != nil {
+		return AttachmentPreviewData{}, err
+	}
+	const maxPreviewBytes = 16 << 20
+	if len(data) > maxPreviewBytes {
+		return AttachmentPreviewData{}, fmt.Errorf("Anhang zu groß für direkte Vorschau (%d MB) — bitte in Downloads speichern", len(data)>>20)
+	}
+	out := AttachmentPreviewData{
+		Name:        name,
+		ContentType: ct,
+		Data:        data,
+	}
+	if strings.EqualFold(filepath.Ext(name), ".eml") || strings.EqualFold(ct, "message/rfc822") {
+		if parsed, perr := ParseRawMessage(data); perr == nil {
+			out.ParsedEML = &parsed
+		}
+	}
+	return out, nil
 }
 
 func sanitizeDownloadFilename(raw string) string {

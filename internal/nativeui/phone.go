@@ -452,6 +452,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 				}
 			})
 		}
+		a.renderUndoSendBar(c)
 		if a.undo != nil {
 			ui.Row(c.Key("ph-undo")).FillWidth().Padding(6, 14).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.10)).Children(func() {
 				ui.Text(c, a.undo.Label).FontSize(13).Grow(1).MinWidth(0).SingleLine()
@@ -801,6 +802,9 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 		}
 	}
 	actions = append(actions,
+		mobile.Action{Label: a.tr("Als .eml speichern", "Save as .eml"), OnTap: func() {
+			a.SaveSelectedMessageEML(context.Background())
+		}},
 		mobile.Action{Label: a.tr("Filterregel erstellen…", "Create filter rule…"), OnTap: func() {
 			a.OpenQuickRuleWizard()
 		}},
