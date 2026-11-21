@@ -148,3 +148,69 @@ func TestSyncBackfillsOlderMails(t *testing.T) {
 		t.Fatal("mail seen in the open app must not be reported again")
 	}
 }
+
+// A caller that stops waiting (a refresh timeout, the system ending a background task) is no
+// account error, and a manual sync it started still runs to its end.
+func TestSyncCallerTimeoutIsNoAccountError(t *testing.T) {
+	addr, memUser, stop := startTestIMAPServer(t, "me@example.org", "pw")
+	defer stop()
+	appendMemMsg(t, memUser, "INBOX", "From: a@b.de\nTo: me@example.org\nSubject: Hallo\nMessage-ID: <h@x>\n\nText\n")
+	cfg := config.Default()
+	var mu sync.Mutex
+	eng, err := New(Options{
+		DBPath:       filepath.Join(t.TempDir(), "m.db"),
+		Secrets:      secretstore.NewMemoryStore(),
+		Events:       events.NewHub(),
+		ConfigLoader: func() (config.Config, error) { mu.Lock(); defer mu.Unlock(); return cfg, nil },
+		ConfigSaver:  func(c config.Config) error { mu.Lock(); cfg = c; mu.Unlock(); return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	host, port, _ := net.SplitHostPort(addr)
+	var p int
+	_, _ = fmt.Sscanf(port, "%d", &p)
+	acc, err := eng.SaveAccount(context.Background(), config.DirectAccount{Name: "Test", Email: "me@example.org", IMAPHost: host, IMAPPort: p, IMAPTLS: "plain"}, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := func() AccountSyncStatus {
+		for _, st := range eng.AccountsStatus(context.Background()) {
+			if st.AccountID == acc.ID {
+				return st
+			}
+		}
+		t.Fatal("account has no status")
+		return AccountSyncStatus{}
+	}
+
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := eng.SyncAccount(gone, acc.ID, false); err == nil {
+		t.Fatal("a cancelled sync reports its end")
+	}
+	if st := state(); st.State == "error" || st.LastError != "" {
+		t.Fatalf("a cancelled caller marked the account: %+v", st)
+	}
+
+	// Another sync holds the account; the caller gives up waiting, the sync follows later.
+	lk := eng.accountSyncLock(acc.ID)
+	lk.Lock()
+	short, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelShort()
+	if err := eng.SyncNow(short, acc.ID); err != context.DeadlineExceeded {
+		t.Fatalf("SyncNow past the caller's deadline: %v", err)
+	}
+	lk.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for eng.store.CountAccountMessages(context.Background(), acc.ID) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the manual sync did not finish after its caller gave up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st := state(); st.State == "error" || st.LastError != "" {
+		t.Fatalf("account after the sync: %+v", st)
+	}
+}

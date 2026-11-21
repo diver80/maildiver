@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 (2026-11-21)
+
+- **Keine falschen Sync-Fehler mehr:** Ein manueller Abgleich (Ziehen zum Aktualisieren, Sync-Knopf, erster Abgleich eines neuen Kontos) läuft im Hintergrund zu Ende, auch wenn er länger dauert als die Anzeige wartet; dann erscheint „Synchronisierung läuft im Hintergrund weiter“. Ein abgebrochenes Warten – oder eine von Android beendete Hintergrund-Aufgabe – markiert das Konto nicht mehr mit „context deadline exceeded“.
+- **Android:** Die Einstellungen zeigen keinen Thunderbird-Import-Reiter mehr; die Reiter passen in die Bildschirmbreite.
+
 ## 0.6.0 (2026-11-20)
 
 ### Desktop

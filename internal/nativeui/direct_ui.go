@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/egoist/mygo"
 	"os/exec"
@@ -474,11 +475,18 @@ func (a *App) saveDirectAccountForm(ctx context.Context) {
 			return
 		}
 		// Trigger an immediate initial sync so folders & inbox messages show up right away.
-		syncErr := dc.SyncNow(c, saved.ID)
+		sc, scancel := context.WithTimeout(ctx, 45*time.Second)
+		syncErr := dc.SyncNow(sc, saved.ID)
+		scancel()
 		a.emitUpdate(func() {
 			a.direct.accBusy = false
 			a.resetDirectAccountForm()
-			if syncErr != nil {
+			if errors.Is(syncErr, context.DeadlineExceeded) {
+				a.toast(a.trf("Konto „%s“ verbunden", "Account “%s” connected", saved.Name), "success")
+				a.direct.accStatusMsg = a.trf("Konto „%s“ gespeichert. Der erste Abgleich läuft im Hintergrund weiter.",
+					"Account “%s” saved. The first sync continues in the background.", saved.Name)
+				a.direct.accStatusErr = false
+			} else if syncErr != nil {
 				a.direct.accStatusMsg = a.tr("Konto gespeichert, erster Sync mit Hinweis: ", "Account saved, initial sync note: ") + syncErr.Error()
 				a.direct.accStatusErr = true
 			} else {
@@ -528,7 +536,9 @@ func (a *App) syncDirectAccountNow(ctx context.Context, accountID string) {
 		err := dc.SyncNow(c, accountID)
 		a.emitUpdate(func() {
 			a.phone.refresh.Refreshing = false
-			if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				a.toast(a.tr("Synchronisierung läuft im Hintergrund weiter", "Sync continues in the background"), "info")
+			} else if err != nil {
 				a.toast(a.tr("Sync-Fehler: ", "Sync error: ")+err.Error(), "error")
 			} else {
 				a.toast(a.tr("Postfach synchronisiert", "Mailbox synced"), "success")
@@ -1002,15 +1012,22 @@ func (a *App) renderDirectModal(c *ui.Context) {
 				}
 			})
 
-			if ui.Segmented(
-				c.Key("dir-tabs"),
-				&d.tab,
-				a.tr("E-Mail", "Email"),
-				a.tr("Kalender", "Calendar"),
-				a.tr("Regeln", "Rules"),
-				a.tr("TB-Import", "TB Import"),
-				"S/MIME",
-			).Changed() {
+			// d.tab is the view (3 the Thunderbird import); a phone has no Thunderbird to import from,
+			// and without that tab the others fit its width.
+			views := []int{0, 1, 2, 3, 4}
+			labels := []string{a.tr("E-Mail", "Email"), a.tr("Kalender", "Calendar"), a.tr("Regeln", "Rules"), a.tr("TB-Import", "TB Import"), "S/MIME"}
+			if isMobileOS() {
+				views = []int{0, 1, 2, 4}
+				labels = append(labels[:3:3], labels[4])
+			}
+			sel := 0
+			for i, v := range views {
+				if v == d.tab {
+					sel = i
+				}
+			}
+			if ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed() {
+				d.tab = views[sel]
 				if d.tab == 3 && len(d.tbProfiles) == 0 && d.tbProfilePath == "" {
 					a.discoverThunderbirdProfiles()
 				}

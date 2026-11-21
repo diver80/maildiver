@@ -647,8 +647,19 @@ func (e *Engine) SyncAccount(ctx context.Context, accountID string, inboxOnly bo
 		return SyncResult{}, fmt.Errorf("not_found: account %q", accountID)
 	}
 
+	e.mu.RLock()
+	prevState := e.accState[accountID]
+	e.mu.RUnlock()
 	e.setAccountState(accountID, "syncing", "")
 	res, err := e.syncAccountIMAP(ctx, acc, inboxOnly)
+	if err != nil && ctx.Err() != nil {
+		// The caller stopped waiting (its timeout, the system ending a background task): not
+		// a fault of the account, whose worker syncs on.
+		e.mu.Lock()
+		e.accState[accountID] = prevState
+		e.mu.Unlock()
+		return res, err
+	}
 	if err != nil {
 		e.setAccountState(accountID, "error", err.Error())
 		if e.events != nil && ctx.Err() == nil {
@@ -680,8 +691,24 @@ func (e *Engine) SyncAccount(ctx context.Context, accountID string, inboxOnly bo
 	return res, nil
 }
 
-// SyncNow triggers an immediate sync for accountID (or all enabled accounts if empty).
+// SyncNow syncs accountID (or every enabled account if empty) now. ctx bounds only how long the
+// caller waits: the sync itself runs to its end in the background, as a first sync of a large
+// mailbox takes minutes and an aborted one leaves its work to the next. When ctx ends first,
+// SyncNow returns ctx's error.
 func (e *Engine) SyncNow(ctx context.Context, accountID string) error {
+	done := make(chan error, 1)
+	e.spawn(func(root context.Context) { done <- e.syncNow(root, accountID) })
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.rootContext().Done():
+		return context.Canceled
+	}
+}
+
+func (e *Engine) syncNow(ctx context.Context, accountID string) error {
 	if accountID != "" {
 		_, err := e.SyncAccount(ctx, accountID, false)
 		return err
