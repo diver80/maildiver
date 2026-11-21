@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2 (2026-11-21)
+
+### Desktop WYSIWYG Compose-Editor
+- **Toolbar & Aktive Formatierung:** Optisch abgesetzte Werkzeugleiste mit deutlich erkennbaren Button-Flächen, Hover-/Aktiv-Hervorhebung (`updateFormatStates` + Absatz-Dropdown-Sync), Rückgängig/Wiederholen-Buttons (`↶` / `↷`), Trennlinie (`―`) sowie Vorausfüllung bestehender Link-URLs.
+- **Bilder selektieren, skalieren & löschen:** Klick auf eingebettete Bilder im Text markiert diese mit Akzentrahmen, Drag-Handle an der unteren rechten Ecke sowie kontextueller Bild-Leiste (`25%`, `50%`, `75%`, `100%`, `−`/`+`, Pixelgröße, Löschen-Button und `Entf`/`Backspace`). Temporäre Editor-Klassen werden beim Versand sauber bereinigt.
+- **Signatur- & Paste-Schutz:** Signaturen (`[data-mdv-sig="1"]`) erhalten im Dark Mode lesbaren `--muted`-Kontrast, sind im Editor gegen versehentliches Überschreiben/Hineinfallen von Bildern geschützt (`contenteditable="false"`, beim Versand entfernt) und eingefügtes HTML übernimmt durch `sanitizePastedHTML` sauber die Editor-Farben statt fremder Hintergrund-/Textfarben.
+
 ## 0.7.1 (2026-11-21)
 
 ### Zuverlässigkeit, Protokolle & Sicherheit

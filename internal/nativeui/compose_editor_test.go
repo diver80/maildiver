@@ -227,3 +227,45 @@ func TestSettingsModelFieldRendersDropdownWhenModelsAvailable(t *testing.T) {
 		t.Fatalf("expected model select displaying example-mini:latest, texts=%v", tt.Texts())
 	}
 }
+
+func TestComposeEditorEnhancedToolbarAndImageControls(t *testing.T) {
+	pal := ComposeThemePalette{
+		Bg:      "#111317",
+		Surface: "#1a1d24",
+		Text:    "#f3f4f6",
+		Muted:   "#9ca3af",
+		Border:  "#2e3340",
+		Accent:  "#f59e0b",
+		Dark:    true,
+	}
+	for _, lang := range []string{"de", "en"} {
+		doc := composeEditorDocumentHTML("<p>Hello</p>", pal, lang)
+		if strings.Contains(doc, "%!(") {
+			t.Fatalf("lang=%s: unexpected fmt.Sprintf error in compose HTML:\n%s", lang, doc)
+		}
+		for _, want := range []string{
+			`id="btn-undo"`,
+			`id="btn-redo"`,
+			`id="btn-hr"`,
+			`id="img-bar"`,
+			`id="img-handle"`,
+			`data-img-pct="25"`,
+			`data-img-pct="50"`,
+			`data-img-pct="75"`,
+			`data-img-pct="100"`,
+			`id="img-smaller"`,
+			`id="img-larger"`,
+			`id="img-del"`,
+			`mdv-img-sel`,
+			`#editor [data-mdv-sig="1"]`,
+			`protectSignatures`,
+			`updateFormatStates`,
+			`sanitizePastedHTML`,
+			`removeAttribute('contenteditable')`,
+		} {
+			if !strings.Contains(doc, want) {
+				t.Fatalf("lang=%s: expected %q in compose editor document", lang, want)
+			}
+		}
+	}
+}

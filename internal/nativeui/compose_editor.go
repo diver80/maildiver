@@ -289,31 +289,55 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   }
   .tb {
     display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-    padding: 6px 8px; background: var(--surface);
-    border-bottom: 1px solid var(--border); user-select: none;
+    padding: 7px 10px; background: var(--surface);
+    border-bottom: 2px solid var(--border);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+    user-select: none; position: relative; z-index: 5;
   }
   .tb-sub {
     display: none; flex-wrap: wrap; align-items: center; gap: 5px;
-    padding: 5px 8px; background: var(--bg);
+    padding: 6px 10px; background: var(--surface);
     border-bottom: 1px solid var(--border); font-size: 12px;
   }
   .tb-sub.open { display: flex; }
-  .sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+  .sep { width: 1px; height: 18px; background: var(--border); margin: 0 3px; }
   button.btn, select.sel {
     height: 26px; border: 1px solid var(--border); border-radius: 5px;
-    background: var(--bg); color: var(--text); font-size: 12px;
-    padding: 0 7px; cursor: pointer; line-height: 24px;
+    background: rgba(127, 127, 127, 0.13); color: var(--text); font-size: 12px;
+    padding: 0 8px; cursor: pointer; line-height: 24px;
+    transition: border-color 0.12s, background 0.12s, color 0.12s;
   }
-  button.btn:hover { border-color: var(--accent); }
-  button.btn.active { border-color: var(--accent); color: var(--accent); }
+  button.btn:hover, select.sel:hover {
+    border-color: var(--accent);
+    background: rgba(127, 127, 127, 0.24);
+  }
+  button.btn.active {
+    background: var(--bg);
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+    font-weight: 600;
+  }
+  button.btn-danger {
+    color: #f87171;
+    border-color: rgba(248, 113, 113, 0.45);
+  }
+  button.btn-danger:hover {
+    border-color: #f87171;
+    background: rgba(248, 113, 113, 0.14);
+  }
   input.clr {
     width: 26px; height: 26px; padding: 2px; border: 1px solid var(--border);
-    border-radius: 5px; background: var(--bg); cursor: pointer;
+    border-radius: 5px; background: rgba(127, 127, 127, 0.13); cursor: pointer;
   }
   input.url-in {
     flex: 1; min-width: 180px; height: 26px; padding: 0 8px;
     border: 1px solid var(--border); border-radius: 5px;
-    background: var(--surface); color: var(--text); font-size: 12px;
+    background: var(--bg); color: var(--text); font-size: 12px;
+  }
+  #ed-wrap {
+    position: relative; flex: 1; display: flex; flex-direction: column;
+    min-height: 0; overflow: hidden;
   }
   #editor {
     flex: 1; overflow-y: auto; padding: 12px 14px;
@@ -330,12 +354,26 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   #editor blockquote {
     margin: 10px 0; padding: 0 0 0 12px; border-left: 3px solid var(--border);
   }
+  #editor hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
   #editor a { color: var(--accent); }
-  #editor img { max-width: 100%%; height: auto; border-radius: 6px; margin: 4px 0; }
+  #editor img { max-width: 100%%; height: auto; border-radius: 6px; margin: 4px 0; cursor: pointer; }
+  #editor img.mdv-img-sel { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #editor [data-mdv-sig="1"], #editor [data-mdv-sig="1"] * { color: var(--muted) !important; }
+  #editor [data-mdv-sig="1"] a { color: var(--accent) !important; }
+  #editor [data-mdv-sig="1"] { opacity: 0.9; margin-top: 12px; }
+  #img-handle {
+    display: none; position: absolute; width: 12px; height: 12px;
+    background: var(--accent); border: 2px solid var(--bg); border-radius: 3px;
+    cursor: nwse-resize; z-index: 20; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  }
+  #img-handle.open { display: block; }
 </style>
 </head>
 <body>
   <div class="tb" id="toolbar">
+    <button class="btn" id="btn-undo" data-cmd="undo" title="%s (⌘Z)">↶</button>
+    <button class="btn" id="btn-redo" data-cmd="redo" title="%s (⌘⇧Z)">↷</button>
+    <span class="sep"></span>
     <select class="sel" id="blk" title="%s">
       <option value="P">%s</option>
       <option value="H1">%s 1</option>
@@ -370,6 +408,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     <button class="btn" id="btn-link" title="%s">🔗 Link</button>
     <button class="btn" id="btn-img" title="%s">🖼 %s</button>
     <button class="btn" id="btn-tbl" title="%s">▦ %s</button>
+    <button class="btn" id="btn-hr" data-cmd="insertHorizontalRule" title="%s">―</button>
     <input type="file" id="img-pick" accept="image/*" style="display:none">
   </div>
 
@@ -387,22 +426,59 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     <button class="btn" id="tbl-r-del">- %s</button>
     <button class="btn" id="tbl-c-add">+ %s</button>
     <button class="btn" id="tbl-c-del">- %s</button>
-    <button class="btn" id="tbl-del" style="color:#f87171;">%s</button>
+    <button class="btn btn-danger" id="tbl-del">%s</button>
   </div>
 
-  <div id="editor" contenteditable="true" spellcheck="true"></div>
+  <div class="tb-sub" id="img-bar">
+    <span>%s:</span>
+    <button class="btn" data-img-pct="25">25%%</button>
+    <button class="btn" data-img-pct="50">50%%</button>
+    <button class="btn" data-img-pct="75">75%%</button>
+    <button class="btn" data-img-pct="100">100%%</button>
+    <button class="btn" id="img-smaller" title="%s">−</button>
+    <button class="btn" id="img-larger" title="%s">+</button>
+    <span id="img-dim" style="color:var(--muted);font-variant-numeric:tabular-nums;"></span>
+    <button class="btn btn-danger" id="img-del">🗑 %s</button>
+  </div>
+
+  <div id="ed-wrap">
+    <div id="editor" contenteditable="true" spellcheck="true"></div>
+    <div id="img-handle" aria-hidden="true"></div>
+  </div>
 
 <script>
 (function() {
+  const edWrap = document.getElementById('ed-wrap');
   const ed = document.getElementById('editor');
   const linkBar = document.getElementById('link-bar');
   const linkURL = document.getElementById('link-url');
   const tblBar = document.getElementById('tbl-bar');
+  const imgBar = document.getElementById('img-bar');
+  const imgDim = document.getElementById('img-dim');
+  const imgHandle = document.getElementById('img-handle');
   const imgPick = document.getElementById('img-pick');
+  const statefulCmds = new Set([
+    'bold', 'italic', 'underline', 'strikeThrough',
+    'insertUnorderedList', 'insertOrderedList',
+    'justifyLeft', 'justifyCenter', 'justifyRight'
+  ]);
   let savedRange = null;
+  let selImg = null;
   let seq = 0;
 
   ed.innerHTML = %s;
+
+  function protectSignatures() {
+    ed.querySelectorAll('[data-mdv-sig="1"]').forEach((sig) => {
+      sig.setAttribute('contenteditable', 'false');
+      if (!sig.previousElementSibling && sig === ed.firstElementChild) {
+        const p = document.createElement('p');
+        p.innerHTML = '<br>';
+        sig.before(p);
+      }
+    });
+  }
+  protectSignatures();
 
   function notify(prefix) {
     seq++;
@@ -423,17 +499,94 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     sel.addRange(savedRange);
   }
 
+  function activeAnchor() {
+    const sel = window.getSelection();
+    if (!sel || !sel.anchorNode) return null;
+    let n = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+    while (n && n !== ed) {
+      if (n.tagName === 'A') return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function updateFormatStates() {
+    document.querySelectorAll('#toolbar [data-cmd]').forEach((btn) => {
+      const cmd = btn.dataset.cmd;
+      if (!statefulCmds.has(cmd)) return;
+      let on = false;
+      try { on = document.queryCommandState(cmd); } catch (_) {}
+      btn.classList.toggle('active', !!on);
+    });
+    const a = activeAnchor();
+    document.getElementById('btn-link').classList.toggle('active', !!a);
+    let blkVal = '';
+    try { blkVal = String(document.queryCommandValue('formatBlock') || '').replace(/[<>]/g, '').toUpperCase(); } catch (_) {}
+    const blkSel = document.getElementById('blk');
+    if (blkSel) {
+      const opts = Array.from(blkSel.options).map((o) => o.value);
+      blkSel.value = opts.includes(blkVal) ? blkVal : 'P';
+    }
+  }
+
+  function clearImageSelection() {
+    if (selImg) {
+      selImg.classList.remove('mdv-img-sel');
+      selImg = null;
+    }
+    imgBar.classList.remove('open');
+    imgHandle.classList.remove('open');
+    imgDim.textContent = '';
+  }
+
+  function positionImgHandle() {
+    if (!selImg || !ed.contains(selImg)) {
+      clearImageSelection();
+      return;
+    }
+    const r = selImg.getBoundingClientRect();
+    const wr = edWrap.getBoundingClientRect();
+    imgDim.textContent = Math.round(r.width) + ' × ' + Math.round(r.height) + ' px';
+    if (r.width <= 0 || r.bottom < wr.top || r.top > wr.bottom) {
+      imgHandle.classList.remove('open');
+      return;
+    }
+    imgHandle.style.left = Math.round(r.right - wr.left - 6) + 'px';
+    imgHandle.style.top = Math.round(r.bottom - wr.top - 6) + 'px';
+    imgHandle.classList.add('open');
+  }
+
+  function selectImage(img) {
+    if (!img || img.closest('[data-mdv-sig="1"]')) return;
+    if (selImg && selImg !== img) selImg.classList.remove('mdv-img-sel');
+    selImg = img;
+    selImg.classList.add('mdv-img-sel');
+    imgBar.classList.add('open');
+    positionImgHandle();
+  }
+
+  function deleteSelectedImage() {
+    if (!selImg) return;
+    const img = selImg;
+    clearImageSelection();
+    img.remove();
+    ed.focus();
+    notify('mdv:dirty');
+  }
+
   document.getElementById('toolbar').addEventListener('mousedown', (e) => {
     if (e.target.tagName !== 'SELECT' && e.target.tagName !== 'INPUT') {
       e.preventDefault();
     }
   });
   tblBar.addEventListener('mousedown', (e) => e.preventDefault());
+  imgBar.addEventListener('mousedown', (e) => e.preventDefault());
 
   document.querySelectorAll('[data-cmd]').forEach((btn) => {
     btn.addEventListener('click', () => {
       ed.focus();
       document.execCommand(btn.dataset.cmd, false, null);
+      updateFormatStates();
       notify('mdv:dirty');
     });
   });
@@ -441,6 +594,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   document.getElementById('blk').addEventListener('change', (e) => {
     ed.focus();
     document.execCommand('formatBlock', false, '<' + e.target.value + '>');
+    updateFormatStates();
     notify('mdv:dirty');
   });
   document.getElementById('fsize').addEventListener('change', (e) => {
@@ -461,10 +615,12 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 
   document.getElementById('btn-link').addEventListener('click', () => {
     saveSel();
+    const curA = activeAnchor();
     linkBar.classList.toggle('open');
     if (linkBar.classList.contains('open')) {
-      linkURL.value = 'https://';
+      linkURL.value = (curA && curA.getAttribute('href')) || 'https://';
       linkURL.focus();
+      linkURL.select();
     }
   });
   document.getElementById('link-ok').addEventListener('click', () => {
@@ -473,12 +629,14 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     linkBar.classList.remove('open');
     restoreSel();
     if (u) document.execCommand('createLink', false, u);
+    updateFormatStates();
     notify('mdv:dirty');
   });
   document.getElementById('link-unlink').addEventListener('click', () => {
     linkBar.classList.remove('open');
     restoreSel();
     document.execCommand('unlink', false, null);
+    updateFormatStates();
     notify('mdv:dirty');
   });
   document.getElementById('link-cancel').addEventListener('click', () => {
@@ -509,6 +667,86 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   imgPick.addEventListener('change', () => {
     if (imgPick.files && imgPick.files[0]) insertImageBlob(imgPick.files[0]);
   });
+
+  ed.addEventListener('click', (e) => {
+    if (e.target && e.target.tagName === 'IMG' && !e.target.closest('[data-mdv-sig="1"]')) {
+      e.preventDefault();
+      ed.focus();
+      selectImage(e.target);
+      return;
+    }
+    clearImageSelection();
+  });
+  ed.addEventListener('scroll', positionImgHandle);
+  window.addEventListener('resize', positionImgHandle);
+
+  imgBar.querySelectorAll('[data-img-pct]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!selImg) return;
+      selImg.style.width = btn.dataset.imgPct + '%%';
+      selImg.style.height = 'auto';
+      selImg.removeAttribute('width');
+      positionImgHandle();
+      notify('mdv:dirty');
+    });
+  });
+  function nudgeImageWidth(delta) {
+    if (!selImg) return;
+    const curW = Math.round(selImg.getBoundingClientRect().width || selImg.naturalWidth || 200);
+    const maxW = Math.max(80, ed.clientWidth - 28);
+    const nextW = Math.max(40, Math.min(maxW, curW + delta));
+    selImg.style.width = nextW + 'px';
+    selImg.style.height = 'auto';
+    selImg.setAttribute('width', String(nextW));
+    positionImgHandle();
+    notify('mdv:dirty');
+  }
+  document.getElementById('img-smaller').addEventListener('click', () => nudgeImageWidth(-50));
+  document.getElementById('img-larger').addEventListener('click', () => nudgeImageWidth(50));
+  document.getElementById('img-del').addEventListener('click', deleteSelectedImage);
+
+  imgHandle.addEventListener('mousedown', (e) => {
+    if (!selImg) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = selImg.getBoundingClientRect().width || selImg.naturalWidth || 200;
+    const maxW = Math.max(80, ed.clientWidth - 28);
+    const onMove = (ev) => {
+      if (!selImg) return;
+      const nextW = Math.max(40, Math.min(maxW, Math.round(startW + (ev.clientX - startX))));
+      selImg.style.width = nextW + 'px';
+      selImg.style.height = 'auto';
+      selImg.setAttribute('width', String(nextW));
+      positionImgHandle();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      notify('mdv:dirty');
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  function sanitizePastedHTML(raw) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = raw;
+    tmp.querySelectorAll('script,style,meta,link,title,xml').forEach((n) => n.remove());
+    tmp.querySelectorAll('*').forEach((el) => {
+      el.removeAttribute('class');
+      if (el.hasAttribute('color')) el.removeAttribute('color');
+      if (el.hasAttribute('face')) el.removeAttribute('face');
+      if (el.style) {
+        el.style.background = '';
+        el.style.backgroundColor = '';
+        el.style.color = '';
+        el.style.fontFamily = '';
+      }
+      if (!el.getAttribute('style')) el.removeAttribute('style');
+    });
+    return tmp.innerHTML;
+  }
 
   function makeTableHTML(rows, cols) {
     let h = '<table><thead><tr>';
@@ -542,7 +780,10 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     tblBar.classList.toggle('open', !!activeCell());
   }
   document.addEventListener('selectionchange', () => {
-    if (ed.contains(document.activeElement) || document.activeElement === ed) updateTblBar();
+    if (ed.contains(document.activeElement) || document.activeElement === ed) {
+      updateTblBar();
+      updateFormatStates();
+    }
   });
   document.getElementById('tbl-r-add').addEventListener('click', () => {
     const cell = activeCell(); if (!cell) return;
@@ -595,6 +836,11 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       notify('mdv:send');
+      return;
+    }
+    if (selImg && (e.key === 'Backspace' || e.key === 'Delete')) {
+      e.preventDefault();
+      deleteSelectedImage();
       return;
     }
     if (e.key === 'Tab') {
@@ -650,10 +896,23 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     if (cd.files && cd.files.length > 0 && !hasHTML && !cd.getData('text/plain')) {
       e.preventDefault();
       notify('mdv:paste-files');
+      return;
+    }
+    if (hasHTML) {
+      const cleaned = sanitizePastedHTML(cd.getData('text/html'));
+      if (cleaned) {
+        e.preventDefault();
+        document.execCommand('insertHTML', false, cleaned);
+        notify('mdv:dirty');
+      }
     }
   });
 
-  ed.addEventListener('input', () => notify('mdv:dirty'));
+  ed.addEventListener('input', () => {
+    if (selImg && !ed.contains(selImg)) clearImageSelection();
+    updateFormatStates();
+    notify('mdv:dirty');
+  });
 
   window.__mdvSetSig = function(sigHTML) {
     const cur = ed.querySelector('[data-mdv-sig="1"]');
@@ -673,6 +932,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       else if (q) q.before(next);
       else ed.appendChild(next);
     }
+    protectSignatures();
   };
 
   window.__mdvSetTheme = function(pal) {
@@ -700,6 +960,13 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 
   window.__mdvRead = function() {
     const clone = ed.cloneNode(true);
+    clone.querySelectorAll('img.mdv-img-sel').forEach((img) => {
+      img.classList.remove('mdv-img-sel');
+      if (!img.getAttribute('class')) img.removeAttribute('class');
+    });
+    clone.querySelectorAll('[contenteditable]').forEach((el) => {
+      el.removeAttribute('contenteditable');
+    });
     clone.querySelectorAll('table').forEach((t) => {
       t.setAttribute('style', 'border-collapse:collapse;border:1px solid #d0d7de;margin:8px 0;font-size:13.5px;');
     });
@@ -724,6 +991,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 </body>
 </html>`,
 		pal.Bg, pal.Surface, pal.Text, pal.Muted, pal.Border, pal.Accent, editorBg, editorFg,
+		lbl("Rückgängig", "Undo"),
+		lbl("Wiederholen", "Redo"),
 		lbl("Absatzformat", "Block format"),
 		lbl("Absatz", "Paragraph"),
 		lbl("Überschrift", "Heading"),
@@ -758,6 +1027,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 		lbl("Bild", "Image"),
 		lbl("Tabelle einfügen", "Insert table"),
 		lbl("Tabelle", "Table"),
+		lbl("Trennlinie einfügen", "Insert horizontal line"),
 		lbl("Übernehmen", "Apply"),
 		lbl("Link entfernen", "Unlink"),
 		lbl("Tabelle", "Table"),
@@ -766,6 +1036,10 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 		lbl("Spalte", "Column"),
 		lbl("Spalte", "Column"),
 		lbl("Tabelle löschen", "Delete table"),
+		lbl("Bild", "Image"),
+		lbl("Bild verkleinern (-50 px)", "Smaller image (-50 px)"),
+		lbl("Bild vergrößern (+50 px)", "Larger image (+50 px)"),
+		lbl("Bild löschen", "Delete image"),
 		string(initJSON),
 		lbl("Spalte", "Column"),
 		lbl("Spalte", "Column"),

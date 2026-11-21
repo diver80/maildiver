@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "maildiver",
   "name": "MailDiver",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "author": "diver80",
   "license": "MIT",
   "description": "Standalone native IMAP/SMTP mail, calendar, contacts and AI assistant desktop app.",
