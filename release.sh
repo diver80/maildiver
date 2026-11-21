@@ -36,7 +36,7 @@ git push origin main "$TAG"
 
 # Upload files only: dist/ also holds the unpacked MailDiver.app directory used by install.sh.
 shopt -s nullglob
-ASSETS=(dist/maildiver-* dist/MailDiver-*.zip dist/*.dmg dist/android/*.apk dist/android/*.aab dist/android/*/*.apk dist/android/*/*.aab dist/packages/*/* dist/SHA256SUMS.txt)
+ASSETS=(dist/maildiver-* dist/MailDiver-*.zip dist/android/*.apk dist/android/*.aab dist/android/*/*.apk dist/android/*/*.aab dist/packages/*/* dist/SHA256SUMS.txt)
 shopt -u nullglob
 gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO" --title "MailDiver $VERSION" --generate-notes
 

@@ -144,7 +144,7 @@ fi
 echo "==> Writing SHA256 checksums..."
 shopt -s nullglob
 ASSETS=()
-for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip "$DIST_DIR"/*.dmg; do
+for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip; do
   [[ -f "$f" ]] && ASSETS+=("$(basename "$f")")
 done
 for sub in packages android; do
