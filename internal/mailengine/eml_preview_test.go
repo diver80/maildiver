@@ -89,3 +89,70 @@ func TestSaveMessageEMLAndReadAttachmentPreview(t *testing.T) {
 		t.Fatalf("expected parsed nested .eml preview, got %+v", emlPrev.ParsedEML)
 	}
 }
+
+func TestParseCSVAttachmentRFC2231AndMalformedDisposition(t *testing.T) {
+	// 1) Long RFC 2231 split CSV filename (as sent by Thunderbird / standard clients)
+	raw1 := strings.Join([]string{
+		"From: Frank <frank@example.de>",
+		"To: Frank <frank@example.de>",
+		"Subject: RE: UAT2",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=\"bnd-csv\"",
+		"",
+		"--bnd-csv",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Hi Romain, see attached CSV.",
+		"--bnd-csv",
+		"Content-Type: text/csv; charset=UTF-8; name=\"2026-11-22_helvetia_fr_deactivated_with_confluence_entitlement.csv\"",
+		"Content-Disposition: attachment;",
+		" filename*0=\"2026-11-22_helvetia_fr_deactivated_with_confluence_\";",
+		" filename*1=\"entitlement.csv\"",
+		"",
+		"user,status",
+		"alice@example.fr,deactivated",
+		"--bnd-csv--",
+		"",
+	}, "\r\n")
+
+	parsed, err := ParseRawMessage([]byte(raw1))
+	if err != nil {
+		t.Fatalf("ParseRawMessage(raw1): %v", err)
+	}
+	wantName := "2026-11-22_helvetia_fr_deactivated_with_confluence_entitlement.csv"
+	if len(parsed.Attachments) != 1 || parsed.Attachments[0].Name != wantName {
+		t.Fatalf("expected CSV attachment %q, got %+v", wantName, parsed.Attachments)
+	}
+	name, ct, data, err := ExtractAttachment([]byte(raw1), parsed.Attachments[0].PartName, "")
+	if err != nil || name != wantName || ct != "text/csv" || !strings.Contains(string(data), "alice@example.fr") {
+		t.Fatalf("ExtractAttachment(raw1): name=%q ct=%q data=%q err=%v", name, ct, string(data), err)
+	}
+
+	// 2) Quirky unquoted filename with spaces where strict mime.ParseMediaType fails
+	raw2 := strings.Join([]string{
+		"From: Sender <sender@example.de>",
+		"To: Receiver <recv@example.de>",
+		"Subject: Quirky CSV",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/mixed; boundary=\"bnd-q\"",
+		"",
+		"--bnd-q",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Body text",
+		"--bnd-q",
+		"Content-Type: text/csv; name=report final 2026.csv",
+		"Content-Disposition: attachment; filename=report final 2026.csv",
+		"",
+		"a,b\r\n1,2",
+		"--bnd-q--",
+		"",
+	}, "\r\n")
+	parsed2, err := ParseRawMessage([]byte(raw2))
+	if err != nil {
+		t.Fatalf("ParseRawMessage(raw2): %v", err)
+	}
+	if len(parsed2.Attachments) != 1 || parsed2.Attachments[0].Name != "report final 2026.csv" {
+		t.Fatalf("expected fallback-parsed attachment, got %+v", parsed2.Attachments)
+	}
+}

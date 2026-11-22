@@ -355,6 +355,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     background: var(--ed-bg); color: var(--ed-fg);
     font-size: 14px; line-height: 1.55; outline: none;
   }
+  #editor p { margin: 0 0 0.75em 0; }
+  #editor p:last-child, #editor [data-mdv-user="1"] > p:last-child { margin-bottom: 0; }
+  #editor div:not([data-mdv-user]):not([data-mdv-sig]):not([data-mdv-fwd]) { margin: 0; }
   #editor:focus { box-shadow: inset 0 0 0 1px var(--accent); }
   #editor table { border-collapse: collapse; margin: 8px 0; min-width: 240px; }
   #editor th, #editor td {
@@ -478,6 +481,46 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   let seq = 0;
 
   ed.innerHTML = %s;
+  try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
+
+  function ensureParagraphInUserBox() {
+    const host = ed.querySelector('[data-mdv-user="1"]') || ed;
+    Array.from(host.childNodes).forEach((node) => {
+      if (node.nodeType === 1 && node.tagName === 'DIV' && !node.hasAttribute('data-mdv-user') && !node.hasAttribute('data-mdv-sig') && !node.hasAttribute('data-mdv-fwd')) {
+        const p = document.createElement('p');
+        while (node.firstChild) p.appendChild(node.firstChild);
+        if (!p.innerHTML) p.innerHTML = '<br>';
+        node.replaceWith(p);
+      }
+    });
+  }
+
+  function insertSoftLineBreak() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    if (document.execCommand && document.execCommand('insertLineBreak', false, null)) {
+      notify('mdv:dirty');
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const br = document.createElement('br');
+    range.insertNode(br);
+    const next = br.nextSibling;
+    const block = br.parentElement;
+    // In WebKit/Blink, a single trailing <br> at the end of a <p> doesn't create a visible new line
+    // until a sentinel <br> follows it.
+    if (!next && block && /^(P|DIV|LI|BLOCKQUOTE|TD|TH)$/i.test(block.tagName)) {
+      const sentinel = document.createElement('br');
+      br.after(sentinel);
+    }
+    const nr = document.createRange();
+    nr.setStartAfter(br);
+    nr.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(nr);
+    notify('mdv:dirty');
+  }
 
   function protectSignatures() {
     ed.querySelectorAll('[data-mdv-sig="1"]').forEach((sig) => {
@@ -490,6 +533,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     });
   }
   protectSignatures();
+  ensureParagraphInUserBox();
 
   function notify(prefix) {
     seq++;
@@ -872,6 +916,38 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       notify('mdv:send');
       return;
     }
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.shiftKey) {
+        e.preventDefault();
+        insertSoftLineBreak();
+        return;
+      }
+      // Plain Return: ensure paragraph separator is <p> (distinct from Shift+Return <br>).
+      try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
+      const sel = window.getSelection();
+      const anchorEl = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
+      const inSpecialBlock = anchorEl && anchorEl.closest('li,pre,td,th');
+      if (!inSpecialBlock) {
+        queueMicrotask(() => {
+          const s = window.getSelection();
+          if (!s || s.rangeCount === 0) return;
+          const n = s.anchorNode;
+          const el = n ? (n.nodeType === 1 ? n : n.parentElement) : null;
+          const div = el && el.closest('div');
+          if (div && div !== ed && !div.hasAttribute('data-mdv-user') && !div.hasAttribute('data-mdv-sig') && !div.hasAttribute('data-mdv-fwd') && (div.parentElement === ed || (div.parentElement && div.parentElement.hasAttribute('data-mdv-user')))) {
+            const p = document.createElement('p');
+            while (div.firstChild) p.appendChild(div.firstChild);
+            if (!p.innerHTML) p.innerHTML = '<br>';
+            div.replaceWith(p);
+            const nr = document.createRange();
+            nr.setStart(p, 0);
+            nr.collapse(true);
+            s.removeAllRanges();
+            s.addRange(nr);
+          }
+        });
+      }
+    }
     if (selImg) {
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault();
@@ -1032,6 +1108,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       else ed.appendChild(next);
     }
     protectSignatures();
+  ensureParagraphInUserBox();
   };
 
   window.__mdvSetTheme = function(pal) {
@@ -1110,6 +1187,14 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     clone.querySelectorAll('blockquote').forEach((bq) => {
       if (!bq.getAttribute('style')) {
         bq.setAttribute('style', 'margin:10px 0;padding:0 0 0 12px;border-left:2px solid #d0d7de;color:#57606a;');
+      }
+    });
+    // Preserve clear paragraph spacing (Return = <p> with gap, Shift+Return = tight <br>) in
+    // outgoing HTML across Thunderbird, Outlook, Gmail, Apple Mail, and MailDiver.
+    const userParas = Array.from(clone.querySelectorAll('p')).filter((p) => !p.closest('[data-mdv-sig="1"]') && !p.closest('[data-mdv-fwd="1"]'));
+    userParas.forEach((p, idx) => {
+      if (!p.getAttribute('style')) {
+        p.setAttribute('style', idx === userParas.length - 1 ? 'margin:0;' : 'margin:0 0 10px 0;');
       }
     });
     const fullHTML = '<!doctype html><html><head><meta charset="utf-8"></head>' +

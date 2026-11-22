@@ -685,22 +685,33 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 		}
 
 		renderMailPane := func() {
-			ui.Scroll(c.Key("insp-scroll")).TrackScroll(&a.widgets.inspectorScroll).Fill().Children(func() {
-				ui.Column(c).FillWidth().Padding(18).Gap(14).Children(func() {
-					// Header block
-					ui.Column(c).FillWidth().Gap(6).Children(func() {
-						subj := msg.Subject
-						if subj == "" {
-							subj = a.tr("(Kein Betreff)", "(No Subject)")
-						}
-						ui.Text(c, subj).FontSize(18).Bold().Selectable()
-						ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-							ui.Text(c, a.tr("Von: ", "From: ")+msg.From).FontSize(12).Bold().Selectable()
-							ui.Text(c, "· "+formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12).TextColor(t.TextMuted)
-							if msg.Folder != "" {
-								pillBadge(c, msg.Folder, t.Surface, t.TextMuted)
+			ui.Column(c).Fill().Children(func() {
+				ui.Scroll(c.Key("insp-scroll")).TrackScroll(&a.widgets.inspectorScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+					ui.Column(c).FillWidth().Padding(18).Gap(14).Children(func() {
+						// Header block
+						ui.Column(c).FillWidth().Gap(6).Children(func() {
+							subj := msg.Subject
+							if subj == "" {
+								subj = a.tr("(Kein Betreff)", "(No Subject)")
 							}
-						})
+							ui.Text(c, subj).FontSize(18).Bold().Selectable()
+							ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+								ui.Text(c, a.tr("Von: ", "From: ")+msg.From).FontSize(12).Bold().Selectable()
+								ui.Text(c, "· "+formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12).TextColor(t.TextMuted)
+								if msg.Folder != "" {
+									pillBadge(c, msg.Folder, t.Surface, t.TextMuted)
+								}
+								if len(msg.Attachments) > 0 {
+									attLabel := a.trf("%d Anhang", "%d attachment", len(msg.Attachments))
+									if len(msg.Attachments) > 1 {
+										attLabel = a.trf("%d Anhänge", "%d attachments", len(msg.Attachments))
+									}
+									ui.Row(c).Padding(2, 8).Radius(999).Background(withAlpha(t.Accent, 0.14)).Gap(4).AlignItems(ui.Center).Shrink(0).Children(func() {
+										ui.Icon(c, iconPaperclip).Size(11, 11).TextColor(t.Accent)
+										ui.Text(c, attLabel).FontSize(11).Bold().TextColor(t.Accent).SingleLine()
+									})
+								}
+							})
 						if len(msg.To) > 0 {
 							ui.Text(c, a.tr("An: ", "To: ")+strings.Join(msg.To, ", ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
 						}
@@ -845,10 +856,13 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 					// Body
 					a.renderMailBody(c, msg)
 
-					a.renderAttachments(c, msg)
-
 					a.renderConversationGroup(c, "older", a.trf("Frühere Mails in dieser Unterhaltung (%d)", "Earlier emails in this conversation (%d)", len(olderMails)), olderMails)
 				})
+			})
+			// Pinned attachment bar (always visible at the bottom of the reading pane, like Thunderbird)
+			if len(msg.Attachments) > 0 {
+				a.renderAttachmentsBar(c, msg)
+			}
 			})
 		}
 
@@ -978,38 +992,80 @@ func (a *App) renderInspectorAIResult(c *ui.Context, msg *backend.MessageDetail)
 
 }
 
-// renderAttachments lists the open mail's attachments (desktop and phone).
-func (a *App) renderAttachments(c *ui.Context, msg *backend.MessageDetail) {
+// renderAttachmentsBar renders a sticky attachment footer pinned to the bottom of the desktop
+// reading pane so attachments stay visible without scrolling past long bodies or signatures.
+func (a *App) renderAttachmentsBar(c *ui.Context, msg *backend.MessageDetail) {
+	if len(msg.Attachments) == 0 {
+		return
+	}
 	t := c.Theme()
-	// Attachments (clickable download & open)
-	if len(msg.Attachments) > 0 {
-		ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
-			ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
-			ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
-				for i, att := range msg.Attachments {
-					attCopy := att
-					lbl := fmt.Sprintf("%s (%d KB)", attCopy.Name, max(1, attCopy.Size/1024))
-					if a.isDirectMode() {
-						if isPreviewableAttachmentName(attCopy.Name) {
-							ui.Row(c.Key(fmt.Sprintf("att-pair-%d", i))).Gap(2).AlignItems(ui.Center).Children(func() {
-								if iconLabelBtn(c.Key(fmt.Sprintf("att-pv-%d", i)), iconBookOpen, lbl, false, a.tr("Anhang direkt in der App ansehen", "Preview attachment in app")).Clicked() {
-									a.OpenAttachmentPreview(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
-								}
-								if iconBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open"), ui.Color{}, false).Clicked() {
-									a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
-								}
-							})
-						} else if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
+	var totalBytes int64
+	for _, att := range msg.Attachments {
+		totalBytes += att.Size
+	}
+	hdr := a.trf("%d Anhang", "%d attachment", len(msg.Attachments))
+	if len(msg.Attachments) > 1 {
+		hdr = a.trf("%d Anhänge", "%d attachments", len(msg.Attachments))
+	}
+	hdr = fmt.Sprintf("%s · %s", hdr, formatByteSize(totalBytes))
+	ui.Column(c.Key("att-bar")).FillWidth().Padding(8, 14).Gap(6).Background(t.Surface).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Shrink(0).Children(func() {
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconPaperclip).Size(13, 13).TextColor(t.Accent).Shrink(0)
+			ui.Text(c, hdr).FontSize(11.5).Bold().TextColor(t.Text).SingleLine()
+		})
+		a.renderAttachmentChips(c, msg)
+	})
+}
+
+func formatByteSize(n int64) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", max(0, n))
+	}
+}
+
+func (a *App) renderAttachmentChips(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
+		for i, att := range msg.Attachments {
+			attCopy := att
+			lbl := fmt.Sprintf("%s (%s)", attCopy.Name, formatByteSize(attCopy.Size))
+			if a.isDirectMode() {
+				if isPreviewableAttachmentName(attCopy.Name) {
+					ui.Row(c.Key(fmt.Sprintf("att-pair-%d", i))).Gap(2).AlignItems(ui.Center).Children(func() {
+						if iconLabelBtn(c.Key(fmt.Sprintf("att-pv-%d", i)), iconBookOpen, lbl, false, a.tr("Anhang direkt in der App ansehen", "Preview attachment in app")).Clicked() {
+							a.OpenAttachmentPreview(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
+						}
+						if iconBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open"), ui.Color{}, false).Clicked() {
 							a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
 						}
-					} else {
-						pillBadge(c, lbl, t.Background, t.Text)
-					}
+					})
+				} else if iconLabelBtn(c.Key(fmt.Sprintf("att-dl-%d", i)), iconDownload, lbl, false, a.tr("In ~/Downloads speichern & öffnen", "Save to ~/Downloads & open")).Clicked() {
+					a.DownloadAndOpenAttachment(context.Background(), msg.ID, attCopy.PartName, attCopy.Name)
 				}
+			} else {
+				pillBadge(c, lbl, t.Background, t.Text)
+			}
+		}
+	})
+}
+
+// renderAttachments lists the open mail's attachments inline (phone view & compact layouts).
+func (a *App) renderAttachments(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	if len(msg.Attachments) > 0 {
+		ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, iconPaperclip).Size(13, 13).TextColor(t.Accent).Shrink(0)
+				ui.Text(c, a.trf("Anhänge (%d)", "Attachments (%d)", len(msg.Attachments))).FontSize(12).Bold()
 			})
+			a.renderAttachmentChips(c, msg)
 		})
 	}
-
 }
 
 // RenderComposeWindow renders the detached native Compose window on desktop.

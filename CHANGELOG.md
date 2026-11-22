@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.10 (2026-11-22)
+
+### Fixierte Anhang-Leiste, robusteres MIME-Parsing & Return vs. Shift+Return
+- **Fixierte Anhang-Leiste am unteren Rand (wie Thunderbird):** Auf dem Desktop werden Anhänge jetzt außerhalb des Scroll-Bereichs fest am unteren Rand der Leseansicht angezeigt (inkl. Büroklammer-Badge im Mail-Header, Gesamtgröße sowie direktem Vorschau- und Download-Button) — damit verschwinden Anhänge nie mehr unter langen Mails oder Signaturen. Auf dem Handy erscheinen Anhänge direkt über dem Mailtext.
+- **Robusteres MIME-Anhang-Parsing & RFC-2231-Ausgabe (`internal/mailengine/mime.go`):** Fallback-Parser für ungewöhnlich formatierte `Content-Disposition`/`Content-Type`-Header (inkl. unquotierte Dateinamen mit Leerzeichen & RFC-2231-`filename*0`/`filename*1`-Fortsetzungen) sowie saubere `mime.FormatMediaType`-Ausgabe bei ausgehenden Anhängen.
+- **Klarer Unterschied zwischen `Return` und `Shift+Return` im Editor:** `Return` erzeugt jetzt im WYSIWYG-Editor zuverlässig einen neuen Absatz (`<p>` mit sichtbarem Absatzabstand `0.75em` und sauberem `margin:0 0 10px 0` im ausgehenden HTML), während `Shift+Return` gezielt einen weichen Zeilenumbruch (`<br>` ohne Absatzabstand) einfügt.
+
 ## 0.7.9 (2026-11-22)
 
 ### Android-Hintergrund-, Standby- & Offline-Sync-Fix (`no such host`)

@@ -105,15 +105,113 @@ func ParseRawMessage(raw []byte) (ParsedMessage, error) {
 	return out, nil
 }
 
+func parseMIMEContentType(h message.Header) (string, map[string]string) {
+	ct, params, err := h.ContentType()
+	if err == nil && strings.TrimSpace(ct) != "" {
+		return strings.ToLower(strings.TrimSpace(ct)), params
+	}
+	raw := strings.TrimSpace(h.Get("Content-Type"))
+	if raw == "" {
+		return "text/plain", nil
+	}
+	mainPart, rest, _ := strings.Cut(raw, ";")
+	mainPart = strings.ToLower(strings.TrimSpace(mainPart))
+	if mainPart == "" {
+		mainPart = "text/plain"
+	}
+	return mainPart, parseLooseMIMEParams(rest)
+}
+
+func parseMIMEDisposition(h message.Header, ctParams map[string]string) (disp string, filename string) {
+	d, dispParams, err := h.ContentDisposition()
+	if err == nil {
+		disp = strings.ToLower(strings.TrimSpace(d))
+		filename = decodeHeader(dispParams["filename"])
+	} else if raw := strings.TrimSpace(h.Get("Content-Disposition")); raw != "" {
+		mainPart, rest, _ := strings.Cut(raw, ";")
+		disp = strings.ToLower(strings.TrimSpace(mainPart))
+		loose := parseLooseMIMEParams(rest)
+		filename = decodeHeader(loose["filename"])
+	}
+	if filename == "" && ctParams != nil {
+		filename = decodeHeader(ctParams["name"])
+	}
+	if filename == "" {
+		if rawCT := strings.TrimSpace(h.Get("Content-Type")); rawCT != "" {
+			if _, rest, ok := strings.Cut(rawCT, ";"); ok {
+				loose := parseLooseMIMEParams(rest)
+				filename = decodeHeader(loose["name"])
+			}
+		}
+	}
+	return disp, strings.TrimSpace(filename)
+}
+
+// parseLooseMIMEParams extracts key=value parameters (including RFC 2231 continuations like
+// filename*0=...; filename*1=...) from headers whose strict mime.ParseMediaType failed.
+func parseLooseMIMEParams(rest string) map[string]string {
+	out := map[string]string{}
+	parts := strings.Split(rest, ";")
+	cont := map[string][]string{}
+	for _, seg := range parts {
+		seg = strings.TrimSpace(seg)
+		eq := strings.IndexByte(seg, '=')
+		if eq <= 0 {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(seg[:eq]))
+		v := strings.TrimSpace(seg[eq+1:])
+		v = strings.Trim(v, `"'`)
+		if idx := strings.IndexByte(k, '*'); idx > 0 {
+			base := k[:idx]
+			suffix := k[idx+1:]
+			// Strip RFC 2231 charset'' prefix if present (e.g. utf-8''foo%20bar.csv)
+			if strings.HasSuffix(suffix, "*") || suffix == "" {
+				if _, after, ok := strings.Cut(v, "''"); ok {
+					v = decodeRFC2231Percent(after)
+				}
+			}
+			if suffix == "" {
+				if out[base] == "" {
+					out[base] = v
+				}
+			} else {
+				cont[base] = append(cont[base], v)
+			}
+			continue
+		}
+		if out[k] == "" && v != "" {
+			out[k] = v
+		}
+	}
+	for base, chunks := range cont {
+		if out[base] == "" {
+			out[base] = strings.Join(chunks, "")
+		}
+	}
+	return out
+}
+
+func decodeRFC2231Percent(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if v, err := hex.DecodeString(s[i+1 : i+3]); err == nil && len(v) == 1 {
+				b.WriteByte(v[0])
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func walkMIMEEntity(e *message.Entity, out *ParsedMessage, inlineFallback *[]backend.Attachment, depth int, partPrefix string) {
 	if e == nil || depth > 12 {
 		return
 	}
-	ct, params, _ := e.Header.ContentType()
-	ct = strings.ToLower(strings.TrimSpace(ct))
-	if ct == "" {
-		ct = "text/plain"
-	}
+	ct, params := parseMIMEContentType(e.Header)
 
 	switch ct {
 	case "multipart/signed":
@@ -153,12 +251,7 @@ func walkMIMEEntity(e *message.Entity, out *ParsedMessage, inlineFallback *[]bac
 		return
 	}
 
-	disp, dispParams, _ := e.Header.ContentDisposition()
-	disp = strings.ToLower(strings.TrimSpace(disp))
-	filename := decodeHeader(dispParams["filename"])
-	if filename == "" {
-		filename = decodeHeader(params["name"])
-	}
+	disp, filename := parseMIMEDisposition(e.Header, params)
 
 	bodyBytes, _ := io.ReadAll(io.LimitReader(e.Body, maxParsedPartBytes))
 
@@ -727,10 +820,17 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 		}
 		ct := sanitizeMediaType(att.ContentType, name)
 		safeName := strings.ReplaceAll(strings.ReplaceAll(name, "\r", ""), "\n", "")
-		encName := mime.QEncoding.Encode("utf-8", safeName)
+		ctHeader := mime.FormatMediaType(ct, map[string]string{"name": safeName})
+		if ctHeader == "" {
+			ctHeader = fmt.Sprintf("%s; name=%q", ct, safeName)
+		}
+		cdHeader := mime.FormatMediaType("attachment", map[string]string{"filename": safeName})
+		if cdHeader == "" {
+			cdHeader = fmt.Sprintf("attachment; filename=%q", safeName)
+		}
 		fmt.Fprintf(&b, "--%s\r\n", boundary)
-		fmt.Fprintf(&b, "Content-Type: %s; name=%q\r\n", ct, encName)
-		fmt.Fprintf(&b, "Content-Disposition: attachment; filename=%q\r\n", encName)
+		fmt.Fprintf(&b, "Content-Type: %s\r\n", ctHeader)
+		fmt.Fprintf(&b, "Content-Disposition: %s\r\n", cdHeader)
 		b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
 		encoded := base64.StdEncoding.EncodeToString(att.Data)
 		for i := 0; i < len(encoded); i += 76 {
@@ -820,8 +920,7 @@ func ExtractAttachment(raw []byte, partName, filename string) (name, contentType
 		if e == nil || depth > 12 {
 			return false
 		}
-		ct, params, _ := e.Header.ContentType()
-		ct = strings.ToLower(strings.TrimSpace(ct))
+		ct, params := parseMIMEContentType(e.Header)
 		if strings.HasPrefix(ct, "multipart/") {
 			mr := e.MultipartReader()
 			if mr == nil {
@@ -844,12 +943,7 @@ func ExtractAttachment(raw []byte, partName, filename string) (name, contentType
 			}
 			return false
 		}
-		disp, dispParams, _ := e.Header.ContentDisposition()
-		disp = strings.ToLower(strings.TrimSpace(disp))
-		fn := decodeHeader(dispParams["filename"])
-		if fn == "" {
-			fn = decodeHeader(params["name"])
-		}
+		disp, fn := parseMIMEDisposition(e.Header, params)
 		isAtt := disp == "attachment" || (fn != "" && ct != "text/plain" && ct != "text/html")
 		if !isAtt {
 			return false
