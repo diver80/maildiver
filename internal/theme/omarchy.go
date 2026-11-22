@@ -173,10 +173,17 @@ func loadOmarchyLive() (Palette, string, bool) {
 		return Palette{}, "", false
 	}
 	name := "omarchy-live"
-	if target, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
-		base := filepath.Base(target)
-		if base != "" && base != "." && base != "theme" {
-			name = base
+	if rawName, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(path)), "theme.name")); err == nil {
+		if trimmed := strings.TrimSpace(string(rawName)); trimmed != "" {
+			name = trimmed
+		}
+	}
+	if name == "omarchy-live" {
+		if target, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+			base := filepath.Base(target)
+			if base != "" && base != "." && base != "theme" {
+				name = base
+			}
 		}
 	}
 	p, err := ParseColorsTOML(string(data), name)

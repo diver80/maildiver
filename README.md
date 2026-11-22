@@ -71,6 +71,15 @@ brew install --cask diver80/tap/maildiver
 brew install diver80/tap/maildiver
 ```
 
+### Arch Linux / Omarchy (AUR)
+
+```bash
+yay -S maildiver-bin
+# or on Omarchy: Super + Space -> Install -> AUR -> maildiver-bin
+```
+
+*(The AUR `PKGBUILD` and `.SRCINFO` live in [`packaging/aur/maildiver-bin/`](packaging/aur/maildiver-bin) and follow Omarchy themes live via `~/.local/state/omarchy/current/theme/colors.toml`.)*
+
 ### GitHub Releases or Build from Source
 
 Download the latest prebuilt release from [GitHub Releases](https://github.com/diver80/maildiver/releases/latest), or build from source (Go 1.24+ / 1.27+):

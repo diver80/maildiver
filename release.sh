@@ -46,3 +46,6 @@ echo
 echo "Homebrew formula values:"
 echo "  url \"$URL\""
 echo "  sha256 \"$SHA\""
+echo
+echo "AUR update:"
+echo "  ./scripts/update-aur.sh $VERSION"
