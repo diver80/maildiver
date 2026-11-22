@@ -623,3 +623,72 @@ func TestReviewSecurityAndSaveAccountPreservation(t *testing.T) {
 		}
 	}
 }
+
+func TestTrashMarksUnreadMessagesRead(t *testing.T) {
+	ctx := context.Background()
+	eng, acc, _, _, _, cleanup := setupTestEngineWithIMAPAndSMTP(t, nil)
+	defer cleanup()
+
+	c, err := dialIMAP(ctx, acc, "pw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Format(time.RFC1123Z)
+	for _, m := range []struct{ subj, mid string }{
+		{"Unread Single Trash", "trash-single@test"},
+		{"Unread Batch Trash 1", "trash-batch-1@test"},
+		{"Unread Batch Trash 2", "trash-batch-2@test"},
+	} {
+		raw := fmt.Sprintf("From: s@example.org\r\nTo: me@example.org\r\nSubject: %s\r\nMessage-ID: <%s>\r\nDate: %s\r\n\r\nBody\r\n", m.subj, m.mid, now)
+		cmd := c.Append("INBOX", int64(len(raw)), nil)
+		_, _ = cmd.Write([]byte(raw))
+		_ = cmd.Close()
+		_, _ = cmd.Wait()
+	}
+	_ = c.Close()
+
+	if _, err := eng.SyncAccount(ctx, acc.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _, err := eng.store.ListMessages(ctx, MessageQuery{AccountID: acc.ID, FolderID: FolderID(acc.ID, "INBOX"), Limit: 20})
+	if err != nil || len(msgs) != 3 {
+		t.Fatalf("expected 3 INBOX messages, got %d (err=%v)", len(msgs), err)
+	}
+
+	// 1. Single trash via messages.actions
+	if _, err := eng.Call(ctx, "messages.actions", map[string]any{
+		"id":    msgs[0].ID,
+		"trash": true,
+	}); err != nil {
+		t.Fatalf("single trash failed: %v", err)
+	}
+
+	// 2. Batch trash via messages.batchActions
+	if _, err := eng.Call(ctx, "messages.batchActions", backend.BatchActionsRequest{
+		Items: []backend.BatchActionItem{
+			{ID: msgs[1].ID},
+			{ID: msgs[2].ID},
+		},
+		Action: backend.MessageActionsRequest{Trash: true},
+	}); err != nil {
+		t.Fatalf("batch trash failed: %v", err)
+	}
+
+	// Sync again and verify Trash has all 3 messages with 0 unread.
+	if _, err := eng.SyncAccount(ctx, acc.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	trashFolder, ok := eng.store.FindFolderByType(ctx, acc.ID, "trash")
+	if !ok {
+		t.Fatal("expected Trash folder")
+	}
+	trashMsgs, _, err := eng.store.ListMessages(ctx, MessageQuery{AccountID: acc.ID, FolderID: trashFolder.ID, Limit: 20})
+	if err != nil || len(trashMsgs) != 3 {
+		t.Fatalf("expected 3 messages in Trash, got %d (err=%v)", len(trashMsgs), err)
+	}
+	for _, tm := range trashMsgs {
+		if !tm.Read {
+			t.Fatalf("trashed message %q must be marked read in Trash", tm.Subject)
+		}
+	}
+}

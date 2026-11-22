@@ -673,6 +673,11 @@ func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMe
 				permanentDelete = true
 			} else {
 				moveTarget = f.Path
+				// Mark trashed emails as read so Trash doesn't accumulate unread badges.
+				if p.Read == nil {
+					readTrue := true
+					p.Read = &readTrue
+				}
 			}
 		} else {
 			// Never delete for good just because no trash folder is known.
@@ -753,6 +758,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 		folderPath string
 		moveTarget string
 		permDel    bool
+		markRead   bool
 	}
 	type accGroup struct {
 		acc    config.DirectAccount
@@ -786,6 +792,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 
 		var moveTarget string
 		permanentDelete := false
+		opRead := p.Read
 		switch {
 		case p.Trash:
 			if f, ok := e.store.FindFolderByType(ctx, m.AccountID, "trash"); ok {
@@ -793,6 +800,11 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 					permanentDelete = true
 				} else {
 					moveTarget = f.Path
+					// Mark trashed emails as read so Trash doesn't accumulate unread badges.
+					if opRead == nil {
+						readTrue := true
+						opRead = &readTrue
+					}
 				}
 			} else {
 				recordErr(fmt.Errorf("not_found: kein Papierkorb-Ordner gefunden – bitte in den Kontoeinstellungen prüfen"))
@@ -849,6 +861,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 			folderPath: m.FolderPath,
 			moveTarget: moveTarget,
 			permDel:    permanentDelete,
+			markRead:   opRead != nil && *opRead,
 		}
 		idx, exists := g.keys[k]
 		if !exists {
@@ -856,7 +869,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 			g.keys[k] = idx
 			g.ops = append(g.ops, folderBatchOp{
 				FolderPath:      m.FolderPath,
-				Read:            p.Read,
+				Read:            opRead,
 				Flagged:         p.Flagged,
 				MoveTargetPath:  moveTarget,
 				PermanentDelete: permanentDelete,
@@ -2129,6 +2142,9 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 							}
 						case "moveToFolder":
 							moveTarget = e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
+							if tf, ok := e.store.FindFolderByType(ctx, acc.ID, "trash"); ok && strings.EqualFold(moveTarget, tf.Path) {
+								readSet = true
+							}
 							matchedAny = true
 							stop = true
 						case "delete":

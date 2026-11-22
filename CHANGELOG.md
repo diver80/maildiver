@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.11 (2026-11-22)
+
+### Gelöschte Mails automatisch als gelesen markieren
+- **Kein Ungelesen-Zähler mehr im Papierkorb:** Beim Verschieben von Mails in den Papierkorb (Einzel-Löschen, Mehrfachauswahl/Batch, Wischen auf dem Handy sowie Filterregeln mit Ziel Papierkorb) setzt MailDiver jetzt vor dem IMAP-`MOVE`/`COPY` automatisch das `\Seen`-Flag (`Read: true`), sodass gelöschte ungelesene Mails nicht mehr als ungelesen im Papierkorb liegen bleiben.
+
 ## 0.7.10 (2026-11-22)
 
 ### Fixierte Anhang-Leiste, robusteres MIME-Parsing & Return vs. Shift+Return

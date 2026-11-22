@@ -1595,6 +1595,9 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 				case "moveToFolder":
 					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
 					if target != "" && !strings.EqualFold(target, folder.Path) {
+						if tf, ok := e.store.FindFolderByType(ctx, acc.ID, "trash"); ok && strings.EqualFold(target, tf.Path) {
+							_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
+						}
 						if err := moveMessagesIMAP(c, uidSet, target); err == nil {
 							_ = e.store.DeleteMessage(ctx, m.ID)
 							removed = true
