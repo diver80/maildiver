@@ -32,7 +32,7 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 				}
 			})
 			cliHint, hasCLIHint := ai.CLIModelHints(a.agentBackend)
-			ui.Row(c).FillWidth().Gap(6).Children(func() {
+			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 				if len(a.providerLabels) > 0 {
 					label := a.providerLabel
 					if ui.Select(c.Key("cp-prov"), &label, a.providerLabels).Grow(1).MinWidth(0).Changed() {
@@ -47,6 +47,15 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 						ph = a.tr(cliHint.PlaceholderDE, cliHint.PlaceholderEN)
 					}
 					ui.TextInput(c.Key("cp-model-in"), &a.agentModel).Placeholder(ph).Grow(1).MinWidth(0)
+				}
+				if !hasCLIHint {
+					ref := iconBtn(c.Key("cp-model-refresh"), iconRefresh, a.tr("Modelle neu laden", "Reload models"), ui.Color{}, false)
+					if a.modelsLoading {
+						ref.Disabled(true)
+					}
+					if ref.Clicked() && !a.modelsLoading {
+						a.LoadModelsAsync(context.Background())
+					}
 				}
 			})
 			if hasCLIHint {

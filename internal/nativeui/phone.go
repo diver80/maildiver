@@ -144,10 +144,26 @@ func (a *App) phoneOpenView(nav string) {
 
 // --- mailboxes -----------------------------------------------------------------------------
 
+// phonePopMailIfOpen leaves the phone mail reader route when the open email was removed
+// (e.g. unstarred in Focus, permanently deleted from Trash, or marked Not Spam).
+func (a *App) phonePopMailIfOpen() {
+	if !a.isPhone() {
+		return
+	}
+	r := a.phoneRouter()
+	if r.Path() == phoneRouteMail {
+		r.Back()
+	}
+}
+
 func (a *App) renderPhoneMailboxes(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		a.phoneBar(c, "MailDiver", false, func() {
+		barTitle := "MailDiver"
+		if v := a.versionTag(); v != "" {
+			barTitle = "MailDiver " + v
+		}
+		a.phoneBar(c, barTitle, false, func() {
 			if a.isDirectMode() && phoneIconButton(c.Key("ph-accounts"), iconUsers, a.tr("Konten", "Accounts"), ui.Color{}).Clicked() {
 				a.OpenDirectModal(0)
 			}
@@ -300,19 +316,21 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 					})
 				}
 				mobile.Section(c, a.tr("Werkzeuge", "Tools"), func() {
-					scanLbl := a.tr("Triage-Scan starten", "Run triage scan")
-					if a.scanRunning {
-						scanLbl = a.tr("Triage-Scan läuft…", "Triage scan running…")
-					}
-					bScan := ui.ButtonBase(c.Key("ph-tool-scan")).FillWidth().Padding(10, 16).Label(scanLbl)
-					bScan.Children(func() {
-						ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-							ui.Icon(c, iconSparkles).Size(18, 18).TextColor(t.Accent)
-							ui.Text(c, scanLbl).FontSize(14.5)
+					if a.cfg.Features.Triage {
+						scanLbl := a.tr("Triage-Scan starten", "Run triage scan")
+						if a.scanRunning {
+							scanLbl = a.tr("Triage-Scan läuft…", "Triage scan running…")
+						}
+						bScan := ui.ButtonBase(c.Key("ph-tool-scan")).FillWidth().Padding(10, 16).Label(scanLbl)
+						bScan.Children(func() {
+							ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+								ui.Icon(c, iconSparkles).Size(18, 18).TextColor(t.Accent)
+								ui.Text(c, scanLbl).FontSize(14.5)
+							})
 						})
-					})
-					if bScan.Clicked() && a.engineReady && !a.scanRunning && a.cfg.Features.Triage {
-						a.StartTriageScan(context.Background())
+						if bScan.Clicked() && a.engineReady && !a.scanRunning {
+							a.StartTriageScan(context.Background())
+						}
 					}
 					bArch := ui.ButtonBase(c.Key("ph-tool-arch")).FillWidth().Padding(10, 16).Label(a.tr("Archiv & Aufräumen", "Archive & cleanup"))
 					bArch.Children(func() {
@@ -368,7 +386,7 @@ func (a *App) phoneFolderRow(c *ui.Context, row folderRow) {
 		el.Children(func() {
 			ui.Icon(c, folderIcon(f)).Size(20, 20).TextColor(t.TextMuted).Shrink(0)
 			ui.Text(c, label).FontSize(15.5).Grow(1).MinWidth(0).SingleLine()
-			if f.UnreadCount > 0 {
+			if f.UnreadCount > 0 && !isTrashOrJunkFolder(f) {
 				ui.Badge(c, fmt.Sprintf("%d", f.UnreadCount))
 			}
 		})
@@ -392,7 +410,7 @@ func (a *App) phoneSync() {
 	a.phone.refresh.Refreshing = true
 	a.clearTransientSyncErrors()
 	if a.isDirectMode() {
-		a.syncDirectAccountNow(context.Background(), a.selectedAccount)
+		a.syncDirectAccountNow(context.Background(), "")
 	} else {
 		a.RefreshAll(context.Background())
 	}
@@ -521,11 +539,14 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			})
 		}
 		a.renderUndoSendBar(c)
-		if a.undo != nil {
+		if a.undo != nil && time.Since(a.undo.CreatedAt) <= undoExpiry {
 			ui.Row(c.Key("ph-undo")).FillWidth().Padding(6, 14).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.10)).Children(func() {
 				ui.Text(c, a.undo.Label).FontSize(13).Grow(1).MinWidth(0).SingleLine()
 				if ui.Button(c.Key("ph-undo-do"), a.tr("Rückgängig", "Undo")).Clicked() && !a.undoBusy {
 					a.PerformUndo(context.Background())
+				}
+				if ui.Button(c.Key("ph-undo-x"), "✕").Padding(2, 6).Clicked() {
+					a.undo = nil
 				}
 			})
 		}
@@ -624,6 +645,9 @@ func (a *App) renderPhoneBulkBar(c *ui.Context, checked []backend.MessageHeader)
 			a.PerformBatchAction(context.Background(), ids, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
 			a.ClearMailSelection()
 		}
+		if bulkBtn("ph-bulk-move", iconFolderInput, a.tr("Ordner", "Move"), false).Clicked() {
+			a.OpenMovePicker()
+		}
 		if bulkBtn("ph-bulk-delete", iconTrash, a.tr("Löschen", "Delete"), true).Clicked() {
 			a.trashMails(context.Background(), ids, "")
 		}
@@ -684,6 +708,9 @@ func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader
 					}
 					if m.Flagged {
 						ui.Icon(c, iconStarFilled).Size(13, 13).TextColor(t.Warning).Shrink(0)
+					}
+					if m.HasAttachments {
+						ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.TextMuted).Shrink(0)
 					}
 					ui.Text(c, formatRelTimeLang(m.Date, a.uiLang())).FontSize(12.5).TextColor(t.TextMuted).Shrink(0)
 				})
@@ -748,6 +775,10 @@ func (a *App) renderPhoneMail(c *ui.Context) {
 			}
 		})
 		if msg == nil {
+			if a.selectedID == "" {
+				a.phonePopMailIfOpen()
+				return
+			}
 			ui.Column(c).Fill().Center().Padding(28).Gap(8).Children(func() {
 				if a.inspectorError != "" {
 					ui.Text(c, a.inspectorError).FontSize(14).TextColor(t.Danger)
@@ -757,7 +788,7 @@ func (a *App) renderPhoneMail(c *ui.Context) {
 			})
 			return
 		}
-		ui.Scroll(c.Key("ph-mail-scroll")).Grow(1).MinHeight(0).FillWidth().Children(func() {
+		ui.Scroll(c.Key("ph-mail-scroll-" + msg.ID)).Grow(1).MinHeight(0).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().Padding(14, 16, 24, 16).Gap(12).Children(func() {
 				subj := msg.Subject
 				if subj == "" {

@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
+	"github.com/diver80/maildiver/internal/ai"
 	"github.com/diver80/maildiver/internal/backend"
 	"github.com/diver80/maildiver/internal/mailengine"
 )
@@ -117,10 +118,7 @@ func (a *App) renderComposeContactPicker(c *ui.Context) {
 			ui.Column(c).FillWidth().Gap(4).Children(func() {
 				for _, rec := range matches {
 					rc := rec
-					formatted := rc.Email
-					if name := strings.TrimSpace(rc.DisplayName); name != "" {
-						formatted = fmt.Sprintf("%s <%s>", name, rc.Email)
-					}
+					formatted := formatEmailAddress(rc.DisplayName, rc.Email)
 					appendAddr := func(cur string) string {
 						cur = strings.TrimSpace(cur)
 						if cur == "" {
@@ -136,7 +134,7 @@ func (a *App) renderComposeContactPicker(c *ui.Context) {
 							label += " <" + rc.Email + ">"
 						}
 						ui.Text(c, label).FontSize(12).Grow(1).SingleLine()
-						if ui.Button(c.Key("cmp-ct-to-"+rc.ID), "+ An").Padding(2, 7).Clicked() {
+						if ui.Button(c.Key("cmp-ct-to-"+rc.ID), a.tr("+ An", "+ To")).Padding(2, 7).Clicked() {
 							a.composeTo = appendAddr(a.composeTo)
 						}
 						if ui.Button(c.Key("cmp-ct-cc-"+rc.ID), "+ CC").Padding(2, 7).Clicked() {
@@ -464,27 +462,41 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						if iconLabelBtn(c.Key("bulk-rule"), iconFilter, a.tr("Quick-Regel", "Quick Rule"), true, a.tr("Aus markierten Mails eine Filterregel erstellen (q · mit Preview)", "Create filter rule from selected emails (q · with preview)")).Clicked() {
 							a.OpenQuickRuleWizard()
 						}
-						if iconBtn(c.Key("bulk-read"), iconMailOpen, a.tr("Markierte als gelesen markieren (u)", "Mark selected as read (u)"), t.Accent, false).Clicked() {
-							readTrue := true
-							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
-						}
-						anyUnflagged := false
-						for _, cm := range a.CheckedMessages() {
-							if !cm.Flagged {
-								anyUnflagged = true
-								break
-							}
-						}
-						starIcon, starClr, starTip := iconStarFilled, t.Warning, a.tr("Markierung entfernen (s)", "Remove star (s)")
-						if anyUnflagged {
-							starIcon, starClr, starTip = iconStar, ui.Color{}, a.tr("Markierte mit Stern markieren (s)", "Star selected (s)")
-						}
-						if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
-							flagVal := anyUnflagged
-							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
-							a.ClearMailSelection()
-						}
 						if !a.readOnly {
+							checkedMsgs := a.CheckedMessages()
+							anyUnread := false
+							anyUnflagged := false
+							for _, cm := range checkedMsgs {
+								if cm.Unread {
+									anyUnread = true
+								}
+								if !cm.Flagged {
+									anyUnflagged = true
+								}
+							}
+							readIcon, readTip, readTarget := iconMailOpen, a.tr("Markierte als gelesen markieren (u)", "Mark selected as read (u)"), true
+							readClr := t.Accent
+							if !anyUnread {
+								readIcon, readTip, readTarget = iconMailUnread, a.tr("Markierte als ungelesen markieren (u)", "Mark selected as unread (u)"), false
+								readClr = ui.Color{}
+							}
+							if iconBtn(c.Key("bulk-read"), readIcon, readTip, readClr, false).Clicked() {
+								target := readTarget
+								msg := a.tr("Als gelesen markiert", "Marked as read")
+								if !target {
+									msg = a.tr("Als ungelesen markiert", "Marked as unread")
+								}
+								a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &target}, msg)
+							}
+							starIcon, starClr, starTip := iconStarFilled, t.Warning, a.tr("Markierung entfernen (s)", "Remove star (s)")
+							if anyUnflagged {
+								starIcon, starClr, starTip = iconStar, ui.Color{}, a.tr("Markierte mit Stern markieren (s)", "Star selected (s)")
+							}
+							if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
+								flagVal := anyUnflagged
+								a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
+								a.ClearMailSelection()
+							}
 							if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {
 								a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
 							}
@@ -589,6 +601,9 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 								}
 							} else if m.Flagged {
 								ui.Icon(c, iconStarFilled).Size(11, 11).TextColor(t.Warning).Shrink(0)
+							}
+							if m.HasAttachments {
+								ui.Icon(c, iconPaperclip).Size(11, 11).TextColor(t.TextMuted).Shrink(0)
 							}
 							tm := ui.Text(c, formatRelTimeLang(m.Date, a.uiLang())).FontSize(11).Shrink(0)
 							if !selected {
@@ -721,7 +736,7 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 					})
 
 					// Mail actions first (the single keys are in the tooltips), the AI actions below.
-					ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 						if a.isDraftsMessage(msg) {
 							if iconLabelBtn(c.Key("act-edit-draft"), iconPen, a.tr("Entwurf weiterbearbeiten", "Edit Draft"), true, a.tr("Gespeicherten Entwurf im Editor öffnen", "Open saved draft in compose editor")).Clicked() {
 								a.OpenComposeFromDraft(msg)
@@ -731,10 +746,10 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 						if iconBtn(c.Key("act-reply-edit"), iconReply, a.tr("Antworten (r)", "Reply (r)"), ui.Color{}, false).Clicked() {
 							a.OpenComposeReply(msg, a.inspectorDraft)
 						}
-						if iconBtn(c.Key("act-reply-all"), iconReplyAll, a.tr("Allen antworten", "Reply All"), ui.Color{}, false).Clicked() {
+						if iconBtn(c.Key("act-reply-all"), iconReplyAll, a.tr("Allen antworten (a)", "Reply All (a)"), ui.Color{}, false).Clicked() {
 							a.OpenComposeReplyAll(msg, a.inspectorDraft)
 						}
-						if iconBtn(c.Key("act-forward"), iconForward, a.tr("Weiterleiten", "Forward"), ui.Color{}, false).Clicked() {
+						if iconBtn(c.Key("act-forward"), iconForward, a.tr("Weiterleiten (f)", "Forward (f)"), ui.Color{}, false).Clicked() {
 							a.OpenComposeForward(msg)
 						}
 						ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 2)
@@ -782,7 +797,11 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 									a.MarkMailSpam(context.Background(), msg.ID)
 								}
 							}
-							if iconBtn(c.Key("act-trash"), iconTrash, a.tr("In Papierkorb verschieben (d)", "Move to Trash (d)"), t.Danger, false).Clicked() {
+							trashTip := a.tr("In Papierkorb verschieben (d)", "Move to Trash (d)")
+							if a.isTrashFolder(msg.FolderID) {
+								trashTip = a.tr("Endgültig löschen (d)", "Delete permanently (d)")
+							}
+							if iconBtn(c.Key("act-trash"), iconTrash, trashTip, t.Danger, false).Clicked() {
 								a.trashMails(context.Background(), nil, msg.ID)
 							}
 						}
@@ -1013,7 +1032,9 @@ func (a *App) renderAttachmentsBar(c *ui.Context, msg *backend.MessageDetail) {
 			ui.Icon(c, iconPaperclip).Size(13, 13).TextColor(t.Accent).Shrink(0)
 			ui.Text(c, hdr).FontSize(11.5).Bold().TextColor(t.Text).SingleLine()
 		})
-		a.renderAttachmentChips(c, msg)
+		ui.Scroll(c.Key("att-bar-scroll")).FillWidth().MaxHeight(120).Children(func() {
+			a.renderAttachmentChips(c, msg)
+		})
 	})
 }
 
@@ -1178,7 +1199,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 					a.composeIdentityID = ch.IdentityID
 					a.composeFromEmail = ch.Email
 					a.composeFromName = ch.Name
-					newPlain, newHTML, _ := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
+					newPlain, newHTML, newBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 					newSig := stripSignatureDelim(ch.Signature)
 					if newSig == "" {
 						newSig = stripSignatureDelim(newPlain)
@@ -1196,7 +1217,11 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 						a.composeBody = appendAccountSignature(a.composeBody, newSig)
 					}
 					if a.composeUsingWYSIWYG() && a.composeEditor.Widget() != nil {
-						a.composeEditor.UpdateSignature(composeSignatureBlockHTMLFromParts(newPlain, newHTML))
+						sigHTML := composeSignatureBlockHTMLFromParts(newPlain, newHTML)
+						if newBelow && sigHTML != "" {
+							sigHTML = strings.Replace(sigHTML, `data-mdv-sig="1"`, `data-mdv-sig="1" data-mdv-sig-below="1"`, 1)
+						}
+						a.composeEditor.UpdateSignature(sigHTML)
 					}
 				}
 			})
@@ -1322,7 +1347,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			default:
 				bodyArea.Height(190)
 			}
-			if !a.readOnly && !a.composeBusy && (bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) || c.Shortcut(ui.Cmd, ui.KeyEnter)) {
+			if !a.readOnly && !a.composeBusy && bodyArea.Shortcut(ui.Cmd, ui.KeyEnter) {
 				if !a.composeConfirm {
 					a.composeConfirm = true
 					a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
@@ -1332,6 +1357,19 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			}
 		}
 	afterComposeEditor:
+		if !a.readOnly && !a.composeBusy {
+			if c.Shortcut(ui.Cmd, ui.KeyEnter) {
+				if !a.composeConfirm {
+					a.composeConfirm = true
+					a.toast(a.tr("Nochmal ⌘↩ drücken zum Senden", "Press ⌘↩ again to send"), "info")
+				} else {
+					a.requestComposeSend(context.Background(), a.buildComposeReq(false))
+				}
+			}
+			if c.Shortcut(ui.Cmd, ui.KeyS) {
+				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+			}
+		}
 		if a.composeForwardHTML != "" && (!a.composeUsingWYSIWYG() || a.composeEditor.Widget() == nil) {
 			ui.Checkbox(c.Key("cmp-keep-html"), &a.composeKeepHTML, a.tr("Original-Formatierung (HTML) beim Weiterleiten beibehalten", "Keep original HTML formatting when forwarding"))
 		}
@@ -1354,11 +1392,11 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 					if ui.Button(c.Key("cmp-att-paste"), a.tr("Einfügen (Zwischenablage)", "Paste Clipboard")).Tooltip(a.tr("Kopierte Dateien oder Bilder als Anhang einfügen (oder Dateien hierher ziehen)", "Attach copied files or images from clipboard (or drag & drop files)")).Clicked() {
 						a.pasteClipboardIntoCompose(false)
 					}
-				}
-				attIn := ui.TextInput(c.Key("cmp-att-in"), &a.composeAttachInput).Placeholder(a.tr("Oder Pfad eingeben (z. B. ~/Downloads/datei.pdf)…", "Or type path (e.g. ~/Downloads/file.pdf)…")).Grow(1)
-				addClicked := ui.Button(c.Key("cmp-att-add"), a.tr("Anhängen", "Attach")).Clicked()
-				if (addClicked || attIn.Submitted()) && strings.TrimSpace(a.composeAttachInput) != "" {
-					a.addComposeAttachment(a.composeAttachInput)
+					attIn := ui.TextInput(c.Key("cmp-att-in"), &a.composeAttachInput).Placeholder(a.tr("Oder Pfad eingeben (z. B. ~/Downloads/datei.pdf)…", "Or type path (e.g. ~/Downloads/file.pdf)…")).Grow(1)
+					addClicked := ui.Button(c.Key("cmp-att-add"), a.tr("Anhängen", "Attach")).Clicked()
+					if (addClicked || attIn.Submitted()) && strings.TrimSpace(a.composeAttachInput) != "" {
+						a.addComposeAttachment(a.composeAttachInput)
+					}
 				}
 			})
 			if len(a.composeSourceAttachments) > 0 || len(a.composeAttachments) > 0 {
@@ -1425,7 +1463,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 		}
 
 		if a.readOnly {
-			ui.Text(c, a.tr("Bitte zuerst ein IMAP/SMTP-Konto verbinden, um E-Mails zu senden.", "Please connect an IMAP/SMTP account first to send emails.")).FontSize(11.5).TextColor(t.Warning)
+			ui.Text(c, a.tr("Read-Only-Modus aktiv — Senden und Speichern sind deaktiviert.", "Read-only mode active — sending and saving are disabled.")).FontSize(11.5).TextColor(t.Warning)
 		}
 
 		if a.composeMissingAttWarn != "" {
@@ -2087,6 +2125,9 @@ func (a *App) renderHelpModal(c *ui.Context) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconHelp).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Hilfe · Überblick, Filterregeln & KI-Transparenz", "Help · Overview, Filter Rules & AI Transparency")).FontSize(16).Bold().Grow(1)
+				if v := a.versionTag(); v != "" {
+					pillBadge(c, "MailDiver "+v, t.Background, t.TextMuted)
+				}
 				if ui.Button(c.Key("help-x"), "✕").Clicked() {
 					a.helpOpen = false
 				}
@@ -2097,7 +2138,9 @@ func (a *App) renderHelpModal(c *ui.Context) {
 			if a.agentModel != "" {
 				backendInfo += " · " + a.agentModel
 			}
-			isLocalModel := a.agentBackend == "ollama" || a.agentBackend == "llamacpp" || a.agentBackend == "llamafile"
+			provCfg := ai.ProviderForBackend(a.cfg.AI, a.agentBackend)
+			isLocalModel := a.agentBackend == "ollama" || a.agentBackend == "llamacpp" || a.agentBackend == "llamafile" ||
+				(a.agentBackend == "openaicompat" && isLoopbackEndpointURL(provCfg.Endpoint))
 			tokenBadge := a.tr("Cloud/CLI Tokens bei KI-Aktion", "Cloud/CLI Tokens on AI Action")
 			badgeBg, badgeFg := withAlpha(t.Accent, 0.16), t.Accent
 			if isLocalModel {

@@ -20,6 +20,9 @@ func (a *App) renderToolbar(c *ui.Context) {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 			a.renderAppMenuButton(c)
 			ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
+			if v := a.versionTag(); v != "" {
+				ui.Text(c, v).FontSize(11).TextColor(t.TextMuted).SingleLine()
+			}
 		})
 
 		// Context-aware search & filter (Calendar search + multi-select calendars in Calendar view;
@@ -181,6 +184,10 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		}
 		if m.Item(a.tr("Hilfe…", "Help…")).Shortcut(ui.Cmd, ui.KeySlash).Chosen() {
 			a.toggleHelp("all")
+		}
+		if v := a.versionTag(); v != "" {
+			m.Separator()
+			m.Item("MailDiver " + v).Disabled(true)
 		}
 	})
 }

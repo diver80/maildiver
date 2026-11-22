@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -43,17 +42,41 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 	mobile := isMobileOS()
 
 	var (
-		stateMu     sync.Mutex
-		foreground  atomic.Bool
-		suspended   bool
-		online      = true
-		resumeTimer *time.Timer
+		stateMu       sync.Mutex
+		pauseMu       sync.Mutex
+		foreground    = !mobile
+		lifecycleSeen bool
+		suspended     bool
+		online        = true
+		resumeTimer   *time.Timer
+		timerGen      uint64
 	)
-	if !mobile {
-		foreground.Store(true)
+
+	desiredRunLocked := func() bool {
+		if !online || suspended {
+			return false
+		}
+		if mobile && !foreground {
+			return false
+		}
+		return true
 	}
 
-	reconcileWorkers := func(settle time.Duration) {
+	// applyWorkersState serializes SetWorkersPaused calls under pauseMu and re-reads the latest
+	// desired state under stateMu so concurrent pause/resume transitions can never invert order.
+	applyWorkersState := func() {
+		if pauser == nil {
+			return
+		}
+		pauseMu.Lock()
+		defer pauseMu.Unlock()
+		stateMu.Lock()
+		wantPaused := !desiredRunLocked()
+		stateMu.Unlock()
+		pauser.SetWorkersPaused(wantPaused)
+	}
+
+	reconcileWorkers := func(settle time.Duration, forceRecycle bool) {
 		if pauser == nil {
 			return
 		}
@@ -62,14 +85,13 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 			resumeTimer.Stop()
 			resumeTimer = nil
 		}
-		shouldRun := online && !suspended
-		if mobile {
-			shouldRun = shouldRun && foreground.Load()
-		}
+		timerGen++
+		gen := timerGen
+		shouldRun := desiredRunLocked()
 		isOffline := !online
 		if !shouldRun {
 			stateMu.Unlock()
-			pauser.SetWorkersPaused(true)
+			go applyWorkersState()
 			s.app.emitUpdate(func() {
 				s.app.networkOffline = isOffline
 				if isOffline {
@@ -78,26 +100,36 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 			})
 			return
 		}
+		if settle > 0 {
+			resumeTimer = time.AfterFunc(settle, func() {
+				stateMu.Lock()
+				stale := timerGen != gen
+				stateMu.Unlock()
+				if !stale {
+					applyWorkersState()
+				}
+			})
+		}
+		stateMu.Unlock()
+
 		// Immediately clear stale "no such host" / socket errors from the previous suspend/offline
 		// window and wait briefly for Android's netd / OS routing to unfreeze before dialing IMAP.
 		s.app.emitUpdate(func() {
 			s.app.networkOffline = false
 			s.app.clearTransientSyncErrors()
 		})
-		if settle <= 0 {
-			stateMu.Unlock()
-			go pauser.SetWorkersPaused(false)
+		if forceRecycle && settle > 0 {
+			// Wi-Fi <-> cellular handoff: drop dead sockets immediately; timer resumes cleanly.
+			go func() {
+				pauseMu.Lock()
+				pauser.SetWorkersPaused(true)
+				pauseMu.Unlock()
+			}()
 			return
 		}
-		resumeTimer = time.AfterFunc(settle, func() {
-			stateMu.Lock()
-			ok := online && !suspended && (!mobile || foreground.Load())
-			stateMu.Unlock()
-			if ok {
-				pauser.SetWorkersPaused(false)
-			}
-		})
-		stateMu.Unlock()
+		if settle <= 0 {
+			go applyWorkersState()
+		}
 	}
 
 	var seen func()
@@ -112,8 +144,9 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 	}
 
 	onWake := func() {
-		foreground.Store(true)
 		stateMu.Lock()
+		foreground = true
+		lifecycleSeen = true
 		suspended = false
 		stateMu.Unlock()
 		if seen != nil {
@@ -124,19 +157,20 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 			// Give Android netd / eBPF UID firewall a moment to restore network after onResume.
 			settle = 500 * time.Millisecond
 		}
-		reconcileWorkers(settle)
+		reconcileWorkers(settle, false)
 	}
 	onSleep := func() {
-		if mobile {
-			foreground.Store(false)
-		}
 		stateMu.Lock()
+		if mobile {
+			foreground = false
+		}
+		lifecycleSeen = true
 		suspended = true
 		stateMu.Unlock()
 		if seen != nil {
 			seen()
 		}
-		reconcileWorkers(0)
+		reconcileWorkers(0, false)
 	}
 
 	mygo.App.OnActivate(func(bool) { onWake() })
@@ -152,28 +186,32 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		prev := online
 		online = st.Online
 		stateMu.Unlock()
-		if st.Online != prev || !st.Online {
+		handoff := mobile && prev && st.Online
+		if st.Online != prev || !st.Online || handoff {
 			settle := 250 * time.Millisecond
 			if mobile {
 				settle = 500 * time.Millisecond
 			}
-			reconcileWorkers(settle)
+			reconcileWorkers(settle, handoff)
 		}
 	})
 
 	mygo.App.WhenReady(func() {
-		if mobile {
-			go func() {
-				st := mygo.Network.Status()
-				stateMu.Lock()
-				online = st.Online
-				stateMu.Unlock()
-				if mygo.App.IsActive() {
-					foreground.Store(true)
-				}
-				reconcileWorkers(300 * time.Millisecond)
-			}()
-		}
+		go func() {
+			st := mygo.Network.Status()
+			active := !mobile || mygo.App.IsActive()
+			stateMu.Lock()
+			online = st.Online
+			if mobile && !lifecycleSeen && active {
+				foreground = true
+			}
+			stateMu.Unlock()
+			settle := time.Duration(0)
+			if mobile {
+				settle = 300 * time.Millisecond
+			}
+			reconcileWorkers(settle, false)
+		}()
 	})
 
 	if !mobile {
@@ -191,7 +229,10 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		if err := bm.SyncInboxes(c); err != nil {
 			return err // runs again later
 		}
-		if foreground.Load() {
+		stateMu.Lock()
+		inForeground := foreground
+		stateMu.Unlock()
+		if inForeground {
 			// Open: the app's own new-mail alerts have shown them.
 			return bm.MarkInboxSeen(c)
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	anyllm "github.com/mozilla-ai/any-llm-go"
 
 	"github.com/diver80/maildiver/internal/ai"
 	"github.com/diver80/maildiver/internal/config"
@@ -76,13 +77,16 @@ type settingsUI struct {
 	agentModels                             []string
 	agentModelsKey                          string
 	agentModelsLoading                      bool
+	agentModelsErr                          string
 	agentModelCustom                        bool
+	savedEndpoints                          map[string]string
 
 	classifyAI                        bool
 	clfBackend, clfModel, clfEndpoint string
 	clfModels                         []string
 	clfModelsKey                      string
 	clfModelsLoading                  bool
+	clfModelsErr                      string
 	clfModelCustom                    bool
 	maxCalls                          string
 	allowCLI                          bool
@@ -115,6 +119,20 @@ func (a *App) OpenSettings() {
 	if cfg.App.LinkPreview.Layout == "bottom" {
 		lpLayout = 1
 	}
+	savedEndpoints := make(map[string]string, len(cfg.AI.Endpoints)+2)
+	for k, v := range cfg.AI.Endpoints {
+		if ck := ai.CanonicalBackend(k); ck != "" && strings.TrimSpace(v) != "" {
+			savedEndpoints[ck] = strings.TrimSpace(v)
+		}
+	}
+	if ck := ai.CanonicalBackend(cfg.AI.Agent.Backend); ck != "" && strings.TrimSpace(cfg.AI.Agent.Endpoint) != "" {
+		savedEndpoints[ck] = strings.TrimSpace(cfg.AI.Agent.Endpoint)
+	}
+	if ck := ai.CanonicalBackend(cfg.AI.Classifier.Backend); ck != "" && strings.TrimSpace(cfg.AI.Classifier.Endpoint) != "" {
+		if _, exists := savedEndpoints[ck]; !exists {
+			savedEndpoints[ck] = strings.TrimSpace(cfg.AI.Classifier.Endpoint)
+		}
+	}
 	s := settingsUI{
 		open:                true,
 		linkPreviewEnabled:  cfg.App.LinkPreview.Enabled,
@@ -125,6 +143,7 @@ func (a *App) OpenSettings() {
 		agentBackend:        ai.CanonicalBackend(cfg.AI.Agent.Backend),
 		agentModel:          cfg.AI.Agent.Model,
 		agentEndpoint:       cfg.AI.Agent.Endpoint,
+		savedEndpoints:      savedEndpoints,
 		classifyAI:          cfg.AI.ClassifyWithAI,
 		clfBackend:          ai.CanonicalBackend(cfg.AI.Classifier.Backend),
 		clfModel:            cfg.AI.Classifier.Model,
@@ -279,6 +298,34 @@ func (a *App) SaveSettings() bool {
 	}
 	cfg.AI.Agent = config.ProviderConfig{Backend: s.agentBackend, Model: strings.TrimSpace(s.agentModel), Endpoint: strings.TrimSpace(s.agentEndpoint)}
 	cfg.AI.Classifier = config.ProviderConfig{Backend: s.clfBackend, Model: strings.TrimSpace(s.clfModel), Endpoint: strings.TrimSpace(s.clfEndpoint)}
+	if s.savedEndpoints == nil {
+		s.savedEndpoints = make(map[string]string)
+	}
+	if s.agentBackend != "" {
+		if ep := strings.TrimSpace(s.agentEndpoint); ep != "" {
+			s.savedEndpoints[s.agentBackend] = ep
+		} else {
+			delete(s.savedEndpoints, s.agentBackend)
+		}
+	}
+	if s.classifyAI && s.clfBackend != "" {
+		if ep := strings.TrimSpace(s.clfEndpoint); ep != "" {
+			s.savedEndpoints[s.clfBackend] = ep
+		} else if s.clfBackend != s.agentBackend {
+			delete(s.savedEndpoints, s.clfBackend)
+		}
+	}
+	if len(s.savedEndpoints) > 0 {
+		epCopy := make(map[string]string, len(s.savedEndpoints))
+		for k, v := range s.savedEndpoints {
+			if strings.TrimSpace(v) != "" {
+				epCopy[k] = strings.TrimSpace(v)
+			}
+		}
+		cfg.AI.Endpoints = epCopy
+	} else {
+		cfg.AI.Endpoints = nil
+	}
 	cfg.AI.ClassifyWithAI = s.classifyAI
 	cfg.AI.MaxAICallsPerScan = maxCalls
 	cfg.AI.AllowUnrestrictedCLI = s.allowCLI
@@ -399,6 +446,7 @@ func (a *App) SaveSettings() bool {
 		return false
 	}
 	a.applyConfig(cfg)
+	a.syncCopilotFromConfig(cfg)
 	a.applyConfiguredFolderCollapse()
 	a.preview.layout = cfg.App.LinkPreview.Layout
 	if a.selectedMsg != nil {
@@ -422,10 +470,18 @@ func (a *App) settingsLabel(c *ui.Context, label string) {
 func (a *App) renderSettingsModal(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
+	wasOpen := s.open
+	maxScrollH := float32(560)
+	if a.winH > 0 {
+		maxScrollH = min(560, max(220, a.winH-220))
+	}
 	ui.Modal(c, &s.open, func() {
 		ui.Column(c).Width(a.modalW(700)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
+				if v := a.versionTag(); v != "" {
+					pillBadge(c, "MailDiver "+v, t.Background, t.TextMuted)
+				}
 				if ui.Button(c.Key("set-x"), "✕").Clicked() {
 					a.stopLANQRSession()
 					s.open = false
@@ -456,7 +512,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 			} else {
 				ui.Segmented(c.Key("set-tabs"), &s.tab, tabLabels...)
 			}
-			ui.Scroll(c.Key(fmt.Sprintf("set-scroll-%d", s.tab))).FillWidth().MaxHeight(560).Children(func() {
+			ui.Scroll(c.Key(fmt.Sprintf("set-scroll-%d", s.tab))).FillWidth().MaxHeight(maxScrollH).Children(func() {
 				ui.Column(c).FillWidth().Gap(8).Padding(0, 6, 0, 0).Children(func() {
 					a.renderSettingsBody(c)
 				})
@@ -476,6 +532,9 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 			})
 		})
 	})
+	if wasOpen && !s.open && s.lanSession != nil {
+		a.stopLANQRSession()
+	}
 }
 
 func (a *App) renderSettingsBody(c *ui.Context) {
@@ -823,10 +882,32 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		if !a.cfg.Features.Assistant {
 			note(a.tr("Der KI-Assistent ist in config.json ausgeschaltet.", "The AI assistant is switched off in config.json."), t.Warning)
 		}
-		field("set-ag-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1) })
-		a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
+		prevAgentBackend := s.agentBackend
+		field("set-ag-b", a.tr("Anbieter", "Provider"), func() {
+			if ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1).Changed() && s.agentBackend != prevAgentBackend {
+				if s.savedEndpoints == nil {
+					s.savedEndpoints = make(map[string]string)
+				}
+				if ep := strings.TrimSpace(s.agentEndpoint); ep != "" {
+					s.savedEndpoints[prevAgentBackend] = ep
+				} else {
+					delete(s.savedEndpoints, prevAgentBackend)
+				}
+				s.agentEndpoint = s.savedEndpoints[s.agentBackend]
+				s.agentModels = nil
+				s.agentModelsKey = ""
+				s.agentModelsErr = ""
+				s.agentModelCustom = false
+			}
+		})
+		a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsErr, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
 		field("set-ag-e", "Endpoint", func() {
-			ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+			epIn := ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+			if epIn.Submitted() && !s.agentModelsLoading {
+				wantKey := s.agentBackend + "|" + strings.TrimSpace(s.agentEndpoint)
+				s.agentModelsKey = wantKey
+				a.loadSettingsModels(s.agentBackend, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsErr, wantKey)
+			}
 		})
 
 		a.settingsSection(c, a.tr("Triage-Scan", "Triage scan"))
@@ -836,10 +917,32 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		ui.Checkbox(c.Key("set-new"), &s.scanOnNewMail, a.tr("Bei neuer Mail automatisch scannen", "Scan automatically when new mail arrives"))
 		ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
 		if s.classifyAI {
-			field("set-clf-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1) })
-			a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
+			prevClfBackend := s.clfBackend
+			field("set-clf-b", a.tr("Anbieter", "Provider"), func() {
+				if ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1).Changed() && s.clfBackend != prevClfBackend {
+					if s.savedEndpoints == nil {
+						s.savedEndpoints = make(map[string]string)
+					}
+					if ep := strings.TrimSpace(s.clfEndpoint); ep != "" {
+						s.savedEndpoints[prevClfBackend] = ep
+					} else {
+						delete(s.savedEndpoints, prevClfBackend)
+					}
+					s.clfEndpoint = s.savedEndpoints[s.clfBackend]
+					s.clfModels = nil
+					s.clfModelsKey = ""
+					s.clfModelsErr = ""
+					s.clfModelCustom = false
+				}
+			})
+			a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsErr, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
 			field("set-clf-e", "Endpoint", func() {
-				ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+				epIn := ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+				if epIn.Submitted() && !s.clfModelsLoading {
+					wantKey := s.clfBackend + "|" + strings.TrimSpace(s.clfEndpoint)
+					s.clfModelsKey = wantKey
+					a.loadSettingsModels(s.clfBackend, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsErr, wantKey)
+				}
 			})
 			field("set-max", a.tr("KI-Aufrufe pro Scan", "AI calls per scan"), func() { ui.TextInput(c.Key("set-max-i"), &s.maxCalls).Width(90) })
 			note(a.tr("Verschlüsselte Mails gehen nur mit Absender und Betreff an die KI, nie mit Inhalt.", "Encrypted emails only reach the AI with sender and subject, never with content."), t.TextMuted)
@@ -855,20 +958,32 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		note(a.tr("Gespeichert in ", "Stored in ")+config.EnvFilePath()+a.tr(" (nur für dich lesbar). Neue Schlüssel gelten sofort.", " (readable only by you). New keys apply at once."), t.TextMuted)
 		for i := range s.keys {
 			k := &s.keys[i]
-			ui.Row(c.Key(fmt.Sprintf("set-key-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, k.backend).FontSize(12).Width(150)
-				ph := a.tr("nicht gesetzt", "not set")
-				if k.set && !k.remove {
-					ph = a.tr("gesetzt – leer lassen zum Behalten", "set – leave empty to keep")
-				}
-				if k.remove {
-					ph = a.tr("wird entfernt", "will be removed")
-				}
-				ui.TextInput(c.Key(fmt.Sprintf("set-key-i-%d", i)), &k.input).Password().Placeholder(ph).Grow(1)
-				if k.set {
-					ui.Checkbox(c.Key(fmt.Sprintf("set-key-rm-%d", i)), &k.remove, a.tr("Entfernen", "Remove"))
-				}
-			})
+			ph := a.tr("nicht gesetzt", "not set")
+			if k.set && !k.remove {
+				ph = a.tr("gesetzt – leer lassen zum Behalten", "set – leave empty to keep")
+			}
+			if k.remove {
+				ph = a.tr("wird entfernt", "will be removed")
+			}
+			if a.isPhone() {
+				ui.Column(c.Key(fmt.Sprintf("set-key-%d", i))).FillWidth().Gap(4).Children(func() {
+					ui.Text(c, k.backend).FontSize(12).TextColor(t.TextMuted)
+					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.TextInput(c.Key(fmt.Sprintf("set-key-i-%d", i)), &k.input).Password().Placeholder(ph).Grow(1)
+						if k.set {
+							ui.Checkbox(c.Key(fmt.Sprintf("set-key-rm-%d", i)), &k.remove, a.tr("Entfernen", "Remove"))
+						}
+					})
+				})
+			} else {
+				ui.Row(c.Key(fmt.Sprintf("set-key-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, k.backend).FontSize(12).Width(150)
+					ui.TextInput(c.Key(fmt.Sprintf("set-key-i-%d", i)), &k.input).Password().Placeholder(ph).Grow(1)
+					if k.set {
+						ui.Checkbox(c.Key(fmt.Sprintf("set-key-rm-%d", i)), &k.remove, a.tr("Entfernen", "Remove"))
+					}
+				})
+			}
 		}
 
 		a.renderSettingsLANQRSection(c)
@@ -885,14 +1000,17 @@ func (a *App) renderSettingsModelField(
 	models *[]string,
 	loadedKey *string,
 	loading *bool,
+	modelsErr *string,
 	customMode *bool,
 	fallbackPH string,
 ) {
 	wantKey := backendName + "|" + strings.TrimSpace(endpointVal)
 	hint, isCLI := ai.CLIModelHints(backendName)
-	if !isCLI && *loadedKey != wantKey && !*loading {
+	// Auto-load only on initial display or after switching provider (loadedKey == ""),
+	// never on every keystroke while the user types an endpoint URL.
+	if !isCLI && *loadedKey == "" && !*loading {
 		*loadedKey = wantKey
-		a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, wantKey)
+		a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, modelsErr, wantKey)
 	}
 	field(keyPrefix+"-m", a.tr("Modell", "Model"), func() {
 		if !isCLI && len(*models) > 0 && !*customMode {
@@ -942,17 +1060,21 @@ func (a *App) renderSettingsModelField(
 				refBtn.Disabled(true)
 			}
 			if refBtn.Clicked() && !*loading {
-				a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, wantKey)
+				*loadedKey = wantKey
+				a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, modelsErr, wantKey)
 			}
 		}
 	})
 	if isCLI {
 		a.renderCLIModelHintChips(c, keyPrefix+"-cli", modelVal, hint)
+	} else if strings.TrimSpace(*modelsErr) != "" {
+		ui.Text(c, a.tr("Modelle nicht ladbar: ", "Could not load models: ")+*modelsErr).FontSize(11).TextColor(c.Theme().Warning)
 	}
 }
 
-func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, loadedKey *string, loading *bool, wantKey string) {
+func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, loadedKey *string, loading *bool, dstErr *string, wantKey string) {
 	*loading = true
+	*dstErr = ""
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
@@ -962,11 +1084,17 @@ func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, lo
 				cfg = loaded
 			}
 		}
-		prov := ai.ProviderForBackend(cfg.AI, backendName)
-		if strings.TrimSpace(endpoint) != "" {
-			prov.Endpoint = strings.TrimSpace(endpoint)
+		ep := strings.TrimSpace(endpoint)
+		savedProv := ai.ProviderForBackend(cfg.AI, backendName)
+		var list []anyllm.Model
+		var err error
+		if ep == "" || ep == strings.TrimSpace(savedProv.Endpoint) {
+			list, err = ai.ListModelsFor(ctx, cfg.AI, backendName, a.opts.AnyLLMOpts...)
+		} else {
+			prov := savedProv
+			prov.Endpoint = ep
+			list, err = ai.ListModels(ctx, prov, a.opts.AnyLLMOpts...)
 		}
-		list, _ := ai.ListModels(ctx, prov, a.opts.AnyLLMOpts...)
 		names := make([]string, 0, len(list))
 		for _, m := range list {
 			if m.ID != "" {
@@ -977,6 +1105,11 @@ func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, lo
 			*loading = false
 			if *loadedKey == wantKey {
 				*dst = names
+				if err != nil {
+					*dstErr = a.errText(err)
+				} else {
+					*dstErr = ""
+				}
 			}
 		})
 	}()

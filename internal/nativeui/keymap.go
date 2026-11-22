@@ -101,7 +101,7 @@ func (a *App) footerHints() []keyHint {
 		}
 		out = append(out, h("q", "Quick-Regel", "quick rule"), h("esc", "Auswahl aufheben", "clear"))
 	case keyCtxMessage:
-		out = append(out, h("j/k", "Nächste/Vorige", "next/prev"), h("r", "Antworten", "reply"))
+		out = append(out, h("j/k", "Nächste/Vorige", "next/prev"), h("r/a/f", "Antw./Alle/Weiterl.", "reply/all/fwd"))
 		if !ro {
 			out = append(out, h("e", "Archivieren", "archive"), h("d", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("s", "Stern", "star"), h("u", "Gelesen/Ungelesen", "read/unread"))
 		}
@@ -229,7 +229,13 @@ func (a *App) handleShortcuts(c *ui.Context) {
 		a.OpenMovePicker()
 	}
 	if c.Shortcut(0, ui.KeyR) && a.selectedMsg != nil {
-		a.OpenComposeReply(a.selectedMsg, "")
+		a.OpenComposeReply(a.selectedMsg, a.inspectorDraft)
+	}
+	if (c.Shortcut(0, ui.KeyA) || c.Shortcut(ui.Shift, ui.KeyR)) && a.selectedMsg != nil {
+		a.OpenComposeReplyAll(a.selectedMsg, a.inspectorDraft)
+	}
+	if c.Shortcut(0, ui.KeyF) && a.selectedMsg != nil {
+		a.OpenComposeForward(a.selectedMsg)
 	}
 	if c.Shortcut(0, ui.KeyQ) && (len(a.checkedIDs) > 0 || a.selectedID != "") {
 		a.OpenQuickRuleWizard()

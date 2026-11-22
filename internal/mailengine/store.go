@@ -918,7 +918,7 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 
 	bodyCols := `m.body_text, m.body_html, m.body_fetched, m.attachments_json, m.headers_json, NULL, m.has_ics, m.ics_body`
 	if q.HeadersOnly {
-		bodyCols = `'', '', m.body_fetched, '[]', '{}', NULL, m.has_ics, ''`
+		bodyCols = `'', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, ''`
 	}
 	orderDir := "DESC"
 	if q.OldestFirst {

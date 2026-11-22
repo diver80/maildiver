@@ -95,7 +95,7 @@ var backendRegistry = []backendSpec{
 		OfficialURL: "https://api.openai.com/v1", Timeout: apiTimeout, Streaming: true, Tools: true,
 		newProvider: wrapProvider(openai.New)},
 	// OpenAI-compatible servers get their own key variable: OPENAI_API_KEY never leaves for a non-OpenAI host.
-	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "omathunder-local",
+	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "maildiver-local",
 		Timeout: apiTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(openai.New)},
 	{ID: "deepseek", Kind: kindAPI, DefaultModel: "deepseek-chat", EnvKeys: []string{"DEEPSEEK_API_KEY"},
 		OfficialURL: "https://api.deepseek.com", Timeout: apiTimeout, Streaming: true, Tools: true,
@@ -235,11 +235,11 @@ type APIKeyName struct {
 	EnvKey  string `json:"envKey"`
 }
 
-// APIKeyNames lists the key variables of the API backends that need one.
+// APIKeyNames lists the key variables of the API backends that accept an API key.
 func APIKeyNames() []APIKeyName {
 	var out []APIKeyName
 	for _, s := range backendRegistry {
-		if s.Kind == kindAPI && len(s.EnvKeys) > 0 && s.PlaceholderKey == "" {
+		if s.Kind == kindAPI && len(s.EnvKeys) > 0 {
 			out = append(out, APIKeyName{Backend: s.ID, EnvKey: s.EnvKeys[0]})
 		}
 	}

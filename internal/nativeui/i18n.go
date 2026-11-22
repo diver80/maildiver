@@ -124,10 +124,25 @@ func trLang(lang, de, en string) string {
 }
 
 func (a *App) uiLang() string {
-	if a != nil && (a.lang == "de" || a.lang == "en") {
+	if a == nil {
+		return "de"
+	}
+	if p := a.langAtomic.Load(); p != nil && (*p == "de" || *p == "en") {
+		return *p
+	}
+	if a.lang == "de" || a.lang == "en" {
 		return a.lang
 	}
 	return "de"
+}
+
+func (a *App) storeLang(lang string) {
+	if lang != "de" && lang != "en" {
+		lang = "de"
+	}
+	a.lang = lang
+	v := lang
+	a.langAtomic.Store(&v)
 }
 
 func (a *App) tr(de, en string) string {

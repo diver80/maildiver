@@ -52,7 +52,7 @@ func Run(ctx context.Context, opts Options) error {
 		appIcon:  RenderAppIconPNG(256),
 	}
 
-	isMobile := runtime.GOOS == "android"
+	isMobile := isMobileOS()
 	if !isMobile {
 		mygo.App.SetMenu(s.appMenu())
 	}
@@ -126,7 +126,7 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 func (s *desktopShell) ready(opts Options) {
-	isMobile := runtime.GOOS == "android"
+	isMobile := isMobileOS()
 	if !isMobile && len(s.appIcon) > 0 {
 		_ = mygo.App.Dock.SetIcon(s.appIcon)
 	}

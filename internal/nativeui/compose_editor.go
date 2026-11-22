@@ -484,21 +484,102 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (_) {}
 
   function ensureParagraphInUserBox() {
+    normalizeUserDivsPreservingSelection();
+  }
+
+  function normalizeUserDivsPreservingSelection() {
     const host = ed.querySelector('[data-mdv-user="1"]') || ed;
-    Array.from(host.childNodes).forEach((node) => {
-      if (node.nodeType === 1 && node.tagName === 'DIV' && !node.hasAttribute('data-mdv-user') && !node.hasAttribute('data-mdv-sig') && !node.hasAttribute('data-mdv-fwd')) {
-        const p = document.createElement('p');
-        while (node.firstChild) p.appendChild(node.firstChild);
-        if (!p.innerHTML) p.innerHTML = '<br>';
-        node.replaceWith(p);
-      }
+    const divs = Array.from(host.childNodes).filter((node) =>
+      node.nodeType === 1 && node.tagName === 'DIV' &&
+      !node.hasAttribute('data-mdv-user') && !node.hasAttribute('data-mdv-sig') && !node.hasAttribute('data-mdv-fwd')
+    );
+    if (divs.length === 0) return;
+    const sel = window.getSelection();
+    let aNode = sel && sel.rangeCount > 0 ? sel.anchorNode : null;
+    let aOff = sel && sel.rangeCount > 0 ? sel.anchorOffset : 0;
+    let fNode = sel && sel.rangeCount > 0 ? sel.focusNode : null;
+    let fOff = sel && sel.rangeCount > 0 ? sel.focusOffset : 0;
+    const mapped = new Map();
+    divs.forEach((div) => {
+      const p = document.createElement('p');
+      while (div.firstChild) p.appendChild(div.firstChild);
+      if (!p.firstChild) p.innerHTML = '<br>';
+      div.replaceWith(p);
+      mapped.set(div, p);
     });
+    if (sel && aNode) {
+      if (mapped.has(aNode)) aNode = mapped.get(aNode);
+      if (mapped.has(fNode)) fNode = mapped.get(fNode);
+      try {
+        if (sel.setBaseAndExtent && fNode) {
+          sel.setBaseAndExtent(aNode, Math.min(aOff, aNode.nodeType === 3 ? aNode.length : aNode.childNodes.length), fNode, Math.min(fOff, fNode.nodeType === 3 ? fNode.length : fNode.childNodes.length));
+        } else {
+          const nr = document.createRange();
+          nr.setStart(aNode, Math.min(aOff, aNode.nodeType === 3 ? aNode.length : aNode.childNodes.length));
+          nr.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(nr);
+        }
+      } catch (_) {}
+    }
+  }
+
+  function clampSelectionBeforeSig() {
+    const sig = ed.querySelector('[data-mdv-sig="1"]');
+    const sel = window.getSelection();
+    if (!sig || !sel || sel.rangeCount === 0) return false;
+    const r = sel.getRangeAt(0);
+    if (!r.intersectsNode || !r.intersectsNode(sig)) return false;
+    const userBox = ed.querySelector('[data-mdv-user="1"]');
+    const endLimit = document.createRange();
+    if (userBox && (userBox.compareDocumentPosition(sig) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      endLimit.selectNodeContents(userBox);
+      endLimit.collapse(false);
+    } else {
+      endLimit.setStartBefore(sig);
+      endLimit.collapse(true);
+    }
+    const clamped = r.cloneRange();
+    // If start is already at or after the signature, collapse caret safely before signature.
+    if (clamped.compareBoundaryPoints(Range.START_TO_START, endLimit) >= 0) {
+      sel.removeAllRanges();
+      sel.addRange(endLimit);
+      return true;
+    }
+    if (clamped.compareBoundaryPoints(Range.END_TO_START, endLimit) > 0) {
+      clamped.setEnd(endLimit.startContainer, endLimit.startOffset);
+    }
+    sel.removeAllRanges();
+    sel.addRange(clamped);
+    return clamped.collapsed;
+  }
+
+  function ensureTrailingBRSentinel() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    let container = r.startContainer;
+    let off = r.startOffset;
+    if (container.nodeType !== 1) return;
+    const prev = off > 0 ? container.childNodes[off - 1] : null;
+    const next = off < container.childNodes.length ? container.childNodes[off] : null;
+    if (prev && prev.nodeType === 1 && prev.tagName === 'BR' && !next && /^(P|DIV|LI|BLOCKQUOTE|TD|TH)$/i.test(container.tagName)) {
+      const sentinel = document.createElement('br');
+      prev.after(sentinel);
+      const nr = document.createRange();
+      nr.setStartAfter(prev);
+      nr.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(nr);
+    }
   }
 
   function insertSoftLineBreak() {
+    clampSelectionBeforeSig();
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     if (document.execCommand && document.execCommand('insertLineBreak', false, null)) {
+      ensureTrailingBRSentinel();
       notify('mdv:dirty');
       return;
     }
@@ -785,8 +866,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   });
 
   function sanitizePastedHTML(raw) {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = raw;
+    const parsed = new DOMParser().parseFromString(String(raw || ''), 'text/html');
+    const tmp = parsed && parsed.body ? parsed.body : document.createElement('div');
     tmp.querySelectorAll('script,style,meta,link,title,xml,iframe,object,embed,svg,math,form,input,button,textarea,select,base,template,noscript').forEach((n) => n.remove());
     const safeUrl = (val, isImg) => {
       const s = String(val || '').replace(/[\u0000-\u001F\s]+/g, '').toLowerCase();
@@ -917,6 +998,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       return;
     }
     if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      clampSelectionBeforeSig();
       if (e.shiftKey) {
         e.preventDefault();
         insertSoftLineBreak();
@@ -928,24 +1010,7 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       const anchorEl = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
       const inSpecialBlock = anchorEl && anchorEl.closest('li,pre,td,th');
       if (!inSpecialBlock) {
-        queueMicrotask(() => {
-          const s = window.getSelection();
-          if (!s || s.rangeCount === 0) return;
-          const n = s.anchorNode;
-          const el = n ? (n.nodeType === 1 ? n : n.parentElement) : null;
-          const div = el && el.closest('div');
-          if (div && div !== ed && !div.hasAttribute('data-mdv-user') && !div.hasAttribute('data-mdv-sig') && !div.hasAttribute('data-mdv-fwd') && (div.parentElement === ed || (div.parentElement && div.parentElement.hasAttribute('data-mdv-user')))) {
-            const p = document.createElement('p');
-            while (div.firstChild) p.appendChild(div.firstChild);
-            if (!p.innerHTML) p.innerHTML = '<br>';
-            div.replaceWith(p);
-            const nr = document.createRange();
-            nr.setStart(p, 0);
-            nr.collapse(true);
-            s.removeAllRanges();
-            s.addRange(nr);
-          }
-        });
+        setTimeout(normalizeUserDivsPreservingSelection, 0);
       }
     }
     if (selImg) {
@@ -965,23 +1030,15 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
         const r = sel.getRangeAt(0);
         if (r.intersectsNode && r.intersectsNode(sig)) {
           e.preventDefault();
+          const collapsed = clampSelectionBeforeSig();
+          if (!collapsed) {
+            document.execCommand('delete', false, null);
+          }
           const userBox = ed.querySelector('[data-mdv-user="1"]');
-          if (userBox) {
+          if (userBox && !userBox.firstElementChild && !String(userBox.textContent || '').trim()) {
             userBox.innerHTML = '<p><br></p>';
             const nr = document.createRange();
             nr.setStart(userBox.firstChild, 0);
-            nr.collapse(true);
-            sel.removeAllRanges();
-            sel.addRange(nr);
-          } else {
-            Array.from(ed.childNodes).forEach((n) => {
-              if (n !== sig && !n.contains(sig)) n.remove();
-            });
-            const p = document.createElement('p');
-            p.innerHTML = '<br>';
-            sig.before(p);
-            const nr = document.createRange();
-            nr.setStart(p, 0);
             nr.collapse(true);
             sel.removeAllRanges();
             sel.addRange(nr);
@@ -990,6 +1047,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
           return;
         }
       }
+    }
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      clampSelectionBeforeSig();
     }
     if (e.key === 'Tab') {
       const cell = activeCell();
@@ -1024,7 +1084,12 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     }
   });
 
+  ed.addEventListener('cut', () => {
+    clampSelectionBeforeSig();
+  });
+
   ed.addEventListener('paste', (e) => {
+    clampSelectionBeforeSig();
     const cd = e.clipboardData;
     if (!cd) return;
     const types = cd.types ? Array.from(cd.types) : [];
@@ -1085,22 +1150,31 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 
   ed.addEventListener('input', () => {
     if (selImg && !ed.contains(selImg)) clearImageSelection();
+    normalizeUserDivsPreservingSelection();
     updateFormatStates();
     notify('mdv:dirty');
   });
 
-  window.__mdvSetSig = function(sigHTML) {
+  window.__mdvSetSig = function(sigHTML, sigBelow) {
     const cur = ed.querySelector('[data-mdv-sig="1"]');
     if (!sigHTML) {
-      if (cur) cur.remove();
+      if (cur) {
+        cur.remove();
+        notify('mdv:dirty');
+      }
       return;
     }
     const tmp = document.createElement('div');
     tmp.innerHTML = sigHTML;
     const next = tmp.firstElementChild;
     if (!next) return;
-    if (cur) cur.replaceWith(next);
-    else {
+    if (cur) {
+      cur.remove();
+    }
+    const below = !!sigBelow || next.getAttribute('data-mdv-sig-below') === '1';
+    if (below) {
+      ed.appendChild(next);
+    } else {
       const fwd = ed.querySelector('[data-mdv-fwd="1"]');
       const q = ed.querySelector('[data-mdv-quote="1"]');
       if (fwd) fwd.before(next);
@@ -1108,7 +1182,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       else ed.appendChild(next);
     }
     protectSignatures();
-  ensureParagraphInUserBox();
+    ensureParagraphInUserBox();
+    notify('mdv:dirty');
   };
 
   window.__mdvSetTheme = function(pal) {
@@ -1189,9 +1264,19 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
         bq.setAttribute('style', 'margin:10px 0;padding:0 0 0 12px;border-left:2px solid #d0d7de;color:#57606a;');
       }
     });
-    // Preserve clear paragraph spacing (Return = <p> with gap, Shift+Return = tight <br>) in
-    // outgoing HTML across Thunderbird, Outlook, Gmail, Apple Mail, and MailDiver.
-    const userParas = Array.from(clone.querySelectorAll('p')).filter((p) => !p.closest('[data-mdv-sig="1"]') && !p.closest('[data-mdv-fwd="1"]'));
+    // Normalize any remaining direct user-box <div>s to <p> and preserve clear paragraph spacing
+    // (Return = <p> with gap, Shift+Return = tight <br>) in outgoing HTML across mail clients.
+    const userHost = clone.querySelector('[data-mdv-user="1"]') || clone;
+    Array.from(userHost.childNodes).forEach((node) => {
+      if (node.nodeType === 1 && node.tagName === 'DIV' && !node.hasAttribute('data-mdv-user') && !node.hasAttribute('data-mdv-sig') && !node.hasAttribute('data-mdv-fwd')) {
+        const p = document.createElement('p');
+        while (node.firstChild) p.appendChild(node.firstChild);
+        node.replaceWith(p);
+      }
+    });
+    const userParas = Array.from(clone.querySelectorAll('p')).filter((p) =>
+      !p.closest('[data-mdv-sig="1"]') && !p.closest('[data-mdv-fwd="1"]') && !p.closest('[data-mdv-quote="1"]') && !p.closest('td,th')
+    );
     userParas.forEach((p, idx) => {
       if (!p.getAttribute('style')) {
         p.setAttribute('style', idx === userParas.length - 1 ? 'margin:0;' : 'margin:0 0 10px 0;');

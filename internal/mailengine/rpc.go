@@ -305,8 +305,9 @@ func storedToHeader(m StoredMessage, inInbox bool) backend.MessageHeader {
 		Read:      m.Read,
 		Unread:    !m.Read,
 		Flagged:   m.Flagged,
-		Tags:      nonNilStrings(m.Tags),
-		Size:      m.Size,
+		Tags:           nonNilStrings(m.Tags),
+		Size:           m.Size,
+		HasAttachments: len(m.Attachments) > 0,
 	}
 }
 
@@ -2137,6 +2138,7 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 						case "junk":
 							if junkFolderPath != "" {
 								moveTarget = junkFolderPath
+								readSet = true
 								matchedAny = true
 								stop = true
 							}
@@ -2489,7 +2491,8 @@ func (e *Engine) rpcHostArchiveFinish(ctx context.Context, params any) (json.Raw
 			}
 		} else {
 			trash := e.resolveTargetFolderPath(ctx, acc.ID, "trash")
-			if err := e.applyMessageActionIMAP(ctx, acc, m, nil, nil, trash, false); err != nil {
+			readTrue := true
+			if err := e.applyMessageActionIMAP(ctx, acc, m, &readTrue, nil, trash, false); err != nil {
 				return nil, err
 			}
 		}

@@ -334,7 +334,7 @@ func (a *App) configuredPinnedSet(accountID string) (map[string]bool, bool) {
 // splitCompactFolders splits an account's visible tree rows into always-visible PrimaryRows
 // (INBOX + active filter-rule target folders or user-pinned folders) and OtherRows tucked into
 // the collapsible "More folders" block.
-func (a *App) splitCompactFolders(accountID string, rows []folderRow) (primary, other []folderRow, otherTopCount, otherUnread int) {
+func (a *App) splitCompactFolders(accountID string, rows []folderRow, allAccountFolders []backend.Folder) (primary, other []folderRow, otherTopCount, otherUnread int) {
 	if !a.cfg.App.EffectiveCompactFolders() || len(rows) == 0 {
 		return rows, nil, 0, 0
 	}
@@ -342,6 +342,25 @@ func (a *App) splitCompactFolders(accountID string, rows []folderRow) (primary, 
 	var ruleTargets map[string]bool
 	if !hasCustom {
 		ruleTargets = a.activeRuleTargetFolders(accountID)
+	}
+	// Pre-build the full uncollapsed tree so OtherUnreadCount includes unread mails inside
+	// collapsed subfolders tucked under "More folders".
+	allRows := buildFolderRows(allAccountFolders, nil)
+	fullUnreadByRoot := make(map[string]int)
+	for i := 0; i < len(allRows); {
+		j := i + 1
+		for j < len(allRows) && allRows[j].Depth > 0 {
+			j++
+		}
+		rootKey := allRows[i].Key
+		sum := 0
+		for _, r := range allRows[i:j] {
+			if r.Folder.UnreadCount > 0 && !isTrashOrJunkFolder(r.Folder) {
+				sum += r.Folder.UnreadCount
+			}
+		}
+		fullUnreadByRoot[rootKey] = sum
+		i = j
 	}
 
 	// Partition rows into top-level subtrees (each starting at Depth == 0).
@@ -372,9 +391,13 @@ func (a *App) splitCompactFolders(accountID string, rows []folderRow) (primary, 
 		} else {
 			other = append(other, subtree...)
 			otherTopCount++
-			for _, r := range subtree {
-				if r.Folder.UnreadCount > 0 && !isTrashOrJunkFolder(r.Folder) {
-					otherUnread += r.Folder.UnreadCount
+			if sum, ok := fullUnreadByRoot[root.Key]; ok {
+				otherUnread += sum
+			} else {
+				for _, r := range subtree {
+					if r.Folder.UnreadCount > 0 && !isTrashOrJunkFolder(r.Folder) {
+						otherUnread += r.Folder.UnreadCount
+					}
 				}
 			}
 		}
@@ -457,7 +480,7 @@ func (a *App) groupFoldersByAccount() []folderAccountGroup {
 		}
 		a.ensureDefaultFolderCollapse(id, byAcc[id])
 		rows := buildFolderRows(byAcc[id], a.collapsedFolders)
-		prim, other, otherCnt, otherUnread := a.splitCompactFolders(id, rows)
+		prim, other, otherCnt, otherUnread := a.splitCompactFolders(id, rows, byAcc[id])
 		groups = append(groups, folderAccountGroup{
 			AccountID:        id,
 			Name:             name,
@@ -855,7 +878,7 @@ func (a *App) renderFolderRow(c *ui.Context, row folderRow) {
 				})
 			}
 		}
-		if f.UnreadCount > 0 {
+		if f.UnreadCount > 0 && !isTrashOrJunkFolder(f) {
 			ui.Badge(c, fmt.Sprintf("%d", f.UnreadCount))
 		}
 		if row.HasKids {

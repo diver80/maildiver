@@ -1547,6 +1547,10 @@ func (e *Engine) EmptyTrash(ctx context.Context, accountID string) (int, error) 
 			return 0, err
 		}
 	}
+	lk := e.accountSyncLock(acc.ID)
+	lk.Lock()
+	defer lk.Unlock()
+
 	trash, ok := e.store.FindFolderByType(ctx, acc.ID, "trash")
 	if !ok {
 		return 0, fmt.Errorf("Kein Papierkorb-Ordner für %s gefunden", acc.Name)
@@ -1570,6 +1574,10 @@ func (e *Engine) EmptySpam(ctx context.Context, accountID string) (int, error) {
 			return 0, err
 		}
 	}
+	lk := e.accountSyncLock(acc.ID)
+	lk.Lock()
+	defer lk.Unlock()
+
 	spam, ok := e.store.FindFolderByType(ctx, acc.ID, "junk")
 	if !ok {
 		return 0, fmt.Errorf("Kein Spam-Ordner für %s gefunden", acc.Name)
@@ -1681,7 +1689,8 @@ func (e *Engine) MarkSpam(ctx context.Context, msgID string) error {
 	if strings.EqualFold(target, m.FolderPath) {
 		return nil
 	}
-	if err := e.applyMessageActionIMAP(ctx, acc, m, nil, nil, target, false); err != nil {
+	readTrue := true
+	if err := e.applyMessageActionIMAP(ctx, acc, m, &readTrue, nil, target, false); err != nil {
 		return err
 	}
 	_ = e.store.DeleteMessage(ctx, m.ID)

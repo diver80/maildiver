@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.13 (2026-11-22)
+
+### UI-Versionsanzeige, Lokale-KI-Doku (MTPLX / Inkling 2 Mini) & Komplett-Review-Fixes
+- **Versionsnummer direkt in der UI:** MailDiver zeigt jetzt die aktuelle Version (`v0.7.13`) dezent direkt hinter **MailDiver** in der Desktop-Toolbar, im Handy-Header, im `☰`-Menü sowie im Einstellungs- und Hilfe-Dialog.
+- **Lokale KI mit MTPLX & Inkling 2 Mini dokumentiert (`docs/LOCAL_AI.md`):** Neue deutsch-/englischsprachige Anleitung zu `brew install youssofal/mtplx/mtplx`, `mtplx --version`, `mtplx serve --model Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed`, MailDiver-Konfiguration auf `http://127.0.0.1:8000/v1`, Ollama sowie Hinweis zu `mtplx connect opencode` für OpenCode / T3 Code.
+- **Lokale KI & Copilot-Synchronisierung:**
+  - *Zusammenfassen / Entwurf / Termin / Kontakte* im Inspector übernehmen jetzt den in der Copilot-Seitenleiste gewählten Provider & das gewählte Modell (`AnalyzeRequest.Backend`/`Model`).
+  - Streaming-Chat (`ChatStream`) beherrscht jetzt ebenfalls den automatischen Retry ohne `response_format=json_object` (inkl. `guided decoding`/`llguidance`-Erkennung), und der Copilot fällt automatisch ohne `tools` zurück, wenn ein lokales Modell kein Function-Calling unterstützt.
+  - `openaicompat` unterstützt jetzt `OPENAICOMPAT_API_KEY` direkt in den Einstellungen, lokale `openaicompat`-Endpoints werden in der Hilfe korrekt als *Lokal (0 Cloud-Tokens)* erkannt, und die Copilot-Seitenleiste erhält einen `↻`-Button zum Nachladen von Modellen.
+  - In den Einstellungen bleiben Endpoints pro Provider erhalten, `ListModelsFor` nutzt gespeicherte API-Keys und zeigt Modell-Ladefehler inline an, und beim Speichern synchronisiert sich die Copilot-Seitenleiste sofort.
+- **Mail-Engine, MIME & IMAP-Robustheit:**
+  - RFC-2231-Fallback-Parser (`parseLooseMIMEParams`) berücksichtigt jetzt Semikolons in Anführungszeichen, `charset'lang'value`-Präfixe, numerisch sortierte `*0*`/`*1*`-Fortsetzungen und gibt erweiterten Dateinamen Vorrang; auch `ExtractInlineImage(s)` nutzt den toleranten `Content-Type`-Parser.
+  - `EmptyTrash` & `EmptySpam` nutzen jetzt den pro-Account-Sync-Lock; `MarkSpam`, Spam-Filterregeln und Host-Archivierung setzen vor dem Verschieben konsistent `\Seen`; Rückgängig (`⌘Z`) stellt bei zuvor ungelesenen Mails im Papierkorb/Spam das `\Unseen`-Flag wieder her (`RestoreUnread`).
+  - `watchIMAPCtx` schließt blockierende IMAP-Sockets bei `SetWorkersPaused(true)` sofort, `io.EOF` wird als transienter Netzabbruch erkannt, und `Junk E-Mail` / `Bulk Mail` werden zuverlässig als Spam-Ordner klassifiziert.
+  - Büroklammer-Symbol in der Mailliste (Desktop & Handy) für Mails mit Anhängen (`HasAttachments`), scrollbare Anhang-Leiste bei vielen Anhängen, CSV/TSV-Tabellenvorschau & Monospace-Textvorschau in der Anhang-Vorschau.
+- **Editor, Mobil-UX & Feinschliff:**
+  - WYSIWYG-Editor: `Return`-`<p>`-Normalisierung läuft nach der Browser-Mutation mit exakter Cursor-Positionierung; `Shift+Return` sorgt am Absatzende verlässlich für den Sentinel-`<br>`; Signatur-Schutz beschneidet Markierungen sauber statt den gesamten Mailtext zu leeren (erhält `⌘Z` Undo); Paste-Sanitizer nutzt `DOMParser` ohne spekulative Bild-Requests; `⌘↩` und `⌘S` (Entwurf speichern) funktionieren auch mit aktivem WYSIWYG-Editor; `a`/`Shift+R` (Allen antworten) und `f` (Weiterleiten) als Tastenkürzel ergänzt.
+  - Android/Mobil-Lifecycle: Race-freie Worker-Pause/Resume-Serialisierung (`pauseMu` + Timer-Generation), WLAN↔5G-Handoff-Reconnect, thread-sicheres `uiLang()` für WorkManager-Benachrichtigungen, automatisches Zurückspringen aus dem Handy-Reader nach Entfernen einer Mail, *Verschieben*-Button in der Handy-Auswahlleiste und `✕`-Button in der Undo-Leiste.
+  - Ungelesen-Zähler & Ordner: Fokus zählt nur noch tatsächlich ungelesene Mails, Papierkorb & Spam zeigen keine Ungelesen-Badges mehr, globale Ungelesen-Zahl kommt aus den Ordnerzählern ohne Papierkorb/Spam/Entwürfe/Gesendet, und *Weitere Ordner* summiert auch eingeklappte Unterordner.
+
 ## 0.7.12 (2026-11-22)
 
 ### KI-Fallback bei Servern ohne `response_format: json_object` (z. B. MTPLX)

@@ -14,6 +14,8 @@ import (
 )
 
 type AnalyzeRequest struct {
+	Backend          string                         `json:"backend,omitempty"`
+	Model            string                         `json:"model,omitempty"`
 	Mode             string                         `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
 	Ephemeral        bool                           `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
 	Language         string                         `json:"language,omitempty"`  // "de" or "en"
@@ -489,7 +491,11 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	}
 	promptBuilder.WriteString(WrapUntrusted("email_context", contextObj))
 
-	completer := CompleterFor(cfg, cfg.Agent)
+	prov := ProviderForBackend(cfg, req.Backend)
+	if m := strings.TrimSpace(req.Model); m != "" {
+		prov.Model = m
+	}
+	completer := CompleterFor(cfg, prov)
 	out, err := completer.Complete(ctx, agentSystemPrompt, promptBuilder.String(), true)
 	if err != nil {
 		return AnalyzeResponse{}, err
@@ -687,7 +693,7 @@ func BuildICS(events []ExtractedEvent, now time.Time) string {
 	}
 	stamp := now.UTC().Format("20060102T150405Z")
 	var b strings.Builder
-	b.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OmaThunder//Mail Calendar Export//EN\r\nCALSCALE:GREGORIAN\r\n")
+	b.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//MailDiver//Mail Calendar Export//EN\r\nCALSCALE:GREGORIAN\r\n")
 	for i, ev := range events {
 		dtStart, dtEnd, allDay, ok := formatEventRange(ev.Start, ev.End, ev.AllDay)
 		if !ok {
@@ -698,7 +704,7 @@ func BuildICS(events []ExtractedEvent, now time.Time) string {
 			summary = "Termin"
 		}
 		b.WriteString("BEGIN:VEVENT\r\n")
-		fmt.Fprintf(&b, "UID:omathunder-%d-%d@omathunder.dev\r\n", now.UnixMilli(), i)
+		fmt.Fprintf(&b, "UID:maildiver-%d-%d@maildiver.app\r\n", now.UnixMilli(), i)
 		fmt.Fprintf(&b, "DTSTAMP:%s\r\n", stamp)
 		if allDay {
 			fmt.Fprintf(&b, "DTSTART;VALUE=DATE:%s\r\n", dtStart)

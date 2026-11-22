@@ -54,6 +54,7 @@ type Options struct {
 	// Backend is the in-process access to the mail engine, the AI layer and the jobs.
 	Backend       *backend.Client
 	Direct        DirectController // account setup, Google/iCal, contacts, Thunderbird import
+	Version       string           // build version string (e.g. "0.7.13")
 	InitialMailto string           // optional mailto: URL passed on launch
 }
 
@@ -272,6 +273,7 @@ type App struct {
 	eventWindowSeq     uint64
 
 	// Connection & live status
+	appVersion      string
 	engineReady     bool
 	networkOffline  bool
 	readOnly        bool
@@ -294,6 +296,7 @@ type App struct {
 	langChoice    string // "auto", "de", "en"
 	langLabel     string // "Auto", "Deutsch", "English"
 	lang          string // resolved: "de" or "en"
+	langAtomic    atomic.Pointer[string]
 	themeCfg      atomic.Pointer[config.ThemeConfig]
 
 	// Navigation & filters
@@ -436,6 +439,7 @@ func NewApp(opts Options) *App {
 		opts:             opts,
 		cfg:              cfg,
 		store:            opts.Store,
+		appVersion:       strings.TrimSpace(opts.Version),
 		engineReady:      opts.Backend != nil,
 		readOnly:         cfg.Mailbox.ReadOnly,
 		activePalette:    pal,
@@ -476,6 +480,7 @@ func NewApp(opts Options) *App {
 	a.pendingActions = make(map[string]*pendingAction)
 	tc := cfg.Theme
 	a.themeCfg.Store(&tc)
+	a.storeLang(resolvedLang)
 	a.quickRuleActionLabel = quickRuleActionLabelLang(a.quickRuleAction, resolvedLang)
 	a.initProvidersFromStatic()
 	if strings.TrimSpace(opts.InitialMailto) != "" {
@@ -621,7 +626,7 @@ func (a *App) applyConfig(cfg config.Config) {
 	prevLang := a.lang
 	a.langChoice = norm
 	a.langLabel = langLabelForPref(norm)
-	a.lang = resolveUILang(norm)
+	a.storeLang(resolveUILang(norm))
 	if a.lang != prevLang {
 		a.languageChanged()
 	}
@@ -638,12 +643,46 @@ func (a *App) applyConfig(cfg config.Config) {
 	}
 }
 
+// syncCopilotFromConfig updates the Copilot sidebar's selected backend/model after settings save.
+func (a *App) syncCopilotFromConfig(cfg config.Config) {
+	want := ai.CanonicalBackend(cfg.AI.Agent.Backend)
+	if want == "" {
+		return
+	}
+	backendChanged := want != a.agentBackend
+	a.agentBackend = want
+	for lbl, id := range a.backendByLabel {
+		if id == want {
+			a.providerLabel = lbl
+			break
+		}
+	}
+	if m := strings.TrimSpace(cfg.AI.Agent.Model); m != "" {
+		a.agentModel = m
+	} else if backendChanged {
+		a.agentModel = ""
+	}
+	a.LoadModelsAsync(context.Background())
+}
+
+// versionTag returns the formatted version label (e.g. "v0.7.13") or "" if unset.
+func (a *App) versionTag() string {
+	v := strings.TrimSpace(a.appVersion)
+	if v == "" {
+		return ""
+	}
+	if strings.HasPrefix(v, "v") || strings.HasPrefix(v, "V") {
+		return "v" + v[1:]
+	}
+	return "v" + v
+}
+
 func (a *App) SetLanguage(pref string) {
 	norm := normalizeLangPref(pref)
 	resolved := resolveUILang(norm)
 	a.langChoice = norm
 	a.langLabel = langLabelForPref(norm)
-	a.lang = resolved
+	a.storeLang(resolved)
 
 	cfg, err := a.opts.ConfigLoader()
 	if err != nil {
@@ -957,6 +996,9 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 			a.lastError = a.errText(connErr)
 			return
 		}
+		if v := strings.TrimSpace(health.Version); v != "" {
+			a.appVersion = v
+		}
 		a.engineReady = health.Connected
 		a.readOnly = health.ReadOnly
 		a.lastError = ""
@@ -1244,7 +1286,13 @@ func (a *App) applyMessageLoad(req messageLoad, msgs []backend.MessageHeader, to
 	a.setMessages(msgs)
 	a.totalMessages = total
 	if req.navID == "focus" {
-		a.focusUnread = len(msgs)
+		unread := 0
+		for _, m := range msgs {
+			if m.Unread {
+				unread++
+			}
+		}
+		a.focusUnread = unread
 	}
 	a.notifyTray()
 	return true
@@ -1378,6 +1426,7 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 	}
 	a.selectedID = id
 	if !sameMsgReload {
+		a.widgets.inspectorScroll.Y = 0
 		a.inspectorSeq++
 		a.inspectorResult = ""
 		a.inspectorDraft = ""
@@ -1446,6 +1495,8 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	a.inspectorContacts = nil
 	a.inspectorError = ""
 	req := ai.AnalyzeRequest{
+		Backend:   aiBackend,
+		Model:     model,
 		Mode:      mode,
 		Ephemeral: true,
 		Language:  lang,
@@ -2063,14 +2114,15 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 	}
 	// Capture metadata for Undo before mutation.
 	var prevAccountID, prevFolderPath, prevHeaderMsgID string
+	var prevUnread bool
 	for _, m := range a.messages {
 		if m.ID == id {
-			prevAccountID, prevFolderPath, prevHeaderMsgID = m.AccountID, m.Folder, m.MessageID
+			prevAccountID, prevFolderPath, prevHeaderMsgID, prevUnread = m.AccountID, m.Folder, m.MessageID, m.Unread
 			break
 		}
 	}
 	if prevAccountID == "" && a.selectedMsg != nil && a.selectedMsg.ID == id {
-		prevAccountID, prevFolderPath, prevHeaderMsgID = a.selectedMsg.AccountID, a.selectedMsg.Folder, a.selectedMsg.MessageID
+		prevAccountID, prevFolderPath, prevHeaderMsgID, prevUnread = a.selectedMsg.AccountID, a.selectedMsg.Folder, a.selectedMsg.MessageID, a.selectedMsg.Unread
 	}
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 12*time.Second)
@@ -2096,6 +2148,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			for i := range a.messages {
 				if a.messages[i].ID == id {
 					if patch.Read != nil {
+						a.messages[i].Read = *patch.Read
 						a.messages[i].Unread = !*patch.Read
 					}
 					if patch.Flagged != nil {
@@ -2107,6 +2160,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			}
 			if a.selectedMsg != nil && a.selectedMsg.ID == id {
 				if patch.Read != nil {
+					a.selectedMsg.Read = *patch.Read
 					a.selectedMsg.Unread = !*patch.Read
 				}
 				if patch.Flagged != nil {
@@ -2119,10 +2173,11 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			if (removed || leftFocus) && a.selectedID == id {
 				a.selectedID = ""
 				a.selectedMsg = nil
-				if openNext != "" {
+				if openNext != "" && !a.isPhone() {
 					a.SelectMessage(ctx, openNext)
 				} else {
 					a.syncPreviewForMessage(nil)
+					a.phonePopMailIfOpen()
 				}
 			}
 			// Record reversible Undo action (never for permanent deletes).
@@ -2137,6 +2192,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 						MessageID:      prevHeaderMsgID,
 						FromFolderPath: prevFolderPath,
 						ToFolderPath:   movedTarget,
+						RestoreUnread:  prevUnread && (patch.Trash || a.isTrashOrJunkPath(prevAccountID, movedTarget)),
 					}},
 				}
 			case !removed && patch.Read != nil:
@@ -3018,74 +3074,61 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 	a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig(body, composeSignatureBlockHTMLFromParts(sig, sigHTML), sigBelow, "", "", nil, quote)
 	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
-	if msg.Security.Encrypted && a.opts.Direct != nil {
-		if msg.Security.PGP {
-			a.composeCryptoTech = 2
-			knownPGP := map[string]bool{}
-			for _, pk := range a.opts.Direct.ListPGPContacts() {
-				if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
-					knownPGP[em] = true
-				}
-				for _, em := range pk.Emails {
-					knownPGP[strings.ToLower(strings.TrimSpace(em))] = true
-				}
+	a.refreshReplyAutoEncrypt(msg.Security.Encrypted, msg.Security.PGP)
+}
+
+// refreshReplyAutoEncrypt checks whether all current To/CC recipients have a known encryption key
+// and sets composeEncrypt accordingly when replying to an encrypted email.
+func (a *App) refreshReplyAutoEncrypt(encrypted, isPGP bool) {
+	a.composeEncrypt = false
+	if !encrypted || a.opts.Direct == nil {
+		return
+	}
+	rcpts := append(splitEmailList(a.composeTo), splitEmailList(a.composeCC)...)
+	if len(rcpts) == 0 {
+		return
+	}
+	known := map[string]bool{}
+	if isPGP {
+		a.composeCryptoTech = 2
+		for _, pk := range a.opts.Direct.ListPGPContacts() {
+			if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
+				known[em] = true
 			}
-			for _, pk := range a.opts.Direct.ListPGPIdentities() {
-				if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
-					knownPGP[em] = true
-				}
+			for _, em := range pk.Emails {
+				known[strings.ToLower(strings.TrimSpace(em))] = true
 			}
-			rcpts := splitEmailList(a.composeTo)
-			if len(rcpts) > 0 {
-				allHave := true
-				for _, r := range rcpts {
-					em := strings.ToLower(strings.TrimSpace(r))
-					if addr, err := mail.ParseAddress(r); err == nil {
-						em = strings.ToLower(strings.TrimSpace(addr.Address))
-					}
-					if !knownPGP[em] {
-						allHave = false
-						break
-					}
-				}
-				if allHave {
-					a.composeEncrypt = true
-				}
-			}
-			return
 		}
-		knownCert := map[string]bool{}
+		for _, pk := range a.opts.Direct.ListPGPIdentities() {
+			if em := strings.ToLower(strings.TrimSpace(pk.Email)); em != "" {
+				known[em] = true
+			}
+		}
+	} else {
 		for _, ci := range a.opts.Direct.ListSMIMEContacts() {
 			if em := strings.ToLower(strings.TrimSpace(ci.Email)); em != "" {
-				knownCert[em] = true
+				known[em] = true
 			}
 			for _, em := range ci.Emails {
-				knownCert[strings.ToLower(strings.TrimSpace(em))] = true
+				known[strings.ToLower(strings.TrimSpace(em))] = true
 			}
 		}
 		for _, ci := range a.opts.Direct.ListSMIMEIdentities() {
 			if em := strings.ToLower(strings.TrimSpace(ci.Email)); em != "" {
-				knownCert[em] = true
-			}
-		}
-		rcpts := splitEmailList(a.composeTo)
-		if len(rcpts) > 0 {
-			allHave := true
-			for _, r := range rcpts {
-				em := strings.ToLower(strings.TrimSpace(r))
-				if addr, err := mail.ParseAddress(r); err == nil {
-					em = strings.ToLower(strings.TrimSpace(addr.Address))
-				}
-				if !knownCert[em] {
-					allHave = false
-					break
-				}
-			}
-			if allHave {
-				a.composeEncrypt = true
+				known[em] = true
 			}
 		}
 	}
+	for _, r := range rcpts {
+		em := strings.ToLower(strings.TrimSpace(r))
+		if addr, err := mail.ParseAddress(r); err == nil {
+			em = strings.ToLower(strings.TrimSpace(addr.Address))
+		}
+		if !known[em] {
+			return
+		}
+	}
+	a.composeEncrypt = true
 }
 
 // maxQuoteRunes bounds the quoted original in a reply.
@@ -3170,6 +3213,9 @@ func (a *App) OpenComposeReplyAll(msg *backend.MessageDetail, body string) {
 	addCC(msg.To)
 	addCC(msg.CC)
 	a.composeCC = strings.Join(cc, ", ")
+	if msg.Security.Encrypted {
+		a.refreshReplyAutoEncrypt(true, msg.Security.PGP)
+	}
 }
 
 func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
@@ -3193,12 +3239,22 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 	a.composeSubject = subj
 	dateStr := formatDateTimeLang(msg.Date, a.uiLang())
 	sep := fmt.Sprintf("---------- %s ----------", a.tr("Weitergeleitete Nachricht", "Forwarded message"))
-	header := fmt.Sprintf("\n\n%s\n%s %s\n%s %s\n%s %s\n\n%s",
+	toLine := ""
+	if len(msg.To) > 0 {
+		toLine = fmt.Sprintf("\n%s %s", a.tr("An:", "To:"), strings.Join(msg.To, ", "))
+	}
+	fwdBodyText := strings.TrimSpace(msg.BodyText)
+	if fwdBodyText == "" && strings.TrimSpace(msg.BodyHtml) != "" {
+		md, _ := htmlMailMarkdown(msg.BodyHtml)
+		fwdBodyText = strings.TrimSpace(md)
+	}
+	header := fmt.Sprintf("\n\n%s\n%s %s%s\n%s %s\n%s %s\n\n%s",
 		sep,
 		a.tr("Von:", "From:"), msg.From,
+		toLine,
 		a.tr("Datum:", "Date:"), dateStr,
 		a.tr("Betreff:", "Subject:"), msg.Subject,
-		strings.TrimSpace(msg.BodyText),
+		fwdBodyText,
 	)
 	sigPlain, sigCustomHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
 	sig := stripSignatureDelim(sigPlain)
@@ -3225,7 +3281,7 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeForwardSubj = msg.Subject
 		a.composeForwardSep = sep
 		a.composeKeepHTML = true
-		fwdMeta := fmt.Sprintf("%s\n%s %s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
+		fwdMeta := fmt.Sprintf("%s\n%s %s%s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, toLine, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
 		a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig("", sigBlock, sigBelow, fwdMeta, msg.BodyHtml, nil, "")
 		a.composeEditorGen++
 		if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {
@@ -3330,8 +3386,22 @@ func (a *App) refreshComposeSuggestions(field, raw string) {
 func (a *App) applyComposeSuggestion(field string, s mailengine.RecipientSuggestion) {
 	formatted := formatEmailAddress(s.DisplayName, s.Email)
 	replaceLast := func(cur string) string {
-		if idx := strings.LastIndex(cur, ","); idx >= 0 {
-			prefix := strings.TrimSpace(cur[:idx])
+		inQuotes := false
+		lastComma := -1
+		for i := 0; i < len(cur); i++ {
+			switch cur[i] {
+			case '"':
+				inQuotes = !inQuotes
+			case '\\':
+				i++
+			case ',':
+				if !inQuotes {
+					lastComma = i
+				}
+			}
+		}
+		if lastComma >= 0 {
+			prefix := strings.TrimSpace(cur[:lastComma])
 			if prefix != "" {
 				return prefix + ", " + formatted + ", "
 			}
@@ -3771,15 +3841,63 @@ func (a *App) triageColumnFor(id string) string {
 	return ""
 }
 
+func (a *App) isTrashOrJunkPath(accountID, folderPath string) bool {
+	p := strings.TrimSpace(folderPath)
+	if p == "" {
+		return false
+	}
+	for _, f := range a.folders {
+		if (accountID == "" || f.AccountID == accountID) && strings.EqualFold(cleanFolderPath(f.Path), cleanFolderPath(p)) {
+			return isTrashOrJunkFolder(f)
+		}
+	}
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(p, "\\", "/"))))
+	switch base {
+	case "trash", "deleted", "deleted items", "deleted messages", "papierkorb", "gelöscht", "geloescht",
+		"junk", "spam", "junk-e-mail", "junk e-mail", "bulk mail", "werbung":
+		return true
+	}
+	return false
+}
+
 func (a *App) unreadCount() int {
+	if len(a.folders) > 0 {
+		n := 0
+		for _, f := range a.folders {
+			if a.selectedAccount != "" && f.AccountID != a.selectedAccount {
+				continue
+			}
+			if isTrashOrJunkFolder(f) {
+				continue
+			}
+			t := strings.ToLower(strings.TrimSpace(f.Type))
+			if t == "drafts" || t == "sent" {
+				continue
+			}
+			if f.UnreadCount > 0 {
+				n += f.UnreadCount
+			}
+		}
+		if n > 0 {
+			return n
+		}
+	}
+	if a.focusUnread > 0 {
+		return a.focusUnread
+	}
+	if strings.HasPrefix(a.navID, "folder:") {
+		fid := strings.TrimPrefix(a.navID, "folder:")
+		for _, f := range a.folders {
+			if f.ID == fid && isTrashOrJunkFolder(f) {
+				return 0
+			}
+		}
+	}
 	n := 0
 	for _, m := range a.messages {
 		if m.Unread {
 			n++
 		}
-	}
-	if a.navID != "focus" && a.focusUnread > n {
-		return a.focusUnread
 	}
 	return n
 }
@@ -3826,9 +3944,6 @@ func (a *App) TrayTooltip() string {
 	if !a.engineReady {
 		return a.tr("MailDiver — Mail-Dienst offline", "MailDiver — Mail engine offline")
 	}
-	if !a.engineReady {
-		return a.tr("MailDiver — Verbinde Postfächer…", "MailDiver — Connecting mailboxes…")
-	}
 	today := a.todayEvents()
 	return a.trf(
 		"MailDiver Live · %d ungelesen · %d Action · %d Termine heute",
@@ -3845,6 +3960,15 @@ func parseEventTime(raw string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02", raw)
+}
+
+func isLoopbackEndpointURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
 func shortSender(from string) string {

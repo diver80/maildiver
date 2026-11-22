@@ -15,6 +15,7 @@ import (
 	"github.com/diver80/maildiver/internal/backend"
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/events"
+	"github.com/diver80/maildiver/internal/mailengine"
 	"github.com/diver80/maildiver/internal/triage"
 )
 
@@ -266,11 +267,47 @@ func TestComposeEditorEnhancedToolbarAndImageControls(t *testing.T) {
 			`#editor p { margin: 0 0 0.75em 0; }`,
 			`updateFormatStates`,
 			`sanitizePastedHTML`,
+			`DOMParser`,
+			`clampSelectionBeforeSig`,
+			`normalizeUserDivsPreservingSelection`,
+			`ensureTrailingBRSentinel`,
 			`removeAttribute('contenteditable')`,
 		} {
 			if !strings.Contains(doc, want) {
 				t.Fatalf("lang=%s: expected %q in compose editor document", lang, want)
 			}
 		}
+	}
+}
+
+func TestVersionDisplayedInUIAndCSVPreview(t *testing.T) {
+	cfg := config.Default()
+	cfg.Language = "de"
+	app := NewApp(Options{
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(config.Config) error { return nil },
+		Store:        triage.NewStoreAt(t.TempDir()),
+		Version:      "0.7.13",
+	})
+	tt := ui.NewTester(func(c *ui.Context) {
+		app.winW = 1280
+		app.winH = 820
+		app.renderToolbar(c)
+	}, 1280, 120)
+	tt.Frame()
+	if !tt.HasText("MailDiver") || !tt.HasText("v0.7.13") {
+		t.Fatalf("expected MailDiver + v0.7.13 in toolbar, texts=%v", tt.Texts())
+	}
+
+	app.applyComposeSuggestion("to", mailengine.RecipientSuggestion{DisplayName: "Bob", Email: "bob@example.com"})
+	app.composeTo = `"Doe, Jane" <jane@example.com>, bo`
+	app.applyComposeSuggestion("to", mailengine.RecipientSuggestion{DisplayName: "Bob", Email: "bob@example.com"})
+	if !strings.HasPrefix(app.composeTo, `"Doe, Jane" <jane@example.com>, Bob <bob@example.com>`) {
+		t.Fatalf("quoted display name comma corrupted by applyComposeSuggestion: %q", app.composeTo)
+	}
+
+	md, cut, ok := formatDelimitedTableMarkdown("Name;Betrag\nAlice;12,50\nBob;9,00\n", ".csv", 200)
+	if !ok || cut || !strings.Contains(md, "| Name | Betrag |") || !strings.Contains(md, "| Alice | 12,50 |") {
+		t.Fatalf("unexpected CSV markdown preview: ok=%v cut=%v md=%q", ok, cut, md)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"runtime"
@@ -29,6 +30,9 @@ func IsTransientNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		return true
@@ -47,6 +51,9 @@ func IsTransientNetworkErrorMsg(msg string) bool {
 	if low == "" {
 		return false
 	}
+	if low == "eof" {
+		return true
+	}
 	if strings.Contains(low, "anmeldung fehlgeschlagen") || strings.Contains(low, "authentication") ||
 		strings.Contains(low, "invalid credentials") || strings.Contains(low, "login failed") {
 		return false
@@ -64,6 +71,7 @@ func IsTransientNetworkErrorMsg(msg string) bool {
 		"i/o timeout",
 		"context deadline exceeded",
 		"unexpected eof",
+		": eof",
 	} {
 		if strings.Contains(low, needle) {
 			return true
@@ -118,6 +126,7 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 	}
 
 	// Authenticate: XOAUTH2 (Gmail/Microsoft 365) when configured, else SASL PLAIN with LOGIN fallback.
+	stopAuthWatch := watchIMAPCtx(ctx, c)
 	user := acc.EffectiveUsername()
 	caps := c.Caps()
 	var authErr error
@@ -138,8 +147,12 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 			}
 		}
 	}
+	stopAuthWatch()
 	if authErr != nil {
 		_ = c.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("IMAP Anmeldung fehlgeschlagen (%s): %w", user, authErr)
 	}
 	return c, nil
@@ -362,7 +375,7 @@ func classifyFolderAttrs(path string, attrs []imap.MailboxAttr) (folderType stri
 			folderType = "drafts"
 		case "trash", "deleted", "deleted items", "deleted messages", "papierkorb", "gelöscht", "geloescht":
 			folderType = "trash"
-		case "junk", "spam", "junk-e-mail", "werbung":
+		case "junk", "spam", "junk-e-mail", "junk e-mail", "bulk mail", "werbung":
 			folderType = "junk"
 		case "archive", "archiv", "all mail":
 			folderType = "archive"
@@ -891,7 +904,9 @@ func (e *Engine) applyMessageActionIMAP(ctx context.Context, acc config.DirectAc
 	if err != nil {
 		return err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
@@ -939,7 +954,9 @@ func (e *Engine) applyBatchActionsIMAP(ctx context.Context, acc config.DirectAcc
 		}
 		return results
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
@@ -1148,13 +1165,19 @@ func (e *Engine) undoMoveIMAP(ctx context.Context, acc config.DirectAccount, ite
 	if err != nil {
 		return 0, err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
 
 	type pairKey struct{ to, from string }
-	grouped := map[pairKey][]string{}
+	type undoEntry struct {
+		mid           string
+		restoreUnread bool
+	}
+	grouped := map[pairKey][]undoEntry{}
 	var order []pairKey
 	for _, it := range items {
 		to := strings.TrimSpace(it.ToFolderPath)
@@ -1167,7 +1190,7 @@ func (e *Engine) undoMoveIMAP(ctx context.Context, acc config.DirectAccount, ite
 		if _, ok := grouped[k]; !ok {
 			order = append(order, k)
 		}
-		grouped[k] = append(grouped[k], mid)
+		grouped[k] = append(grouped[k], undoEntry{mid: mid, restoreUnread: it.RestoreUnread})
 	}
 
 	restored := 0
@@ -1183,8 +1206,10 @@ func (e *Engine) undoMoveIMAP(ctx context.Context, acc config.DirectAccount, ite
 			continue
 		}
 		var matchedUIDs []imap.UID
+		var restoreUnreadUIDs []imap.UID
 		seenUID := map[imap.UID]bool{}
-		for _, mid := range grouped[k] {
+		for _, entry := range grouped[k] {
+			mid := entry.mid
 			// Match exact angle-bracketed Message-ID first to avoid substring collisions.
 			data, err := c.UIDSearch(&imap.SearchCriteria{
 				Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + mid + ">"}},
@@ -1218,10 +1243,21 @@ func (e *Engine) undoMoveIMAP(ctx context.Context, acc config.DirectAccount, ite
 			if newest > 0 && !seenUID[newest] {
 				seenUID[newest] = true
 				matchedUIDs = append(matchedUIDs, newest)
+				if entry.restoreUnread {
+					restoreUnreadUIDs = append(restoreUnreadUIDs, newest)
+				}
 			}
 		}
 		if len(matchedUIDs) == 0 {
 			continue
+		}
+		// Restore \Unseen before moving back for messages that were auto-marked read on Trash/Spam move.
+		for _, unreadSet := range chunkUIDs(restoreUnreadUIDs, imapUIDChunkSize) {
+			_ = c.Store(unreadSet, &imap.StoreFlags{
+				Op:     imap.StoreFlagsDel,
+				Silent: true,
+				Flags:  []imap.Flag{imap.FlagSeen},
+			}, nil).Close()
 		}
 		for _, uidSet := range chunkUIDs(matchedUIDs, imapUIDChunkSize) {
 			if err := moveMessagesIMAP(c, uidSet, k.from); err != nil {
@@ -1424,7 +1460,9 @@ func (e *Engine) emptyFolderIMAP(ctx context.Context, acc config.DirectAccount, 
 	if err != nil {
 		return 0, err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
+		stopWatch()
 		_ = c.Logout().Wait()
 		_ = c.Close()
 	}()
@@ -1586,6 +1624,7 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 					}
 				case "junk":
 					if junkFolderPath != "" && !strings.EqualFold(junkFolderPath, folder.Path) {
+						_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
 						if err := moveMessagesIMAP(c, uidSet, junkFolderPath); err == nil {
 							_ = e.store.DeleteMessage(ctx, m.ID)
 							removed = true
@@ -1817,7 +1856,11 @@ func (e *Engine) idleOnce(ctx context.Context, acc config.DirectAccount, backfil
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	stopWatch := watchIMAPCtx(ctx, c)
+	defer func() {
+		stopWatch()
+		_ = c.Close()
+	}()
 
 	inboxPath := "INBOX"
 	if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {

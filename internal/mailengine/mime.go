@@ -12,6 +12,8 @@ import (
 	"net/mail"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,46 +149,139 @@ func parseMIMEDisposition(h message.Header, ctParams map[string]string) (disp st
 	return disp, strings.TrimSpace(filename)
 }
 
+// splitMIMEParams splits a semicolon-separated MIME parameter string while respecting
+// quoted values (so semicolons inside quotes like filename="a;b.pdf" stay intact).
+func splitMIMEParams(rest string) []string {
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	escaped := false
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if escaped {
+			cur.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if inQuote && ch == '\\' {
+			cur.WriteByte(ch)
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inQuote = !inQuote
+			cur.WriteByte(ch)
+			continue
+		}
+		if ch == ';' && !inQuote {
+			parts = append(parts, cur.String())
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(ch)
+	}
+	if cur.Len() > 0 {
+		parts = append(parts, cur.String())
+	}
+	return parts
+}
+
+func trimMatchingQuotes(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		inner := v[1 : len(v)-1]
+		var b strings.Builder
+		for i := 0; i < len(inner); i++ {
+			if inner[i] == '\\' && i+1 < len(inner) {
+				i++
+			}
+			b.WriteByte(inner[i])
+		}
+		return b.String()
+	}
+	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		return v[1 : len(v)-1]
+	}
+	return v
+}
+
 // parseLooseMIMEParams extracts key=value parameters (including RFC 2231 continuations like
-// filename*0=...; filename*1=...) from headers whose strict mime.ParseMediaType failed.
+// filename*0*=utf-8'de'foo%20; filename*1*=bar%20baz.pdf) from headers whose strict
+// mime.ParseMediaType failed.
 func parseLooseMIMEParams(rest string) map[string]string {
-	out := map[string]string{}
-	parts := strings.Split(rest, ";")
-	cont := map[string][]string{}
-	for _, seg := range parts {
+	type contPiece struct {
+		idx   int
+		order int
+		val   string
+	}
+	plain := map[string]string{}
+	ext := map[string]string{}
+	cont := map[string][]contPiece{}
+	order := 0
+	for _, seg := range splitMIMEParams(rest) {
 		seg = strings.TrimSpace(seg)
 		eq := strings.IndexByte(seg, '=')
 		if eq <= 0 {
 			continue
 		}
 		k := strings.ToLower(strings.TrimSpace(seg[:eq]))
-		v := strings.TrimSpace(seg[eq+1:])
-		v = strings.Trim(v, `"'`)
+		v := trimMatchingQuotes(seg[eq+1:])
 		if idx := strings.IndexByte(k, '*'); idx > 0 {
 			base := k[:idx]
 			suffix := k[idx+1:]
-			// Strip RFC 2231 charset'' prefix if present (e.g. utf-8''foo%20bar.csv)
-			if strings.HasSuffix(suffix, "*") || suffix == "" {
-				if _, after, ok := strings.Cut(v, "''"); ok {
-					v = decodeRFC2231Percent(after)
+			isExt := suffix == "" || strings.HasSuffix(suffix, "*")
+			if isExt {
+				// RFC 2231: charset'lang'value appears on key*= and key*0*=; subsequent *N*= segments are percent-encoded only.
+				if suffix == "" || suffix == "0*" {
+					if p1 := strings.IndexByte(v, '\''); p1 >= 0 {
+						if p2 := strings.IndexByte(v[p1+1:], '\''); p2 >= 0 {
+							v = v[p1+1+p2+1:]
+						}
+					}
 				}
+				v = decodeRFC2231Percent(v)
 			}
 			if suffix == "" {
-				if out[base] == "" {
-					out[base] = v
+				if v != "" {
+					ext[base] = v
 				}
 			} else {
-				cont[base] = append(cont[base], v)
+				numStr := strings.TrimSuffix(suffix, "*")
+				n, err := strconv.Atoi(numStr)
+				if err != nil {
+					n = order
+				}
+				cont[base] = append(cont[base], contPiece{idx: n, order: order, val: v})
+				order++
 			}
 			continue
 		}
-		if out[k] == "" && v != "" {
-			out[k] = v
+		if plain[k] == "" && v != "" {
+			plain[k] = v
 		}
 	}
-	for base, chunks := range cont {
-		if out[base] == "" {
-			out[base] = strings.Join(chunks, "")
+	out := make(map[string]string, len(plain)+len(ext)+len(cont))
+	for k, v := range plain {
+		out[k] = v
+	}
+	for base, pieces := range cont {
+		sort.SliceStable(pieces, func(i, j int) bool {
+			if pieces[i].idx != pieces[j].idx {
+				return pieces[i].idx < pieces[j].idx
+			}
+			return pieces[i].order < pieces[j].order
+		})
+		var b strings.Builder
+		for _, p := range pieces {
+			b.WriteString(p.val)
+		}
+		if joined := b.String(); joined != "" {
+			out[base] = joined
+		}
+	}
+	for base, v := range ext {
+		if v != "" {
+			out[base] = v
 		}
 	}
 	return out
@@ -397,8 +492,7 @@ func ExtractInlineImage(raw []byte, cid string) (contentType string, data []byte
 		if e == nil || depth > 12 || found {
 			return
 		}
-		ct, _, _ := e.Header.ContentType()
-		ct = strings.ToLower(strings.TrimSpace(ct))
+		ct, _ := parseMIMEContentType(e.Header)
 		if strings.HasPrefix(ct, "multipart/") {
 			mr := e.MultipartReader()
 			if mr == nil {
@@ -448,8 +542,7 @@ func ExtractAllInlineImages(raw []byte) map[string]InlineImage {
 		if e == nil || depth > 12 || len(out) >= maxInlineImageCount {
 			return
 		}
-		ct, _, _ := e.Header.ContentType()
-		ct = strings.ToLower(strings.TrimSpace(ct))
+		ct, _ := parseMIMEContentType(e.Header)
 		if strings.HasPrefix(ct, "multipart/") {
 			mr := e.MultipartReader()
 			if mr == nil {

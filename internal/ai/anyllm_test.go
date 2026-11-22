@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -232,7 +233,7 @@ func TestOpenAICompatNeverGetsOpenAIKey(t *testing.T) {
 	if _, err := Chat(context.Background(), cfg, ChatRequest{Messages: []anyllm.Message{{Role: anyllm.RoleUser, Content: "hi"}}}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := rec.header(0).Get("Authorization"); got != "Bearer omathunder-local" {
+	if got := rec.header(0).Get("Authorization"); got != "Bearer maildiver-local" {
 		t.Fatalf("without OPENAICOMPAT_API_KEY a placeholder must be sent, got %q", got)
 	}
 	if got := rec.header(1).Get("Authorization"); got != "Bearer compat-key" {
@@ -490,5 +491,78 @@ func TestJSONObjectResponseFormatFallback(t *testing.T) {
 	}
 	if got != `{"summary":"OK"}` {
 		t.Fatalf("unexpected fallback content %q", got)
+	}
+}
+
+func TestChatStreamJSONFallback(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), "json_object") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"guided decoding not enabled: llguidance missing","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"mtplx\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "llamacpp", Model: "mtplx-inkling-2-mini", Endpoint: srv.URL + "/v1"}
+	chunks, errs := ChatStream(context.Background(), cfg, ChatRequest{
+		Messages:       []anyllm.Message{{Role: anyllm.RoleUser, Content: "Hi"}},
+		ResponseFormat: &anyllm.ResponseFormat{Type: "json_object"},
+		Stream:         true,
+	})
+	var sb strings.Builder
+	for ch := range chunks {
+		if len(ch.Choices) > 0 {
+			sb.WriteString(ch.Choices[0].Delta.Content)
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls (initial + stream fallback), got %d", calls)
+	}
+	if sb.String() != "hello" {
+		t.Fatalf("expected streamed fallback text 'hello', got %q", sb.String())
+	}
+}
+
+func TestAnalyzeHonorsRequestBackendAndModel(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-2","object":"chat.completion","model":"custom-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"answer\":\"Kurzfassung\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "ollama", Model: "other-model"}
+	cfg.Endpoints = map[string]string{"llamacpp": srv.URL + "/v1"}
+
+	res, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Backend: "llamacpp",
+		Model:   "custom-model",
+		Mode:    "summarize",
+	})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if gotModel != "custom-model" || res.Provider != "llamacpp" {
+		t.Fatalf("expected llamacpp/custom-model, got provider=%q model=%q", res.Provider, gotModel)
 	}
 }

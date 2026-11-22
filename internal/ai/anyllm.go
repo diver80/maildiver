@@ -86,7 +86,20 @@ func isUnsupportedResponseFormatError(err error) bool {
 		return false
 	}
 	low := strings.ToLower(err.Error())
-	return strings.Contains(low, "response_format") || strings.Contains(low, "json_object")
+	for _, needle := range []string{
+		"response_format",
+		"json_object",
+		"structured output",
+		"json mode",
+		"guided_json",
+		"guided decoding",
+		"llguidance",
+	} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func completeWithJSONFallback(ctx context.Context, p anyllm.Provider, params anyllm.CompletionParams) (*anyllm.ChatCompletion, error) {
@@ -222,8 +235,98 @@ func ChatStream(ctx context.Context, aiCfg config.AIConfig, req ChatRequest, ext
 		return errorStream(err)
 	}
 	sctx, cancel := context.WithTimeout(ctx, streamMaxDuration)
-	srcChunks, srcErrs := p.CompletionStream(sctx, chatParams(model, req, true))
-	return watchStream(sctx, cancel, srcChunks, srcErrs, streamIdleTimeout)
+	params := chatParams(model, req, true)
+	srcChunks, srcErrs := p.CompletionStream(sctx, params)
+	if params.ResponseFormat == nil {
+		return watchStream(sctx, cancel, srcChunks, srcErrs, streamIdleTimeout)
+	}
+	return watchStreamWithJSONFallback(sctx, cancel, p, params, srcChunks, srcErrs, streamIdleTimeout)
+}
+
+// watchStreamWithJSONFallback wraps a streaming call with ResponseFormat set so that if the
+// server rejects response_format before emitting any chunk, we transparently retry once without
+// ResponseFormat (matching completeWithJSONFallback for non-streaming calls).
+func watchStreamWithJSONFallback(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	p anyllm.Provider,
+	params anyllm.CompletionParams,
+	src <-chan anyllm.ChatCompletionChunk,
+	srcErr <-chan error,
+	idle time.Duration,
+) (<-chan anyllm.ChatCompletionChunk, <-chan error) {
+	out := make(chan anyllm.ChatCompletionChunk)
+	outErr := make(chan error, 1)
+	go func() {
+		defer func() {
+			cancel()
+			close(out)
+			close(outErr)
+		}()
+		curChunks, curErrs := src, srcErr
+		retried := false
+		emittedAny := false
+		timer := time.NewTimer(idle)
+		defer timer.Stop()
+		for curChunks != nil || curErrs != nil {
+			select {
+			case c, ok := <-curChunks:
+				if !ok {
+					curChunks = nil
+					continue
+				}
+				emittedAny = true
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idle)
+				select {
+				case out <- c:
+				case <-ctx.Done():
+					go drainStream(curChunks, curErrs)
+					outErr <- ctx.Err()
+					return
+				}
+			case err, ok := <-curErrs:
+				if !ok {
+					curErrs = nil
+					continue
+				}
+				if err != nil {
+					if !emittedAny && !retried && isUnsupportedResponseFormatError(err) && ctx.Err() == nil {
+						retried = true
+						go drainStream(curChunks, curErrs)
+						retryParams := params
+						retryParams.ResponseFormat = nil
+						curChunks, curErrs = p.CompletionStream(ctx, retryParams)
+						if !timer.Stop() {
+							select {
+							case <-timer.C:
+							default:
+							}
+						}
+						timer.Reset(idle)
+						continue
+					}
+					go drainStream(curChunks, curErrs)
+					outErr <- err
+					return
+				}
+			case <-timer.C:
+				go drainStream(curChunks, curErrs)
+				outErr <- fmt.Errorf("AI stream idle for %s – abgebrochen / aborted", idle)
+				return
+			case <-ctx.Done():
+				go drainStream(curChunks, curErrs)
+				outErr <- ctx.Err()
+				return
+			}
+		}
+	}()
+	return out, outErr
 }
 
 // watchStream forwards a provider stream and ends it with an error when no chunk arrives within

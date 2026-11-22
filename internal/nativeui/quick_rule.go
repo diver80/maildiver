@@ -197,6 +197,7 @@ type actionTarget struct {
 	messageID  string
 	accountID  string
 	folderPath string
+	unread     bool
 }
 
 // applyActionTargets runs patch on every target using batched IMAP calls (one connection per account).
@@ -266,7 +267,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 	}
 	metaByID := make(map[string]actionTarget, len(ids))
 	for _, m := range a.messages {
-		metaByID[m.ID] = actionTarget{id: m.ID, messageID: m.MessageID, accountID: m.AccountID, folderPath: m.Folder}
+		metaByID[m.ID] = actionTarget{id: m.ID, messageID: m.MessageID, accountID: m.AccountID, folderPath: m.Folder, unread: m.Unread}
 	}
 	targets := make([]actionTarget, 0, len(ids))
 	for _, id := range ids {
@@ -294,6 +295,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 						continue
 					}
 					if patch.Read != nil {
+						a.messages[i].Read = *patch.Read
 						a.messages[i].Unread = !*patch.Read
 					}
 					if patch.Flagged != nil {
@@ -305,6 +307,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 				}
 				if a.selectedMsg != nil && okSet[a.selectedMsg.ID] {
 					if patch.Read != nil {
+						a.selectedMsg.Read = *patch.Read
 						a.selectedMsg.Unread = !*patch.Read
 					}
 					if patch.Flagged != nil {
@@ -339,6 +342,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 								MessageID:      t.messageID,
 								FromFolderPath: t.folderPath,
 								ToFolderPath:   toPath,
+								RestoreUnread:  t.unread && (patch.Trash || a.isTrashOrJunkPath(t.accountID, toPath)),
 							})
 						}
 					}
@@ -882,6 +886,8 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 				), "warning")
 			}
 			a.startMessageLoad(ctx)
+			a.refreshFoldersBackground(ctx)
+			a.reloadDirectState(ctx)
 		})
 	}()
 }

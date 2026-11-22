@@ -2,19 +2,25 @@ package nativeui
 
 import (
 	"context"
+	"encoding/csv"
 	"fmt"
 	"image"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 
 	"github.com/diver80/maildiver/internal/mailengine"
 )
 
-const maxTextPreviewBytes = 128 * 1024
+const (
+	maxTextPreviewBytes = 128 * 1024
+	maxCSVPreviewRows   = 200
+)
 
 type attachmentPreviewState struct {
 	open        bool
@@ -30,6 +36,9 @@ type attachmentPreviewState struct {
 	imgW        int
 	imgH        int
 	textContent string
+	csvMarkdown string
+	csvRowsCut  bool
+	mdOpts      markdown.Options
 	truncated   bool
 	parsedEML   *mailengine.ParsedMessage
 	isPDF       bool
@@ -52,9 +61,92 @@ func (p *attachmentPreviewState) resetMedia() {
 	p.imgW = 0
 	p.imgH = 0
 	p.textContent = ""
+	p.csvMarkdown = ""
+	p.csvRowsCut = false
 	p.parsedEML = nil
 	p.isPDF = false
 	p.truncated = false
+}
+
+// formatDelimitedTableMarkdown parses CSV/TSV text (auto-detecting tab, semicolon, or comma)
+// into a GitHub-flavored Markdown table capped at maxRows rows.
+func formatDelimitedTableMarkdown(raw string, ext string, maxRows int) (md string, truncated bool, ok bool) {
+	cleaned := strings.TrimPrefix(raw, "\uFEFF")
+	if strings.TrimSpace(cleaned) == "" {
+		return "", false, false
+	}
+	delim := ','
+	if ext == ".tsv" {
+		delim = '\t'
+	} else {
+		firstLine := cleaned
+		if nl := strings.IndexAny(firstLine, "\r\n"); nl >= 0 {
+			firstLine = firstLine[:nl]
+		}
+		tabs := strings.Count(firstLine, "\t")
+		semis := strings.Count(firstLine, ";")
+		commas := strings.Count(firstLine, ",")
+		switch {
+		case tabs > semis && tabs > commas && tabs > 0:
+			delim = '\t'
+		case semis > commas && semis > 0:
+			delim = ';'
+		}
+	}
+	r := csv.NewReader(strings.NewReader(cleaned))
+	r.Comma = delim
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+	var rows [][]string
+	maxCols := 0
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", false, false
+		}
+		if len(rows) >= maxRows {
+			truncated = true
+			break
+		}
+		rows = append(rows, rec)
+		if len(rec) > maxCols {
+			maxCols = len(rec)
+		}
+	}
+	if len(rows) == 0 || maxCols < 2 || maxCols > 32 {
+		return "", false, false
+	}
+	esc := func(s string) string {
+		s = strings.ReplaceAll(strings.TrimSpace(s), "\r\n", " ")
+		s = strings.ReplaceAll(s, "\n", " ")
+		s = strings.ReplaceAll(s, "|", "\\|")
+		return s
+	}
+	var b strings.Builder
+	writeRow := func(rec []string) {
+		b.WriteByte('|')
+		for i := 0; i < maxCols; i++ {
+			b.WriteByte(' ')
+			if i < len(rec) {
+				b.WriteString(esc(rec[i]))
+			}
+			b.WriteString(" |")
+		}
+		b.WriteByte('\n')
+	}
+	writeRow(rows[0])
+	b.WriteByte('|')
+	for i := 0; i < maxCols; i++ {
+		b.WriteString(" --- |")
+	}
+	b.WriteByte('\n')
+	for _, rec := range rows[1:] {
+		writeRow(rec)
+	}
+	return b.String(), truncated, true
 }
 
 // OpenAttachmentPreview loads attachment bytes in memory and displays images, plain/code files,
@@ -80,9 +172,11 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 		var imgSrc ui.ImageSource
 		var imgW, imgH int
 		var txt string
+		var csvMD string
+		var csvCut bool
 		var truncated bool
 		var isPDF bool
-		var decodeErr string
+		var decodeErr error
 
 		if err == nil {
 			ext := strings.ToLower(filepath.Ext(data.Name))
@@ -92,7 +186,7 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 				if src, derr := ui.DecodeImage(data.Data); derr == nil {
 					imgSrc = src
 				} else {
-					decodeErr = fmt.Sprintf("Bildformat konnte nicht dekodiert werden (%v) — bitte über „Speichern & Öffnen“ anzeigen.", derr)
+					decodeErr = derr
 				}
 				if cfgImg, _, cerr := image.DecodeConfig(strings.NewReader(string(data.Data))); cerr == nil {
 					imgW, imgH = cfgImg.Width, cfgImg.Height
@@ -109,6 +203,12 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 				} else {
 					txt = strings.ToValidUTF8(string(raw), "")
 				}
+				if ext == ".csv" || ext == ".tsv" || strings.Contains(ct, "csv") || strings.Contains(ct, "tab-separated-values") {
+					if md, rowsCut, ok := formatDelimitedTableMarkdown(txt, ext, maxCSVPreviewRows); ok {
+						csvMD = md
+						csvCut = rowsCut
+					}
+				}
 			}
 		}
 
@@ -124,14 +224,20 @@ func (a *App) OpenAttachmentPreview(ctx context.Context, msgID, partName, filena
 			a.attPreview.filename = data.Name
 			a.attPreview.contentType = data.ContentType
 			a.attPreview.sizeBytes = len(data.Data)
-			if decodeErr != "" {
-				a.attPreview.errMsg = decodeErr
+			if decodeErr != nil {
+				a.attPreview.errMsg = a.trf(
+					"Bildformat konnte nicht dekodiert werden (%v) — bitte über „Speichern & Öffnen“ anzeigen.",
+					"Could not decode image format (%v) — please use “Save & Open” to view it.",
+					decodeErr,
+				)
 				return
 			}
 			a.attPreview.imgSrc = imgSrc
 			a.attPreview.imgW = imgW
 			a.attPreview.imgH = imgH
 			a.attPreview.textContent = txt
+			a.attPreview.csvMarkdown = csvMD
+			a.attPreview.csvRowsCut = csvCut
 			a.attPreview.truncated = truncated
 			a.attPreview.parsedEML = data.ParsedEML
 			a.attPreview.isPDF = isPDF
@@ -240,10 +346,20 @@ func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 						p.open = false
 					}
 				})
+			case p.csvMarkdown != "":
+				ui.Scroll(c.Key("attpv-csv-sc")).FillWidth().MaxHeight(500).Children(func() {
+					ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+						markdown.View(c, p.csvMarkdown, &p.mdOpts)
+						if p.csvRowsCut || p.truncated {
+							ui.Text(c, a.trf("… Tabellen-Vorschau auf %d Zeilen / 128 KB begrenzt — für vollständige Datei „Speichern & Öffnen“ nutzen.",
+								"… table preview capped at %d rows / 128 KB — use “Save & Open” for the full file.", maxCSVPreviewRows)).FontSize(11).TextColor(t.Warning)
+						}
+					})
+				})
 			default:
 				ui.Scroll(c.Key("attpv-txt-sc")).FillWidth().MaxHeight(500).Children(func() {
 					ui.Column(c).FillWidth().Padding(10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
-						ui.Text(c, p.textContent).FontSize(12).Selectable()
+						ui.Text(c, p.textContent).Font("monospace").FontSize(12).Selectable()
 						if p.truncated {
 							ui.Text(c, a.tr("… Vorschau nach 128 KB abgeschnitten — für vollständige Datei „Speichern & Öffnen“ nutzen.",
 								"… preview truncated at 128 KB — use “Save & Open” for full file.")).FontSize(11).TextColor(t.Warning)

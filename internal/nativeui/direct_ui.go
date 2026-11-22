@@ -1053,8 +1053,8 @@ func (a *App) renderDirectOnboarding(c *ui.Context) {
 			)).FontSize(12.5).TextColor(t.TextMuted)
 			if isMobileOS() {
 				ui.Text(c, a.tr(
-					"Am schnellsten: Auf dem Computer unter ☰ → Einstellungen → Geräte-Übertragung einen QR-Code erzeugen und hier abfotografieren (gleiches WLAN).",
-					"Quickest: on your computer, create a QR code under ☰ → Settings → Device Transfer and photograph it here (same Wi-Fi).",
+					"Am schnellsten: Auf dem Computer unter ☰ → Einstellungen → KI & Sync → Geräte-Übertragung einen QR-Code erzeugen und hier abfotografieren (gleiches WLAN).",
+					"Quickest: on your computer, open ☰ → Settings → AI & Sync → Device Transfer to create a QR code and scan it here (same Wi-Fi).",
 				)).FontSize(12.5).TextColor(t.TextMuted)
 				if iconLabelBtn(c.Key("onb-qr"), iconCamera, a.tr("Vom Computer übernehmen (QR-Code)", "Transfer from computer (QR code)"), true, "").Disabled(a.settings.lanBusy).FillWidth().Clicked() {
 					a.ScanPairingQR(context.Background())
@@ -2006,6 +2006,7 @@ func (a *App) MarkMailSpam(ctx context.Context, msgID string) {
 				AccountID:      m.AccountID,
 				MessageID:      m.MessageID,
 				FromFolderPath: m.Folder,
+				RestoreUnread:  m.Unread,
 			}
 			break
 		}
@@ -2015,6 +2016,7 @@ func (a *App) MarkMailSpam(ctx context.Context, msgID string) {
 			AccountID:      a.selectedMsg.AccountID,
 			MessageID:      a.selectedMsg.MessageID,
 			FromFolderPath: a.selectedMsg.Folder,
+			RestoreUnread:  a.selectedMsg.Unread,
 		}
 	}
 	if undoMeta.AccountID != "" {
@@ -2042,10 +2044,11 @@ func (a *App) MarkMailSpam(ctx context.Context, msgID string) {
 			if a.selectedID == msgID {
 				a.selectedID = ""
 				a.selectedMsg = nil
-				if nextID != "" {
+				if nextID != "" && !a.isPhone() {
 					a.SelectMessage(context.Background(), nextID)
 				} else {
 					a.syncPreviewForMessage(nil)
+					a.phonePopMailIfOpen()
 				}
 			}
 			if undoMeta.AccountID != "" && undoMeta.MessageID != "" && undoMeta.FromFolderPath != "" && undoMeta.ToFolderPath != "" {
@@ -2068,7 +2071,11 @@ func (a *App) MarkMailNotSpam(ctx context.Context, msgID string) {
 	if msgID == "" {
 		return
 	}
-	a.performMessageAction(ctx, msgID, backend.MessageActionsRequest{MoveToPath: "INBOX"}, a.tr("Kein Spam — in Posteingang verschoben", "Not Spam — moved to Inbox"), a.neighborAfterRemoval(msgID))
+	nextID := a.neighborAfterRemoval(msgID)
+	if a.isPhone() {
+		nextID = ""
+	}
+	a.performMessageAction(ctx, msgID, backend.MessageActionsRequest{MoveToPath: "INBOX"}, a.tr("Kein Spam — in Posteingang verschoben", "Not Spam — moved to Inbox"), nextID)
 }
 
 // CreateIMAPFolder creates a new IMAP folder for accountID.

@@ -142,8 +142,9 @@ type MessageHeader struct {
 	Unread    bool     `json:"unread"`
 	Flagged   bool     `json:"flagged"`
 	Tags      []string `json:"tags"`
-	Size      int64    `json:"size"`
-	External  bool     `json:"external,omitempty"`
+	Size           int64    `json:"size"`
+	HasAttachments bool     `json:"hasAttachments,omitempty"`
+	External       bool     `json:"external,omitempty"`
 	// ThreadCount is the number of mails in this mail's conversation (lists only; 0 = unknown).
 	ThreadCount int `json:"threadCount,omitempty"`
 }
@@ -282,6 +283,7 @@ type UndoMoveItem struct {
 	MessageID      string `json:"messageId"` // RFC Message-ID (without <>)
 	FromFolderPath string `json:"fromFolderPath"`
 	ToFolderPath   string `json:"toFolderPath"`
+	RestoreUnread  bool   `json:"restoreUnread,omitempty"`
 }
 
 // UndoMoveRequest moves messages back from ToFolderPath to FromFolderPath on IMAP.

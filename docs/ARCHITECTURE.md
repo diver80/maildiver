@@ -33,7 +33,7 @@ cmd/maildiver
 | | macOS | Linux |
 |---|---|---|
 | `config.json`, `env` (API keys) | `~/Library/Application Support/maildiver/` | `~/.config/maildiver/` |
-| `maildiver.db` (mail, calendars, contacts), `triage-state.json` | `~/Library/Caches/maildiver/` | `~/.local/state/maildiver/` |
+| `maildiver.db` (mail, calendars, contacts), `triage-state.json` | `~/Library/Application Support/maildiver/` | `~/.local/share/maildiver/` |
 | Passwords, OAuth tokens, S/MIME keys | Keychain | `~/.config/maildiver/secrets.seal` (libsecret / AES-256-GCM) |
 
 `XDG_CONFIG_HOME` / `XDG_STATE_HOME` override the directories. Config files never hold secrets.
@@ -54,7 +54,7 @@ cmd/maildiver
 ## Security
 
 - **Transport:** IMAP and SMTP only over TLS or a required STARTTLS upgrade; plain text only to `localhost`. Login with SASL PLAIN (UTF-8 passwords), falling back to LOGIN.
-- **Remote content:** the reader never loads anything from the network; HTML is converted to Markdown, images are counted, not fetched.
+- **Remote content:** remote images are blocked by default for privacy and counted, not fetched; users can allow images once per email or per trusted sender (`app.allowedImageSenders`), and inline CID images are loaded strictly from local MIME parts.
 - **Read-only:** with `mailbox.readOnly` on, `backend` refuses mail actions, drafts, sending and filter rules; the UI hides them and also respects the per-account write list. Adding an account switches read-only off; `"mailbox": {"readOnly": true}` in `config.json` switches it back on.
 - **AI:** mail content is wrapped as untrusted data. The copilot only proposes drafts, events and "mark read"; they run after the user clicks *Execute*. Endpoints come only from `config.json`; a key is sent only to its provider. `claude-cli` runs without tools and gets the prompt on stdin.
 - **Encrypted mails:** Full **S/MIME** (`.p12`/`.pfx` in OS secure store) AND native **OpenPGP** (`internal/pgp`, RFC 3156 PGP/MIME + MIME-decoded Inline PGP, passphrase-protected secret keys in OS secure store, SSRF-/key-binding-guarded WKD & `keys.openpgp.org` lookup) verify signatures, check signer-address mismatches, decrypt on open, and fail closed when signing/encrypting outgoing mail; scans, archive exports, and copilot lookups never decrypt.
