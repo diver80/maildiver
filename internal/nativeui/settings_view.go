@@ -33,8 +33,17 @@ type accountFolderPref struct {
 	pinned       map[string]bool // top-level folder path (lowercase) -> always visible outside "More folders"
 }
 
+const (
+	settingsTabGeneral = 0
+	settingsTabCompose = 1
+	settingsTabFolders = 2
+	settingsTabPrivacy = 3
+	settingsTabAI      = 4
+)
+
 type settingsUI struct {
 	open      bool
+	tab       int // 0: General, 1: Compose, 2: Folders, 3: Web & Images, 4: AI & Sync
 	providers []string
 
 	markRead int // 0: at once, 1: after 3 s, 2: never
@@ -244,6 +253,7 @@ func (a *App) SaveSettings() bool {
 	limit, ok2 := parseBounded(s.scanLimit, 1, 200)
 	days, ok3 := parseBounded(s.scanDays, 1, 365)
 	if !ok1 || !ok2 || !ok3 {
+		s.tab = settingsTabAI
 		s.err = a.tr("Zahlen prüfen: KI-Aufrufe 1–1000, Mails pro Ordner 1–200, Tage 1–365.",
 			"Check the numbers: AI calls 1–1000, emails per folder 1–200, days 1–365.")
 		return false
@@ -413,7 +423,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
 	ui.Modal(c, &s.open, func() {
-		ui.Column(c).Width(a.modalW(680)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(8).Children(func() {
+		ui.Column(c).Width(a.modalW(700)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
 				if ui.Button(c.Key("set-x"), "✕").Clicked() {
@@ -421,7 +431,32 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 					s.open = false
 				}
 			})
-			ui.Scroll(c.Key("set-scroll")).FillWidth().MaxHeight(580).Children(func() {
+			tabLabels := []string{
+				a.tr("Allgemein", "General"),
+				a.tr("Verfassen", "Compose"),
+				a.tr("Ordner", "Folders"),
+				a.tr("Web & Bilder", "Web & Images"),
+				a.tr("KI & Sync", "AI & Sync"),
+			}
+			if a.isPhone() {
+				ui.Row(c.Key("set-tabs-ph")).FillWidth().Wrap().Gap(6).Children(func() {
+					for i, lbl := range tabLabels {
+						idx := i
+						var btn ui.Element
+						if s.tab == idx {
+							btn = ui.PrimaryButton(c.Key(fmt.Sprintf("set-tab-%d", idx)), lbl).Padding(4, 10)
+						} else {
+							btn = ui.Button(c.Key(fmt.Sprintf("set-tab-%d", idx)), lbl).Padding(4, 10)
+						}
+						if btn.Clicked() {
+							s.tab = idx
+						}
+					}
+				})
+			} else {
+				ui.Segmented(c.Key("set-tabs"), &s.tab, tabLabels...)
+			}
+			ui.Scroll(c.Key(fmt.Sprintf("set-scroll-%d", s.tab))).FillWidth().MaxHeight(560).Children(func() {
 				ui.Column(c).FillWidth().Gap(8).Padding(0, 6, 0, 0).Children(func() {
 					a.renderSettingsBody(c)
 				})
@@ -464,96 +499,104 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		ui.Text(c, text).FontSize(11.5).TextColor(color)
 	}
 
-	a.settingsSection(c, a.tr("Darstellung & Sprache", "Appearance & Language"))
-	field("set-lang", a.tr("Sprache", "Language"), func() {
-		langLbl := a.langLabel
-		if ui.Select(c.Key("set-lang-s"), &langLbl, langChoiceLabels()).Grow(1).Changed() {
-			a.langLabel = langLbl
-			a.applyLanguageChoice(langLbl)
-		}
-	})
-	field("set-theme", a.tr("Design", "Theme"), func() {
-		thLbl := a.themeLabel
-		if ui.Select(c.Key("set-theme-s"), &thLbl, a.themeLabelList()).Grow(1).Changed() {
-			a.applyThemeChoice(thLbl)
-		}
-	})
-	field("set-style-body", a.tr("Mail-Inhalt einfärben", "Recolor mail bodies"), func() {
-		sb := a.cfg.Theme.StyleBody
-		if ui.Checkbox(c.Key("set-style-body-c"), &sb, a.tr("HTML-Mails an App-Theme anpassen", "Adapt HTML emails to app theme")).Changed() {
-			cfg, err := a.opts.ConfigLoader()
-			if err != nil {
-				cfg = a.cfg
+	switch s.tab {
+	case settingsTabGeneral:
+		a.settingsSection(c, a.tr("Darstellung & Sprache", "Appearance & Language"))
+		field("set-lang", a.tr("Sprache", "Language"), func() {
+			langLbl := a.langLabel
+			if ui.Select(c.Key("set-lang-s"), &langLbl, langChoiceLabels()).Grow(1).Changed() {
+				a.langLabel = langLbl
+				a.applyLanguageChoice(langLbl)
 			}
-			cfg.Theme.StyleBody = sb
-			if a.opts.ConfigSaver != nil {
-				_ = a.opts.ConfigSaver(cfg)
-			}
-			a.applyConfig(cfg)
-			a.readerBody = readerBody{}
-		}
-	})
-
-	a.settingsSection(c, a.tr("Lesen", "Reading"))
-	field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {
-		ui.Segmented(c.Key("set-read-s"), &s.markRead, a.tr("Beim Öffnen", "On open"), a.tr("Nach 3 Sekunden", "After 3 seconds"), a.tr("Nie", "Never"))
-	})
-	if a.readOnly {
-		note(a.tr("„Nur lesen“ ist in config.json aktiviert: Mails bleiben ungelesen.", "Read-only is enabled in config.json: emails stay unread."), t.Warning)
-	}
-
-	a.settingsSection(c, a.tr("Verfassen, Undo-Send & Textbausteine", "Compose, Undo Send & Templates"))
-	field("set-undo-send", a.tr("Senden rückgängig (Verzögerung)", "Undo Send delay"), func() {
-		ui.Segmented(c.Key("set-undo-sends"), &s.undoSendOpt, a.tr("Sofort", "Off (0s)"), "5 s", "10 s", "20 s")
-	})
-	field("set-auto-save", a.tr("Entwurf Auto-Save", "Draft auto-save"), func() {
-		ui.Segmented(c.Key("set-auto-saves"), &s.autoSaveOpt, a.tr("Aus", "Off"), "15 s", "25 s", "60 s")
-	})
-	ui.Column(c.Key("set-tpl-box")).FillWidth().Gap(6).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-		ui.Text(c, a.tr("Textbausteine / Vorlagen (im Verfassen-Fenster einfügbar)", "Snippets / Templates (insertable while composing)")).FontSize(11.5).Bold()
-		if len(s.templates) == 0 {
-			ui.Text(c, a.tr("Noch keine Vorlagen angelegt.", "No templates added yet.")).FontSize(11.5).TextColor(t.TextMuted)
-		} else {
-			delIdx := -1
-			for i, tpl := range s.templates {
-				ui.Row(c.Key(fmt.Sprintf("set-tpl-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, tpl.Name).FontSize(12).Bold().Width(140).SingleLine()
-					ui.Text(c, strings.ReplaceAll(tpl.Body, "\n", " ")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
-					if ui.Button(c.Key(fmt.Sprintf("set-tpl-del-%d", i)), "✕").Padding(1, 6).Clicked() {
-						delIdx = i
-					}
-				})
-			}
-			if delIdx >= 0 {
-				s.templates = append(s.templates[:delIdx], s.templates[delIdx+1:]...)
-			}
-		}
-		ui.Divider(c)
-		ui.Row(c.Key("set-tpl-add-hdr")).FillWidth().Gap(6).Children(func() {
-			ui.TextInput(c.Key("set-tpl-nn"), &s.newTplName).Placeholder(a.tr("Vorlagenname…", "Template name…")).Width(160)
-			ui.TextInput(c.Key("set-tpl-ns"), &s.newTplSubj).Placeholder(a.tr("Betreff (optional)…", "Subject (optional)…")).Grow(1)
 		})
-		ui.Row(c.Key("set-tpl-add-b")).FillWidth().Gap(6).AlignItems(ui.End).Children(func() {
-			ui.TextArea(c.Key("set-tpl-nb"), &s.newTplBody).Placeholder(a.tr("Vorlagentext…", "Template text…")).Grow(1).Height(54)
-			if ui.Button(c.Key("set-tpl-add"), a.tr("+ Vorlage", "+ Template")).Padding(4, 9).Clicked() {
-				name := strings.TrimSpace(s.newTplName)
-				body := strings.TrimSpace(s.newTplBody)
-				if name != "" && body != "" {
-					s.templates = append(s.templates, config.ComposeTemplate{
-						ID:      fmt.Sprintf("tpl-%d", time.Now().UnixNano()),
-						Name:    name,
-						Subject: strings.TrimSpace(s.newTplSubj),
-						Body:    body,
+		field("set-theme", a.tr("Design", "Theme"), func() {
+			thLbl := a.themeLabel
+			if ui.Select(c.Key("set-theme-s"), &thLbl, a.themeLabelList()).Grow(1).Changed() {
+				a.applyThemeChoice(thLbl)
+			}
+		})
+		field("set-style-body", a.tr("Mail-Inhalt einfärben", "Recolor mail bodies"), func() {
+			sb := a.cfg.Theme.StyleBody
+			if ui.Checkbox(c.Key("set-style-body-c"), &sb, a.tr("HTML-Mails an App-Theme anpassen", "Adapt HTML emails to app theme")).Changed() {
+				cfg, err := a.opts.ConfigLoader()
+				if err != nil {
+					cfg = a.cfg
+				}
+				cfg.Theme.StyleBody = sb
+				if a.opts.ConfigSaver != nil {
+					_ = a.opts.ConfigSaver(cfg)
+				}
+				a.applyConfig(cfg)
+				a.readerBody = readerBody{}
+			}
+		})
+
+		a.settingsSection(c, a.tr("Lesen", "Reading"))
+		field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {
+			ui.Segmented(c.Key("set-read-s"), &s.markRead, a.tr("Beim Öffnen", "On open"), a.tr("Nach 3 Sekunden", "After 3 seconds"), a.tr("Nie", "Never"))
+		})
+		if a.readOnly {
+			note(a.tr("„Nur lesen“ ist in config.json aktiviert: Mails bleiben ungelesen.", "Read-only is enabled in config.json: emails stay unread."), t.Warning)
+		}
+
+		a.settingsSection(c, a.tr("Archiv", "Archive"))
+		field("set-arch", a.tr("Archiv-Ordner", "Archive folder"), func() { ui.TextInput(c.Key("set-arch-i"), &s.archiveDir).Grow(1) })
+
+	case settingsTabCompose:
+		a.settingsSection(c, a.tr("Verfassen, Undo-Send & Auto-Save", "Compose, Undo Send & Auto-Save"))
+		field("set-undo-send", a.tr("Senden rückgängig (Verzögerung)", "Undo Send delay"), func() {
+			ui.Segmented(c.Key("set-undo-sends"), &s.undoSendOpt, a.tr("Sofort", "Off (0s)"), "5 s", "10 s", "20 s")
+		})
+		field("set-auto-save", a.tr("Entwurf Auto-Save", "Draft auto-save"), func() {
+			ui.Segmented(c.Key("set-auto-saves"), &s.autoSaveOpt, a.tr("Aus", "Off"), "15 s", "25 s", "60 s")
+		})
+
+		a.settingsSection(c, a.tr("Textbausteine / Vorlagen", "Snippets / Templates"))
+		ui.Column(c.Key("set-tpl-box")).FillWidth().Gap(6).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+			ui.Text(c, a.tr("Vorlagen lassen sich im Verfassen-Fenster direkt am Cursor einfügen.", "Templates can be inserted directly at the cursor while composing.")).FontSize(11.5).TextColor(t.TextMuted)
+			if len(s.templates) == 0 {
+				ui.Text(c, a.tr("Noch keine Vorlagen angelegt.", "No templates added yet.")).FontSize(11.5).TextColor(t.TextMuted)
+			} else {
+				delIdx := -1
+				for i, tpl := range s.templates {
+					ui.Row(c.Key(fmt.Sprintf("set-tpl-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, tpl.Name).FontSize(12).Bold().Width(140).SingleLine()
+						ui.Text(c, strings.ReplaceAll(tpl.Body, "\n", " ")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
+						if ui.Button(c.Key(fmt.Sprintf("set-tpl-del-%d", i)), "✕").Padding(1, 6).Clicked() {
+							delIdx = i
+						}
 					})
-					s.newTplName = ""
-					s.newTplSubj = ""
-					s.newTplBody = ""
+				}
+				if delIdx >= 0 {
+					s.templates = append(s.templates[:delIdx], s.templates[delIdx+1:]...)
 				}
 			}
+			ui.Divider(c)
+			ui.Row(c.Key("set-tpl-add-hdr")).FillWidth().Gap(6).Wrap().Children(func() {
+				ui.TextInput(c.Key("set-tpl-nn"), &s.newTplName).Placeholder(a.tr("Vorlagenname…", "Template name…")).Width(160)
+				ui.TextInput(c.Key("set-tpl-ns"), &s.newTplSubj).Placeholder(a.tr("Betreff (optional)…", "Subject (optional)…")).Grow(1)
+			})
+			ui.Row(c.Key("set-tpl-add-b")).FillWidth().Gap(6).AlignItems(ui.End).Children(func() {
+				ui.TextArea(c.Key("set-tpl-nb"), &s.newTplBody).Placeholder(a.tr("Vorlagentext…", "Template text…")).Grow(1).Height(54)
+				if ui.Button(c.Key("set-tpl-add"), a.tr("+ Vorlage", "+ Template")).Padding(4, 9).Clicked() {
+					name := strings.TrimSpace(s.newTplName)
+					body := strings.TrimSpace(s.newTplBody)
+					if name != "" && body != "" {
+						s.templates = append(s.templates, config.ComposeTemplate{
+							ID:      fmt.Sprintf("tpl-%d", time.Now().UnixNano()),
+							Name:    name,
+							Subject: strings.TrimSpace(s.newTplSubj),
+							Body:    body,
+						})
+						s.newTplName = ""
+						s.newTplSubj = ""
+						s.newTplBody = ""
+					}
+				}
+			})
 		})
-	})
 
-	if len(s.folderAccLabels) > 0 {
+	case settingsTabFolders:
 		a.settingsSection(c, a.tr("Ordner in der Seitenleiste (pro Postfach)", "Sidebar folders (per mailbox)"))
 		ui.Checkbox(c.Key("set-fld-compact"), &s.compactFolders, a.tr(
 			"Kompakte Ordneransicht (weniger genutzte Ordner unter „Weitere Ordner“ einklappen)",
@@ -563,6 +606,10 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 			"Zeigt pro Postfach nur Posteingang (INBOX) und aktive Filterregel-Zielordner direkt an. Archiv, Entwürfe, Gesendet, Papierkorb & Co. bleiben eingeklappt unter „Weitere Ordner“ — ideal auf Handy & Desktop bei mehreren Konten.",
 			"Shows only INBOX and active filter-rule target folders directly per mailbox. Archives, Drafts, Sent, Trash, etc. stay collapsed inside “More folders” — keeping all accounts visible on phone & desktop.",
 		), t.TextMuted)
+		if len(s.folderAccLabels) == 0 {
+			note(a.tr("Noch keine Postfächer geladen. Verbinde zuerst ein E-Mail-Konto.", "No mailboxes loaded yet. Connect an email account first."), t.TextMuted)
+			return
+		}
 		if len(s.folderAccLabels) > 1 {
 			field("set-fld-acc", a.tr("Postfach", "Mailbox"), func() {
 				ui.Select(c.Key("set-fld-accs"), &s.folderAccLabel, s.folderAccLabels).Grow(1)
@@ -585,7 +632,7 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 						roots := a.topLevelFoldersForAccount(accID)
 						ruleTargets := a.activeRuleTargetFolders(accID)
 						ui.Divider(c)
-						ui.Scroll(c.Key("set-pin-scroll-" + accID)).MaxHeight(160).FillWidth().Children(func() {
+						ui.Scroll(c.Key("set-pin-scroll-" + accID)).MaxHeight(180).FillWidth().Children(func() {
 							ui.Column(c).FillWidth().Gap(4).Children(func() {
 								for _, f := range roots {
 									cp := cleanFolderPath(f.Path)
@@ -669,164 +716,163 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 				}
 			})
 		}
-	}
 
-	a.settingsSection(c, a.tr("Browser-Vorschau (Split-Panel)", "Browser Preview (Split Panel)"))
-	note(a.tr(
-		"Öffnet passende Links (z. B. Jira-/Confluence-Issues) direkt neben oder unter der Mail im eingebetteten Browser mit persistenter Login-Session.",
-		"Opens matching links (e.g. Jira/Confluence issues) directly beside or below the email in an embedded browser with persistent login session.",
-	), t.TextMuted)
-	ui.Checkbox(c.Key("set-lp-en"), &s.linkPreviewEnabled, a.tr("Browser-Vorschau aktivieren", "Enable Browser Preview"))
-	ui.Checkbox(c.Key("set-lp-auto"), &s.linkPreviewAutoLoad, a.tr("Bei Treffer einer Regel automatisch öffnen (nur aktive Regeln)", "Auto-open when a rule matches (enabled rules only)"))
-	field("set-lp-lay", a.tr("Standard-Layout", "Default layout"), func() {
-		ui.Segmented(c.Key("set-lp-lays"), &s.linkPreviewLayout, a.tr("Nebeneinander (Rechts)", "Side by side"), a.tr("Übereinander (Unten)", "Top & bottom"))
-	})
-	ui.Column(c.Key("set-lp-rules")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-		ui.Text(c, a.tr("Auto-Link-Regeln (Absender & URL-Muster)", "Auto-Link Rules (Sender & URL pattern)")).FontSize(11.5).Bold()
-		deleteIdx := -1
-		for i := range s.linkPreviewRules {
-			r := &s.linkPreviewRules[i]
-			ui.Row(c.Key(fmt.Sprintf("set-lpr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Checkbox(c.Key(fmt.Sprintf("set-lpr-en-%d", i)), &r.Enabled, r.Name)
-				ui.Spacer(c)
-				meta := r.URLPattern
-				if r.SenderPattern != "" {
-					meta = r.SenderPattern + " → " + r.URLPattern
-				}
-				ui.Text(c, meta).FontSize(11).TextColor(t.TextMuted).SingleLine()
-				if ui.Button(c.Key(fmt.Sprintf("set-lpr-del-%d", i)), "✕").Padding(1, 6).Clicked() {
-					deleteIdx = i
-				}
-			})
-		}
-		if deleteIdx >= 0 {
-			s.linkPreviewRules = append(s.linkPreviewRules[:deleteIdx], s.linkPreviewRules[deleteIdx+1:]...)
-		}
-		ui.Divider(c)
-		ui.Row(c.Key("set-lp-add")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("set-lpr-nn"), &s.newRuleName).Placeholder(a.tr("Name (z. B. Firmen-Jira)", "Name (e.g. Corp Jira)")).Width(140)
-			ui.TextInput(c.Key("set-lpr-ns"), &s.newRuleSender).Placeholder(a.tr("Absender (optional)", "Sender (optional)")).Width(150)
-			ui.TextInput(c.Key("set-lpr-nu"), &s.newRuleURL).Placeholder(a.tr("URL-Muster (z. B. jira.firma.de/)", "URL pattern (e.g. jira.corp.com/)")).Grow(1)
-			if ui.Button(c.Key("set-lpr-addb"), a.tr("+ Regel", "+ Rule")).Padding(3, 8).Clicked() {
-				urlPat := strings.TrimSpace(s.newRuleURL)
-				if urlPat != "" {
-					name := strings.TrimSpace(s.newRuleName)
-					if name == "" {
-						name = urlPat
-					}
-					s.linkPreviewRules = append(s.linkPreviewRules, config.LinkPreviewRule{
-						Name:          name,
-						Enabled:       true,
-						SenderPattern: strings.TrimSpace(s.newRuleSender),
-						URLPattern:    urlPat,
+	case settingsTabPrivacy:
+		a.settingsSection(c, a.tr("Externe Bilder — Erlaubte Absender", "Remote Images — Allowed Senders"))
+		note(a.tr(
+			"Externe Bilder sind aus Datenschutzgründen standardmäßig blockiert. Für diese Absender werden Bilder automatisch geladen.",
+			"Remote images are blocked by default for privacy. Images from these senders load automatically.",
+		), t.TextMuted)
+		ui.Column(c.Key("set-img-allow")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+			if len(s.allowedImageSenders) == 0 {
+				ui.Text(c, a.tr("Noch keine Absender freigegeben.", "No senders allowed yet.")).FontSize(11.5).TextColor(t.TextMuted)
+			} else {
+				rmIdx := -1
+				for i, em := range s.allowedImageSenders {
+					ui.Row(c.Key(fmt.Sprintf("set-imgr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, em).FontSize(12).Grow(1).SingleLine()
+						if ui.Button(c.Key(fmt.Sprintf("set-imgd-%d", i)), "✕").Padding(1, 6).Clicked() {
+							rmIdx = i
+						}
 					})
-					s.newRuleName = ""
-					s.newRuleSender = ""
-					s.newRuleURL = ""
+				}
+				if rmIdx >= 0 {
+					s.allowedImageSenders = append(s.allowedImageSenders[:rmIdx], s.allowedImageSenders[rmIdx+1:]...)
 				}
 			}
+			ui.Divider(c)
+			ui.Row(c.Key("set-img-add")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				in := ui.TextInput(c.Key("set-img-in"), &s.newImageSender).Placeholder(a.tr("absender@domain.de", "sender@domain.com")).Grow(1)
+				clicked := ui.Button(c.Key("set-img-addb"), a.tr("+ Hinzufügen", "+ Add")).Padding(3, 8).Clicked()
+				if (clicked || in.Submitted()) && strings.TrimSpace(s.newImageSender) != "" {
+					em := extractSenderEmail(s.newImageSender)
+					dup := false
+					for _, existing := range s.allowedImageSenders {
+						if strings.EqualFold(existing, em) {
+							dup = true
+							break
+						}
+					}
+					if em != "" && !dup {
+						s.allowedImageSenders = append(s.allowedImageSenders, em)
+					}
+					s.newImageSender = ""
+				}
+			})
 		})
-	})
 
-	a.settingsSection(c, a.tr("Externe Bilder — Erlaubte Absender", "Remote Images — Allowed Senders"))
-	note(a.tr(
-		"Externe Bilder sind aus Datenschutzgründen standardmäßig blockiert. Für diese Absender werden Bilder automatisch geladen.",
-		"Remote images are blocked by default for privacy. Images from these senders load automatically.",
-	), t.TextMuted)
-	ui.Column(c.Key("set-img-allow")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
-		if len(s.allowedImageSenders) == 0 {
-			ui.Text(c, a.tr("Noch keine Absender freigegeben.", "No senders allowed yet.")).FontSize(11.5).TextColor(t.TextMuted)
-		} else {
-			rmIdx := -1
-			for i, em := range s.allowedImageSenders {
-				ui.Row(c.Key(fmt.Sprintf("set-imgr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, em).FontSize(12).Grow(1).SingleLine()
-					if ui.Button(c.Key(fmt.Sprintf("set-imgd-%d", i)), "✕").Padding(1, 6).Clicked() {
-						rmIdx = i
+		a.settingsSection(c, a.tr("Browser-Vorschau (Split-Panel)", "Browser Preview (Split Panel)"))
+		note(a.tr(
+			"Öffnet passende Links (z. B. Jira-/Confluence-Issues) direkt neben oder unter der Mail im eingebetteten Browser mit persistenter Login-Session.",
+			"Opens matching links (e.g. Jira/Confluence issues) directly beside or below the email in an embedded browser with persistent login session.",
+		), t.TextMuted)
+		ui.Checkbox(c.Key("set-lp-en"), &s.linkPreviewEnabled, a.tr("Browser-Vorschau aktivieren", "Enable Browser Preview"))
+		ui.Checkbox(c.Key("set-lp-auto"), &s.linkPreviewAutoLoad, a.tr("Bei Treffer einer Regel automatisch öffnen (nur aktive Regeln)", "Auto-open when a rule matches (enabled rules only)"))
+		field("set-lp-lay", a.tr("Standard-Layout", "Default layout"), func() {
+			ui.Segmented(c.Key("set-lp-lays"), &s.linkPreviewLayout, a.tr("Nebeneinander (Rechts)", "Side by side"), a.tr("Übereinander (Unten)", "Top & bottom"))
+		})
+		ui.Column(c.Key("set-lp-rules")).FillWidth().Gap(4).Padding(8).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
+			ui.Text(c, a.tr("Auto-Link-Regeln (Absender & URL-Muster)", "Auto-Link Rules (Sender & URL pattern)")).FontSize(11.5).Bold()
+			deleteIdx := -1
+			for i := range s.linkPreviewRules {
+				r := &s.linkPreviewRules[i]
+				ui.Row(c.Key(fmt.Sprintf("set-lpr-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Checkbox(c.Key(fmt.Sprintf("set-lpr-en-%d", i)), &r.Enabled, r.Name)
+					ui.Spacer(c)
+					meta := r.URLPattern
+					if r.SenderPattern != "" {
+						meta = r.SenderPattern + " → " + r.URLPattern
+					}
+					ui.Text(c, meta).FontSize(11).TextColor(t.TextMuted).SingleLine()
+					if ui.Button(c.Key(fmt.Sprintf("set-lpr-del-%d", i)), "✕").Padding(1, 6).Clicked() {
+						deleteIdx = i
 					}
 				})
 			}
-			if rmIdx >= 0 {
-				s.allowedImageSenders = append(s.allowedImageSenders[:rmIdx], s.allowedImageSenders[rmIdx+1:]...)
+			if deleteIdx >= 0 {
+				s.linkPreviewRules = append(s.linkPreviewRules[:deleteIdx], s.linkPreviewRules[deleteIdx+1:]...)
 			}
-		}
-		ui.Divider(c)
-		ui.Row(c.Key("set-img-add")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("set-img-in"), &s.newImageSender).Placeholder(a.tr("absender@domain.de", "sender@domain.com")).Grow(1)
-			clicked := ui.Button(c.Key("set-img-addb"), a.tr("+ Hinzufügen", "+ Add")).Padding(3, 8).Clicked()
-			if (clicked || in.Submitted()) && strings.TrimSpace(s.newImageSender) != "" {
-				em := extractSenderEmail(s.newImageSender)
-				dup := false
-				for _, existing := range s.allowedImageSenders {
-					if strings.EqualFold(existing, em) {
-						dup = true
-						break
+			ui.Divider(c)
+			ui.Row(c.Key("set-lp-add")).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c.Key("set-lpr-nn"), &s.newRuleName).Placeholder(a.tr("Name (z. B. Firmen-Jira)", "Name (e.g. Corp Jira)")).Width(140)
+				ui.TextInput(c.Key("set-lpr-ns"), &s.newRuleSender).Placeholder(a.tr("Absender (optional)", "Sender (optional)")).Width(150)
+				ui.TextInput(c.Key("set-lpr-nu"), &s.newRuleURL).Placeholder(a.tr("URL-Muster (z. B. jira.firma.de/)", "URL pattern (e.g. jira.corp.com/)")).Grow(1)
+				if ui.Button(c.Key("set-lpr-addb"), a.tr("+ Regel", "+ Rule")).Padding(3, 8).Clicked() {
+					urlPat := strings.TrimSpace(s.newRuleURL)
+					if urlPat != "" {
+						name := strings.TrimSpace(s.newRuleName)
+						if name == "" {
+							name = urlPat
+						}
+						s.linkPreviewRules = append(s.linkPreviewRules, config.LinkPreviewRule{
+							Name:          name,
+							Enabled:       true,
+							SenderPattern: strings.TrimSpace(s.newRuleSender),
+							URLPattern:    urlPat,
+						})
+						s.newRuleName = ""
+						s.newRuleSender = ""
+						s.newRuleURL = ""
 					}
 				}
-				if em != "" && !dup {
-					s.allowedImageSenders = append(s.allowedImageSenders, em)
+			})
+		})
+
+	case settingsTabAI:
+		a.settingsSection(c, a.tr("KI-Assistent", "AI assistant"))
+		if !a.cfg.Features.Assistant {
+			note(a.tr("Der KI-Assistent ist in config.json ausgeschaltet.", "The AI assistant is switched off in config.json."), t.Warning)
+		}
+		field("set-ag-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1) })
+		a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
+		field("set-ag-e", "Endpoint", func() {
+			ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+		})
+
+		a.settingsSection(c, a.tr("Triage-Scan", "Triage scan"))
+		if !a.cfg.Features.Triage {
+			note(a.tr("Triage-Scans sind in config.json ausgeschaltet.", "Triage scans are switched off in config.json."), t.Warning)
+		}
+		ui.Checkbox(c.Key("set-new"), &s.scanOnNewMail, a.tr("Bei neuer Mail automatisch scannen", "Scan automatically when new mail arrives"))
+		ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
+		if s.classifyAI {
+			field("set-clf-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1) })
+			a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
+			field("set-clf-e", "Endpoint", func() {
+				ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
+			})
+			field("set-max", a.tr("KI-Aufrufe pro Scan", "AI calls per scan"), func() { ui.TextInput(c.Key("set-max-i"), &s.maxCalls).Width(90) })
+			note(a.tr("Verschlüsselte Mails gehen nur mit Absender und Betreff an die KI, nie mit Inhalt.", "Encrypted emails only reach the AI with sender and subject, never with content."), t.TextMuted)
+		}
+		field("set-lim", a.tr("Gelesene Mails je Posteingang", "Read emails per inbox"), func() { ui.TextInput(c.Key("set-lim-i"), &s.scanLimit).Width(90) })
+		field("set-days", a.tr("Zeitraum (Tage)", "Period (days)"), func() { ui.TextInput(c.Key("set-days-i"), &s.scanDays).Width(90) })
+		ui.Checkbox(c.Key("set-cli"), &s.allowCLI, a.tr("Unbeschränkte CLIs erlauben (gemini-cli, opencode-cli)", "Allow unrestricted CLIs (gemini-cli, opencode-cli)"))
+		if s.allowCLI {
+			note(a.tr("Diese CLIs laufen ohne Werkzeugsperre: Ein präparierter Mailtext könnte sie Werkzeuge benutzen lassen.", "These CLIs run without a tool lock: a crafted email could make them use tools."), t.Warning)
+		}
+
+		a.settingsSection(c, a.tr("API-Schlüssel", "API keys"))
+		note(a.tr("Gespeichert in ", "Stored in ")+config.EnvFilePath()+a.tr(" (nur für dich lesbar). Neue Schlüssel gelten sofort.", " (readable only by you). New keys apply at once."), t.TextMuted)
+		for i := range s.keys {
+			k := &s.keys[i]
+			ui.Row(c.Key(fmt.Sprintf("set-key-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, k.backend).FontSize(12).Width(150)
+				ph := a.tr("nicht gesetzt", "not set")
+				if k.set && !k.remove {
+					ph = a.tr("gesetzt – leer lassen zum Behalten", "set – leave empty to keep")
 				}
-				s.newImageSender = ""
-			}
-		})
-	})
+				if k.remove {
+					ph = a.tr("wird entfernt", "will be removed")
+				}
+				ui.TextInput(c.Key(fmt.Sprintf("set-key-i-%d", i)), &k.input).Password().Placeholder(ph).Grow(1)
+				if k.set {
+					ui.Checkbox(c.Key(fmt.Sprintf("set-key-rm-%d", i)), &k.remove, a.tr("Entfernen", "Remove"))
+				}
+			})
+		}
 
-	a.settingsSection(c, a.tr("KI-Assistent", "AI assistant"))
-	if !a.cfg.Features.Assistant {
-		note(a.tr("Der KI-Assistent ist in config.json ausgeschaltet.", "The AI assistant is switched off in config.json."), t.Warning)
+		a.renderSettingsLANQRSection(c)
 	}
-	field("set-ag-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-ag-bs"), &s.agentBackend, s.providers).Grow(1) })
-	a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
-	field("set-ag-e", "Endpoint", func() {
-		ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
-	})
-
-	a.settingsSection(c, a.tr("Triage-Scan", "Triage scan"))
-	if !a.cfg.Features.Triage {
-		note(a.tr("Triage-Scans sind in config.json ausgeschaltet.", "Triage scans are switched off in config.json."), t.Warning)
-	}
-	ui.Checkbox(c.Key("set-new"), &s.scanOnNewMail, a.tr("Bei neuer Mail automatisch scannen", "Scan automatically when new mail arrives"))
-	ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
-	if s.classifyAI {
-		field("set-clf-b", a.tr("Anbieter", "Provider"), func() { ui.Select(c.Key("set-clf-bs"), &s.clfBackend, s.providers).Grow(1) })
-		a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
-		field("set-clf-e", "Endpoint", func() {
-			ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
-		})
-		field("set-max", a.tr("KI-Aufrufe pro Scan", "AI calls per scan"), func() { ui.TextInput(c.Key("set-max-i"), &s.maxCalls).Width(90) })
-		note(a.tr("Verschlüsselte Mails gehen nur mit Absender und Betreff an die KI, nie mit Inhalt.", "Encrypted emails only reach the AI with sender and subject, never with content."), t.TextMuted)
-	}
-	field("set-lim", a.tr("Gelesene Mails je Posteingang", "Read emails per inbox"), func() { ui.TextInput(c.Key("set-lim-i"), &s.scanLimit).Width(90) })
-	field("set-days", a.tr("Zeitraum (Tage)", "Period (days)"), func() { ui.TextInput(c.Key("set-days-i"), &s.scanDays).Width(90) })
-	ui.Checkbox(c.Key("set-cli"), &s.allowCLI, a.tr("Unbeschränkte CLIs erlauben (gemini-cli, opencode-cli)", "Allow unrestricted CLIs (gemini-cli, opencode-cli)"))
-	if s.allowCLI {
-		note(a.tr("Diese CLIs laufen ohne Werkzeugsperre: Ein präparierter Mailtext könnte sie Werkzeuge benutzen lassen.", "These CLIs run without a tool lock: a crafted email could make them use tools."), t.Warning)
-	}
-
-	a.settingsSection(c, a.tr("Archiv", "Archive"))
-	field("set-arch", a.tr("Archiv-Ordner", "Archive folder"), func() { ui.TextInput(c.Key("set-arch-i"), &s.archiveDir).Grow(1) })
-
-	a.settingsSection(c, a.tr("API-Schlüssel", "API keys"))
-	note(a.tr("Gespeichert in ", "Stored in ")+config.EnvFilePath()+a.tr(" (nur für dich lesbar). Neue Schlüssel gelten sofort.", " (readable only by you). New keys apply at once."), t.TextMuted)
-	for i := range s.keys {
-		k := &s.keys[i]
-		ui.Row(c.Key(fmt.Sprintf("set-key-%d", i))).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, k.backend).FontSize(12).Width(150)
-			ph := a.tr("nicht gesetzt", "not set")
-			if k.set && !k.remove {
-				ph = a.tr("gesetzt – leer lassen zum Behalten", "set – leave empty to keep")
-			}
-			if k.remove {
-				ph = a.tr("wird entfernt", "will be removed")
-			}
-			ui.TextInput(c.Key(fmt.Sprintf("set-key-i-%d", i)), &k.input).Password().Placeholder(ph).Grow(1)
-			if k.set {
-				ui.Checkbox(c.Key(fmt.Sprintf("set-key-rm-%d", i)), &k.remove, a.tr("Entfernen", "Remove"))
-			}
-		})
-	}
-
-	a.renderSettingsLANQRSection(c)
 }
 
 func (a *App) renderSettingsModelField(

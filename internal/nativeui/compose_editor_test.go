@@ -214,6 +214,7 @@ func TestSettingsModelFieldRendersDropdownWhenModelsAvailable(t *testing.T) {
 		Store:        triage.NewStoreAt(t.TempDir()),
 	})
 	app.OpenSettings()
+	app.settings.tab = settingsTabAI
 	app.settings.agentModelsKey = "ollama|"
 	app.settings.agentModels = []string{"example-mini:latest", "example-pro:latest"}
 

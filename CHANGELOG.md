@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.7 (2026-11-22)
+
+### Einstellungen in fachliche Tabs gruppiert (Desktop & Handy)
+- **5 übersichtliche Bereiche statt langer Scroll-Liste:** Der Einstellungsdialog ([internal/nativeui/settings_view.go](internal/nativeui/settings_view.go)) ist jetzt über eine fixierte Tab-Leiste unter dem Titel in fünf fachliche Tabs gegliedert:
+  1. **Allgemein** (*Darstellung & Sprache, Lesen, Archiv*)
+  2. **Verfassen** (*Undo-Send, Entwurf Auto-Save, Textbausteine / Vorlagen*)
+  3. **Ordner** (*Kompakte Ordneransicht, Postfach-Auswahl, immer sichtbare Ordner & aufgeklappte Unterordner beim Start*)
+  4. **Web & Bilder** (*Erlaubte Bild-Absender, Browser-Vorschau Split-Panel & Auto-Link-Regeln*)
+  5. **KI & Sync** (*KI-Assistent, Triage-Scan, API-Schlüssel & verschlüsselter LAN-QR-Geräte-Transfer*)
+- **Desktop & Mobil:** Auf dem Desktop als kompakte Segmented-Tab-Leiste, auf dem Handy als umbrechende Pill-Tabs; jeder Tab startet sauber am Anfang gescrollt, und bei einem Validierungsfehler im Triage-Bereich springt der Dialog beim Speichern automatisch in den Tab *KI & Sync*.
+
 ## 0.7.6 (2026-11-22)
 
 ### Kompakte Ordner-Seitenleiste (Desktop & Handy)

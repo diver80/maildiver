@@ -24,8 +24,28 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 	}
 	tt := ui.NewTester(app.RenderMain, 1380, 1000)
 	tt.Frame()
-	if !tt.HasText("API-Schlüssel") || !tt.HasText("KI-Assistent") {
-		t.Fatalf("sections missing: %v", tt.Texts())
+	if !tt.HasText("Darstellung & Sprache") || !tt.HasText("KI & Sync") {
+		t.Fatalf("general tab / tab bar missing: %v", tt.Texts())
+	}
+	// Verify each settings tab renders its respective domain cleanly.
+	tabChecks := []struct {
+		tab  int
+		want string
+	}{
+		{settingsTabCompose, "Textbausteine / Vorlagen"},
+		{settingsTabFolders, "Ordner in der Seitenleiste (pro Postfach)"},
+		{settingsTabPrivacy, "Browser-Vorschau (Split-Panel)"},
+		{settingsTabAI, "API-Schlüssel"},
+	}
+	for _, tc := range tabChecks {
+		app.settings.tab = tc.tab
+		tt.Frame()
+		if !tt.HasText(tc.want) {
+			t.Fatalf("tab %d missing %q: %v", tc.tab, tc.want, tt.Texts())
+		}
+	}
+	if !tt.HasText("KI-Assistent") {
+		t.Fatalf("sections missing on AI tab: %v", tt.Texts())
 	}
 
 	app.settings.agentBackend = "claude-api"
