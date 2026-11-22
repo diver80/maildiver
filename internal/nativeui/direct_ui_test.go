@@ -141,6 +141,7 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	if !hasText("Direkt-Test-Termin") {
 		t.Fatalf("expected imported .ics event in calendar month grid; texts=%v", tt.Texts())
 	}
+	app.calCursor = time.Now().Add(24 * time.Hour)
 	app.calViewMode = 1 // Week Grid
 	tt.Frame()
 	if !hasText("Direkt-Test-Termin") {

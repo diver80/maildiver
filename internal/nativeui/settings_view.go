@@ -27,8 +27,10 @@ type keyRow struct {
 }
 
 type accountFolderPref struct {
-	custom   bool
-	expanded map[string]bool // clean folder path (exact case from folder list) -> start expanded
+	custom       bool
+	expanded     map[string]bool // clean folder path (lowercase) -> start expanded
+	customPinned bool
+	pinned       map[string]bool // top-level folder path (lowercase) -> always visible outside "More folders"
 }
 
 type settingsUI struct {
@@ -44,7 +46,8 @@ type settingsUI struct {
 	newTplSubj  string
 	newTplBody  string
 
-	// Per-mailbox startup folder expansion preferences
+	// Per-mailbox sidebar folder visibility & startup expansion preferences
+	compactFolders  bool
 	folderAccLabels []string
 	folderAccByLbl  map[string]string
 	folderAccLabel  string
@@ -158,7 +161,8 @@ func (a *App) OpenSettings() {
 		s.keys = append(s.keys, keyRow{backend: k.Backend, envKey: k.EnvKey, set: config.LookupAPIKey(k.EnvKey) != ""})
 	}
 
-	// Populate per-mailbox startup folder preferences from config.json + known folders.
+	// Populate per-mailbox sidebar folder preferences from config.json + known folders.
+	s.compactFolders = cfg.App.EffectiveCompactFolders()
 	s.folderPrefs = make(map[string]*accountFolderPref)
 	s.folderAccByLbl = make(map[string]string)
 	seenAcc := make(map[string]bool)
@@ -180,7 +184,10 @@ func (a *App) OpenSettings() {
 		s.folderAccLabels = append(s.folderAccLabels, lbl)
 		s.folderAccByLbl[lbl] = accID
 
-		pref := &accountFolderPref{expanded: make(map[string]bool)}
+		pref := &accountFolderPref{
+			expanded: make(map[string]bool),
+			pinned:   make(map[string]bool),
+		}
 		if paths, ok := cfg.App.ExpandedFolders[accID]; ok {
 			pref.custom = true
 			for _, p := range paths {
@@ -190,6 +197,20 @@ func (a *App) OpenSettings() {
 			// Seed checkboxes with current live expanded state so toggling custom mode starts sensible.
 			for _, p := range a.currentExpandedFolderPaths(accID) {
 				pref.expanded[strings.ToLower(cleanFolderPath(p))] = true
+			}
+		}
+		if paths, ok := cfg.App.PinnedFolders[accID]; ok {
+			pref.customPinned = true
+			for _, p := range paths {
+				pref.pinned[strings.ToLower(cleanFolderPath(p))] = true
+			}
+		} else {
+			ruleTargets := a.activeRuleTargetFolders(accID)
+			for _, f := range a.topLevelFoldersForAccount(accID) {
+				low := strings.ToLower(cleanFolderPath(f.Path))
+				if isInboxFolder(f) || ruleTargets[low] {
+					pref.pinned[low] = true
+				}
 			}
 		}
 		s.folderPrefs[accID] = pref
@@ -293,41 +314,72 @@ func (a *App) SaveSettings() bool {
 		Layout:   layout,
 		Rules:    rules,
 	}
+	compactVal := s.compactFolders
+	cfg.App.CompactFolders = &compactVal
 	if len(s.folderPrefs) > 0 {
 		expMap := make(map[string][]string)
+		pinMap := make(map[string][]string)
 		// Preserve any configured accounts not currently loaded in memory.
 		for accID, paths := range cfg.App.ExpandedFolders {
 			if _, managed := s.folderPrefs[accID]; !managed {
 				expMap[accID] = append([]string(nil), paths...)
 			}
 		}
+		for accID, paths := range cfg.App.PinnedFolders {
+			if _, managed := s.folderPrefs[accID]; !managed {
+				pinMap[accID] = append([]string(nil), paths...)
+			}
+		}
 		for accID, pref := range s.folderPrefs {
-			if !pref.custom {
-				continue
-			}
-			// Preserve original folder path casing from known folders where available.
-			canonByLow := make(map[string]string)
-			for _, row := range a.expandableFoldersForAccount(accID) {
-				cp := cleanFolderPath(row.Folder.Path)
-				canonByLow[strings.ToLower(cp)] = cp
-			}
-			out := make([]string, 0, len(pref.expanded))
-			for low, on := range pref.expanded {
-				if !on {
-					continue
+			if pref.custom {
+				// Preserve original folder path casing from known folders where available.
+				canonByLow := make(map[string]string)
+				for _, row := range a.expandableFoldersForAccount(accID) {
+					cp := cleanFolderPath(row.Folder.Path)
+					canonByLow[strings.ToLower(cp)] = cp
 				}
-				if orig, ok := canonByLow[low]; ok {
-					out = append(out, orig)
-				} else {
-					out = append(out, low)
+				out := make([]string, 0, len(pref.expanded))
+				for low, on := range pref.expanded {
+					if !on {
+						continue
+					}
+					if orig, ok := canonByLow[low]; ok {
+						out = append(out, orig)
+					} else {
+						out = append(out, low)
+					}
 				}
+				expMap[accID] = out
 			}
-			expMap[accID] = out
+			if pref.customPinned {
+				canonByLow := make(map[string]string)
+				for _, f := range a.topLevelFoldersForAccount(accID) {
+					cp := cleanFolderPath(f.Path)
+					canonByLow[strings.ToLower(cp)] = cp
+				}
+				out := make([]string, 0, len(pref.pinned))
+				for low, on := range pref.pinned {
+					if !on {
+						continue
+					}
+					if orig, ok := canonByLow[low]; ok {
+						out = append(out, orig)
+					} else {
+						out = append(out, low)
+					}
+				}
+				pinMap[accID] = out
+			}
 		}
 		if len(expMap) > 0 {
 			cfg.App.ExpandedFolders = expMap
 		} else {
 			cfg.App.ExpandedFolders = nil
+		}
+		if len(pinMap) > 0 {
+			cfg.App.PinnedFolders = pinMap
+		} else {
+			cfg.App.PinnedFolders = nil
 		}
 	}
 	cfg.App.AllowedImageSenders = append([]string(nil), s.allowedImageSenders...)
@@ -502,10 +554,14 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	})
 
 	if len(s.folderAccLabels) > 0 {
-		a.settingsSection(c, a.tr("Ordner beim Start (pro Postfach)", "Startup folders (per mailbox)"))
+		a.settingsSection(c, a.tr("Ordner in der Seitenleiste (pro Postfach)", "Sidebar folders (per mailbox)"))
+		ui.Checkbox(c.Key("set-fld-compact"), &s.compactFolders, a.tr(
+			"Kompakte Ordneransicht (weniger genutzte Ordner unter „Weitere Ordner“ einklappen)",
+			"Compact folder view (collapse less-used folders into “More folders”)",
+		))
 		note(a.tr(
-			"Standardmäßig ist nur INBOX bis Ebene 2 aufgeklappt (Unterordner & Archiv eingeklappt). Hier kannst du pro Postfach festlegen, welche Ordner beim Start aufgeklappt sein sollen.",
-			"By default only INBOX expands to level 2 (deeper subfolders & Archives start collapsed). Configure per mailbox which folders should start expanded.",
+			"Zeigt pro Postfach nur Posteingang (INBOX) und aktive Filterregel-Zielordner direkt an. Archiv, Entwürfe, Gesendet, Papierkorb & Co. bleiben eingeklappt unter „Weitere Ordner“ — ideal auf Handy & Desktop bei mehreren Konten.",
+			"Shows only INBOX and active filter-rule target folders directly per mailbox. Archives, Drafts, Sent, Trash, etc. stay collapsed inside “More folders” — keeping all accounts visible on phone & desktop.",
 		), t.TextMuted)
 		if len(s.folderAccLabels) > 1 {
 			field("set-fld-acc", a.tr("Postfach", "Mailbox"), func() {
@@ -514,9 +570,56 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		}
 		accID := s.folderAccByLbl[s.folderAccLabel]
 		if pref, ok := s.folderPrefs[accID]; ok {
+			if s.compactFolders {
+				ui.Column(c.Key("set-pin-box-"+accID)).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
+						ui.Checkbox(c.Key("set-pin-cust-"+accID), &pref.customPinned, a.tr("Immer sichtbare Ordner manuell wählen", "Customize always-visible folders"))
+						ui.Spacer(c)
+						if pref.customPinned {
+							if ui.Button(c.Key("set-pin-rst-"+accID), a.tr("Auto (INBOX + Regeln)", "Auto (INBOX + rules)")).Padding(2, 8).Clicked() {
+								pref.customPinned = false
+							}
+						}
+					})
+					if pref.customPinned {
+						roots := a.topLevelFoldersForAccount(accID)
+						ruleTargets := a.activeRuleTargetFolders(accID)
+						ui.Divider(c)
+						ui.Scroll(c.Key("set-pin-scroll-" + accID)).MaxHeight(160).FillWidth().Children(func() {
+							ui.Column(c).FillWidth().Gap(4).Children(func() {
+								for _, f := range roots {
+									cp := cleanFolderPath(f.Path)
+									low := strings.ToLower(cp)
+									lbl := f.Name
+									if lbl == "" {
+										lbl = cp
+									}
+									if isInboxFolder(f) {
+										checked := true
+										ui.Checkbox(c.Key("set-pin-c-"+accID+"-"+low), &checked, lbl+a.tr(" (immer sichtbar)", " (always visible)")).Disabled(true)
+										continue
+									}
+									if ruleTargets[low] {
+										lbl += a.tr(" (Regelziel)", " (rule target)")
+									}
+									checked := pref.pinned[low]
+									if ui.Checkbox(c.Key("set-pin-c-"+accID+"-"+low), &checked, lbl).Changed() {
+										if checked {
+											pref.pinned[low] = true
+										} else {
+											delete(pref.pinned, low)
+										}
+									}
+								}
+							})
+						})
+					}
+				})
+			}
+
 			ui.Column(c.Key("set-fld-box-"+accID)).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
-					ui.Checkbox(c.Key("set-fld-cust-"+accID), &pref.custom, a.tr("Eigene Start-Ordner (Rest eingeklappt)", "Custom startup folders (collapse rest)"))
+					ui.Checkbox(c.Key("set-fld-cust-"+accID), &pref.custom, a.tr("Aufgeklappte Unterordner beim Start festlegen", "Custom expanded subfolders on startup"))
 					ui.Spacer(c)
 					if ui.Button(c.Key("set-fld-cap-"+accID), a.tr("Aktuelle Sidebar übernehmen", "Use current sidebar")).Padding(2, 8).Clicked() {
 						pref.custom = true

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.6 (2026-11-22)
+
+### Kompakte Ordner-Seitenleiste (Desktop & Handy)
+- **Weniger genutzte Ordner im „Weitere Ordner“-Block einklappen:** Pro Postfach werden standardmäßig nur **INBOX** (mit Unterordnern) sowie Ordner angezeigt, in die aktive Filterregeln eingehende Mails verschieben oder kopieren. Alle übrigen Ordner (*Archiv, Entwürfe, Gesendet, Papierkorb, Spam, Vorlagen* usw.) liegen platzsparend eingeklappt unter **„Weitere Ordner (N)“** (mit Ungelesen-Zähler ohne Papierkorb/Spam) und lassen sich bei Bedarf per 1-Klick aufklappen — so sind auf Handy und Desktop alle Accounts ohne ständiges Scrollen im Blick.
+- **Einstellungen & Handy-Konten:** In den Einstellungen (*Ordner in der Seitenleiste*) lässt sich die kompakte Ansicht ein-/ausschalten sowie pro Postfach manuell festlegen, welche Ordner immer sichtbar bleiben (`app.compactFolders`, `app.pinnedFolders`). Auf dem Handy sind zudem die Konto-Überschriften bei mehreren Konten direkt ein-/ausklappbar.
+- **Dokumentation aktualisiert:** Kompakte Ordneransicht sowie natives OpenPGP & Regeleditor in `README.md`, `docs/ARCHITECTURE.md` und `docs/index.html` aufgenommen.
+
+### Star/Unstar View-Refresh-Fix
+- **Sofortige Aktualisierung bei Einzel- & Bulk-Star/Unstar (+ Undo):** `PerformMessageAction`, `PerformBatchAction` und `PerformUndo` aktualisieren den Markierungs- und Gelesen-Status jetzt sofort im Speicher, laden eine geöffnete Mail nach Bulk-Aktionen nach, leeren die Mehrfachauswahl nach Bulk-Star/Unstar und entfernen eine gelesene Mail beim Entsternen in **Fokus (Ungelesen & ★)** sofort aus der Fokus-Liste (kein Hängenbleiben über `keepOpenMail`).
+
 ## 0.7.5 (2026-11-21)
 
 ### Security-Hardening & OpenPGP / S/MIME

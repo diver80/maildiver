@@ -300,6 +300,7 @@ type App struct {
 	secViewsOpen       bool
 	secFoldersOpen     bool
 	secAccountOpen     map[string]*bool // per-account folder sections (folders.go)
+	secMoreFoldersOpen map[string]bool  // per-account "More folders" collapsible block (folders.go)
 	collapsedFolders   map[string]bool  // folder tree: collapsed folders by account+path
 	folderCollapseSeen map[string]bool  // folder keys whose startup collapse default was applied
 	searchQuery        string
@@ -976,10 +977,11 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		folders   []backend.Folder
 		calendars []backend.Calendar
 		events    []backend.CalendarEvent
-		errs      [4]error
+		rules     []triage.NativeFilter
+		errs      [5]error
 	}
 	var res result
-	done := make(chan struct{}, 4)
+	done := make(chan struct{}, 5)
 	load := func(i int, fn func(c context.Context) error) {
 		go func() {
 			c, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -1003,7 +1005,14 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		return err
 	})
-	for i := 0; i < 4; i++ {
+	load(4, func(c context.Context) error {
+		fl, err := bc.FiltersList(c, "")
+		if err == nil {
+			res.rules = fl.Filters
+		}
+		return err
+	})
+	for i := 0; i < 5; i++ {
 		<-done
 	}
 
@@ -1014,6 +1023,9 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		if res.errs[1] == nil && res.folders != nil {
 			a.folders = res.folders
+		}
+		if res.errs[4] == nil && res.rules != nil {
+			a.direct.rules = res.rules
 		}
 		if res.errs[2] == nil && res.calendars != nil {
 			a.calendars = res.calendars
@@ -2077,7 +2089,33 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 				return
 			}
 			removed := patch.RemovesFromFolder()
-			if removed && a.selectedID == id {
+			// Apply flag/read mutations immediately in memory so list icons, reading pane, and
+			// Focus keepOpenMail never display stale state while reload is in flight.
+			isUnread := false
+			for i := range a.messages {
+				if a.messages[i].ID == id {
+					if patch.Read != nil {
+						a.messages[i].Unread = !*patch.Read
+					}
+					if patch.Flagged != nil {
+						a.messages[i].Flagged = *patch.Flagged
+					}
+					isUnread = a.messages[i].Unread
+					break
+				}
+			}
+			if a.selectedMsg != nil && a.selectedMsg.ID == id {
+				if patch.Read != nil {
+					a.selectedMsg.Unread = !*patch.Read
+				}
+				if patch.Flagged != nil {
+					a.selectedMsg.Flagged = *patch.Flagged
+				}
+				isUnread = a.selectedMsg.Unread
+			}
+			// In Focus (Unread & ★), explicitly unstarring an already-read mail removes it from Focus.
+			leftFocus := a.navID == "focus" && patch.Flagged != nil && !*patch.Flagged && !isUnread
+			if (removed || leftFocus) && a.selectedID == id {
 				a.selectedID = ""
 				a.selectedMsg = nil
 				if openNext != "" {
@@ -2120,7 +2158,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			a.toast(toastMsg, "success")
 			a.startMessageLoad(ctx)
 			a.refreshFoldersBackground(ctx)
-			if !removed && a.selectedID == id {
+			if !removed && !leftFocus && a.selectedID == id {
 				a.reloadMessage(ctx, id)
 			}
 		})
@@ -2194,6 +2232,30 @@ func (a *App) PerformUndo(ctx context.Context) {
 				return
 			}
 			a.toast(a.tr("Rückgängig gemacht", "Undone"), "success")
+			if u.Kind == "flag" || u.Kind == "read" {
+				affected := make(map[string]bool, len(u.ToggleItems))
+				for _, it := range u.ToggleItems {
+					affected[it.ID] = true
+				}
+				for i := range a.messages {
+					if !affected[a.messages[i].ID] {
+						continue
+					}
+					if u.Kind == "flag" {
+						a.messages[i].Flagged = u.PrevValue
+					} else {
+						a.messages[i].Unread = !u.PrevValue
+					}
+				}
+				if a.selectedMsg != nil && affected[a.selectedMsg.ID] {
+					if u.Kind == "flag" {
+						a.selectedMsg.Flagged = u.PrevValue
+					} else {
+						a.selectedMsg.Unread = !u.PrevValue
+					}
+					a.reloadMessage(ctx, a.selectedID)
+				}
+			}
 			a.startMessageLoad(ctx)
 			a.refreshFoldersBackground(ctx)
 		})

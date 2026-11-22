@@ -205,36 +205,91 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 						a.phoneBoxRow(c, "contacts", iconUsers, a.tr("Kontakte", "Contacts"), 0, 0)
 					}
 				})
-				for _, g := range a.groupFoldersByAccount() {
+				groups := a.groupFoldersByAccount()
+				for _, g := range groups {
 					gCopy := g
-					mobile.Section(c, gCopy.Name, func() {
-						for _, row := range gCopy.Rows {
-							a.phoneFolderRow(c, row)
+					accOpen := a.accountSectionOpen(gCopy.AccountID)
+					renderPhoneNewFolder := func() {
+						if !a.isDirectMode() || a.readOnly {
+							return
 						}
-						if a.isDirectMode() && !a.readOnly {
-							if a.direct.newFolderAccountID == gCopy.AccountID {
-								ui.Row(c.Key("ph-nf-row-"+gCopy.AccountID)).FillWidth().Padding(6, 14).Gap(6).AlignItems(ui.Center).Children(func() {
-									inp := ui.TextInput(c.Key("ph-nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
-									if (ui.Button(c.Key("ph-nf-ok-"+gCopy.AccountID), "✓").Padding(6, 12).Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
-										a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
-									}
-									if ui.Button(c.Key("ph-nf-x-"+gCopy.AccountID), "✕").Padding(6, 10).Clicked() {
-										a.direct.newFolderAccountID = ""
-										a.direct.newFolderName = ""
-									}
-								})
-							} else {
-								b := ui.ButtonBase(c.Key("ph-nf-add-"+gCopy.AccountID)).FillWidth().Padding(8, 16).Label(a.tr("Neuer Ordner", "New Folder"))
-								b.Children(func() {
-									ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-										ui.Icon(c, iconFolderPlus).Size(16, 16).TextColor(t.TextMuted)
-										ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(13.5).TextColor(t.TextMuted)
-									})
-								})
-								if b.Clicked() {
-									a.direct.newFolderAccountID = gCopy.AccountID
+						if a.direct.newFolderAccountID == gCopy.AccountID {
+							ui.Row(c.Key("ph-nf-row-"+gCopy.AccountID)).FillWidth().Padding(6, 14).Gap(6).AlignItems(ui.Center).Children(func() {
+								inp := ui.TextInput(c.Key("ph-nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
+								if (ui.Button(c.Key("ph-nf-ok-"+gCopy.AccountID), "✓").Padding(6, 12).Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
+									a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
+								}
+								if ui.Button(c.Key("ph-nf-x-"+gCopy.AccountID), "✕").Padding(6, 10).Clicked() {
+									a.direct.newFolderAccountID = ""
 									a.direct.newFolderName = ""
 								}
+							})
+						} else {
+							b := ui.ButtonBase(c.Key("ph-nf-add-"+gCopy.AccountID)).FillWidth().Padding(8, 16).Label(a.tr("Neuer Ordner", "New Folder"))
+							b.Children(func() {
+								ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+									ui.Icon(c, iconFolderPlus).Size(16, 16).TextColor(t.TextMuted)
+									ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(13.5).TextColor(t.TextMuted)
+								})
+							})
+							if b.Clicked() {
+								a.direct.newFolderAccountID = gCopy.AccountID
+								a.direct.newFolderName = ""
+							}
+						}
+					}
+					ui.Column(c.Key("ph-acc-"+gCopy.AccountID)).FillWidth().Gap(2).Padding(8, 0, 2, 0).Children(func() {
+						if len(groups) > 1 {
+							hdr := ui.ButtonBase(c.Key("ph-acc-hdr-"+gCopy.AccountID)).FillWidth().Padding(6, 16).Label(gCopy.Name)
+							hdr.Children(func() {
+								ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+									chev := iconChevronDn
+									if !*accOpen {
+										chev = iconChevronRt
+									}
+									ui.Icon(c, chev).Size(15, 15).TextColor(t.Accent).Shrink(0)
+									ui.Text(c, gCopy.Name).FontSize(13.5).Bold().TextColor(t.Accent).Grow(1).MinWidth(0).SingleLine()
+								})
+							})
+							if hdr.Clicked() {
+								*accOpen = !*accOpen
+								a.persistCollapsedAccounts()
+							}
+						} else {
+							ui.Row(c).FillWidth().Padding(6, 16).Children(func() {
+								ui.Text(c, gCopy.Name).FontSize(13.5).Bold().TextColor(t.Accent).SingleLine()
+							})
+						}
+						if len(groups) == 1 || *accOpen {
+							for _, row := range gCopy.PrimaryRows {
+								a.phoneFolderRow(c, row)
+							}
+							if len(gCopy.OtherRows) > 0 {
+								moreOpen := a.moreFoldersOpen(gCopy.AccountID)
+								chev := iconChevronRt
+								if moreOpen {
+									chev = iconChevronDn
+								}
+								lbl := a.trf("Weitere Ordner (%d)", "More folders (%d)", gCopy.OtherTopCount)
+								moreRow := ui.Row(c.Key("ph-more-"+gCopy.AccountID)).FillWidth().MinHeight(44).Padding(6, 16).Gap(12).AlignItems(ui.Center).Role(ui.RoleButton).Label(lbl)
+								moreRow.Children(func() {
+									ui.Icon(c, chev).Size(17, 17).TextColor(t.TextMuted).Shrink(0)
+									ui.Text(c, lbl).FontSize(14).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
+									if !moreOpen && gCopy.OtherUnreadCount > 0 {
+										ui.Badge(c, fmt.Sprintf("%d", gCopy.OtherUnreadCount))
+									}
+								})
+								if moreRow.Clicked() {
+									a.toggleMoreFolders(gCopy.AccountID)
+								}
+								if moreOpen {
+									for _, row := range gCopy.OtherRows {
+										a.phoneFolderRow(c, row)
+									}
+									renderPhoneNewFolder()
+								}
+							} else {
+								renderPhoneNewFolder()
 							}
 						}
 					})

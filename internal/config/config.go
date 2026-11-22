@@ -61,6 +61,13 @@ type AppConfig struct {
 	// sidebar (all other expandable folders in that account start collapsed).
 	// Absent accountID uses the built-in default (INBOX expanded to level 2; level 2+ & Archives collapsed).
 	ExpandedFolders map[string][]string `json:"expandedFolders,omitempty"`
+	// CompactFolders groups less-used folders (Archives, Drafts, Sent, Trash, Spam, etc.) per
+	// account into a collapsible "More folders" block, keeping INBOX and active filter-rule target
+	// folders immediately visible (nil defaults to true).
+	CompactFolders *bool `json:"compactFolders,omitempty"`
+	// PinnedFolders optionally maps accountID -> top-level folder paths that stay visible outside
+	// the collapsed "More folders" block when CompactFolders is enabled.
+	PinnedFolders map[string][]string `json:"pinnedFolders,omitempty"`
 	// CollapsedAccounts stores accountIDs whose top-level sidebar folder section is collapsed.
 	CollapsedAccounts []string `json:"collapsedAccounts,omitempty"`
 	// HiddenCalendars stores calendar IDs unchecked in the multi-select calendar filter.
@@ -79,6 +86,15 @@ type AppConfig struct {
 	SidebarSplit  float32 `json:"sidebarSplit,omitempty"`
 	MailSplit     float32 `json:"mailSplit,omitempty"`
 	CopilotSplit  float32 `json:"copilotSplit,omitempty"`
+}
+
+// EffectiveCompactFolders reports whether less-used folders are grouped into a collapsible
+// "More folders" block per mailbox (defaults to true when unset).
+func (a AppConfig) EffectiveCompactFolders() bool {
+	if a.CompactFolders == nil {
+		return true
+	}
+	return *a.CompactFolders
 }
 
 // EffectiveUndoSendSeconds returns the configured undo-send grace period in seconds (default 5, 0..30).
@@ -416,6 +432,30 @@ func Normalize(cfg Config) Config {
 			clean[accID] = out
 		}
 		cfg.App.ExpandedFolders = clean
+	}
+	if len(cfg.App.PinnedFolders) > 0 {
+		clean := make(map[string][]string, len(cfg.App.PinnedFolders))
+		for accID, paths := range cfg.App.PinnedFolders {
+			accID = strings.TrimSpace(accID)
+			if accID == "" {
+				continue
+			}
+			seen := make(map[string]bool, len(paths))
+			out := make([]string, 0, len(paths))
+			for _, p := range paths {
+				p = strings.Trim(strings.TrimSpace(p), "/")
+				if p == "" {
+					continue
+				}
+				low := strings.ToLower(p)
+				if !seen[low] {
+					seen[low] = true
+					out = append(out, p)
+				}
+			}
+			clean[accID] = out
+		}
+		cfg.App.PinnedFolders = clean
 	}
 	if len(cfg.App.HiddenCalendars) > 0 {
 		seen := make(map[string]bool, len(cfg.App.HiddenCalendars))

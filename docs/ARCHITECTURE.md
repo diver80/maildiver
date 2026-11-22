@@ -25,7 +25,7 @@ cmd/maildiver
 | `events` | In-process fan-out of engine events. Subscribers get a buffered channel; a slow subscriber drops events instead of blocking the engine. |
 | `jobs`, `triage`, `archive` | Triage classification (local rules first, then the model within `ai.maxAiCallsPerScan`), result in `triage-state.json`; archive runs write `.eml` files, maintain `.maildiver-index.json`, check SHA-256 and only then delete. |
 | `ai`, `copilot` | Provider registry (API, local servers such as Ollama/llama.cpp, CLIs) and the copilot agent. |
-| `nativeui` | The app. It touches UI state only on its UI thread (`emitUpdate`); network and disk work run in goroutines; HTML WYSIWYG compose & optional Web Preview embed platform `mygo.WebView`. |
+| `nativeui` | The app. It touches UI state only on its UI thread (`emitUpdate`); network and disk work run in goroutines; HTML WYSIWYG compose & optional Web Preview embed platform `mygo.WebView`. The sidebar (desktop & mobile) defaults to a **compact folder view** (`app.compactFolders`, optional per-account `app.pinnedFolders`) that shows only `INBOX` and active incoming filter-rule target folders directly and tucks secondary folders (Archives, Drafts, Sent, Trash, Spam, etc.) into a collapsible *More folders* block so all accounts stay visible at a glance. |
 | `config`, `secretstore`, `theme` | `config.json`, the API-key env file (`0600`), encrypted secrets (macOS Keychain, Android Keystore, Windows DPAPI, Linux libsecret/AES-256-GCM sealed store), Omarchy/bundled themes. |
 
 ## Where data lives
@@ -57,7 +57,7 @@ cmd/maildiver
 - **Remote content:** the reader never loads anything from the network; HTML is converted to Markdown, images are counted, not fetched.
 - **Read-only:** with `mailbox.readOnly` on, `backend` refuses mail actions, drafts, sending and filter rules; the UI hides them and also respects the per-account write list. Adding an account switches read-only off; `"mailbox": {"readOnly": true}` in `config.json` switches it back on.
 - **AI:** mail content is wrapped as untrusted data. The copilot only proposes drafts, events and "mark read"; they run after the user clicks *Execute*. Endpoints come only from `config.json`; a key is sent only to its provider. `claude-cli` runs without tools and gets the prompt on stdin.
-- **Encrypted mails:** **S/MIME** certificates (`.p12`/`.pfx` in OS secure store) verify signatures, check signer-address mismatches, decrypt on open, and sign/encrypt outgoing mails; **OpenPGP (PGP/MIME)** detection displays a Phase 2 status notice (full OpenPGP arrives in Phase 2); scans, archive exports, and copilot lookups never decrypt.
+- **Encrypted mails:** Full **S/MIME** (`.p12`/`.pfx` in OS secure store) AND native **OpenPGP** (`internal/pgp`, RFC 3156 PGP/MIME + MIME-decoded Inline PGP, passphrase-protected secret keys in OS secure store, SSRF-/key-binding-guarded WKD & `keys.openpgp.org` lookup) verify signatures, check signer-address mismatches, decrypt on open, and fail closed when signing/encrypting outgoing mail; scans, archive exports, and copilot lookups never decrypt.
 - **Attachments:** executables, scripts, installers and active HTML/SVG are only saved to `~/Downloads`, never opened.
 
 ## Theme

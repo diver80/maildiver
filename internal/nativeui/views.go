@@ -402,6 +402,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 					if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
 						flagVal := anyUnflagged
 						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
+						a.ClearMailSelection()
 					}
 					if !a.readOnly {
 						if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {

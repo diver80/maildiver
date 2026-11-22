@@ -257,10 +257,45 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 	go func() {
 		okIDs, movedTargets, failed, firstErr := applyActionTargetsWithMoves(ctx, bc, targets, patch)
 		a.emitUpdate(func() {
-			if removes {
+			okSet := make(map[string]bool, len(okIDs))
+			for _, id := range okIDs {
+				okSet[id] = true
+			}
+			// Apply flag/read mutations immediately in memory so list rows, reading pane, and
+			// Focus view refresh cleanly without stale star/read icons.
+			selectedLeftFocus := false
+			selectedAffected := okSet[a.selectedID]
+			if !removes && (patch.Read != nil || patch.Flagged != nil) {
+				for i := range a.messages {
+					if !okSet[a.messages[i].ID] {
+						continue
+					}
+					if patch.Read != nil {
+						a.messages[i].Unread = !*patch.Read
+					}
+					if patch.Flagged != nil {
+						a.messages[i].Flagged = *patch.Flagged
+					}
+					if a.messages[i].ID == a.selectedID && a.navID == "focus" && patch.Flagged != nil && !*patch.Flagged && !a.messages[i].Unread {
+						selectedLeftFocus = true
+					}
+				}
+				if a.selectedMsg != nil && okSet[a.selectedMsg.ID] {
+					if patch.Read != nil {
+						a.selectedMsg.Unread = !*patch.Read
+					}
+					if patch.Flagged != nil {
+						a.selectedMsg.Flagged = *patch.Flagged
+					}
+					if a.navID == "focus" && patch.Flagged != nil && !*patch.Flagged && !a.selectedMsg.Unread {
+						selectedLeftFocus = true
+					}
+				}
+			}
+			if removes || selectedLeftFocus {
 				for _, id := range okIDs {
 					delete(a.checkedIDs, id)
-					if a.selectedID == id {
+					if a.selectedID == id && (removes || selectedLeftFocus) {
 						a.selectedID = ""
 						a.selectedMsg = nil
 						a.syncPreviewForMessage(nil)
@@ -329,6 +364,9 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 			}
 			a.startMessageLoad(ctx)
 			a.refreshFoldersBackground(ctx)
+			if !removes && !selectedLeftFocus && selectedAffected && a.selectedID != "" {
+				a.reloadMessage(ctx, a.selectedID)
+			}
 		})
 	}()
 }

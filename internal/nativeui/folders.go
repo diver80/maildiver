@@ -30,11 +30,17 @@ type folderRow struct {
 	Collapsed bool
 }
 
-// folderAccountGroup holds the folder rows of one account.
+// folderAccountGroup holds the folder rows of one account, split into always-visible primary
+// folders (INBOX + active incoming rule targets / pinned folders) and secondary folders tucked
+// into the collapsible "More folders" block when CompactFolders is enabled.
 type folderAccountGroup struct {
-	AccountID string
-	Name      string
-	Rows      []folderRow
+	AccountID        string
+	Name             string
+	Rows             []folderRow
+	PrimaryRows      []folderRow
+	OtherRows        []folderRow
+	OtherTopCount    int
+	OtherUnreadCount int
 }
 
 func cleanFolderPath(p string) string { return strings.Trim(p, "/") }
@@ -222,6 +228,195 @@ func (a *App) currentExpandedFolderPaths(accountID string) []string {
 // draggedAccount is the typed drag-and-drop payload when reordering mail accounts.
 type draggedAccount string
 
+func isInboxFolder(f backend.Folder) bool {
+	if strings.EqualFold(strings.TrimSpace(f.Type), "inbox") {
+		return true
+	}
+	for _, su := range f.SpecialUse {
+		if strings.EqualFold(strings.TrimSpace(su), "inbox") {
+			return true
+		}
+	}
+	return strings.EqualFold(cleanFolderPath(f.Path), "INBOX")
+}
+
+func isTrashOrJunkFolder(f backend.Folder) bool {
+	switch strings.ToLower(strings.TrimSpace(f.Type)) {
+	case "trash", "junk":
+		return true
+	}
+	for _, su := range f.SpecialUse {
+		switch strings.ToLower(strings.TrimSpace(su)) {
+		case "trash", "junk":
+			return true
+		}
+	}
+	low := strings.ToLower(cleanFolderPath(f.Path))
+	return low == "trash" || low == "papierkorb" || low == "junk" || low == "spam"
+}
+
+func isTerminalRuleTargetPath(path string) bool {
+	norm := strings.ToLower(strings.Trim(strings.ReplaceAll(path, "\\", "/"), "/"))
+	if norm == "" {
+		return true
+	}
+	parts := strings.Split(norm, "/")
+	first := parts[0]
+	last := parts[len(parts)-1]
+	switch first {
+	case "trash", "papierkorb", "deleted", "deleted items", "gelöschte objekte",
+		"junk", "spam", "sent", "gesendet", "gesendete objekte",
+		"drafts", "entwürfe", "entwuerfe",
+		"archive", "archives", "archiv", "templates", "vorlagen":
+		return true
+	}
+	switch last {
+	case "done", "erledigt", "archive", "archiv", "trash", "papierkorb", "junk", "spam":
+		return true
+	}
+	return false
+}
+
+// activeRuleTargetFolders returns lowercase folder paths (and their ancestors) that active filter
+// rules for accountID move or copy incoming mail into (excluding terminal/system folders).
+func (a *App) activeRuleTargetFolders(accountID string) map[string]bool {
+	targets := make(map[string]bool)
+	for _, flt := range a.direct.rules {
+		if !flt.Enabled {
+			continue
+		}
+		if flt.AccountID != "" && accountID != "" && flt.AccountID != accountID {
+			continue
+		}
+		for _, act := range flt.Actions {
+			if act.Type != "moveToFolder" && act.Type != "copyToFolder" {
+				continue
+			}
+			raw := cleanFolderPath(strings.ReplaceAll(act.TargetFolderPath, "\\", "/"))
+			if raw == "" || isTerminalRuleTargetPath(raw) {
+				continue
+			}
+			p := strings.ToLower(raw)
+			targets[p] = true
+			for {
+				idx := strings.LastIndexByte(p, '/')
+				if idx <= 0 {
+					break
+				}
+				p = p[:idx]
+				targets[p] = true
+			}
+		}
+	}
+	return targets
+}
+
+// configuredPinnedSet returns the custom lowercase always-visible folder paths for accountID, or
+// (nil, false) when smart default detection (INBOX + active rule targets) applies.
+func (a *App) configuredPinnedSet(accountID string) (map[string]bool, bool) {
+	if len(a.cfg.App.PinnedFolders) == 0 {
+		return nil, false
+	}
+	paths, ok := a.cfg.App.PinnedFolders[accountID]
+	if !ok {
+		return nil, false
+	}
+	set := make(map[string]bool, len(paths))
+	for _, raw := range paths {
+		p := strings.ToLower(cleanFolderPath(raw))
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return set, true
+}
+
+// splitCompactFolders splits an account's visible tree rows into always-visible PrimaryRows
+// (INBOX + active filter-rule target folders or user-pinned folders) and OtherRows tucked into
+// the collapsible "More folders" block.
+func (a *App) splitCompactFolders(accountID string, rows []folderRow) (primary, other []folderRow, otherTopCount, otherUnread int) {
+	if !a.cfg.App.EffectiveCompactFolders() || len(rows) == 0 {
+		return rows, nil, 0, 0
+	}
+	pinnedSet, hasCustom := a.configuredPinnedSet(accountID)
+	var ruleTargets map[string]bool
+	if !hasCustom {
+		ruleTargets = a.activeRuleTargetFolders(accountID)
+	}
+
+	// Partition rows into top-level subtrees (each starting at Depth == 0).
+	for i := 0; i < len(rows); {
+		j := i + 1
+		for j < len(rows) && rows[j].Depth > 0 {
+			j++
+		}
+		subtree := rows[i:j]
+		root := subtree[0]
+		isPrimary := isInboxFolder(root.Folder)
+		if !isPrimary {
+			for _, r := range subtree {
+				low := strings.ToLower(cleanFolderPath(r.Folder.Path))
+				if hasCustom {
+					if pinnedSet[low] {
+						isPrimary = true
+						break
+					}
+				} else if ruleTargets[low] {
+					isPrimary = true
+					break
+				}
+			}
+		}
+		if isPrimary {
+			primary = append(primary, subtree...)
+		} else {
+			other = append(other, subtree...)
+			otherTopCount++
+			for _, r := range subtree {
+				if r.Folder.UnreadCount > 0 && !isTrashOrJunkFolder(r.Folder) {
+					otherUnread += r.Folder.UnreadCount
+				}
+			}
+		}
+		i = j
+	}
+	if len(primary) == 0 {
+		return rows, nil, 0, 0
+	}
+	return primary, other, otherTopCount, otherUnread
+}
+
+// topLevelFoldersForAccount returns the root-level (Depth == 0) folders of accountID in tree order.
+func (a *App) topLevelFoldersForAccount(accountID string) []backend.Folder {
+	var accFolders []backend.Folder
+	for _, f := range a.folders {
+		if f.AccountID == accountID {
+			accFolders = append(accFolders, f)
+		}
+	}
+	var out []backend.Folder
+	for _, row := range buildFolderRows(accFolders, nil) {
+		if row.Depth == 0 {
+			out = append(out, row.Folder)
+		}
+	}
+	return out
+}
+
+func (a *App) moreFoldersOpen(accountID string) bool {
+	if a.secMoreFoldersOpen == nil {
+		return false
+	}
+	return a.secMoreFoldersOpen[accountID]
+}
+
+func (a *App) toggleMoreFolders(accountID string) {
+	if a.secMoreFoldersOpen == nil {
+		a.secMoreFoldersOpen = make(map[string]bool)
+	}
+	a.secMoreFoldersOpen[accountID] = !a.secMoreFoldersOpen[accountID]
+}
+
 // groupFoldersByAccount splits folders per account in the configured a.accounts order (falling
 // back to first appearance in a.folders for any unmapped account) and builds each account's tree.
 func (a *App) groupFoldersByAccount() []folderAccountGroup {
@@ -261,7 +456,17 @@ func (a *App) groupFoldersByAccount() []folderAccountGroup {
 			name = a.accountDisplayName(id)
 		}
 		a.ensureDefaultFolderCollapse(id, byAcc[id])
-		groups = append(groups, folderAccountGroup{AccountID: id, Name: name, Rows: buildFolderRows(byAcc[id], a.collapsedFolders)})
+		rows := buildFolderRows(byAcc[id], a.collapsedFolders)
+		prim, other, otherCnt, otherUnread := a.splitCompactFolders(id, rows)
+		groups = append(groups, folderAccountGroup{
+			AccountID:        id,
+			Name:             name,
+			Rows:             rows,
+			PrimaryRows:      prim,
+			OtherRows:        other,
+			OtherTopCount:    otherCnt,
+			OtherUnreadCount: otherUnread,
+		})
 	}
 	return groups
 }
@@ -479,39 +684,72 @@ func (a *App) renderFolderSections(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	renderRows := func(gCopy folderAccountGroup) {
-		for _, row := range gCopy.Rows {
-			a.renderFolderRow(c, row)
+	renderNewFolder := func(gCopy folderAccountGroup) {
+		if !a.isDirectMode() || a.readOnly {
+			return
 		}
-		if a.isDirectMode() && !a.readOnly {
-			if a.direct.newFolderAccountID == gCopy.AccountID {
-				ui.Row(c.Key("nf-row-"+gCopy.AccountID)).FillWidth().Padding(4, 8).Gap(4).AlignItems(ui.Center).Children(func() {
-					inp := ui.TextInput(c.Key("nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
-					okBtn := ui.Button(c.Key("nf-ok-"+gCopy.AccountID), "✓").Padding(3, 6)
-					if a.direct.newFolderBusy {
-						okBtn.Disabled(true)
-					}
-					if (okBtn.Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
-						a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
-					}
-					if ui.Button(c.Key("nf-x-"+gCopy.AccountID), "✕").Padding(3, 6).Clicked() {
-						a.direct.newFolderAccountID = ""
-						a.direct.newFolderName = ""
-					}
-				})
-			} else {
-				btn := ui.ButtonBase(c.Key("nf-add-"+gCopy.AccountID)).FillWidth().Padding(4, 10).Radius(6).Label(a.tr("Neuer Ordner", "New Folder"))
-				btn.Children(func() {
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconFolderPlus).Size(13, 13).TextColor(t.TextMuted)
-						ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(11.5).TextColor(t.TextMuted)
-					})
-				})
-				if btn.Clicked() {
-					a.direct.newFolderAccountID = gCopy.AccountID
+		if a.direct.newFolderAccountID == gCopy.AccountID {
+			ui.Row(c.Key("nf-row-"+gCopy.AccountID)).FillWidth().Padding(4, 8).Gap(4).AlignItems(ui.Center).Children(func() {
+				inp := ui.TextInput(c.Key("nf-in-"+gCopy.AccountID), &a.direct.newFolderName).Placeholder(a.tr("Ordnername…", "Folder name…")).Grow(1)
+				okBtn := ui.Button(c.Key("nf-ok-"+gCopy.AccountID), "✓").Padding(3, 6)
+				if a.direct.newFolderBusy {
+					okBtn.Disabled(true)
+				}
+				if (okBtn.Clicked() || inp.Submitted()) && !a.direct.newFolderBusy && strings.TrimSpace(a.direct.newFolderName) != "" {
+					a.CreateIMAPFolder(context.Background(), gCopy.AccountID, a.direct.newFolderName)
+				}
+				if ui.Button(c.Key("nf-x-"+gCopy.AccountID), "✕").Padding(3, 6).Clicked() {
+					a.direct.newFolderAccountID = ""
 					a.direct.newFolderName = ""
 				}
+			})
+		} else {
+			btn := ui.ButtonBase(c.Key("nf-add-"+gCopy.AccountID)).FillWidth().Padding(4, 10).Radius(6).Label(a.tr("Neuer Ordner", "New Folder"))
+			btn.Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconFolderPlus).Size(13, 13).TextColor(t.TextMuted)
+					ui.Text(c, a.tr("Neuer Ordner…", "New Folder…")).FontSize(11.5).TextColor(t.TextMuted)
+				})
+			})
+			if btn.Clicked() {
+				a.direct.newFolderAccountID = gCopy.AccountID
+				a.direct.newFolderName = ""
 			}
+		}
+	}
+	renderRows := func(gCopy folderAccountGroup) {
+		for _, row := range gCopy.PrimaryRows {
+			a.renderFolderRow(c, row)
+		}
+		if len(gCopy.OtherRows) > 0 {
+			moreOpen := a.moreFoldersOpen(gCopy.AccountID)
+			chev := iconChevronRt
+			if moreOpen {
+				chev = iconChevronDn
+			}
+			lbl := a.trf("Weitere Ordner (%d)", "More folders (%d)", gCopy.OtherTopCount)
+			moreBtn := ui.ButtonBase(c.Key("sb-more-"+gCopy.AccountID)).FillWidth().Padding(5, 10).Radius(6).Label(lbl).
+				Tooltip(a.tr("Archiv, Entwürfe, Gesendet, Papierkorb & weitere Ordner ein-/ausklappen", "Expand/collapse Archives, Drafts, Sent, Trash & other folders"))
+			moreBtn.Children(func() {
+				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, chev).Size(12, 12).TextColor(t.TextMuted).Shrink(0)
+					ui.Text(c, lbl).FontSize(11.5).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
+					if !moreOpen && gCopy.OtherUnreadCount > 0 {
+						ui.Badge(c, fmt.Sprintf("%d", gCopy.OtherUnreadCount))
+					}
+				})
+			})
+			if moreBtn.Clicked() {
+				a.toggleMoreFolders(gCopy.AccountID)
+			}
+			if moreOpen {
+				for _, row := range gCopy.OtherRows {
+					a.renderFolderRow(c, row)
+				}
+				renderNewFolder(gCopy)
+			}
+		} else {
+			renderNewFolder(gCopy)
 		}
 	}
 
