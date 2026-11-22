@@ -163,7 +163,12 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 			ui.Scroll(c).Fill().Children(func() { a.renderDirectOnboarding(c) })
 			return
 		}
-		if acc, msg := a.firstSyncError(); acc != "" {
+		if a.networkOffline {
+			ui.Row(c.Key("ph-offline-bar")).FillWidth().Padding(9, 16).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Warning, 0.14)).Children(func() {
+				statusDot(c, t.Warning, 8)
+				ui.Text(c, a.tr("Offline — warte auf Netzwerkverbindung", "Offline — waiting for network")).FontSize(13.5).Bold().TextColor(t.Warning).Grow(1)
+			})
+		} else if acc, msg := a.firstSyncError(); acc != "" {
 			// Phones have no status bar: a failing account shows here.
 			b := ui.ButtonBase(c.Key("ph-sync-err")).FillWidth().Padding(10, 16).Gap(4).Background(withAlpha(t.Danger, 0.14)).Label(msg)
 			b.Children(func() {
@@ -385,6 +390,7 @@ func (a *App) phoneFolderRow(c *ui.Context, row folderRow) {
 // phoneSync pulls new mail for all accounts (pull to refresh).
 func (a *App) phoneSync() {
 	a.phone.refresh.Refreshing = true
+	a.clearTransientSyncErrors()
 	if a.isDirectMode() {
 		a.syncDirectAccountNow(context.Background(), a.selectedAccount)
 	} else {

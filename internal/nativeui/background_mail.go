@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,27 +31,158 @@ type backgroundMail interface {
 	MarkInboxSeen(ctx context.Context) error
 }
 
-// setupBackgroundMail registers the task and keeps the "seen" watermark with the app's
-// foreground; call it before mygo.App.Run.
+type workerPauser interface {
+	SetWorkersPaused(paused bool)
+}
+
+// setupBackgroundMail registers lifecycle/network pause-resume for IMAP IDLE workers on all
+// platforms and schedules Android/iOS WorkManager periodic inbox sync when running on mobile.
+// Call before mygo.App.Run.
 func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
-	if !isMobileOS() {
+	pauser, _ := opts.Direct.(workerPauser)
+	mobile := isMobileOS()
+
+	var (
+		stateMu     sync.Mutex
+		foreground  atomic.Bool
+		suspended   bool
+		online      = true
+		resumeTimer *time.Timer
+	)
+	if !mobile {
+		foreground.Store(true)
+	}
+
+	reconcileWorkers := func(settle time.Duration) {
+		if pauser == nil {
+			return
+		}
+		stateMu.Lock()
+		if resumeTimer != nil {
+			resumeTimer.Stop()
+			resumeTimer = nil
+		}
+		shouldRun := online && !suspended
+		if mobile {
+			shouldRun = shouldRun && foreground.Load()
+		}
+		isOffline := !online
+		if !shouldRun {
+			stateMu.Unlock()
+			pauser.SetWorkersPaused(true)
+			s.app.emitUpdate(func() {
+				s.app.networkOffline = isOffline
+				if isOffline {
+					s.app.clearTransientSyncErrors()
+				}
+			})
+			return
+		}
+		// Immediately clear stale "no such host" / socket errors from the previous suspend/offline
+		// window and wait briefly for Android's netd / OS routing to unfreeze before dialing IMAP.
+		s.app.emitUpdate(func() {
+			s.app.networkOffline = false
+			s.app.clearTransientSyncErrors()
+		})
+		if settle <= 0 {
+			stateMu.Unlock()
+			go pauser.SetWorkersPaused(false)
+			return
+		}
+		resumeTimer = time.AfterFunc(settle, func() {
+			stateMu.Lock()
+			ok := online && !suspended && (!mobile || foreground.Load())
+			stateMu.Unlock()
+			if ok {
+				pauser.SetWorkersPaused(false)
+			}
+		})
+		stateMu.Unlock()
+	}
+
+	var seen func()
+	if bm, ok := opts.Direct.(backgroundMail); ok && mobile {
+		seen = func() {
+			go func() {
+				c, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				_ = bm.MarkInboxSeen(c)
+			}()
+		}
+	}
+
+	onWake := func() {
+		foreground.Store(true)
+		stateMu.Lock()
+		suspended = false
+		stateMu.Unlock()
+		if seen != nil {
+			seen()
+		}
+		settle := 250 * time.Millisecond
+		if mobile {
+			// Give Android netd / eBPF UID firewall a moment to restore network after onResume.
+			settle = 500 * time.Millisecond
+		}
+		reconcileWorkers(settle)
+	}
+	onSleep := func() {
+		if mobile {
+			foreground.Store(false)
+		}
+		stateMu.Lock()
+		suspended = true
+		stateMu.Unlock()
+		if seen != nil {
+			seen()
+		}
+		reconcileWorkers(0)
+	}
+
+	mygo.App.OnActivate(func(bool) { onWake() })
+	mygo.App.OnDidBecomeActive(func() {
+		if mobile {
+			onWake()
+		}
+	})
+	mygo.Power.OnResume(func() { onWake() })
+	mygo.Power.OnSuspend(func() { onSleep() })
+	mygo.Network.OnChanged(func(st mygo.NetworkStatus) {
+		stateMu.Lock()
+		prev := online
+		online = st.Online
+		stateMu.Unlock()
+		if st.Online != prev || !st.Online {
+			settle := 250 * time.Millisecond
+			if mobile {
+				settle = 500 * time.Millisecond
+			}
+			reconcileWorkers(settle)
+		}
+	})
+
+	mygo.App.WhenReady(func() {
+		if mobile {
+			go func() {
+				st := mygo.Network.Status()
+				stateMu.Lock()
+				online = st.Online
+				stateMu.Unlock()
+				if mygo.App.IsActive() {
+					foreground.Store(true)
+				}
+				reconcileWorkers(300 * time.Millisecond)
+			}()
+		}
+	})
+
+	if !mobile {
 		return
 	}
 	bm, ok := opts.Direct.(backgroundMail)
 	if !ok {
 		return
 	}
-	var foreground atomic.Bool
-	seen := func() {
-		go func() {
-			c, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			_ = bm.MarkInboxSeen(c)
-		}()
-	}
-	mygo.App.OnActivate(func(bool) { foreground.Store(true); seen() })
-	mygo.Power.OnResume(func() { foreground.Store(true); seen() })
-	mygo.Power.OnSuspend(func() { foreground.Store(false); seen() })
 
 	background.Handle(backgroundMailTask, func(c context.Context) error {
 		if ext, ok := opts.Direct.(interface{ SyncBackgroundExtras(context.Context) }); ok {

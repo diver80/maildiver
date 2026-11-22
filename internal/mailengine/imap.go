@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/mail"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -21,11 +23,56 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, unilateral *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+// IsTransientNetworkError reports whether err looks like a temporary DNS, offline, or socket
+// drop error (common on Android Doze / background UID firewall / Wi-Fi↔cellular handoff).
+func IsTransientNetworkError(err error) bool {
+	if err == nil {
+		return false
 	}
-	addr := net.JoinHostPort(strings.TrimSpace(acc.IMAPHost), fmt.Sprintf("%d", acc.IMAPPort))
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	return IsTransientNetworkErrorMsg(err.Error())
+}
+
+// IsTransientNetworkErrorMsg classifies an error string as a transient network/DNS outage
+// (as opposed to an authentication or configuration fault).
+func IsTransientNetworkErrorMsg(msg string) bool {
+	low := strings.ToLower(strings.TrimSpace(msg))
+	if low == "" {
+		return false
+	}
+	if strings.Contains(low, "anmeldung fehlgeschlagen") || strings.Contains(low, "authentication") ||
+		strings.Contains(low, "invalid credentials") || strings.Contains(low, "login failed") {
+		return false
+	}
+	for _, needle := range []string{
+		"no such host",
+		"temporary failure in name resolution",
+		"server misbehaving",
+		"network is unreachable",
+		"network is down",
+		"no route to host",
+		"software caused connection abort",
+		"connection reset by peer",
+		"broken pipe",
+		"i/o timeout",
+		"context deadline exceeded",
+		"unexpected eof",
+	} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func dialIMAPOnce(ctx context.Context, acc config.DirectAccount, addr string, unilateral *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
 	dialer := &net.Dialer{Timeout: 20 * time.Second}
 	if d, ok := ctx.Deadline(); ok {
 		dialer.Deadline = d
@@ -35,17 +82,36 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 		TLSConfig:             &tls.Config{ServerName: strings.TrimSpace(acc.IMAPHost), MinVersion: tls.VersionTLS12},
 		UnilateralDataHandler: unilateral,
 	}
-
-	var c *imapclient.Client
-	var err error
 	mode := strings.ToLower(strings.TrimSpace(acc.IMAPTLS))
 	switch {
 	case mode == "plain" && isLoopbackHost(acc.IMAPHost):
-		c, err = imapclient.DialInsecure(addr, opts)
+		return imapclient.DialInsecure(addr, opts)
 	case mode == "starttls":
-		c, err = imapclient.DialStartTLS(addr, opts)
+		return imapclient.DialStartTLS(addr, opts)
 	default:
-		c, err = imapclient.DialTLS(addr, opts)
+		return imapclient.DialTLS(addr, opts)
+	}
+}
+
+func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, unilateral *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	addr := net.JoinHostPort(strings.TrimSpace(acc.IMAPHost), fmt.Sprintf("%d", acc.IMAPPort))
+	c, err := dialIMAPOnce(ctx, acc, addr, unilateral)
+	// On Android/iOS, DNS lookups immediately after Activity.onResume or a Wi-Fi↔5G handoff
+	// can fail once with "no such host" while netd unfreezes the UID's network route.
+	if err != nil && ctx.Err() == nil && (runtime.GOOS == "android" || runtime.GOOS == "ios") && IsTransientNetworkError(err) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1500 * time.Millisecond):
+		}
+		if retryClient, rerr := dialIMAPOnce(ctx, acc, addr, unilateral); rerr == nil {
+			c, err = retryClient, nil
+		} else {
+			err = rerr
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("IMAP Verbindung zu %s fehlgeschlagen: %w", addr, err)

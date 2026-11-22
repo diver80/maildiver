@@ -86,6 +86,7 @@ type Engine struct {
 	gcalOAuthCancel context.CancelFunc
 	started         bool
 	closed          bool
+	workersPaused   bool
 }
 
 // New creates an Engine and opens its local SQLite database.
@@ -341,6 +342,9 @@ func (e *Engine) runOutboxLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if e.IsWorkersPaused() {
+				continue
+			}
 			_, _ = e.FlushOutbox(ctx)
 		}
 	}
@@ -422,6 +426,53 @@ func (e *Engine) setAccountState(accountID, state, lastErr string) {
 	e.mu.Unlock()
 }
 
+// IsWorkersPaused reports whether background IMAP IDLE / periodic loops are currently paused
+// (e.g. while an Android/iOS app is backgrounded or the device is offline).
+func (e *Engine) IsWorkersPaused() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.workersPaused
+}
+
+// SetWorkersPaused pauses or resumes background IMAP IDLE and periodic sync workers.
+// Pausing cancels active worker loops cleanly without marking accounts as errored (crucial on
+// Android where background apps have network/DNS blocked by netd). Resuming clears stale
+// transient network errors and restarts IMAP IDLE workers immediately without backoff.
+func (e *Engine) SetWorkersPaused(paused bool) {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	wasPaused := e.workersPaused
+	e.workersPaused = paused
+	if paused {
+		for id, cancel := range e.workers {
+			cancel()
+			delete(e.workers, id)
+			if e.accState[id] == "syncing" {
+				e.accState[id] = "idle"
+			}
+		}
+		e.mu.Unlock()
+		return
+	}
+	for id, lastErr := range e.accLastErr {
+		if IsTransientNetworkErrorMsg(lastErr) {
+			delete(e.accLastErr, id)
+			if e.accState[id] == "error" {
+				e.accState[id] = "idle"
+			}
+		}
+	}
+	started := e.started
+	e.mu.Unlock()
+
+	if started && wasPaused {
+		e.reconcileAccountWorkers()
+	}
+}
+
 // ReloadAccounts starts syncing accounts that came into the configuration from elsewhere (a
 // transfer from another device) and stops those that left it.
 func (e *Engine) ReloadAccounts() {
@@ -443,11 +494,17 @@ func (e *Engine) reconcileAccountWorkers() {
 		}
 	}
 	for id, cancel := range e.workers {
-		if _, ok := want[id]; !ok {
+		if _, ok := want[id]; !ok || e.workersPaused {
 			cancel()
 			delete(e.workers, id)
-			e.accState[id] = "stopped"
+			if !e.workersPaused {
+				e.accState[id] = "stopped"
+			}
 		}
+	}
+	if e.workersPaused {
+		e.mu.Unlock()
+		return
 	}
 	for id, acc := range want {
 		if _, running := e.workers[id]; !running {
@@ -780,6 +837,14 @@ func (e *Engine) SyncAccount(ctx context.Context, accountID string, inboxOnly bo
 		return res, err
 	}
 	if err != nil {
+		if e.IsWorkersPaused() && IsTransientNetworkError(err) {
+			// App just went offline or into Android background/Doze while this sync ran:
+			// do not poison the UI with a scary "no such host" account error.
+			e.mu.Lock()
+			e.accState[accountID] = prevState
+			e.mu.Unlock()
+			return res, err
+		}
 		e.setAccountState(accountID, "error", err.Error())
 		if e.events != nil && ctx.Err() == nil {
 			e.events.Publish("mail.sync.error", map[string]any{"accountId": accountID, "error": err.Error()})
@@ -927,7 +992,9 @@ func (e *Engine) runCalendarSyncLoop(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case <-time.After(1500 * time.Millisecond):
-		_ = e.SyncCalendarsNow(ctx)
+		if !e.IsWorkersPaused() {
+			_ = e.SyncCalendarsNow(ctx)
+		}
 	}
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -936,6 +1003,9 @@ func (e *Engine) runCalendarSyncLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if e.IsWorkersPaused() {
+				continue
+			}
 			_ = e.SyncCalendarsNow(ctx)
 		}
 	}

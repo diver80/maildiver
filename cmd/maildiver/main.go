@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -19,7 +20,7 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-var version = "0.7.8-dev"
+var version = "0.7.9-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -68,6 +69,12 @@ func run() error {
 	})
 	if err != nil {
 		return fmt.Errorf("Fehler beim Starten der MailDiver-Engine: %w", err)
+	}
+	// On Android/iOS, keep persistent IMAP IDLE workers paused until the Activity is active
+	// and online: headless WorkManager wakes use SyncInboxes directly and must not leave IDLE
+	// goroutines hitting Android's background network firewall ("no such host").
+	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
+		eng.SetWorkersPaused(true)
 	}
 	eng.Start(ctx)
 	defer func() { _ = eng.Close() }()

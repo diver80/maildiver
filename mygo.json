@@ -2,7 +2,7 @@
   "name": "MailDiver",
   "slug": "maildiver",
   "identifier": "dev.maildiver.app",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "icon": "resources/icon.png",
   "main": "./cmd/maildiver",
   "out": "dist",

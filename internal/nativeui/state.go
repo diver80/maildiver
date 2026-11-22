@@ -273,6 +273,7 @@ type App struct {
 
 	// Connection & live status
 	engineReady     bool
+	networkOffline  bool
 	readOnly        bool
 	lastSync        time.Time
 	lastError       string

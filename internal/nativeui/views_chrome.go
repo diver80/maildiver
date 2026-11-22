@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+
+	"github.com/diver80/maildiver/internal/mailengine"
 )
 
 // Window chrome: the slim toolbar on top (menu, search, primary actions) and the status bar at
@@ -185,17 +187,33 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 
 // footerStatus returns the connection label and its dot color.
 func (a *App) footerStatus(t *ui.Theme) (string, ui.Color) {
+	if a.networkOffline {
+		return a.tr("Offline (kein Netz)", "Offline (no network)"), t.Warning
+	}
 	if a.engineReady {
 		return a.tr("Verbunden (IMAP)", "Connected (IMAP)"), t.Success
 	}
 	return a.tr("Nicht verbunden", "Offline"), t.Danger
 }
 
+// clearTransientSyncErrors drops stale DNS/network error banners (e.g. from Android Doze or
+// system sleep) while keeping real authentication/configuration errors visible.
+func (a *App) clearTransientSyncErrors() {
+	for id, msg := range a.syncErrors {
+		if mailengine.IsTransientNetworkErrorMsg(msg) {
+			delete(a.syncErrors, id)
+		}
+	}
+}
+
 // firstSyncError returns an account whose last sync failed and the error ("" if none), in a
 // stable order.
 func (a *App) firstSyncError() (string, string) {
 	best := ""
-	for id := range a.syncErrors {
+	for id, msg := range a.syncErrors {
+		if a.networkOffline && mailengine.IsTransientNetworkErrorMsg(msg) {
+			continue
+		}
 		if best == "" || id < best {
 			best = id
 		}

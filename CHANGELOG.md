@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.9 (2026-11-22)
+
+### Android-Hintergrund-, Standby- & Offline-Sync-Fix (`no such host`)
+- **IMAP IDLE bei Hintergrund / Suspend / Offline sauber pausieren (`SetWorkersPaused`):** Auf Android blockiert die System-Firewall (`netd` / App Standby / Doze) Netzwerk & DNS, sobald die App im Hintergrund liegt — bisher liefen die IMAP-IDLE-Worker trotzdem weiter, liefen in `dial tcp: lookup …: no such host`, zeigten einen roten Sync-Fehler-Banner und schliefen bis zu 60 s im Backoff. Jetzt pausiert MailDiver alle IDLE- und Perioden-Worker sofort bei `OnSuspend` sowie im Offline-Zustand (und startet beim Headless-WorkManager-Wake keine dauerhaften IDLE-Sockets).
+- **Sofortiger Reconnect bei Rückkehr in den Vordergrund & Netzwechsel:** Bei `OnResume` / `OnDidBecomeActive` und `mygo.Network.OnChanged` wartet MailDiver kurz (500 ms auf Mobilgeräten), bis Android Netzwerk & DNS wieder freigibt, räumt alte transiente Netz-/DNS-Fehler auf und verbindet IMAP IDLE sofort ohne Backoff neu.
+- **Transiente Mobil-DNS-Wiederholung & Offline-Anzeige:** `dialIMAP` wiederholt auf Android/iOS einen einmaligen transienten DNS-/Netz-Fehler nach 1,5 s automatisch (z. B. beim WLAN↔5G-Wechsel), und bei fehlendem Netz zeigt die App einen ruhigen *Offline — warte auf Netzwerkverbindung*-Hinweis statt roter `no such host`-Fehlermeldungen.
+
 ## 0.7.8 (2026-11-22)
 
 ### „Alle auswählen“ (Mark All), verbesserte Auswahlleiste & Spam leeren
