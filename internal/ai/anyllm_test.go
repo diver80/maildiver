@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -459,5 +460,35 @@ func TestUnrestrictedCLIUsesStdin(t *testing.T) {
 	stdin, _ := os.ReadFile(stdinFile)
 	if strings.Contains(string(args), "SECRET") || !strings.Contains(string(stdin), "MAIL-SECRET") {
 		t.Fatalf("argv=%q stdin=%q", args, stdin)
+	}
+}
+
+func TestJSONObjectResponseFormatFallback(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), "json_object") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"response_format type 'json_object' cannot be enforced without llguidance","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"mtplx","choices":[{"index":0,"message":{"role":"assistant","content":"{\"summary\":\"OK\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "llamacpp", Model: "mtplx-inkling-2-mini-optimized-speed", Endpoint: srv.URL + "/v1"}
+	got, err := CompleterFor(cfg, cfg.Agent).Complete(context.Background(), "Return JSON", "Summarize this", true)
+	if err != nil {
+		t.Fatalf("Complete should fall back without response_format, got err=%v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 requests (initial + fallback), got %d", calls)
+	}
+	if got != `{"summary":"OK"}` {
+		t.Fatalf("unexpected fallback content %q", got)
 	}
 }

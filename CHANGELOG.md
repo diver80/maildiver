@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.12 (2026-11-22)
+
+### KI-Fallback bei Servern ohne `response_format: json_object` (z. B. MTPLX)
+- **Automatischer Retry ohne `response_format` (`internal/ai/anyllm.go`):** Lehnt ein lokaler OpenAI-kompatibler Server (wie `mtplx serve` ohne optionales `llguidance`) `response_format: {"type": "json_object"}` mit `400 Bad Request` ab, wiederholt MailDiver die Anfrage automatisch einmal ohne `response_format` und wertet die JSON-Antwort des Modells normal aus.
+
 ## 0.7.11 (2026-11-22)
 
 ### Gelöschte Mails automatisch als gelesen markieren

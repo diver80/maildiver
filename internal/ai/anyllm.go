@@ -69,7 +69,7 @@ func (a *AnyLLMCompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 	if expectJSON {
 		params.ResponseFormat = &anyllm.ResponseFormat{Type: "json_object"}
 	}
-	resp, err := p.Completion(ctx, params)
+	resp, err := completeWithJSONFallback(ctx, p, params)
 	if err != nil {
 		return "", err
 	}
@@ -77,6 +77,26 @@ func (a *AnyLLMCompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 		return "", fmt.Errorf("%s returned empty choices", spec.ID)
 	}
 	return resp.Choices[0].Message.ContentString(), nil
+}
+
+// isUnsupportedResponseFormatError reports whether a server rejected response_format=json_object
+// (e.g. local servers like MTPLX without optional llguidance or older OpenAI-compatible servers).
+func isUnsupportedResponseFormatError(err error) bool {
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "response_format") || strings.Contains(low, "json_object")
+}
+
+func completeWithJSONFallback(ctx context.Context, p anyllm.Provider, params anyllm.CompletionParams) (*anyllm.ChatCompletion, error) {
+	resp, err := p.Completion(ctx, params)
+	if err != nil && params.ResponseFormat != nil && isUnsupportedResponseFormatError(err) && ctx.Err() == nil {
+		retryParams := params
+		retryParams.ResponseFormat = nil
+		return p.Completion(ctx, retryParams)
+	}
+	return resp, err
 }
 
 // ChatRequest is a multi-turn chat request (bridge /v1/ai/chat, copilot).
@@ -144,7 +164,7 @@ func Chat(ctx context.Context, aiCfg config.AIConfig, req ChatRequest, extraOpts
 	if err := requireModel(spec, model); err != nil {
 		return nil, err
 	}
-	return p.Completion(ctx, chatParams(model, req, false))
+	return completeWithJSONFallback(ctx, p, chatParams(model, req, false))
 }
 
 func errorStream(err error) (<-chan anyllm.ChatCompletionChunk, <-chan error) {
