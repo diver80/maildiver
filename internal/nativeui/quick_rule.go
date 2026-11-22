@@ -164,6 +164,29 @@ func (a *App) SelectAllVisibleMails() {
 	}
 }
 
+func (a *App) AllVisibleMailsChecked() bool {
+	if len(a.messages) == 0 || len(a.checkedIDs) == 0 {
+		return false
+	}
+	for _, m := range a.messages {
+		if !a.checkedIDs[m.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) ToggleSelectAllVisibleMails() {
+	if len(a.messages) == 0 {
+		return
+	}
+	if a.AllVisibleMailsChecked() {
+		a.ClearMailSelection()
+		return
+	}
+	a.SelectAllVisibleMails()
+}
+
 func (a *App) ClearMailSelection() {
 	a.checkedIDs = make(map[string]bool)
 	a.lastCheckedIndex = -1

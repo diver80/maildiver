@@ -389,3 +389,63 @@ func TestAppMenuTogglesSidebarHeadless(t *testing.T) {
 		t.Fatalf("choosing English must switch the UI, lang=%q", app.uiLang())
 	}
 }
+
+func TestSelectAllShortcutHeaderCheckboxAndSpamFolder(t *testing.T) {
+	app, loop, _ := keymapApp(t)
+	tt := ui.NewTester(app.RenderMain, 1380, 860)
+	tt.Frame()
+
+	// Cmd+A selects all visible emails and shows the 2-row bulk bar with "3 / 3 markiert" and "Keine".
+	tt.Key(ui.Cmd, ui.KeyA)
+	loop.drain()
+	tt.Frame()
+	if !app.AllVisibleMailsChecked() || len(app.CheckedMessageIDs()) != 3 {
+		t.Fatalf("Cmd+A must select all 3 visible mails, got %v", app.CheckedMessageIDs())
+	}
+	if !tt.HasText("3 / 3 markiert") || !tt.HasText("Keine") {
+		t.Fatalf("expected 3 / 3 markiert and Keine button in bulk bar, texts=%v", tt.Texts())
+	}
+
+	// Clicking "Keine" clears the selection.
+	if err := tt.Click("Keine"); err != nil {
+		t.Fatalf("click Keine: %v", err)
+	}
+	loop.drain()
+	tt.Frame()
+	if len(app.CheckedMessageIDs()) != 0 {
+		t.Fatalf("clicking Keine must clear selection, got %v", app.CheckedMessageIDs())
+	}
+
+	// Clicking the header Select-All checkbox selects all visible mails again.
+	if err := tt.Click("Alle sichtbaren Mails auswählen (⌘A)"); err != nil {
+		t.Fatalf("click header select-all checkbox: %v", err)
+	}
+	loop.drain()
+	tt.Frame()
+	if !app.AllVisibleMailsChecked() {
+		t.Fatalf("header select-all checkbox must select all visible mails")
+	}
+
+	// Pressing Cmd+A again toggles back to none selected.
+	tt.Key(ui.Cmd, ui.KeyA)
+	loop.drain()
+	tt.Frame()
+	if len(app.CheckedMessageIDs()) != 0 {
+		t.Fatalf("second Cmd+A must clear selection, got %v", app.CheckedMessageIDs())
+	}
+
+	// Verify Spam folder detection for Empty Spam action.
+	app.folders = []backend.Folder{
+		{ID: "f-inbox", AccountID: "acc1", Name: "INBOX", Path: "INBOX", Type: "inbox"},
+		{ID: "f-spam", AccountID: "acc1", Name: "Spam", Path: "Spam", Type: "junk"},
+		{ID: "f-trash", AccountID: "acc1", Name: "Papierkorb", Path: "Trash", Type: "trash"},
+	}
+	app.navID = "folder:f-inbox"
+	if got := app.currentSpamAccountID(); got != "" {
+		t.Fatalf("INBOX must not match spam folder, got %q", got)
+	}
+	app.navID = "folder:f-spam"
+	if got := app.currentSpamAccountID(); got != "acc1" {
+		t.Fatalf("Spam folder must resolve account acc1, got %q", got)
+	}
+}

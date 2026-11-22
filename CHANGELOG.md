@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.8 (2026-11-22)
+
+### „Alle auswählen“ (Mark All), verbesserte Auswahlleiste & Spam leeren
+- **Select-All-Checkbox & `⌘A`:** In der Kopfzeile der Mailliste sitzt jetzt linksbündig über den Zeilen-Checkboxen eine 3-Zustands-Auswahlbox (leer / teilweise / alle), mit der alle sichtbaren Mails per 1-Klick oder `⌘A` ausgewählt und wieder abgewählt werden können.
+- **Unabgeschnittene Batch-Aktionsleiste:** Die Auswahlleiste bei markierten Mails ist jetzt kompakt zweizeilig aufgebaut (*Zeile 1:* `X / N markiert` + `Alle`/`Keine` + `✕`; *Zeile 2:* Quick-Regel, Gelesen, Stern, Archivieren, Verschieben, Papierkorb inkl. Bestätigungshervorhebung), sodass auch in schmalen Maillisten nichts mehr abgeschnitten wird.
+- **„Spam leeren“ (Desktop & Handy):** Im Spam-/Junk-Ordner gibt es analog zu *Papierkorb leeren* jetzt direkt im Header eine 2-Klick-Aktion **Spam leeren** (`EmptySpam`), die den gesamten Spam-Ordner sicher nach Rückbestätigung auf dem IMAP-Server und lokal leert.
+
 ## 0.7.7 (2026-11-22)
 
 ### Einstellungen in fachliche Tabs gruppiert (Desktop & Handy)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -281,14 +282,62 @@ func (a *App) currentTrashAccountID() string {
 	return ""
 }
 
+func (a *App) currentSpamAccountID() string {
+	if !strings.HasPrefix(a.navID, "folder:") {
+		return ""
+	}
+	fid := strings.TrimPrefix(a.navID, "folder:")
+	for _, f := range a.folders {
+		if f.ID == fid {
+			if strings.EqualFold(f.Type, "junk") || slices.Contains(f.SpecialUse, "junk") {
+				return f.AccountID
+			}
+			base := strings.ToLower(strings.TrimSpace(filepath.Base(strings.ReplaceAll(f.Path, "\\", "/"))))
+			if base == "junk" || base == "spam" || base == "junk e-mail" || base == "bulk mail" {
+				return f.AccountID
+			}
+		}
+	}
+	return ""
+}
+
 func (a *App) renderMailWorkspace(c *ui.Context) {
 	t := c.Theme()
 	ui.Split(c, &a.mailSplit, func() {
 		// Message list column
 		ui.Column(c).Fill().Background(t.Background).Children(func() {
-			ui.Row(c).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			checked := a.CheckedMessageIDs()
+			ui.Row(c).FillWidth().Padding(8, 12, 8, 10).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				if len(a.messages) > 0 {
+					allChecked := a.AllVisibleMailsChecked()
+					someChecked := len(checked) > 0 && !allChecked
+					chkBg, chkBorder := t.Surface, t.Border
+					if allChecked {
+						chkBg, chkBorder = t.Accent, t.Accent
+					} else if someChecked {
+						chkBg, chkBorder = withAlpha(t.Accent, 0.25), t.Accent
+					}
+					selTip := a.tr("Alle sichtbaren Mails auswählen (⌘A)", "Select all visible emails (⌘A)")
+					if allChecked {
+						selTip = a.tr("Auswahl aufheben (⌘A)", "Clear selection (⌘A)")
+					}
+					selAllBtn := ui.ButtonBase(c.Key("list-select-all")).Padding(2, 0).Radius(4).Shrink(0).Label(selTip).Tooltip(selTip)
+					selAllBtn.Children(func() {
+						ui.Box(c).Size(15, 15).Radius(4).Background(chkBg).Border(1.2, chkBorder).Center().Children(func() {
+							if allChecked {
+								ui.Icon(c, iconCheck).Size(11, 11).TextColor(t.Background)
+							} else if someChecked {
+								ui.Box(c).Size(7, 2).Radius(1).Background(t.Accent)
+							}
+						})
+					})
+					if selAllBtn.Clicked() {
+						a.ToggleSelectAllVisibleMails()
+						checked = a.CheckedMessageIDs()
+					}
+				}
 				title := a.currentViewTitle()
-				ui.Text(c, title).FontSize(13).Bold().Grow(1).SingleLine()
+				ui.Text(c, title).FontSize(13).Bold().Grow(1).MinWidth(0).SingleLine()
 				if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
 					hasUnread := a.navID == "focus" && a.unreadCount() > 0
 					if !hasUnread {
@@ -330,6 +379,25 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						} else {
 							a.direct.emptyTrashArmID = trashAcc
 							a.direct.emptyTrashArmAt = time.Now()
+						}
+					}
+				}
+				if spamAcc := a.currentSpamAccountID(); spamAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+					armed := a.direct.emptySpamArmID == spamAcc && time.Since(a.direct.emptySpamArmAt) < 5*time.Second
+					lbl := a.tr("Spam leeren", "Empty Spam")
+					if armed {
+						lbl = a.tr("Wirklich leeren?", "Confirm Empty?")
+					}
+					btn := ui.Button(c.Key("spam-empty"), lbl).Padding(3, 8)
+					if armed {
+						btn.Background(withAlpha(t.Danger, 0.18)).Border(1, t.Danger)
+					}
+					if btn.Clicked() {
+						if armed {
+							a.EmptyAccountSpam(context.Background(), spamAcc)
+						} else {
+							a.direct.emptySpamArmID = spamAcc
+							a.direct.emptySpamArmAt = time.Now()
 						}
 					}
 				}
@@ -377,47 +445,57 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 				})
 			}
 
-			checked := a.CheckedMessageIDs()
 			if len(checked) > 0 {
-				ui.Row(c.Key("bulk-bar")).FillWidth().Padding(6, 10).Gap(6).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.12)).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-					ui.Text(c, a.trf("%d markiert", "%d selected", len(checked))).FontSize(11.5).Bold().TextColor(t.Accent).Grow(1).SingleLine()
-					if iconLabelBtn(c.Key("bulk-rule"), iconFilter, a.tr("Quick-Regel", "Quick Rule"), true, a.tr("Aus markierten Mails eine Filterregel erstellen (q · mit Preview)", "Create filter rule from selected emails (q · with preview)")).Clicked() {
-						a.OpenQuickRuleWizard()
-					}
-					if iconBtn(c.Key("bulk-read"), iconMailOpen, a.tr("Markierte als gelesen markieren (u)", "Mark selected as read (u)"), t.Accent, false).Clicked() {
-						readTrue := true
-						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
-					}
-					anyUnflagged := false
-					for _, cm := range a.CheckedMessages() {
-						if !cm.Flagged {
-							anyUnflagged = true
-							break
+				ui.Column(c.Key("bulk-bar")).FillWidth().Padding(6, 10).Gap(5).Background(withAlpha(t.Accent, 0.12)).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+					ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, a.trf("%d / %d markiert", "%d / %d selected", len(checked), len(a.messages))).FontSize(11.5).Bold().TextColor(t.Accent).Grow(1).MinWidth(0).SingleLine()
+						allBtnLbl := a.tr("Alle", "All")
+						if a.AllVisibleMailsChecked() {
+							allBtnLbl = a.tr("Keine", "None")
 						}
-					}
-					starIcon, starClr, starTip := iconStarFilled, t.Warning, a.tr("Markierung entfernen (s)", "Remove star (s)")
-					if anyUnflagged {
-						starIcon, starClr, starTip = iconStar, ui.Color{}, a.tr("Markierte mit Stern markieren (s)", "Star selected (s)")
-					}
-					if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
-						flagVal := anyUnflagged
-						a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
-						a.ClearMailSelection()
-					}
-					if !a.readOnly {
-						if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {
-							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
+						if ui.Button(c.Key("bulk-select-all"), allBtnLbl).Padding(2, 7).Tooltip(a.tr("Alle sichtbaren Mails auswählen / abwählen (⌘A)", "Select / deselect all visible emails (⌘A)")).Clicked() {
+							a.ToggleSelectAllVisibleMails()
 						}
-						if iconBtn(c.Key("bulk-move"), iconFolderInput, a.tr("Markierte verschieben nach… (v)", "Move selected to… (v)"), ui.Color{}, false).Clicked() {
-							a.OpenMovePicker()
+						if ui.Button(c.Key("bulk-clear"), "✕").Padding(2, 7).Tooltip(a.tr("Auswahl aufheben (esc)", "Clear selection (esc)")).Clicked() {
+							a.ClearMailSelection()
 						}
-						if iconBtn(c.Key("bulk-trash"), iconTrash, a.tr("Markierte in Papierkorb verschieben (d d)", "Move selected to Trash (d d)"), t.Danger, false).Clicked() {
-							a.trashMails(context.Background(), checked, "")
+					})
+					ui.Row(c).FillWidth().Wrap().Gap(4).AlignItems(ui.Center).Children(func() {
+						if iconLabelBtn(c.Key("bulk-rule"), iconFilter, a.tr("Quick-Regel", "Quick Rule"), true, a.tr("Aus markierten Mails eine Filterregel erstellen (q · mit Preview)", "Create filter rule from selected emails (q · with preview)")).Clicked() {
+							a.OpenQuickRuleWizard()
 						}
-					}
-					if ui.Button(c.Key("bulk-clear"), "✕").Padding(4, 7).Tooltip(a.tr("Auswahl aufheben (esc)", "Clear selection (esc)")).Clicked() {
-						a.ClearMailSelection()
-					}
+						if iconBtn(c.Key("bulk-read"), iconMailOpen, a.tr("Markierte als gelesen markieren (u)", "Mark selected as read (u)"), t.Accent, false).Clicked() {
+							readTrue := true
+							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Read: &readTrue}, a.tr("Als gelesen markiert", "Marked as read"))
+						}
+						anyUnflagged := false
+						for _, cm := range a.CheckedMessages() {
+							if !cm.Flagged {
+								anyUnflagged = true
+								break
+							}
+						}
+						starIcon, starClr, starTip := iconStarFilled, t.Warning, a.tr("Markierung entfernen (s)", "Remove star (s)")
+						if anyUnflagged {
+							starIcon, starClr, starTip = iconStar, ui.Color{}, a.tr("Markierte mit Stern markieren (s)", "Star selected (s)")
+						}
+						if iconBtn(c.Key("bulk-star"), starIcon, starTip, starClr, !anyUnflagged).Clicked() {
+							flagVal := anyUnflagged
+							a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Flagged: &flagVal}, a.tr("Markierung aktualisiert", "Star updated"))
+							a.ClearMailSelection()
+						}
+						if !a.readOnly {
+							if iconBtn(c.Key("bulk-archive"), iconArchive, a.tr("Markierte archivieren (e)", "Archive selected (e)"), ui.Color{}, false).Clicked() {
+								a.PerformBatchAction(context.Background(), checked, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"))
+							}
+							if iconBtn(c.Key("bulk-move"), iconFolderInput, a.tr("Markierte verschieben nach… (v)", "Move selected to… (v)"), ui.Color{}, false).Clicked() {
+								a.OpenMovePicker()
+							}
+							if iconBtn(c.Key("bulk-trash"), iconTrash, a.tr("Markierte in Papierkorb verschieben (d d)", "Move selected to Trash (d d)"), t.Danger, a.confirmArmed("trash", checked)).Clicked() {
+								a.trashMails(context.Background(), checked, "")
+							}
+						}
+					})
 				})
 			}
 

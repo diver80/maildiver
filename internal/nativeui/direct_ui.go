@@ -52,6 +52,7 @@ type DirectController interface {
 	RenameFolder(ctx context.Context, accountID, folderID, newName string) error
 	DeleteFolder(ctx context.Context, accountID, folderID string) error
 	EmptyTrash(ctx context.Context, accountID string) (int, error)
+	EmptySpam(ctx context.Context, accountID string) (int, error)
 	ListOutbox(ctx context.Context) ([]mailengine.OutboxItem, error)
 	FlushOutboxNow(ctx context.Context) (int, int)
 	DeleteOutbox(ctx context.Context, id string) error
@@ -229,6 +230,8 @@ type directUI struct {
 	delFolderArmAt     time.Time
 	emptyTrashArmID    string
 	emptyTrashArmAt    time.Time
+	emptySpamArmID     string
+	emptySpamArmAt     time.Time
 	delAccArmID        string
 	delAccArmAt        time.Time
 }
@@ -2167,7 +2170,34 @@ func (a *App) EmptyAccountTrash(ctx context.Context, accountID string) {
 			a.selectedID = ""
 			a.selectedMsg = nil
 			a.syncPreviewForMessage(nil)
+			a.ClearMailSelection()
 			a.toast(a.trf("Papierkorb geleert (%d Mails entfernt)", "Trash emptied (%d emails deleted)", n), "success")
+			a.RefreshAll(context.Background())
+		})
+	}()
+}
+
+// EmptyAccountSpam permanently empties the Spam/Junk folder of accountID.
+func (a *App) EmptyAccountSpam(ctx context.Context, accountID string) {
+	dc := a.opts.Direct
+	if dc == nil || accountID == "" {
+		return
+	}
+	a.direct.emptySpamArmID = ""
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := dc.EmptySpam(c, accountID)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.toast(a.tr("Spam-Fehler: ", "Empty spam error: ")+err.Error(), "error")
+				return
+			}
+			a.selectedID = ""
+			a.selectedMsg = nil
+			a.syncPreviewForMessage(nil)
+			a.ClearMailSelection()
+			a.toast(a.trf("Spam geleert (%d Mails entfernt)", "Spam emptied (%d emails deleted)", n), "success")
 			a.RefreshAll(context.Background())
 		})
 	}()

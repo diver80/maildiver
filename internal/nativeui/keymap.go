@@ -95,7 +95,7 @@ func (a *App) footerHints() []keyHint {
 	case keyCtxContacts:
 		out = append(out, h("n", "Neuer Kontakt", "new contact"), h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
 	case keyCtxSelection:
-		out = append(out, h("x", "Markieren", "check"), h("shift+x", "Bereich", "range"))
+		out = append(out, h("x", "Markieren", "check"), h("shift+x", "Bereich", "range"), h("⌘A", "Alle", "all"))
 		if !ro {
 			out = append(out, h("e", "Archivieren", "archive"), h("d", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("u", "Gelesen", "mark read"), h("s", "Stern", "star"))
 		}
@@ -209,6 +209,9 @@ func (a *App) handleShortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Shift, ui.KeyX) {
 		a.toggleCheckCurrent(true)
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyA) && len(a.messages) > 0 {
+		a.ToggleSelectAllVisibleMails()
 	}
 	if c.Shortcut(0, ui.KeyS) {
 		a.starKey(ctx)
@@ -501,6 +504,7 @@ func (a *App) shortcutHelpRows() []keyHint {
 		h("j / k", "Nächste / vorige Mail öffnen", "Open next / previous email"),
 		h("shift+j / k", "Lesebereich scrollen", "Scroll the reading pane"),
 		h("x / shift+x", "Mail markieren / Bereich markieren", "Check email / check range"),
+		h("⌘A", "Alle sichtbaren Mails auswählen / abwählen", "Select / deselect all visible emails"),
 		h("s", "Stern setzen/entfernen (markierte: Stern setzen)", "Toggle star (checked: add star)"),
 		h("u", "Gelesen/ungelesen (markierte: gelesen)", "Read/unread (checked: mark read)"),
 		h("d", "In den Papierkorb, öffnet die nächste Mail · mehrere markierte: d zweimal", "Move to Trash and open the next email · several checked: press d twice"),

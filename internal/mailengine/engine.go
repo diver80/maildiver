@@ -1490,6 +1490,29 @@ func (e *Engine) EmptyTrash(ctx context.Context, accountID string) (int, error) 
 	return n, nil
 }
 
+// EmptySpam permanently deletes all messages in the account's Spam/Junk folder on IMAP and locally.
+func (e *Engine) EmptySpam(ctx context.Context, accountID string) (int, error) {
+	acc, ok := e.findAccount(accountID)
+	if !ok {
+		var err error
+		acc, err = e.pickOutgoingAccount(accountID)
+		if err != nil {
+			return 0, err
+		}
+	}
+	spam, ok := e.store.FindFolderByType(ctx, acc.ID, "junk")
+	if !ok {
+		return 0, fmt.Errorf("Kein Spam-Ordner für %s gefunden", acc.Name)
+	}
+	n, err := e.emptyFolderIMAP(ctx, acc, spam.Path)
+	if err != nil {
+		return 0, err
+	}
+	_ = e.store.ClearFolderMessages(ctx, spam.ID)
+	e.emitMailSync(acc.ID)
+	return n, nil
+}
+
 // migrateDBIfNeeded safely migrates a pre-existing SQLite database (including any
 // uncheckpointed WAL pages) from legacyPath (formerly ~/Library/Caches/maildiver on macOS)
 // into targetPath (Application Support / DataDir) when targetPath does not yet exist.

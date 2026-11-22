@@ -425,15 +425,11 @@ func (a *App) renderPhoneList(c *ui.Context) {
 				},
 				Trailing: func() {
 					lbl := a.tr("Alle", "All")
-					if len(a.messages) > 0 && len(checked) >= len(a.messages) {
+					if a.AllVisibleMailsChecked() {
 						lbl = a.tr("Keine", "None")
 					}
 					if ui.Button(c.Key("ph-sel-all"), lbl).Padding(6, 10).Clicked() {
-						if len(a.messages) > 0 && len(checked) >= len(a.messages) {
-							a.ClearMailSelection()
-						} else {
-							a.SelectAllVisibleMails()
-						}
+						a.ToggleSelectAllVisibleMails()
 					}
 				},
 			})
@@ -454,6 +450,17 @@ func (a *App) renderPhoneList(c *ui.Context) {
 								a.direct.emptyTrashArmID = trashAcc
 								a.direct.emptyTrashArmAt = time.Now()
 								a.toast(a.tr("Nochmal tippen zum endgültigen Leeren", "Tap again to empty Trash"), "warning")
+							}
+						}
+					}
+					if spamAcc := a.currentSpamAccountID(); spamAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+						if phoneIconButton(c.Key("ph-empty-spam"), iconTrash, a.tr("Spam leeren", "Empty Spam"), t.Danger).Clicked() {
+							if a.direct.emptySpamArmID == spamAcc && time.Since(a.direct.emptySpamArmAt) < 5*time.Second {
+								a.EmptyAccountSpam(context.Background(), spamAcc)
+							} else {
+								a.direct.emptySpamArmID = spamAcc
+								a.direct.emptySpamArmAt = time.Now()
+								a.toast(a.tr("Nochmal tippen zum endgültigen Spam-Leeren", "Tap again to empty Spam"), "warning")
 							}
 						}
 					}
