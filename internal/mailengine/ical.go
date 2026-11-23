@@ -670,7 +670,8 @@ func ExportEventsICS(calName string, events []StoredEvent) string {
 	return buf.String()
 }
 
-// ImportICSBytes parses an .ics payload and upserts all events into calendarID.
+// ImportICSBytes parses an .ics payload and upserts all events into calendarID,
+// syncing directly to Google Calendar or CalDAV when calendarID is a remote writable calendar.
 func (e *Engine) ImportICSBytes(ctx context.Context, calendarID string, data []byte) (int, error) {
 	if calendarID == "" {
 		calendarID = LocalCalendarID
@@ -679,13 +680,27 @@ func (e *Engine) ImportICSBytes(ctx context.Context, calendarID string, data []b
 	if err != nil {
 		return 0, fmt.Errorf("Kalender %q nicht gefunden", calendarID)
 	}
+	if cal.ReadOnly {
+		return 0, fmt.Errorf("Kalender %q ist schreibgeschützt", cal.Name)
+	}
 	events, err := ParseICS(cal.ID, cal.Name, cal.ReadOnly, bytes.NewReader(data))
 	if err != nil {
 		return 0, err
 	}
 	for _, ev := range events {
-		if err := e.store.UpsertEvent(ctx, ev); err != nil {
-			return 0, err
+		switch cal.Source {
+		case "google":
+			if _, err := e.importGoogleEvent(ctx, cal, ev); err != nil {
+				return 0, err
+			}
+		case "caldav":
+			if _, err := e.pushCalDAVEvent(ctx, cal, ev); err != nil {
+				return 0, err
+			}
+		default:
+			if err := e.store.UpsertEvent(ctx, ev); err != nil {
+				return 0, err
+			}
 		}
 	}
 	if len(events) > 0 {

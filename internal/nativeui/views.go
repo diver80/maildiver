@@ -902,6 +902,100 @@ func (a *App) renderMessageInspector(c *ui.Context) {
 	})
 }
 
+// defaultICSTargetCalendar picks the best writable calendar label for an .ics invitation:
+// 1. The calendar the event is already in (if writable),
+// 2. A writable calendar matching the receiving mail account's email or domain,
+// 3. The last calendar manually chosen by the user for an .ics invite,
+// 4. The first non-local synced writable calendar (e.g. Google Calendar / CalDAV),
+// 5. Fallback to the first available writable calendar.
+func (a *App) defaultICSTargetCalendar(msg *backend.MessageDetail) string {
+	if len(a.eventCalLabels) == 0 {
+		return ""
+	}
+	if msg != nil && msg.ICSInvite != nil {
+		if inCal := strings.TrimSpace(msg.ICSInvite.InCalendarName); inCal != "" {
+			if _, ok := a.eventCalByLabel[inCal]; ok {
+				return inCal
+			}
+		}
+	}
+	if msg != nil {
+		var hints []string
+		for _, acc := range a.accounts {
+			if acc.ID == msg.AccountID {
+				for _, id := range acc.Identities {
+					if em := strings.ToLower(strings.TrimSpace(id.Email)); em != "" {
+						hints = append(hints, em)
+					}
+				}
+				if nm := strings.ToLower(strings.TrimSpace(acc.Name)); strings.Contains(nm, "@") {
+					hints = append(hints, nm)
+				}
+				break
+			}
+		}
+		for _, addr := range msg.To {
+			if em := strings.ToLower(strings.TrimSpace(addr)); em != "" {
+				hints = append(hints, em)
+			}
+		}
+		genericDomains := map[string]bool{
+			"gmail": true, "googlemail": true, "gmx": true, "web": true,
+			"icloud": true, "me": true, "outlook": true, "hotmail": true,
+			"live": true, "yahoo": true, "posteo": true, "mailbox": true,
+			"proton": true, "protonmail": true, "t-online": true,
+		}
+		for _, raw := range hints {
+			em := raw
+			if lt := strings.IndexByte(em, '<'); lt >= 0 {
+				if gt := strings.IndexByte(em[lt+1:], '>'); gt >= 0 {
+					em = strings.TrimSpace(em[lt+1 : lt+1+gt])
+				}
+			}
+			domBase := ""
+			if at := strings.LastIndexByte(em, '@'); at >= 0 && at+1 < len(em) {
+				dom := em[at+1:]
+				if dot := strings.IndexByte(dom, '.'); dot > 0 {
+					domBase = dom[:dot]
+				} else {
+					domBase = dom
+				}
+				if len(domBase) < 3 || genericDomains[domBase] {
+					domBase = ""
+				}
+			}
+			for _, cal := range a.calendars {
+				if cal.ReadOnly {
+					continue
+				}
+				if _, ok := a.eventCalByLabel[cal.Name]; !ok {
+					continue
+				}
+				lowName := strings.ToLower(cal.Name)
+				lowID := strings.ToLower(cal.ID)
+				if (em != "" && (strings.Contains(lowName, em) || strings.Contains(lowID, em))) ||
+					(domBase != "" && strings.Contains(lowName, domBase)) {
+					return cal.Name
+				}
+			}
+		}
+	}
+	if a.icsLastCalLabel != "" {
+		if _, ok := a.eventCalByLabel[a.icsLastCalLabel]; ok {
+			return a.icsLastCalLabel
+		}
+	}
+	for _, cal := range a.calendars {
+		if cal.ReadOnly || cal.ID == mailengine.LocalCalendarID {
+			continue
+		}
+		if _, ok := a.eventCalByLabel[cal.Name]; ok {
+			return cal.Name
+		}
+	}
+	return a.eventCalLabels[0]
+}
+
 // renderICSBanner shows a calendar invitation in a mail with its answers (desktop and phone).
 func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
@@ -986,18 +1080,30 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 				}
 			})
 			if a.isDirectMode() {
+				if a.icsTargetMsgID != msg.ID {
+					a.icsTargetMsgID = msg.ID
+					a.icsTargetCal = a.defaultICSTargetCalendar(msg)
+				} else if _, ok := a.eventCalByLabel[a.icsTargetCal]; !ok {
+					a.icsTargetCal = a.defaultICSTargetCalendar(msg)
+				}
+				targetCalID := a.eventCalByLabel[a.icsTargetCal]
+				if targetCalID == "" {
+					targetCalID = mailengine.LocalCalendarID
+				}
+				alreadyInSelected := inCal != "" && (a.icsTargetCal == "" || strings.EqualFold(inCal, a.icsTargetCal))
+
 				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 					acceptPrimary := status == "" || status == "needsAction" || status == "imported"
 					acceptLabel := a.tr("Zusagen", "Accept")
 					if status == "accepted" {
 						acceptLabel = a.tr("Zugesagt", "Accepted")
 					}
-					acceptBtn := iconLabelBtn(c.Key("ics-accept"), iconCheck, acceptLabel, acceptPrimary, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply"))
+					acceptBtn := iconLabelBtn(c.Key("ics-accept"), iconCheck, acceptLabel, acceptPrimary, a.tr("Einladung annehmen, in den gewählten Kalender übernehmen & Antwort senden", "Accept invitation, add to selected calendar & send RSVP reply"))
 					if status == "accepted" {
 						acceptBtn.Background(withAlpha(t.Success, 0.22)).Border(1, t.Success).TextColor(t.Success)
 					}
 					if acceptBtn.Clicked() {
-						a.RespondMailICS(context.Background(), msg.ID, "accepted")
+						a.RespondMailICS(context.Background(), msg.ID, targetCalID, "accepted")
 					}
 
 					tentLabel := a.tr("Vielleicht", "Tentative")
@@ -1009,7 +1115,7 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 						tentBtn.Background(withAlpha(t.Warning, 0.22)).Border(1, t.Warning).TextColor(t.Warning)
 					}
 					if tentBtn.Clicked() {
-						a.RespondMailICS(context.Background(), msg.ID, "tentative")
+						a.RespondMailICS(context.Background(), msg.ID, targetCalID, "tentative")
 					}
 
 					declLabel := a.tr("Absagen", "Decline")
@@ -1021,12 +1127,20 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 						declBtn.Background(withAlpha(t.Danger, 0.22)).Border(1, t.Danger)
 					}
 					if declBtn.Clicked() {
-						a.RespondMailICS(context.Background(), msg.ID, "declined")
+						a.RespondMailICS(context.Background(), msg.ID, targetCalID, "declined")
 					}
-					if inCal == "" {
+					if len(a.eventCalLabels) > 1 {
+						ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, a.tr("Kalender:", "Calendar:")).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
+							if ui.Select(c.Key("ics-cal-sel"), &a.icsTargetCal, a.eventCalLabels).MinWidth(140).Changed() {
+								a.icsLastCalLabel = a.icsTargetCal
+							}
+						})
+					}
+					if !alreadyInSelected {
 						ui.Spacer(c)
-						if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
-							a.ImportMailICS(context.Background(), msg.ID)
+						if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den gewählten Kalender übernehmen", "Import event into selected calendar without sending RSVP")).Clicked() {
+							a.ImportMailICS(context.Background(), msg.ID, targetCalID)
 						}
 					}
 				})

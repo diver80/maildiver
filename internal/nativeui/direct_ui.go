@@ -1996,22 +1996,37 @@ func isRiskyAttachmentExt(path string) bool {
 	return false
 }
 
-// ImportMailICS imports an .ics calendar invitation embedded in a message into the local calendar.
-func (a *App) ImportMailICS(ctx context.Context, msgID string) {
+// ImportMailICS imports an .ics calendar invitation embedded in a message into calendarID
+// (defaults to LocalCalendarID if empty).
+func (a *App) ImportMailICS(ctx context.Context, msgID, calendarID string) {
 	dc := a.opts.Direct
 	if dc == nil || msgID == "" {
 		return
 	}
+	if strings.TrimSpace(calendarID) == "" {
+		calendarID = mailengine.LocalCalendarID
+	}
+	calName := ""
+	for _, cal := range a.calendars {
+		if cal.ID == calendarID {
+			calName = cal.Name
+			break
+		}
+	}
 	go func() {
-		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		c, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
-		n, err := dc.ImportMessageICS(c, msgID, mailengine.LocalCalendarID)
+		n, err := dc.ImportMessageICS(c, msgID, calendarID)
 		a.emitUpdate(func() {
 			if err != nil {
 				a.toast(a.tr("Einladung-Fehler: ", "Invite error: ")+err.Error(), "error")
 				return
 			}
-			a.toast(a.trf("%d Termin(e) in den Kalender übernommen", "Added %d event(s) to calendar", n), "success")
+			if calName != "" {
+				a.toast(a.trf("%d Termin(e) in %s übernommen", "Added %d event(s) to %s", n, calName), "success")
+			} else {
+				a.toast(a.trf("%d Termin(e) in den Kalender übernommen", "Added %d event(s) to calendar", n), "success")
+			}
 			if a.selectedMsg != nil && a.selectedMsg.ID == msgID {
 				a.reloadMessage(context.Background(), msgID)
 			}
@@ -2263,16 +2278,19 @@ func openLocalFile(path string) error {
 }
 
 // RespondMailICS accepts, tentatively accepts, or declines an .ics invitation email,
-// importing the event on Accept/Tentative and sending an RFC 5546 iTIP REPLY via SMTP.
-func (a *App) RespondMailICS(ctx context.Context, msgID, status string) {
+// importing the event into calendarID on Accept/Tentative and sending an RFC 5546 iTIP REPLY via SMTP.
+func (a *App) RespondMailICS(ctx context.Context, msgID, calendarID, status string) {
 	dc := a.opts.Direct
 	if dc == nil || msgID == "" {
 		return
 	}
+	if strings.TrimSpace(calendarID) == "" {
+		calendarID = mailengine.LocalCalendarID
+	}
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
-		res, err := dc.RespondMessageICS(c, msgID, mailengine.LocalCalendarID, status)
+		res, err := dc.RespondMessageICS(c, msgID, calendarID, status)
 		a.emitUpdate(func() {
 			if err != nil {
 				a.toast(a.tr("Einladung-Fehler: ", "Invite error: ")+err.Error(), "error")
@@ -2294,14 +2312,20 @@ func (a *App) RespondMailICS(ctx context.Context, msgID, status string) {
 				detail = a.trf(" · Antwort nicht gesendet: %s", " · Reply not sent: %s", res.ReplyError)
 			}
 			if res.ImportedCount > 0 {
-				detail = a.tr(" · im Kalender gespeichert", " · saved to calendar") + detail
+				if res.CalendarName != "" {
+					detail = a.trf(" · in %s gespeichert", " · saved to %s", res.CalendarName) + detail
+				} else {
+					detail = a.tr(" · im Kalender gespeichert", " · saved to calendar") + detail
+				}
 			} else if res.AlreadyInCalendar != "" {
 				detail = a.trf(" · bereits in %s", " · already in %s", res.AlreadyInCalendar) + detail
 			}
 			if a.selectedMsg != nil && a.selectedMsg.ID == msgID {
 				if a.selectedMsg.ICSInvite != nil {
 					a.selectedMsg.ICSInvite.ResponseStatus = res.Status
-					if res.AlreadyInCalendar != "" && a.selectedMsg.ICSInvite.InCalendarName == "" {
+					if res.CalendarName != "" {
+						a.selectedMsg.ICSInvite.InCalendarName = res.CalendarName
+					} else if res.AlreadyInCalendar != "" && a.selectedMsg.ICSInvite.InCalendarName == "" {
 						a.selectedMsg.ICSInvite.InCalendarName = res.AlreadyInCalendar
 					}
 				}

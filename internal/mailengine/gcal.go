@@ -575,6 +575,44 @@ func (e *Engine) createGoogleEvent(ctx context.Context, cal StoredCalendar, req 
 	return se, nil
 }
 
+// importGoogleEvent imports an RFC 5545 event into a Google Calendar via events.import
+// (preserving iCalUID for deduplication without sending duplicate invite emails),
+// falling back to events.insert if needed.
+func (e *Engine) importGoogleEvent(ctx context.Context, cal StoredCalendar, ev StoredEvent) (StoredEvent, error) {
+	hc, err := e.loadGCalHTTPClient(ctx)
+	if err != nil {
+		return StoredEvent{}, err
+	}
+	payload := buildGCalWritePayload(ev.Title, ev.StartISO, ev.EndISO, ev.AllDay, ev.Location, ev.Description, ev.RRule)
+	var created gcalEventPayload
+	uid := strings.TrimSpace(ev.UID)
+	if uid != "" {
+		payload["iCalUID"] = uid
+		importEndpoint := fmt.Sprintf("%s/calendars/%s/events/import", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
+		if err := doGCalJSON(ctx, hc, http.MethodPost, importEndpoint, payload, &created); err != nil {
+			// Fallback to standard insert if Google rejects an edge-case iCalUID/recurrence payload.
+			delete(payload, "iCalUID")
+			insertEndpoint := fmt.Sprintf("%s/calendars/%s/events", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
+			if err2 := doGCalJSON(ctx, hc, http.MethodPost, insertEndpoint, payload, &created); err2 != nil {
+				return StoredEvent{}, err2
+			}
+		}
+	} else {
+		insertEndpoint := fmt.Sprintf("%s/calendars/%s/events", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
+		if err := doGCalJSON(ctx, hc, http.MethodPost, insertEndpoint, payload, &created); err != nil {
+			return StoredEvent{}, err
+		}
+	}
+	se := gcalPayloadToStored(cal.ID, cal.Name, cal.ReadOnly, created)
+	if ev.SelfResponse != "" && se.SelfResponse == "" {
+		se.SelfResponse = ev.SelfResponse
+	}
+	if err := e.store.UpsertEvent(ctx, se); err != nil {
+		return StoredEvent{}, err
+	}
+	return se, nil
+}
+
 func (e *Engine) updateGoogleEvent(ctx context.Context, cal StoredCalendar, existing StoredEvent) (StoredEvent, error) {
 	hc, err := e.loadGCalHTTPClient(ctx)
 	if err != nil {

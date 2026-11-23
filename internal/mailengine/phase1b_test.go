@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -414,5 +416,73 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	psICS := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:ps-1\r\nDTSTART:20261125T140000Z\r\nSUMMARY:Test\r\nATTENDEE;CN=Frank;PARTSTAT=TENTATIVE:mailto:frank@firma.de\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	if got := ParseICSSelfPartStat(psICS, []string{"frank@firma.de"}); got != "tentative" {
 		t.Fatalf("ParseICSSelfPartStat = %q, want tentative", got)
+	}
+
+	// Test accepting an .ics invite directly into a Google Calendar target (uses POST /events/import with iCalUID).
+	var importedUID, importedPath string
+	gcalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		importedPath = r.URL.Path
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		importedUID, _ = body["iCalUID"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "gcal-imported-99",
+			"iCalUID": importedUID,
+			"summary": body["summary"],
+			"start":   body["start"],
+			"end":     body["end"],
+			"status":  "confirmed",
+		})
+	}))
+	defer gcalSrv.Close()
+
+	cfg.Direct.GoogleCalendar.ClientID = "test-client"
+	cfg.Direct.GoogleCalendar.Enabled = true
+	_ = eng.secrets.Set("gcal:token", `{"access_token":"tok-1","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`)
+	eng.gcalAPIBase = gcalSrv.URL
+	if err := eng.store.UpsertCalendar(ctx, StoredCalendar{
+		ID:         "gcal-target",
+		ExternalID: "work@avono.de",
+		Name:       "Frank Hess (avono AG)",
+		Source:     "google",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	invite2 := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:work-sync-77@avono.de\r\nDTSTART:20261126T143000Z\r\nDTEND:20261126T150000Z\r\nSUMMARY:Quick sync external users\r\nORGANIZER:mailto:boss@avono.de\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	if err := eng.store.UpsertMessage(ctx, StoredMessage{
+		ID:          "m-invite-gcal",
+		AccountID:   "acc-1",
+		FolderID:    "f-inbox",
+		FolderPath:  "INBOX",
+		UID:         2,
+		Subject:     "Quick sync external users",
+		From:        "Boss <boss@avono.de>",
+		DateISO:     time.Now().UTC().Format(time.RFC3339),
+		DateUnix:    time.Now().Unix(),
+		BodyFetched: true,
+		HasICS:      true,
+		ICSBody:     invite2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gRes, err := eng.RespondMessageICS(ctx, "m-invite-gcal", "gcal-target", "accepted")
+	if err != nil {
+		t.Fatalf("RespondMessageICS into Google Calendar: %v", err)
+	}
+	if gRes.ImportedCount != 1 || gRes.CalendarName != "Frank Hess (avono AG)" {
+		t.Fatalf("unexpected Google Calendar RSVP result: %+v", gRes)
+	}
+	if !strings.HasSuffix(importedPath, "/events/import") || importedUID != "work-sync-77@avono.de" {
+		t.Fatalf("expected POST .../events/import with iCalUID=work-sync-77@avono.de, got path=%q uid=%q", importedPath, importedUID)
+	}
+	// Verify stored in gcal-target with SelfResponse="accepted" and NOT duplicated into LocalCalendarID.
+	gEvs, _ := eng.store.ListRawEvents(ctx, []string{"gcal-target"})
+	if len(gEvs) != 1 || gEvs[0].SelfResponse != "accepted" {
+		t.Fatalf("expected 1 accepted event in gcal-target, got %+v", gEvs)
+	}
+	localEvs3, _ := eng.store.ListRawEvents(ctx, []string{LocalCalendarID})
+	if len(localEvs3) != 0 {
+		t.Fatalf("expected 0 local events when accepted directly into Google Calendar, got %d", len(localEvs3))
 	}
 }

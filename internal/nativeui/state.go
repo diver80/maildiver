@@ -232,6 +232,9 @@ type eventState struct {
 	eventCalendar   string
 	eventCalLabels  []string
 	eventCalByLabel map[string]string
+	icsTargetCal    string // selected writable calendar label in the open mail's .ics banner
+	icsTargetMsgID  string // message ID for which icsTargetCal was initialized
+	icsLastCalLabel string // last calendar label manually chosen by the user for .ics invites
 	eventTitle      string
 	eventStart      string
 	eventEnd        string

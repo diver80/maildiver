@@ -235,7 +235,31 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 		t.Fatalf("expected .ics event title in invitation banner")
 	}
 
-	// Verify RSVP status badge & hidden Import Only when invite is already accepted in an external calendar.
+	// Verify RSVP status badge, target calendar selector, smart default selection, and hidden Import Only.
+	app.accounts = []backend.Account{{ID: "acc-work", Name: "frank.hess@avono.de", Identities: []backend.AccountIdentity{{ID: "id-1", Email: "frank.hess@avono.de"}}}}
+	app.calendars = []backend.Calendar{
+		{ID: mailengine.LocalCalendarID, Name: "Persönlich"},
+		{ID: "gcal-work", Name: "Frank Hess (avono AG)"},
+		{ID: "gcal-fam", Name: "Frank und Simone"},
+	}
+	app.eventCalLabels = []string{"Persönlich", "Frank Hess (avono AG)", "Frank und Simone"}
+	app.eventCalByLabel = map[string]string{
+		"Persönlich":            mailengine.LocalCalendarID,
+		"Frank Hess (avono AG)": "gcal-work",
+		"Frank und Simone":      "gcal-fam",
+	}
+	app.selectedMsg.AccountID = "acc-work"
+	app.selectedMsg.ICSInvite.ResponseStatus = ""
+	app.selectedMsg.ICSInvite.InCalendarName = ""
+	app.icsTargetMsgID = ""
+	tt.Frame()
+	if app.icsTargetCal != "Frank Hess (avono AG)" {
+		t.Fatalf("expected smart default target calendar 'Frank Hess (avono AG)' for frank.hess@avono.de, got %q", app.icsTargetCal)
+	}
+	if _, ok := tt.Find("Kalender:"); !ok {
+		t.Fatalf("expected calendar selector label in .ics banner when multiple writable calendars exist")
+	}
+
 	app.selectedMsg.ICSInvite.ResponseStatus = "accepted"
 	app.selectedMsg.ICSInvite.InCalendarName = "Frank Hess (avono AG)"
 	tt.Frame()
@@ -246,7 +270,13 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 		t.Fatalf("expected accepted button label in .ics banner")
 	}
 	if _, ok := tt.Find("Nur übernehmen"); ok {
-		t.Fatalf("expected Import Only button to be hidden when event is already in a calendar")
+		t.Fatalf("expected Import Only button to be hidden when selected calendar already contains the event")
+	}
+	// Switching target calendar to a different calendar re-enables Import Only.
+	app.icsTargetCal = "Frank und Simone"
+	tt.Frame()
+	if _, ok := tt.Find("Nur übernehmen"); !ok {
+		t.Fatalf("expected Import Only button to appear when choosing a different target calendar")
 	}
 
 	// Test Reply All, Forward, Draft edit & BCC prefill

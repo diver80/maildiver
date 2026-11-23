@@ -1369,6 +1369,7 @@ func (e *Engine) ImportMessageICS(ctx context.Context, msgID, calendarID string)
 type ICSRespondResult struct {
 	Status            string
 	ImportedCount     int
+	CalendarName      string
 	AlreadyInCalendar string
 	ReplySent         bool
 	OrganizerEmail    string
@@ -1519,23 +1520,38 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 	}
 	matches, _ := e.store.FindEventsByUIDOrMatch(ctx, inviteUID, inviteTitle, inviteStart)
 	var externalCalName string
+	var targetMatchName string
 	for _, me := range matches {
-		if me.CalendarID != LocalCalendarID {
-			externalCalName = strings.TrimSpace(me.CalendarName)
-			if externalCalName == "" {
-				externalCalName = me.CalendarID
-			}
-			break
+		calName := strings.TrimSpace(me.CalendarName)
+		if calName == "" {
+			calName = me.CalendarID
+		}
+		if me.CalendarID == calendarID && targetMatchName == "" {
+			targetMatchName = calName
+		}
+		if me.CalendarID != LocalCalendarID && externalCalName == "" {
+			externalCalName = calName
 		}
 	}
 
+	targetCal, _ := e.store.GetCalendar(ctx, calendarID)
 	e.store.SetICSRSVP(ctx, inviteUID, msgID, status)
 
 	res := ICSRespondResult{Status: status}
 	if status == "accepted" || status == "tentative" {
-		if calendarID == LocalCalendarID && externalCalName != "" {
-			// Avoid duplicating an event that already exists in a synced external calendar (e.g. Google Calendar).
+		if targetMatchName != "" {
+			// Event already exists in the chosen target calendar: update cached RSVP status without duplicating.
+			res.AlreadyInCalendar = targetMatchName
+			res.CalendarName = targetMatchName
+			for _, me := range matches {
+				if me.CalendarID == calendarID {
+					e.store.SetEventSelfResponse(ctx, me.ID, status)
+				}
+			}
+		} else if calendarID == LocalCalendarID && externalCalName != "" {
+			// Avoid duplicating into LocalCalendarID when a synced external calendar already holds the event.
 			res.AlreadyInCalendar = externalCalName
+			res.CalendarName = externalCalName
 			for _, me := range matches {
 				e.store.SetEventSelfResponse(ctx, me.ID, status)
 			}
@@ -1545,8 +1561,13 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 				return res, err
 			}
 			res.ImportedCount = n
-			for _, pe := range parsedEvs {
-				e.store.SetEventSelfResponse(ctx, pe.ID, status)
+			res.CalendarName = strings.TrimSpace(targetCal.Name)
+			// Mark self_response on the stored row(s) in calendarID (handles Google/CalDAV/local IDs alike).
+			afterMatches, _ := e.store.FindEventsByUIDOrMatch(ctx, inviteUID, inviteTitle, inviteStart)
+			for _, am := range afterMatches {
+				if am.CalendarID == calendarID {
+					e.store.SetEventSelfResponse(ctx, am.ID, status)
+				}
 			}
 		}
 	} else if status == "declined" {

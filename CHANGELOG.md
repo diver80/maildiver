@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.19 (2026-11-23)
+
+### Zielkalender-Auswahl beim Annehmen von `.ics`-Einladungen (inkl. Google Calendar & CalDAV)
+- **Kalender-Auswahl direkt im `.ics`-Einladungsbanner (Desktop & Handy):** Bei mehreren schreibbaren Kalendern zeigt das Einladungsbanner jetzt ein `Kalender:`-Dropdown für *Zusagen*, *Vielleicht* und *Nur übernehmen*.
+- **Intelligente Vorauswahl:** MailDiver wählt automatisch den passenden schreibbaren Kalender vor (1. Kalender, in dem der Termin bereits liegt, 2. passender Kalender zur Empfänger-Mail/Domain wie `avono.de` → `Frank Hess (avono AG)`, 3. zuletzt gewählter Kalender, 4. erster externer Kalender statt lokalem `Persönlich`).
+- **Direkter Sync in Google Calendar & CalDAV:** `ImportICSBytes` und `RespondMessageICS` schreiben Einladungen jetzt direkt in den gewählten Google-Kalender (via `events.import` mit `iCalUID` zur Duplikat-Vermeidung) oder per CalDAV-PUT statt immer nur in den lokalen Kalender `Persönlich`.
+
 ## 0.7.18 (2026-11-23)
 
 ### Kalender-Tagesansicht (24h-Zeitleiste) mit roter Jetzt-Linie
