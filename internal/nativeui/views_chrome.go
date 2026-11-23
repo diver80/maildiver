@@ -21,7 +21,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 			a.renderAppMenuButton(c)
 			ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
 			if v := a.versionTag(); v != "" {
-				ui.Text(c, v).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, v).FontSize(9.5).TextColor(withAlpha(t.TextMuted, 0.68)).Margin(2, 0, 0, 0).SingleLine()
 			}
 		})
 

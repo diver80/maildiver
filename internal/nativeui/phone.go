@@ -159,11 +159,20 @@ func (a *App) phonePopMailIfOpen() {
 func (a *App) renderPhoneMailboxes(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		barTitle := "MailDiver"
-		if v := a.versionTag(); v != "" {
-			barTitle = "MailDiver " + v
+		barH := float32(44)
+		titleSz := float32(17)
+		verTop := float32(3)
+		if mobile.Current() == mobile.Material {
+			barH = 56
+			titleSz = 20
+			verTop = 5
 		}
-		a.phoneBar(c, barTitle, false, func() {
+		ui.Row(c.Key("ph-home-bar")).FillWidth().Height(barH).Background(t.Surface).Padding(0, 6, 0, 16).Gap(6).AlignItems(ui.Center).Shrink(0).Role(ui.RoleGroup).Children(func() {
+			ui.Text(c, "MailDiver").FontSize(titleSz).FontWeight(600).SingleLine().Role(ui.RoleHeading).Level(1)
+			if v := a.versionTag(); v != "" {
+				ui.Text(c, v).FontSize(10.5).TextColor(withAlpha(t.TextMuted, 0.70)).Margin(verTop, 0, 0, 0).SingleLine()
+			}
+			ui.Spacer(c)
 			if a.isDirectMode() && phoneIconButton(c.Key("ph-accounts"), iconUsers, a.tr("Konten", "Accounts"), ui.Color{}).Clicked() {
 				a.OpenDirectModal(0)
 			}
@@ -171,6 +180,7 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 				a.OpenSettings()
 			}
 		})
+		ui.Divider(c)
 		if !a.engineReady {
 			a.renderOfflineBanner(c)
 			return

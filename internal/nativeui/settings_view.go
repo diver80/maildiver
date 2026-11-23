@@ -480,7 +480,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
 				if v := a.versionTag(); v != "" {
-					pillBadge(c, "MailDiver "+v, t.Background, t.TextMuted)
+					ui.Text(c, v).FontSize(10.5).TextColor(withAlpha(t.TextMuted, 0.72)).SingleLine()
 				}
 				if ui.Button(c.Key("set-x"), "✕").Clicked() {
 					a.stopLANQRSession()

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.14 (2026-11-23)
+
+### Dezentere Versionsanzeige (Handy & Desktop)
+- **Kleine, zurückhaltende Versionsnummer:** Auf dem Handy ([internal/nativeui/phone.go](internal/nativeui/phone.go)) wird die Versionsnummer jetzt nicht mehr im großen 22pt-Fett-Titel gerendert, sondern klein (`10.5pt`) und gedimmt hinter **MailDiver** (zugleich entfällt der leere linke Platzhalter auf dem Startbildschirm). Auf dem Desktop ([internal/nativeui/views_chrome.go](internal/nativeui/views_chrome.go)) sowie in Einstellungen und Hilfe ist die Versionsnummer ebenfalls kleiner (`9.5–10.5pt`) und dezenter gestaltet.
+
 ## 0.7.13 (2026-11-22)
 
 ### UI-Versionsanzeige, Lokale-KI-Doku (MTPLX / Inkling 2 Mini) & Komplett-Review-Fixes

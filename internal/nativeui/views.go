@@ -2126,7 +2126,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 				ui.Icon(c, iconHelp).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Hilfe · Überblick, Filterregeln & KI-Transparenz", "Help · Overview, Filter Rules & AI Transparency")).FontSize(16).Bold().Grow(1)
 				if v := a.versionTag(); v != "" {
-					pillBadge(c, "MailDiver "+v, t.Background, t.TextMuted)
+					ui.Text(c, v).FontSize(10.5).TextColor(withAlpha(t.TextMuted, 0.72)).SingleLine()
 				}
 				if ui.Button(c.Key("help-x"), "✕").Clicked() {
 					a.helpOpen = false
