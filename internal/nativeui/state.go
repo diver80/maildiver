@@ -344,6 +344,7 @@ type App struct {
 	loadingMore bool
 	listKey     string
 	focusUnread int
+	focusTotal  int
 	selectedID  string
 	selectedMsg *backend.MessageDetail
 	readerBody  readerBody // selectedMsg's body as Markdown (mailbody.go)
@@ -1022,7 +1023,8 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		events         []backend.CalendarEvent
 		rules          []triage.NativeFilter
 		focusUnread    int
-		hasFocusUnread bool
+		focusTotal     int
+		hasFocusCounts bool
 		errs           [6]error
 	}
 	var res result
@@ -1061,16 +1063,22 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		if snap.msgLoad.navID == "focus" {
 			return nil
 		}
-		unreadTrue := true
 		page, err := bc.Messages(c, backend.MessagesFilter{
-			AccountID: snap.account,
-			Unread:    &unreadTrue,
-			Days:      14,
-			Limit:     1,
+			AccountID:       snap.account,
+			UnreadOrFlagged: true,
+			Days:            14,
+			Limit:           100,
 		})
 		if err == nil {
-			res.focusUnread = page.Total
-			res.hasFocusUnread = true
+			unread := 0
+			for _, m := range page.Messages {
+				if m.Unread {
+					unread++
+				}
+			}
+			res.focusUnread = unread
+			res.focusTotal = max(page.Total, len(page.Messages))
+			res.hasFocusCounts = true
 		}
 		return err
 	})
@@ -1089,8 +1097,9 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		if res.errs[4] == nil && res.rules != nil {
 			a.direct.rules = res.rules
 		}
-		if res.hasFocusUnread && a.navID != "focus" {
+		if res.hasFocusCounts && a.navID != "focus" {
 			a.focusUnread = res.focusUnread
+			a.focusTotal = res.focusTotal
 		}
 		if res.errs[2] == nil && res.calendars != nil {
 			a.calendars = res.calendars
@@ -1315,6 +1324,7 @@ func (a *App) applyMessageLoad(req messageLoad, msgs []backend.MessageHeader, to
 			}
 		}
 		a.focusUnread = unread
+		a.focusTotal = max(total, len(msgs))
 	}
 	a.notifyTray()
 	return true
@@ -1828,17 +1838,21 @@ func (a *App) refreshFoldersBackground(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		folders, err := bc.Folders(c, acc)
-		var focusCnt int
+		var focusUnread, focusTot int
 		hasFocus := false
 		if wantFocusCount {
-			unreadTrue := true
 			if page, ferr := bc.Messages(c, backend.MessagesFilter{
-				AccountID: acc,
-				Unread:    &unreadTrue,
-				Days:      14,
-				Limit:     1,
+				AccountID:       acc,
+				UnreadOrFlagged: true,
+				Days:            14,
+				Limit:           100,
 			}); ferr == nil {
-				focusCnt = page.Total
+				for _, m := range page.Messages {
+					if m.Unread {
+						focusUnread++
+					}
+				}
+				focusTot = max(page.Total, len(page.Messages))
 				hasFocus = true
 			}
 		}
@@ -1851,7 +1865,8 @@ func (a *App) refreshFoldersBackground(ctx context.Context) {
 					a.folders = folders
 				}
 				if hasFocus && a.navID != "focus" {
-					a.focusUnread = focusCnt
+					a.focusUnread = focusUnread
+					a.focusTotal = focusTot
 					a.notifyTray()
 				}
 			}
@@ -3903,9 +3918,20 @@ func (a *App) isTrashOrJunkPath(accountID, folderPath string) bool {
 	return false
 }
 
+// focusCount returns the exact number of items in Focus (Unread & ★): unread mails from the
+// last 14 days plus starred mails, matching what appears when opening Focus.
+func (a *App) focusCount() int {
+	if a.navID == "focus" {
+		if a.totalMessages > len(a.messages) {
+			return a.totalMessages
+		}
+		return len(a.messages)
+	}
+	return a.focusTotal
+}
+
 // unreadCount returns the unread count for Focus (last 14 days, excluding Trash/Junk),
-// matching what the user actually sees when opening Focus (Unread & ★) rather than summing
-// older (>14 day) unread mail counts from individual folders.
+// used for Dock/Tray unread indicators and the Focus "Mark all read" action.
 func (a *App) unreadCount() int {
 	if a.navID == "focus" {
 		n := 0

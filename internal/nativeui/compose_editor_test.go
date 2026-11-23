@@ -320,8 +320,13 @@ func TestVersionDisplayedInUIAndCSVPreview(t *testing.T) {
 	app.messages = []backend.MessageHeader{
 		{ID: "m1", Subject: "Starred only", Unread: false, Flagged: true},
 	}
+	app.totalMessages = 1
 	app.focusUnread = 0
+	app.focusTotal = 1
 	if got := app.unreadCount(); got != 0 {
 		t.Fatalf("Focus unreadCount with 0 recent unread + 1 read starred must be 0 (not 64), got %d", got)
+	}
+	if got := app.focusCount(); got != 1 {
+		t.Fatalf("Focus badge focusCount with 1 starred mail must be 1, got %d", got)
 	}
 }

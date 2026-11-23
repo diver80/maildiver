@@ -591,16 +591,45 @@ func (a *App) deleteDirectAccount(ctx context.Context, accountID string) {
 	}()
 }
 
+type quickSyncController interface {
+	SyncQuick(ctx context.Context, accountID, folderPath string) error
+}
+
 func (a *App) syncDirectAccountNow(ctx context.Context, accountID string) {
 	dc := a.opts.Direct
 	if dc == nil {
 		return
 	}
-	a.toast(a.tr("Synchronisiere Postfach…", "Syncing mailbox…"), "info")
+	folderPath := ""
+	targetAcc := accountID
+	if strings.HasPrefix(a.navID, "folder:") {
+		fid := strings.TrimPrefix(a.navID, "folder:")
+		for _, f := range a.folders {
+			if f.ID == fid {
+				folderPath = f.Path
+				if targetAcc == "" {
+					targetAcc = f.AccountID
+				}
+				break
+			}
+		}
+	}
+	if !a.phone.refresh.Refreshing {
+		a.toast(a.tr("Synchronisiere Postfach…", "Syncing mailbox…"), "info")
+	}
 	go func() {
-		c, cancel := context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
-		err := dc.SyncNow(c, accountID)
+		timeout := 45 * time.Second
+		var err error
+		if qs, ok := dc.(quickSyncController); ok {
+			timeout = 20 * time.Second
+			c, cancel := context.WithTimeout(ctx, timeout)
+			err = qs.SyncQuick(c, targetAcc, folderPath)
+			cancel()
+		} else {
+			c, cancel := context.WithTimeout(ctx, timeout)
+			err = dc.SyncNow(c, accountID)
+			cancel()
+		}
 		a.emitUpdate(func() {
 			a.phone.refresh.Refreshing = false
 			if errors.Is(err, context.DeadlineExceeded) {

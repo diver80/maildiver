@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.16 (2026-11-23)
+
+### Schneller Pull-to-Refresh & genauer Fokus-Zähler
+- **Deutlich schnelleres Aktualisieren (`SyncQuick` + paralleler Multi-Account-Sync):**
+  - Pull-to-Refresh und `↻` synchronisieren jetzt zuerst parallel alle Posteingänge (bzw. den gerade geöffneten Ordner + INBOX) ohne redundantes `IMAP LIST` und ohne 20-Mail-Body-Prefetch bei unverändertem Postfach — der Lade-Spinner beendet sich damit nach ~1–2 Sekunden statt 20–45 Sekunden.
+  - Sekundärordner & Backfill laufen direkt danach nicht-blockierend im Hintergrund weiter und aktualisieren Badges live.
+  - `SyncNow` und `SyncInboxes` synchronisieren mehrere Konten jetzt parallel statt nacheinander.
+- **Genauer Fokus-Badge (`focusCount` vs. `unreadCount`):** Der Badge neben **Fokus (Ungelesen & ★)** zeigt jetzt exakt die Anzahl der Mails, die beim Öffnen tatsächlich in Fokus liegen (Ungelesene der letzten 14 Tage + ★-Mails — z. B. `1` bei einer markierten Mail), während Dock-/Tray-Zähler weiterhin nur ungelesene Mails zählen.
+
 ## 0.7.15 (2026-11-23)
 
 ### Korrekter Fokus-Ungelesen-Zähler (14-Tage-Fenster)

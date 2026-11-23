@@ -898,16 +898,74 @@ func (e *Engine) syncNow(ctx context.Context, accountID string) error {
 		return err
 	}
 	cfg := e.loadConfig()
-	var firstErr error
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
 	for _, a := range cfg.Direct.Accounts {
 		if !a.Enabled {
 			continue
 		}
-		if _, err := e.SyncAccount(ctx, a.ID, false); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		accID := a.ID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := e.SyncAccount(ctx, accID, false); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
 	}
+	wg.Wait()
 	return firstErr
+}
+
+// SyncQuick performs a fast foreground refresh (INBOXes in parallel, or the currently viewed
+// folder + INBOX) so pull-to-refresh and ↻ respond in ~1-2 seconds, then triggers a full
+// multi-folder sync asynchronously in the background.
+func (e *Engine) SyncQuick(ctx context.Context, accountID, folderPath string) error {
+	done := make(chan error, 1)
+	e.spawn(func(root context.Context) {
+		var err error
+		if accountID != "" && strings.TrimSpace(folderPath) != "" {
+			if acc, ok := e.findAccount(accountID); ok {
+				paths := []string{strings.TrimSpace(folderPath)}
+				if inbox, ok := e.store.FindFolderByType(root, acc.ID, "inbox"); ok && !strings.EqualFold(inbox.Path, paths[0]) {
+					paths = append(paths, inbox.Path)
+				}
+				err = e.syncSpecificFoldersIMAP(ctx, acc, paths)
+				if err == nil && e.events != nil {
+					e.events.Publish("mail.updated", map[string]any{"accountId": acc.ID})
+				}
+			} else {
+				err = fmt.Errorf("not_found: account %q", accountID)
+			}
+		} else if accountID != "" {
+			_, err = e.SyncAccount(ctx, accountID, true)
+		} else {
+			err = e.SyncInboxes(ctx)
+		}
+		done <- err
+		// Follow up with full multi-folder sync in the background so secondary folders stay fresh
+		// without blocking the pull-to-refresh spinner.
+		if err == nil && root.Err() == nil && !e.IsWorkersPaused() {
+			e.spawn(func(bg context.Context) {
+				_ = e.syncNow(bg, accountID)
+			})
+		}
+	})
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.rootContext().Done():
+		return context.Canceled
+	}
 }
 
 // AddICSFeed saves a new iCal subscription feed and immediately syncs it.

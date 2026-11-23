@@ -228,7 +228,7 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 					}
 				}
 				mobile.Section(c, a.tr("Arbeitsbereich", "Workspace"), func() {
-					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)"), a.unreadCount(), 0)
+					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)"), a.focusCount(), 0)
 					a.phoneBoxRow(c, "recent", iconMail, a.tr("Aktuelle Mails", "Recent Mail"), 0, 0)
 					a.phoneBoxRow(c, "action", iconBolt, a.tr("Action / Warten", "Action / Waiting"), a.barSummary.ActionCount+a.barSummary.WaitingCount, 0)
 					a.phoneBoxRow(c, "calendar", iconCal, a.tr("Kalender & Termine", "Calendar & Events"), len(a.todayEvents()), 0)

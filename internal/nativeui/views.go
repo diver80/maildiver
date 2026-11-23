@@ -184,7 +184,7 @@ func (a *App) renderSidebar(c *ui.Context) {
 		sb := ui.Sidebar(c, &a.navID, func() {
 			ui.SidebarSection(c, a.tr("Arbeitsbereich", "Workspace"), &a.secViewsOpen, func() {
 				ui.SidebarItem(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)")).Children(func() {
-					if n := a.unreadCount(); n > 0 {
+					if n := a.focusCount(); n > 0 {
 						ui.Badge(c, fmt.Sprintf("%d", n))
 					}
 				})

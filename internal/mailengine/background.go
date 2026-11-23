@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"sync"
 )
 
 // Mail while the app is not open (phones): the system wakes the app now and then, it syncs the
@@ -13,17 +14,31 @@ import (
 // so older mails fetched later (backfill) never count as new, while mails moved into the inbox
 // do.
 
-// SyncInboxes syncs the INBOX of every enabled account.
+// SyncInboxes syncs the INBOX of every enabled account in parallel.
 func (e *Engine) SyncInboxes(ctx context.Context) error {
-	var firstErr error
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
 	for _, a := range e.loadConfig().Direct.Accounts {
 		if !a.Enabled {
 			continue
 		}
-		if _, err := e.SyncAccount(ctx, a.ID, true); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		accID := a.ID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := e.SyncAccount(ctx, accID, true); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
 	}
+	wg.Wait()
 	return firstErr
 }
 

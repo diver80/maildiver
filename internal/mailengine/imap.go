@@ -216,9 +216,18 @@ func (e *Engine) syncAccountIMAP(ctx context.Context, acc config.DirectAccount, 
 	}()
 
 	res := SyncResult{AccountID: acc.ID}
-	folders, err := e.syncFoldersIMAP(ctx, c, acc)
-	if err != nil {
-		return res, err
+	var folders []StoredFolder
+	if inboxOnly {
+		if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {
+			folders = []StoredFolder{inbox}
+		}
+	}
+	if len(folders) == 0 {
+		var err error
+		folders, err = e.syncFoldersIMAP(ctx, c, acc)
+		if err != nil {
+			return res, err
+		}
 	}
 	res.Folders = len(folders)
 
@@ -252,8 +261,15 @@ func (e *Engine) syncAccountIMAP(ctx context.Context, acc config.DirectAccount, 
 	}
 
 	// Prefetch newest INBOX bodies so clicking through unread mails is instant.
-	if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {
-		e.prefetchFolderBodies(ctx, c, acc, inbox, 20)
+	// On quick/inbox-only refreshes with no new messages, skip prefetch to keep refresh snappy.
+	if !inboxOnly || len(res.NewMessages) > 0 {
+		prefetchLimit := 20
+		if inboxOnly || runtime.GOOS == "android" || runtime.GOOS == "ios" {
+			prefetchLimit = 5
+		}
+		if inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox"); ok {
+			e.prefetchFolderBodies(ctx, c, acc, inbox, prefetchLimit)
+		}
 	}
 
 	return res, nil
