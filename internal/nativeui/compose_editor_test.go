@@ -310,4 +310,18 @@ func TestVersionDisplayedInUIAndCSVPreview(t *testing.T) {
 	if !ok || cut || !strings.Contains(md, "| Name | Betrag |") || !strings.Contains(md, "| Alice | 12,50 |") {
 		t.Fatalf("unexpected CSV markdown preview: ok=%v cut=%v md=%q", ok, cut, md)
 	}
+
+	// Focus unread badge must reflect Focus (last 14 days), not older folder unread counts.
+	app.navID = "focus"
+	app.folders = []backend.Folder{
+		{ID: "f1", AccountID: "acc1", Name: "INBOX", Path: "INBOX", Type: "inbox", UnreadCount: 60},
+		{ID: "f2", AccountID: "acc1", Name: "REWE", Path: "INBOX/REWE", UnreadCount: 4},
+	}
+	app.messages = []backend.MessageHeader{
+		{ID: "m1", Subject: "Starred only", Unread: false, Flagged: true},
+	}
+	app.focusUnread = 0
+	if got := app.unreadCount(); got != 0 {
+		t.Fatalf("Focus unreadCount with 0 recent unread + 1 read starred must be 0 (not 64), got %d", got)
+	}
 }

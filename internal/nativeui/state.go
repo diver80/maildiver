@@ -1016,15 +1016,17 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 	}
 
 	type result struct {
-		accounts  []backend.Account
-		folders   []backend.Folder
-		calendars []backend.Calendar
-		events    []backend.CalendarEvent
-		rules     []triage.NativeFilter
-		errs      [5]error
+		accounts       []backend.Account
+		folders        []backend.Folder
+		calendars      []backend.Calendar
+		events         []backend.CalendarEvent
+		rules          []triage.NativeFilter
+		focusUnread    int
+		hasFocusUnread bool
+		errs           [6]error
 	}
 	var res result
-	done := make(chan struct{}, 5)
+	done := make(chan struct{}, 6)
 	load := func(i int, fn func(c context.Context) error) {
 		go func() {
 			c, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -1055,7 +1057,24 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		return err
 	})
-	for i := 0; i < 5; i++ {
+	load(5, func(c context.Context) error {
+		if snap.msgLoad.navID == "focus" {
+			return nil
+		}
+		unreadTrue := true
+		page, err := bc.Messages(c, backend.MessagesFilter{
+			AccountID: snap.account,
+			Unread:    &unreadTrue,
+			Days:      14,
+			Limit:     1,
+		})
+		if err == nil {
+			res.focusUnread = page.Total
+			res.hasFocusUnread = true
+		}
+		return err
+	})
+	for i := 0; i < 6; i++ {
 		<-done
 	}
 
@@ -1069,6 +1088,9 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		if res.errs[4] == nil && res.rules != nil {
 			a.direct.rules = res.rules
+		}
+		if res.hasFocusUnread && a.navID != "focus" {
+			a.focusUnread = res.focusUnread
 		}
 		if res.errs[2] == nil && res.calendars != nil {
 			a.calendars = res.calendars
@@ -1801,16 +1823,37 @@ func (a *App) refreshFoldersBackground(ctx context.Context) {
 		return
 	}
 	acc := a.selectedAccount
+	wantFocusCount := a.navID != "focus"
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		folders, err := bc.Folders(c, acc)
-		if err != nil || folders == nil {
+		var focusCnt int
+		hasFocus := false
+		if wantFocusCount {
+			unreadTrue := true
+			if page, ferr := bc.Messages(c, backend.MessagesFilter{
+				AccountID: acc,
+				Unread:    &unreadTrue,
+				Days:      14,
+				Limit:     1,
+			}); ferr == nil {
+				focusCnt = page.Total
+				hasFocus = true
+			}
+		}
+		if err != nil && !hasFocus {
 			return
 		}
 		a.emitUpdate(func() {
 			if a.selectedAccount == acc {
-				a.folders = folders
+				if err == nil && folders != nil {
+					a.folders = folders
+				}
+				if hasFocus && a.navID != "focus" {
+					a.focusUnread = focusCnt
+					a.notifyTray()
+				}
 			}
 		})
 	}()
@@ -3860,46 +3903,20 @@ func (a *App) isTrashOrJunkPath(accountID, folderPath string) bool {
 	return false
 }
 
+// unreadCount returns the unread count for Focus (last 14 days, excluding Trash/Junk),
+// matching what the user actually sees when opening Focus (Unread & ★) rather than summing
+// older (>14 day) unread mail counts from individual folders.
 func (a *App) unreadCount() int {
-	if len(a.folders) > 0 {
+	if a.navID == "focus" {
 		n := 0
-		for _, f := range a.folders {
-			if a.selectedAccount != "" && f.AccountID != a.selectedAccount {
-				continue
-			}
-			if isTrashOrJunkFolder(f) {
-				continue
-			}
-			t := strings.ToLower(strings.TrimSpace(f.Type))
-			if t == "drafts" || t == "sent" {
-				continue
-			}
-			if f.UnreadCount > 0 {
-				n += f.UnreadCount
+		for _, m := range a.messages {
+			if m.Unread {
+				n++
 			}
 		}
-		if n > 0 {
-			return n
-		}
+		return n
 	}
-	if a.focusUnread > 0 {
-		return a.focusUnread
-	}
-	if strings.HasPrefix(a.navID, "folder:") {
-		fid := strings.TrimPrefix(a.navID, "folder:")
-		for _, f := range a.folders {
-			if f.ID == fid && isTrashOrJunkFolder(f) {
-				return 0
-			}
-		}
-	}
-	n := 0
-	for _, m := range a.messages {
-		if m.Unread {
-			n++
-		}
-	}
-	return n
+	return a.focusUnread
 }
 
 func (a *App) todayEvents() []backend.CalendarEvent {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.15 (2026-11-23)
+
+### Korrekter Fokus-Ungelesen-Zähler (14-Tage-Fenster)
+- **Fokus-Badge stimmt jetzt mit Fokus überein ([internal/nativeui/state.go](internal/nativeui/state.go)):** `unreadCount()` zählt wieder gezielt die ungelesenen Mails in **Fokus (Ungelesen & ★)** (letzte 14 Tage, ohne Papierkorb/Spam) und wird auch beim Wechsel in andere Ordner laufend im Hintergrund aktualisiert — statt ältere (> 14 Tage) ungelesene Ordner-Zähler aus `INBOX` & Unterordnern auf den Fokus-Badge zu addieren.
+
 ## 0.7.14 (2026-11-23)
 
 ### Dezentere Versionsanzeige (Handy & Desktop)

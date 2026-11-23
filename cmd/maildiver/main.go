@@ -20,7 +20,7 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-var version = "0.7.14-dev"
+var version = "0.7.15-dev"
 
 func main() {
 	if err := run(); err != nil {
