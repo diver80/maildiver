@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.20 (2026-11-23)
+
+### Korrekter `Sent`-Ordner (RFC 6154 Special-Use) & sofortige Anzeige gesendeter Mails
+- **RFC-6154-Special-Use hat Vorrang (`FindFolderByType`):** Wenn ein Postfach mehrere gleichartig benannte Ordner besitzt (z. B. altes `Gesendet` neben dem offiziellen Server-Ordner `Sent` bzw. `Gesendete Objekte` mit `\Sent`-Flag), wählt MailDiver jetzt zuverlässig den vom IMAP-Server deklarierten Special-Use-Ordner (`\Sent`, `\Drafts`, `\Trash`, `\Junk`, `\Archive`) statt den alphabetisch ersten Namen.
+- **Gesendete Mails sofort sichtbar (`appendToSentFolder`):** Nach dem Versand (direkt und aus dem Offline-Postausgang) wird die per `IMAP APPEND` im `Sent`-Ordner abgelegte Kopie direkt im lokalen SQLite-Cache gespeichert, sodass sie ohne Warten auf den nächsten Hintergrund-Sync sofort in *Gesendet* und im Konversations-Thread erscheint.
+
 ## 0.7.19 (2026-11-23)
 
 ### Zielkalender-Auswahl beim Annehmen von `.ics`-Einladungen (inkl. Google Calendar & CalDAV)

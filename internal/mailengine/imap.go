@@ -385,7 +385,7 @@ func classifyFolderAttrs(path string, attrs []imap.MailboxAttr) (folderType stri
 			base = base[idx+1:]
 		}
 		switch base {
-		case "sent", "sent items", "sent messages", "gesendet", "gesendete objekte", "gesendete elemente":
+		case "sent", "sent items", "sent messages", "sent mail", "gesendet", "gesendete", "gesendete objekte", "gesendete elemente", "gesendete nachrichten":
 			folderType = "sent"
 		case "drafts", "entwürfe", "entwuerfe":
 			folderType = "drafts"

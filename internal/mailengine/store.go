@@ -444,14 +444,33 @@ func (s *Store) FindFolderByType(ctx context.Context, accountID, folderType stri
 		return StoredFolder{}, false
 	}
 	want := strings.ToLower(strings.TrimSpace(folderType))
+	isSelectable := func(f StoredFolder) bool {
+		for _, su := range f.SpecialUse {
+			if strings.EqualFold(su, "noselect") || strings.EqualFold(su, "nonexistent") {
+				return false
+			}
+		}
+		return true
+	}
+	// Pass 1: prefer RFC 6154 server-declared Special-Use (\Sent, \Drafts, \Trash, \Junk, \Archive)
+	// over name-heuristic legacy folders (e.g. "Gesendet" sorting before "Sent" / "Gesendete Objekte").
 	for _, f := range folders {
-		if strings.ToLower(f.Type) == want {
-			return f, true
+		if !isSelectable(f) {
+			continue
 		}
 		for _, su := range f.SpecialUse {
 			if strings.EqualFold(su, want) {
 				return f, true
 			}
+		}
+	}
+	// Pass 2: fall back to name-based folder type classification.
+	for _, f := range folders {
+		if !isSelectable(f) {
+			continue
+		}
+		if strings.ToLower(f.Type) == want {
+			return f, true
 		}
 	}
 	return StoredFolder{}, false

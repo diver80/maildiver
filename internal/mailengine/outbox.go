@@ -8,8 +8,6 @@ import (
 	"net"
 	"strings"
 	"time"
-
-	"github.com/emersion/go-imap/v2"
 )
 
 // OutboxItem represents an email queued locally while offline or during transient SMTP outages.
@@ -226,11 +224,7 @@ func (e *Engine) flushOutbox(ctx context.Context, force bool) (sent int, remaini
 			remaining++
 			continue
 		}
-		sentPath := "Sent"
-		if f, ok := e.store.FindFolderByType(ctx, acc.ID, "sent"); ok {
-			sentPath = f.Path
-		}
-		_, _ = e.appendMessageIMAP(ctx, acc, sentPath, it.RawEML, []imap.Flag{imap.FlagSeen}, "")
+		_ = e.appendToSentFolder(ctx, acc, it.RawEML, "")
 		if it.DraftMessageID != "" {
 			e.deleteDraftIfExists(ctx, acc.ID, it.DraftMessageID)
 		}

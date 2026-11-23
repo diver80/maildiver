@@ -1654,12 +1654,8 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer postCancel()
 
-	// Best-effort APPEND to Sent folder.
-	sentPath := "Sent"
-	if f, ok := e.store.FindFolderByType(postCtx, acc.ID, "sent"); ok {
-		sentPath = f.Path
-	}
-	_, sentErr := e.appendMessageIMAP(postCtx, acc, sentPath, raw, []imap.Flag{imap.FlagSeen}, "")
+	// Best-effort APPEND to the account's Sent folder + immediate local SQLite upsert.
+	sentErr := e.appendToSentFolder(postCtx, acc, raw, msgID)
 	// Clean up the draft that was just sent.
 	if req.DraftMessageID != "" {
 		e.deleteDraftIfExists(postCtx, acc.ID, req.DraftMessageID)
@@ -1675,6 +1671,44 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 		e.store.PutIdempotency(postCtx, idemKey, res)
 	}
 	return res, nil
+}
+
+// appendToSentFolder appends a sent RFC 5322 message to the account's Sent folder via IMAP
+// and immediately caches it in local SQLite so it appears in Sent and conversation threads right away.
+func (e *Engine) appendToSentFolder(ctx context.Context, acc config.DirectAccount, raw []byte, msgID string) error {
+	if strings.TrimSpace(msgID) == "" {
+		if parsed, err := ParseRawMessage(raw); err == nil {
+			msgID = parsed.MessageID
+		}
+	}
+	sentPath := "Sent"
+	sentFolderID := FolderID(acc.ID, sentPath)
+	if f, ok := e.store.FindFolderByType(ctx, acc.ID, "sent"); ok {
+		sentPath = f.Path
+		sentFolderID = f.ID
+	}
+	uid, err := e.appendMessageIMAP(ctx, acc, sentPath, raw, []imap.Flag{imap.FlagSeen}, msgID)
+	if err != nil {
+		return err
+	}
+	if uid > 0 {
+		now := time.Now().UTC()
+		sm := StoredMessage{
+			ID:         MessageStoreID(acc.ID, sentPath, uid),
+			AccountID:  acc.ID,
+			FolderID:   sentFolderID,
+			FolderPath: sentPath,
+			UID:        uid,
+			MessageID:  msgID,
+			DateISO:    now.Format(time.RFC3339),
+			DateUnix:   now.Unix(),
+			Read:       true,
+			Size:       int64(len(raw)),
+		}
+		mergeParsedIntoStored(&sm, raw)
+		_ = e.store.UpsertMessage(ctx, sm)
+	}
+	return nil
 }
 
 // --- Calendar RPCs ---

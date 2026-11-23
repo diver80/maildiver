@@ -692,3 +692,55 @@ func TestTrashMarksUnreadMessagesRead(t *testing.T) {
 		}
 	}
 }
+
+func TestFindFolderByTypePrefersSpecialUseAndSentCache(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "maildiver.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Scenario 1: avono-like mailbox with legacy "Gesendet" (alphabetically first, no SpecialUse)
+	// and official server-declared "Sent" (SpecialUse=["sent"]).
+	for _, f := range []StoredFolder{
+		{ID: FolderID("acc1", "Gesendet"), AccountID: "acc1", Name: "Gesendet", Path: "Gesendet", Type: "sent"},
+		{ID: FolderID("acc1", "Gesendete Objekte"), AccountID: "acc1", Name: "Gesendete Objekte", Path: "Gesendete Objekte", Type: "sent"},
+		{ID: FolderID("acc1", "Sent"), AccountID: "acc1", Name: "Sent", Path: "Sent", Type: "sent", SpecialUse: []string{"sent"}},
+	} {
+		if err := store.UpsertFolder(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := store.FindFolderByType(ctx, "acc1", "sent")
+	if !ok || got.Path != "Sent" {
+		t.Fatalf("expected RFC 6154 SpecialUse folder 'Sent', got %+v (ok=%v)", got, ok)
+	}
+
+	// Scenario 2: German provider mailbox with legacy "Gesendet" and official "Gesendete Objekte" (SpecialUse=["sent"]).
+	for _, f := range []StoredFolder{
+		{ID: FolderID("acc2", "Gesendet"), AccountID: "acc2", Name: "Gesendet", Path: "Gesendet", Type: "sent"},
+		{ID: FolderID("acc2", "Gesendete Objekte"), AccountID: "acc2", Name: "Gesendete Objekte", Path: "Gesendete Objekte", Type: "sent", SpecialUse: []string{"sent"}},
+		{ID: FolderID("acc2", "Sent"), AccountID: "acc2", Name: "Sent", Path: "Sent", Type: "sent"},
+	} {
+		if err := store.UpsertFolder(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got2, ok := store.FindFolderByType(ctx, "acc2", "sent")
+	if !ok || got2.Path != "Gesendete Objekte" {
+		t.Fatalf("expected RFC 6154 SpecialUse folder 'Gesendete Objekte', got %+v (ok=%v)", got2, ok)
+	}
+
+	// Scenario 3: Server without RFC 6154 attributes falls back to name-based Type.
+	if err := store.UpsertFolder(ctx, StoredFolder{
+		ID: FolderID("acc3", "Gesendet"), AccountID: "acc3", Name: "Gesendet", Path: "Gesendet", Type: "sent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got3, ok := store.FindFolderByType(ctx, "acc3", "sent")
+	if !ok || got3.Path != "Gesendet" {
+		t.Fatalf("expected fallback folder 'Gesendet', got %+v (ok=%v)", got3, ok)
+	}
+}
