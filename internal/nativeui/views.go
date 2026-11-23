@@ -1445,6 +1445,9 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 
 		ui.Row(c.Key("cmp-sub-row")).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("cmp-sub"), &a.composeSubject).Placeholder(a.tr("Betreff…", "Subject…")).Grow(1)
+			if iconLabelBtn(c.Key("cmp-ai-btn"), iconSparkles, a.tr("KI-Hilfe", "AI Assist"), a.composeAIOpen, a.tr("KI-Assistent zum Entwerfen, Verbessern, Übersetzen & Prüfen", "AI assistant to draft, polish, translate & review")).Clicked() {
+				a.composeAIOpen = !a.composeAIOpen
+			}
 			tplLabel := a.tr("Vorlagen ▾", "Templates ▾")
 			if n := len(a.cfg.App.ComposeTemplates); n > 0 {
 				tplLabel = fmt.Sprintf("%s (%d) ▾", a.tr("Vorlagen", "Templates"), n)
@@ -1453,6 +1456,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 				a.composeTplOpen = !a.composeTplOpen
 			}
 		})
+		a.renderComposeAIAssist(c)
 		if a.composeTplOpen {
 			ui.Column(c.Key("cmp-tpl-box")).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
 				if len(a.cfg.App.ComposeTemplates) == 0 {

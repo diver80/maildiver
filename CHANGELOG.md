@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.21 (2026-11-23)
+
+### KI-Hilfe direkt im Antwort- & Verfassen-Fenster (`✨ KI-Hilfe`)
+- **Direkter KI-Assistent im separaten Verfassen-/Antwort-Fenster (Desktop & Handy):** Neuer **`✨ KI-Hilfe`**-Button direkt in der Betreff-Zeile öffnet eine kompakte KI-Leiste mit freiem Anweisungsfeld (z. B. *„kurz zusagen, ab 15 Uhr passt“*) und Anzeige des aktiven lokalen/Cloud-Modells.
+- **1-Klick-Schnellaktionen:** *Antwort entwerfen* (nutzt bei Reply automatisch Originalmail + gesamten Konversations-Thread), *Verbessern*, *Kürzer*, *Formeller*, *DE ⇄ EN* (Übersetzung inkl. Betreff) und *Prüfen* (Prüfhinweise zu offenen Fragen, Tonfall & vergessenen Anhängen).
+- **Saubere Übernahme & 1-Klick-Rückgängig:** *Übernehmen* ersetzt ausschließlich den eigenen Antworttext (Signatur und zitiertes Original bleiben im WYSIWYG- und Text-Editor vollständig erhalten), *Einfügen* ergänzt an der Cursorposition, und *↶ KI-Text rückgängig* stellt den vorherigen Entwurf jederzeit wieder her.
+
 ## 0.7.20 (2026-11-23)
 
 ### Korrekter `Sent`-Ordner (RFC 6154 Special-Use) & sofortige Anzeige gesendeter Mails

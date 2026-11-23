@@ -36,6 +36,7 @@ type ComposeEditorHost interface {
 	UpdateSignature(sigHTML string)
 	UpdateTheme(pal ComposeThemePalette)
 	InsertHTML(fragHTML string)
+	SetUserHTML(fragHTML string)
 	ReadContent(ctx context.Context) (htmlBody string, plainText string, ok bool)
 	Focus()
 	Destroy()
@@ -1206,6 +1207,26 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
   window.__mdvInsertHTML = function(frag) {
     ed.focus();
     document.execCommand('insertHTML', false, frag);
+    notify('mdv:dirty');
+  };
+
+  window.__mdvSetUserHTML = function(frag) {
+    let userBox = ed.querySelector('[data-mdv-user="1"]');
+    if (!userBox) {
+      userBox = document.createElement('div');
+      userBox.setAttribute('data-mdv-user', '1');
+      ed.insertBefore(userBox, ed.firstChild);
+    }
+    userBox.innerHTML = frag || '<p><br></p>';
+    ed.focus();
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(userBox);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
     notify('mdv:dirty');
   };
 

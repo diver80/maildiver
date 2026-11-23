@@ -71,6 +71,12 @@ func (f *fakeComposeEditorHost) InsertHTML(fragHTML string) {
 	f.mu.Unlock()
 }
 
+func (f *fakeComposeEditorHost) SetUserHTML(fragHTML string) {
+	f.mu.Lock()
+	f.inserted = append(f.inserted, "SET:"+fragHTML)
+	f.mu.Unlock()
+}
+
 func (f *fakeComposeEditorHost) ReadContent(context.Context) (string, string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -328,5 +334,56 @@ func TestVersionDisplayedInUIAndCSVPreview(t *testing.T) {
 	}
 	if got := app.focusCount(); got != 1 {
 		t.Fatalf("Focus badge focusCount with 1 starred mail must be 1, got %d", got)
+	}
+}
+
+func TestComposeAIAssistReplaceUndoAndRender(t *testing.T) {
+	// 1. replaceComposeUserText preserves signature and quoted reply.
+	orig := "Erster Entwurf.\n\n-- \nFrank Hess\n\nAm 23.11. schrieb Alice:\n> Frage?"
+	got := replaceComposeUserText(orig, "Hallo Alice,\n\n15 Uhr passt mir gut!\n\nViele Grüße\nFrank")
+	if !strings.HasPrefix(got, "Hallo Alice,\n\n15 Uhr passt mir gut!") {
+		t.Fatalf("expected replaced top text, got %q", got)
+	}
+	if !strings.Contains(got, "-- \nFrank Hess") || !strings.Contains(got, "> Frage?") {
+		t.Fatalf("signature or reply quote lost during replaceComposeUserText: %q", got)
+	}
+
+	// 2. Render Compose window with AI Assist panel open, apply preview, and undo.
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) {
+		c := config.Default()
+		c.Language = "de"
+		return c, nil
+	}})
+	app.agentBackend = "llamacpp"
+	app.agentModel = "mtplx-inkling-2-mini-optimized-speed"
+	app.OpenComposeReply(&backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{
+			ID:      "m-reply-1",
+			Subject: "Projekt-Termin",
+			From:    "Alice <alice@example.com>",
+			Date:    "2026-11-23T10:00:00Z",
+		},
+		BodyText: "Können wir um 15 Uhr sprechen?",
+	}, "Alter Text")
+	app.composeAIOpen = true
+	app.composeAIResult = "Hallo Alice,\n\n15 Uhr passt wunderbar."
+	app.composeAIReview = []string{"Terminzeit bestätigt."}
+
+	tt := ui.NewTester(app.RenderComposeWindow, 760, 680)
+	tt.Frame()
+	if !tt.HasText("KI-Hilfe") || !tt.HasText("Antwort entwerfen") || !tt.HasText("DE ⇄ EN") || !tt.HasText("Übernehmen") {
+		t.Fatalf("expected Compose AI Assist controls in detached reply window, texts=%v", tt.Texts())
+	}
+
+	app.applyComposeAIResult(true)
+	if !strings.HasPrefix(app.composeBody, "Hallo Alice,\n\n15 Uhr passt wunderbar.") || !strings.Contains(app.composeBody, "> Können wir um 15 Uhr sprechen?") {
+		t.Fatalf("applyComposeAIResult did not replace user text cleanly: %q", app.composeBody)
+	}
+	if !app.composeAIUndoReady {
+		t.Fatalf("expected composeAIUndoReady after apply")
+	}
+	app.undoComposeAIApply()
+	if !strings.HasPrefix(app.composeBody, "Alter Text") || !strings.Contains(app.composeBody, "> Können wir um 15 Uhr sprechen?") {
+		t.Fatalf("undoComposeAIApply did not restore previous draft: %q", app.composeBody)
 	}
 }

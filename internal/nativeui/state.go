@@ -201,6 +201,18 @@ type composeState struct {
 	composeMissingAttAck     bool
 	composeTplOpen           bool
 	composeTplName           string
+	composeSourceMsg         *backend.MessageDetail
+	composeAIOpen            bool
+	composeAIPrompt          string
+	composeAILoading         bool
+	composeAISeq             uint64
+	composeAIMode            string
+	composeAIResult          string
+	composeAISubject         string
+	composeAIReview          []string
+	composeAIError           string
+	composeAIBeforeUndo      string
+	composeAIUndoReady       bool
 	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
 	scanRunning bool
 	arch        archiveUI
@@ -2992,6 +3004,8 @@ func (a *App) closeCompose() {
 	a.composeMissingAttAck = false
 	a.composeTplOpen = false
 	a.composeTplName = ""
+	a.composeSourceMsg = nil
+	a.resetComposeAIState()
 	a.composeContactPickerOpen = false
 	a.composeContactFilter = ""
 	a.syncAuxWindows()
@@ -3014,6 +3028,8 @@ func (a *App) guardComposeClose() {
 
 func (a *App) OpenComposeNew() {
 	a.initComposeCommon("")
+	a.composeSourceMsg = nil
+	a.resetComposeAIState()
 	a.composeReplyTo = ""
 	a.composeReplyType = ""
 	a.composeTo = ""
@@ -3120,6 +3136,9 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 		return
 	}
 	a.initComposeCommon(msg.AccountID)
+	srcCopy := *msg
+	a.composeSourceMsg = &srcCopy
+	a.resetComposeAIState()
 	if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
 		a.selectComposeIdentity(msg.AccountID, alias)
 	}
@@ -3288,6 +3307,9 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		return
 	}
 	a.initComposeCommon(msg.AccountID)
+	srcCopy := *msg
+	a.composeSourceMsg = &srcCopy
+	a.resetComposeAIState()
 	if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
 		a.selectComposeIdentity(msg.AccountID, alias)
 	}

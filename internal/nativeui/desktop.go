@@ -973,6 +973,11 @@ func (h *mygoComposeHost) InsertHTML(fragHTML string) {
 	h.evalAsync("window.__mdvInsertHTML && window.__mdvInsertHTML(" + string(b) + ")")
 }
 
+func (h *mygoComposeHost) SetUserHTML(fragHTML string) {
+	b, _ := json.Marshal(fragHTML)
+	h.evalAsync("window.__mdvSetUserHTML && window.__mdvSetUserHTML(" + string(b) + ")")
+}
+
 func (h *mygoComposeHost) evalAsync(code string) {
 	h.mu.Lock()
 	wv := h.wv
