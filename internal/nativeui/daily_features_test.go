@@ -327,7 +327,7 @@ func TestCalendarSearchAndMultiSelectFilter(t *testing.T) {
 	app := NewApp(Options{})
 	app.engineReady = true
 	app.navID = "calendar"
-	app.calViewMode = 2 // Agenda
+	app.calViewMode = 3 // Agenda
 	app.calendars = []backend.Calendar{
 		{ID: "cal-work", Name: "Work", Color: "#7aa2f7"},
 		{ID: "cal-family", Name: "Family", Color: "#f7768e"},

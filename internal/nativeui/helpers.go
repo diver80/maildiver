@@ -33,6 +33,7 @@ type uiWidgetsState struct {
 	chatScroll           ui.ScrollState
 	inspectorScroll      ui.ScrollState
 	calScroll            ui.ScrollState
+	calDayScroll         ui.ScrollState
 	flyoutScroll         ui.ScrollState
 	helpScroll           ui.ScrollState
 	quickRuleScroll      ui.ScrollState

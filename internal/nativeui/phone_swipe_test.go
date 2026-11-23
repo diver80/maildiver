@@ -426,7 +426,7 @@ func TestPhoneContactsAndCalendarRender(t *testing.T) {
 		t.Fatalf("back button did not clear contact selection: %q", app.contacts.selectedID)
 	}
 
-	// Render Agenda, Week, and Month calendar modes at phone width without layout panic.
+	// Render Month, Week, Day, and Agenda calendar modes at phone width without layout panic.
 	now := time.Now()
 	app.navID = "calendar"
 	app.calCursor = now
@@ -439,7 +439,7 @@ func TestPhoneContactsAndCalendarRender(t *testing.T) {
 			End:      now.Add(time.Hour).Format(time.RFC3339),
 		},
 	}
-	for _, mode := range []int{0, 1, 2} {
+	for _, mode := range []int{0, 1, 2, 3} {
 		app.calViewMode = mode
 		tt.Frame()
 	}

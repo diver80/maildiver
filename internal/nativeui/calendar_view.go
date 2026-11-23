@@ -217,6 +217,8 @@ var monthNamesEN = [...]string{
 
 var weekdayShortDE = [...]string{"Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"}
 var weekdayShortEN = [...]string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+var weekdayLongDE = [...]string{"Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"}
+var weekdayLongEN = [...]string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
 
 func (a *App) calColorForEvent(ev backend.CalendarEvent, fallback ui.Color) ui.Color {
 	for _, cal := range a.calendars {
@@ -257,6 +259,9 @@ func (a *App) stepCalendar(ctx context.Context, delta int) {
 		a.calCursor = time.Date(cur.Year(), cur.Month()+time.Month(delta), 1, 12, 0, 0, 0, cur.Location())
 	case 1: // Week
 		a.calCursor = cur.AddDate(0, 0, delta*7)
+	case 2: // Day
+		a.calCursor = cur.AddDate(0, 0, delta)
+		a.calDayScrolledKey = ""
 	default:
 		a.calCursor = cur.AddDate(0, 0, delta*max(a.calDays, 7))
 	}
@@ -282,6 +287,19 @@ func (a *App) calendarPeriodLabel() string {
 			prefix = "W"
 		}
 		return fmt.Sprintf("%s %d · %02d.%02d. – %02d.%02d.%d", prefix, kw, mon.Day(), int(mon.Month()), sun.Day(), int(sun.Month()), sun.Year())
+	}
+	if a.calViewMode == 2 {
+		wdIdx := (int(cur.Weekday()) + 6) % 7
+		if a.uiLang() == "en" {
+			if a.isPhone() {
+				return fmt.Sprintf("%s, %s %d", weekdayShortEN[wdIdx], monthNamesEN[cur.Month()][:3], cur.Day())
+			}
+			return fmt.Sprintf("%s, %s %d, %d", weekdayLongEN[wdIdx], monthNamesEN[cur.Month()], cur.Day(), cur.Year())
+		}
+		if a.isPhone() {
+			return fmt.Sprintf("%s, %02d.%02d.%d", weekdayShortDE[wdIdx], cur.Day(), int(cur.Month()), cur.Year())
+		}
+		return fmt.Sprintf("%s, %d. %s %d", weekdayLongDE[wdIdx], cur.Day(), monthNamesDE[cur.Month()], cur.Year())
 	}
 	return a.tr("Kalender & Termine", "Calendar & Events")
 }
@@ -311,14 +329,15 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 		ui.Row(c).FillWidth().Padding(10, 16).Gap(8).AlignItems(ui.Center).Wrap().BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 			ui.Text(c, a.calendarPeriodLabel()).FontSize(15).Bold().MinWidth(160)
 
-			// Navigation buttons (Month / Week)
-			if a.calViewMode == 0 || a.calViewMode == 1 {
+			// Navigation buttons (Month / Week / Day)
+			if a.calViewMode == 0 || a.calViewMode == 1 || a.calViewMode == 2 {
 				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 					if ui.Button(c.Key("cal-prev"), "‹").Padding(4, 9).Clicked() {
 						a.stepCalendar(context.Background(), -1)
 					}
 					if ui.Button(c.Key("cal-today"), a.tr("Heute", "Today")).Padding(4, 10).Clicked() {
 						a.calCursor = time.Now()
+						a.calDayScrolledKey = ""
 						a.RefreshAll(context.Background())
 					}
 					if ui.Button(c.Key("cal-next"), "›").Padding(4, 9).Clicked() {
@@ -348,8 +367,11 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 
 			ui.Spacer(c)
 
-			// Mode switcher: Month | Week | Agenda
-			if ui.Segmented(c.Key("cal-mode"), &a.calViewMode, a.tr("Monat", "Month"), a.tr("Woche", "Week"), a.tr("Agenda", "Agenda")).Changed() {
+			// Mode switcher: Month | Week | Day | Agenda
+			if ui.Segmented(c.Key("cal-mode"), &a.calViewMode, a.tr("Monat", "Month"), a.tr("Woche", "Week"), a.tr("Tag", "Day"), a.tr("Agenda", "Agenda")).Changed() {
+				if a.calViewMode == 2 {
+					a.calDayScrolledKey = ""
+				}
 				a.RefreshAll(context.Background())
 			}
 
@@ -439,6 +461,8 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 			a.renderCalendarMonthGrid(c, byDay)
 		case 1:
 			a.renderCalendarWeekGrid(c, byDay)
+		case 2:
+			a.renderCalendarDayView(c, byDay)
 		default:
 			a.renderCalendarAgendaList(c, byDay)
 		}
@@ -540,7 +564,8 @@ func (a *App) renderCalendarMonthGrid(c *ui.Context, byDay map[string][]backend.
 											extra := len(dayEvents) - maxChips
 											if ui.Button(c.Key("cal-more-"+dk), a.trf("+%d weitere", "+%d more", extra)).Padding(1, 4).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.Accent).Clicked() {
 												a.calCursor = day
-												a.calViewMode = 1 // Jump straight to Week view for this day
+												a.calViewMode = 2 // Jump straight to Day view for this day
+												a.calDayScrolledKey = ""
 												a.RefreshAll(context.Background())
 											}
 											break
@@ -645,12 +670,17 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 						hdrBorder = t.Accent
 					}
 					ui.Row(c.Key("cal-wkhdr-"+dayKeys[d])).Grow(1).MinWidth(0).Padding(5, 8).Radius(6).Background(hdrBg).Border(1, hdrBorder).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, fmt.Sprintf("%s %02d.%02d.", weekdays[d], dayCopy.Day(), int(dayCopy.Month()))).FontSize(12).Bold().TextColor(func() ui.Color {
-							if isToday {
-								return t.Accent
-							}
-							return t.Text
-						}())
+						hdrClr := t.Text
+						if isToday {
+							hdrClr = t.Accent
+						}
+						if ui.Button(c.Key("cal-wkday-"+dayKeys[d]), fmt.Sprintf("%s %02d.%02d.", weekdays[d], dayCopy.Day(), int(dayCopy.Month()))).
+							Padding(0, 2).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(hdrClr).Tooltip(a.tr("Zur Tagesansicht wechseln", "Open day view")).Clicked() {
+							a.calCursor = dayCopy
+							a.calViewMode = 2
+							a.calDayScrolledKey = ""
+							a.RefreshAll(context.Background())
+						}
 						ui.Spacer(c)
 						if !a.readOnly || a.isDirectMode() {
 							if ui.Button(c.Key("cal-wkadd-"+dayKeys[d]), "+").Padding(0, 5).Background(ui.Color{}).Border(0, ui.Color{}).TextColor(t.TextMuted).Clicked() {
@@ -688,6 +718,8 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 			}
 
 			// Scrollable hourly rows 07:00 – 21:00
+			now := time.Now()
+			nowClr := ui.RGB(239, 68, 68)
 			ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
 				ui.Column(c).FillWidth().Gap(4).Children(func() {
 					for h := 7; h <= 21; h++ {
@@ -697,7 +729,18 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 							for d := 0; d < 7; d++ {
 								slotKey := fmt.Sprintf("%d-%d", d, hour)
 								evs := bySlot[slotKey]
-								ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, withAlpha(t.Border, 0.7)).Gap(3).Children(func() {
+								isNowSlot := dayKeys[d] == todayKey && now.Hour() == hour
+								slotBorder := withAlpha(t.Border, 0.7)
+								if isNowSlot {
+									slotBorder = withAlpha(nowClr, 0.55)
+								}
+								ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, slotBorder).Gap(3).Children(func() {
+									if isNowSlot {
+										ui.Row(c.Key("cal-wk-now")).FillWidth().AlignItems(ui.Center).Gap(3).Children(func() {
+											ui.Box(c).Size(6, 6).Radius(3).Background(nowClr).Shrink(0)
+											ui.Box(c).Height(2).Grow(1).Radius(1).Background(nowClr)
+										})
+									}
 									for idx, ev := range evs {
 										evCopy := ev
 										evClr := a.calColorForEvent(evCopy, t.Accent)
@@ -726,6 +769,328 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 		return
 	}
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, 14).Children(weekGrid)
+}
+
+type dayEventBlock struct {
+	ev       backend.CalendarEvent
+	startMin float32
+	endMin   float32
+	visEnd   float32 // endMin clamped to at least startMin+28 so short cards don't overlap visually
+	col      int
+	numCols  int
+}
+
+// layoutDayEvents converts timed events for a single day into minute-positioned blocks
+// and assigns side-by-side columns within each overlapping cluster.
+func layoutDayEvents(evs []backend.CalendarEvent, day time.Time) []dayEventBlock {
+	loc := day.Location()
+	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+	var blocks []dayEventBlock
+	for _, ev := range evs {
+		if ev.AllDay {
+			continue
+		}
+		startMin := float32(9 * 60)
+		var st time.Time
+		hasStart := false
+		if parsed, err := parseEventTime(ev.Start); err == nil {
+			st = parsed.In(loc)
+			hasStart = true
+			startMin = float32(st.Sub(dayStart).Minutes())
+		}
+		if startMin < 0 {
+			startMin = 0
+		}
+		if startMin > 23*60+30 {
+			startMin = 23*60 + 30
+		}
+		endMin := startMin + 60
+		if hasStart && strings.TrimSpace(ev.End) != "" {
+			if parsedEnd, err := parseEventTime(ev.End); err == nil {
+				et := parsedEnd.In(loc)
+				if et.After(st) {
+					endMin = float32(et.Sub(dayStart).Minutes())
+				}
+			}
+		}
+		if endMin > 24*60 {
+			endMin = 24 * 60
+		}
+		if endMin < startMin+15 {
+			endMin = startMin + 15
+		}
+		visEnd := endMin
+		if visEnd < startMin+28 {
+			visEnd = startMin + 28
+		}
+		if visEnd > 24*60 {
+			visEnd = 24 * 60
+		}
+		blocks = append(blocks, dayEventBlock{
+			ev:       ev,
+			startMin: startMin,
+			endMin:   endMin,
+			visEnd:   visEnd,
+			numCols:  1,
+		})
+	}
+	sort.SliceStable(blocks, func(i, j int) bool {
+		if blocks[i].startMin != blocks[j].startMin {
+			return blocks[i].startMin < blocks[j].startMin
+		}
+		return blocks[i].endMin > blocks[j].endMin
+	})
+
+	// Partition into connected overlapping clusters and assign columns greedily.
+	i := 0
+	for i < len(blocks) {
+		clusterEnd := blocks[i].visEnd
+		j := i + 1
+		for j < len(blocks) && blocks[j].startMin < clusterEnd {
+			if blocks[j].visEnd > clusterEnd {
+				clusterEnd = blocks[j].visEnd
+			}
+			j++
+		}
+		var colEnds []float32
+		for k := i; k < j; k++ {
+			placed := -1
+			for cIdx, end := range colEnds {
+				if end <= blocks[k].startMin {
+					placed = cIdx
+					colEnds[cIdx] = blocks[k].visEnd
+					break
+				}
+			}
+			if placed < 0 {
+				placed = len(colEnds)
+				colEnds = append(colEnds, blocks[k].visEnd)
+			}
+			blocks[k].col = placed
+		}
+		nCols := len(colEnds)
+		if nCols < 1 {
+			nCols = 1
+		}
+		for k := i; k < j; k++ {
+			blocks[k].numCols = nCols
+		}
+		i = j
+	}
+	return blocks
+}
+
+func (a *App) renderCalendarDayView(c *ui.Context, byDay map[string][]backend.CalendarEvent) {
+	t := c.Theme()
+	cur := a.ensureCalCursor()
+	loc := cur.Location()
+	day := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, loc)
+	dayKey := day.Format("2006-01-02")
+	now := time.Now().In(loc)
+	todayKey := now.Format("2006-01-02")
+	isToday := dayKey == todayKey
+
+	var allDay []backend.CalendarEvent
+	for _, ev := range byDay[dayKey] {
+		if ev.AllDay {
+			allDay = append(allDay, ev)
+		}
+	}
+	blocks := layoutDayEvents(byDay[dayKey], day)
+
+	const hourHeight float32 = 60 // 1px = 1 minute
+	const totalHeight float32 = 24*hourHeight + 16
+	nowClr := ui.RGB(239, 68, 68)
+	nowY := float32(now.Hour()*60+now.Minute()) + float32(now.Second())/60.0
+
+	// Auto-scroll to current time (today) or first timed event / 07:30 once per day switch.
+	if a.calDayScrolledKey != dayKey {
+		a.calDayScrolledKey = dayKey
+		targetY := float32(7*60 + 30)
+		if isToday {
+			targetY = nowY - 120
+		} else if len(blocks) > 0 {
+			targetY = blocks[0].startMin - 60
+		}
+		if targetY < 0 {
+			targetY = 0
+		}
+		if targetY > totalHeight-360 {
+			targetY = totalHeight - 360
+		}
+		a.widgets.calDayScroll.Y = targetY
+	}
+
+	padH := float32(14)
+	if a.isPhone() {
+		padH = 8
+	}
+
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, padH).Gap(8).Children(func() {
+		// All-day strip (when all-day events exist on this day)
+		if len(allDay) > 0 {
+			ui.Row(c.Key("cal-day-allday")).FillWidth().Gap(8).AlignItems(ui.Center).Padding(6, 10).Radius(8).Background(t.Surface).Border(1, t.Border).Children(func() {
+				ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(11).Bold().TextColor(t.TextMuted).Width(50).Shrink(0)
+				ui.Row(c).Grow(1).MinWidth(0).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+					for idx, ev := range allDay {
+						evCopy := ev
+						evClr := a.calColorForEvent(evCopy, t.Accent)
+						if ui.Button(c.Key(fmt.Sprintf("cal-day-ad-%d", idx)), evCopy.Title).
+							Padding(3, 8).Radius(5).Background(withAlpha(evClr, 0.22)).Border(1, withAlpha(evClr, 0.55)).TextColor(t.Text).Clicked() {
+							a.OpenEventDetails(evCopy)
+						}
+					}
+				})
+			})
+		}
+
+		// 24-hour visual timeline with proportional event blocks and live red current-time line
+		ui.Scroll(c.Key("cal-day-scroll")).TrackScroll(&a.widgets.calDayScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+			ui.Row(c.Key("cal-day-grid-"+dayKey)).FillWidth().Height(totalHeight).AlignItems(ui.Start).Children(func() {
+				// Left hour-label gutter
+				ui.Box(c.Key("cal-day-gutter")).Width(58).Height(totalHeight).Shrink(0).Children(func() {
+					for h := 0; h < 24; h++ {
+						y := float32(h) * hourHeight
+						// Avoid colliding with the red current-time pill when viewing today.
+						if isToday && (y-nowY > -14 && y-nowY < 14) {
+							continue
+						}
+						lblTop := y - 7
+						if lblTop < 0 {
+							lblTop = 1
+						}
+						ui.Text(c, fmt.Sprintf("%02d:00", h)).
+							FontSize(11).TextColor(t.TextMuted).
+							Absolute().Top(lblTop).Right(8)
+					}
+					if isToday {
+						pillTop := nowY - 9
+						if pillTop < 0 {
+							pillTop = 0
+						}
+						if pillTop > totalHeight-18 {
+							pillTop = totalHeight - 18
+						}
+						ui.Box(c.Key("cal-day-now-badge")).
+							Absolute().Top(pillTop).Left(2).Right(6).ZIndex(30).
+							Padding(1, 5).Radius(4).Background(nowClr).Center().
+							Children(func() {
+								ui.Text(c, now.Format("15:04")).FontSize(10.5).Bold().TextColor(ui.RGB(255, 255, 255)).SingleLine()
+							})
+					}
+				})
+
+				// Right 24h timeline canvas
+				ui.Box(c.Key("cal-day-canvas")).Grow(1).MinWidth(0).Height(totalHeight).Radius(8).Border(1, t.Border).Background(t.Background).Children(func() {
+					// Hour rows (00:00..23:00), off-hours shading, half-hour hairlines & click-to-create
+					for h := 0; h < 24; h++ {
+						hour := h
+						rowBg := t.Background
+						if hour < 7 || hour >= 20 {
+							rowBg = withAlpha(t.Surface, 0.45)
+						}
+						slot := ui.Box(c.Key(fmt.Sprintf("cal-day-h-%02d", hour))).
+							Absolute().Top(float32(hour) * hourHeight).Left(0).Right(0).Height(hourHeight).
+							Background(rowBg)
+						if hour > 0 {
+							slot.BorderWidth(1, 0, 0, 0).BorderColor(withAlpha(t.Border, 0.75))
+						}
+						if !a.readOnly || a.isDirectMode() {
+							slot.OnClick(func() {
+								a.OpenNewEventOnDateHour(day, hour)
+							})
+						}
+						slot.Children(func() {
+							ui.Box(c).Absolute().Top(hourHeight / 2).Left(0).Right(0).Height(1).
+								Background(withAlpha(t.Border, 0.28)).PassThrough()
+						})
+					}
+
+					// Positioned, overlap-aware event blocks
+					for idx, blk := range blocks {
+						evCopy := blk.ev
+						evClr := a.calColorForEvent(evCopy, t.Accent)
+						cardH := blk.endMin - blk.startMin - 2
+						if cardH < 26 {
+							cardH = 26
+						}
+						colW := float32(100) / float32(blk.numCols)
+						colL := float32(blk.col) * colW
+						timeText := formatEventRangeLang(false, evCopy.Start, evCopy.End, a.uiLang())
+						joinURL, joinLabel := a.eventJoinLink(evCopy)
+
+						ui.Box(c.Key(fmt.Sprintf("cal-day-evwrap-%d", idx))).
+							Absolute().Top(blk.startMin + 1).Height(cardH).LeftPercent(colL).WidthPercent(colW).
+							Padding(0, 4).ZIndex(10).
+							Children(func() {
+								card := ui.Row(c.Key(fmt.Sprintf("cal-day-ev-%d", idx))).
+									Fill().Radius(6).
+									Background(withAlpha(evClr, 0.20)).
+									Border(1, withAlpha(evClr, 0.55)).
+									Clip().AlignItems(ui.Start)
+								card.Children(func() {
+									ui.Box(c).Width(4).FillHeight().Background(evClr).Shrink(0)
+									info := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Padding(4, 8).Gap(2)
+									info.OnClick(func() {
+										a.OpenEventDetails(evCopy)
+									})
+									info.Children(func() {
+										titleText := evCopy.Title
+										if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+											titleText = "↻ " + titleText
+										}
+										if cardH < 42 {
+											// Compact 1-line layout for 15–30 min meetings
+											ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+												ui.Text(c, titleText).FontSize(12).Bold().TextColor(t.Text).SingleLine().Grow(1).MinWidth(0)
+												ui.Text(c, timeText).FontSize(11).TextColor(t.TextMuted).SingleLine().Shrink(0)
+											})
+										} else {
+											ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+												ui.Text(c, titleText).FontSize(12.5).Bold().TextColor(t.Text).SingleLine().Grow(1).MinWidth(0)
+												ui.Text(c, timeText).FontSize(11).Bold().TextColor(evClr).SingleLine().Shrink(0)
+											})
+											var meta []string
+											if evCopy.Calendar != "" {
+												meta = append(meta, evCopy.Calendar)
+											}
+											if evCopy.Location != "" {
+												meta = append(meta, evCopy.Location)
+											}
+											if len(meta) > 0 {
+												ui.Text(c, strings.Join(meta, " · ")).FontSize(11).TextColor(t.TextMuted).SingleLine()
+											}
+											if cardH >= 72 {
+												if desc := cleanEventPreviewText(evCopy.Description); desc != "" {
+													ui.Text(c, truncateText(desc, 160)).FontSize(11).TextColor(t.TextMuted).MaxLines(2)
+												}
+											}
+										}
+									})
+									if joinURL != "" && !a.isPhone() && cardH >= 38 && blk.numCols == 1 {
+										ui.Box(c).Padding(4, 6).Shrink(0).Children(func() {
+											if iconLabelBtn(c.Key(fmt.Sprintf("cal-day-join-%d", idx)), iconLink, joinLabel, true, a.tr("Online-Besprechung im Browser öffnen", "Open online meeting in browser")).Clicked() {
+												_ = openExternalURL(joinURL)
+											}
+										})
+									}
+								})
+							})
+					}
+
+					// Live red current-time indicator line + dot (PassThrough so clicks reach events underneath)
+					if isToday {
+						ui.Box(c.Key("cal-day-now-dot")).
+							Absolute().Top(nowY - 5).Left(-5).Size(10, 10).Radius(5).
+							Background(nowClr).ZIndex(31).PassThrough()
+						ui.Box(c.Key("cal-day-now-line")).
+							Absolute().Top(nowY - 1).Left(0).Right(0).Height(2).
+							Background(nowClr).ZIndex(30).PassThrough()
+					}
+				})
+			})
+		})
+	})
 }
 
 func (a *App) renderCalendarAgendaList(c *ui.Context, byDay map[string][]backend.CalendarEvent) {

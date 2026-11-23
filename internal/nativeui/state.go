@@ -313,8 +313,9 @@ type App struct {
 	accountLabels      []string
 	accountIDByLabel   map[string]string
 	calDays            int             // 7, 14, 30 (Agenda mode)
-	calViewMode        int             // 0 = Month Grid, 1 = Week Grid, 2 = Agenda
-	calCursor          time.Time       // reference date for Month/Week navigation
+	calViewMode        int             // 0 = Month Grid, 1 = Week Grid, 2 = Day Timeline, 3 = Agenda
+	calCursor          time.Time       // reference date for Month/Week/Day navigation
+	calDayScrolledKey  string          // last day key auto-scrolled in Day view
 	calSearchQuery     string          // top-bar search query when viewing Calendar
 	lastCalSearch      string          // tracks empty <-> non-empty widened fetch transitions
 	hiddenCalendars    map[string]bool // calendar IDs toggled off in multi-select filter
@@ -908,6 +909,9 @@ func (a *App) calendarFetchWindow() (time.Time, time.Time) {
 		offset := (int(day.Weekday()) + 6) % 7
 		viewStart = day.AddDate(0, 0, -offset)
 		viewEnd = viewStart.AddDate(0, 0, 7).Add(-time.Second)
+	case 2: // Day timeline
+		viewStart = time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, loc)
+		viewEnd = viewStart.AddDate(0, 0, 1).Add(-time.Second)
 	default: // Agenda
 		viewStart = baseStart
 		viewEnd = baseEnd
@@ -3571,8 +3575,19 @@ func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 
 // OpenNewEventOnDate opens the new-event modal pre-filled for a specific calendar day (09:00–10:00).
 func (a *App) OpenNewEventOnDate(day time.Time) {
+	a.OpenNewEventOnDateHour(day, 9)
+}
+
+// OpenNewEventOnDateHour opens the new-event modal pre-filled for a specific calendar day and hour.
+func (a *App) OpenNewEventOnDateHour(day time.Time, hour int) {
+	if hour < 0 {
+		hour = 0
+	}
+	if hour > 23 {
+		hour = 23
+	}
 	a.OpenNewEventModal(nil)
-	start := time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, day.Location())
+	start := time.Date(day.Year(), day.Month(), day.Day(), hour, 0, 0, 0, day.Location())
 	a.eventStart = start.Format("2006-01-02T15:04")
 	a.eventEnd = start.Add(time.Hour).Format("2006-01-02T15:04")
 }

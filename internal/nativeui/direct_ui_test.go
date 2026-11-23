@@ -147,7 +147,19 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	if !hasText("Direkt-Test-Termin") {
 		t.Fatalf("expected imported .ics event in calendar week grid; texts=%v", tt.Texts())
 	}
-	app.calViewMode = 2 // Agenda
+	app.calViewMode = 2 // Day Timeline
+	tt.Frame()
+	if !hasText("Direkt-Test-Termin") {
+		t.Fatalf("expected imported .ics event in calendar day view; texts=%v", tt.Texts())
+	}
+	// Switching Day view to today shows the live current-time badge (HH:MM)
+	app.calCursor = time.Now()
+	app.calDayScrolledKey = ""
+	tt.Frame()
+	if _, ok := tt.Find(time.Now().Format("15:04")); !ok {
+		t.Fatalf("expected live red current-time badge in Day view for today")
+	}
+	app.calViewMode = 3 // Agenda
 	tt.Frame()
 	if _, ok := tt.Find("Direkt-Test-Termin"); !ok {
 		t.Fatalf("expected imported .ics event in calendar agenda view")

@@ -88,7 +88,7 @@ func TestCalendarAgendaExpandAndDetailModalRender(t *testing.T) {
 	}})
 	app.engineReady = true
 	app.navID = "calendar"
-	app.calViewMode = 2 // Agenda
+	app.calViewMode = 3 // Agenda
 	app.events = []backend.CalendarEvent{ev}
 
 	tt := ui.NewTester(app.RenderMain, 1400, 900)
@@ -178,6 +178,64 @@ func TestMailBodySelectionHighlightContrastAndCopy(t *testing.T) {
 	// Verify prominent sidebar compose button opens Compose modal.
 	if _, ok := tt.Find("New Email"); !ok {
 		t.Fatalf("expected sidebar 'New Email' compose button; texts=%v", tt.Texts())
+	}
+}
+
+func TestCalendarDayViewLayoutAndNowLine(t *testing.T) {
+	loc := time.Local
+	day := time.Date(2026, 11, 23, 0, 0, 0, 0, loc)
+	mk := func(id, title string, sh, sm, eh, em int) backend.CalendarEvent {
+		return backend.CalendarEvent{
+			ID:       id,
+			Title:    title,
+			Calendar: "Work",
+			Start:    time.Date(2026, 11, 23, sh, sm, 0, 0, loc).Format(time.RFC3339),
+			End:      time.Date(2026, 11, 23, eh, em, 0, 0, loc).Format(time.RFC3339),
+		}
+	}
+	blocks := layoutDayEvents([]backend.CalendarEvent{
+		{ID: "ad", Title: "Feiertag", AllDay: true, Start: "2026-11-23"},
+		mk("e1", "Standup", 9, 0, 9, 30),
+		mk("e2", "Overlap Call", 9, 15, 10, 0),
+		mk("e3", "Nachmittag", 14, 0, 15, 0),
+	}, day)
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 timed blocks (all-day excluded), got %d", len(blocks))
+	}
+	if blocks[0].numCols != 2 || blocks[1].numCols != 2 || blocks[0].col == blocks[1].col {
+		t.Fatalf("expected overlapping morning events in 2 distinct columns, got %+v and %+v", blocks[0], blocks[1])
+	}
+	if blocks[2].numCols != 1 || blocks[2].col != 0 || blocks[2].startMin != 14*60 {
+		t.Fatalf("expected non-overlapping afternoon event at 14:00 full width, got %+v", blocks[2])
+	}
+
+	// Verify Day view renders all-day strip, timed event, and live red time indicator on today.
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) {
+		c := config.Default()
+		c.Language = "de"
+		return c, nil
+	}})
+	app.engineReady = true
+	app.navID = "calendar"
+	app.calViewMode = 2 // Day Timeline
+	app.calCursor = now
+	app.events = []backend.CalendarEvent{
+		{ID: "ad1", Title: "Urlaubstag", AllDay: true, Start: today},
+		{ID: "t1", Title: "Tages-Meeting", Calendar: "Work", Start: now.Format(time.RFC3339), End: now.Add(45 * time.Minute).Format(time.RFC3339)},
+	}
+
+	tt := ui.NewTester(app.RenderMain, 1280, 820)
+	tt.Frame()
+	if _, ok := tt.Find("Urlaubstag"); !ok {
+		t.Fatalf("expected all-day chip in Day view")
+	}
+	if _, ok := tt.Find("Tages-Meeting"); !ok {
+		t.Fatalf("expected timed event block in Day view")
+	}
+	if _, ok := tt.Find(now.Format("15:04")); !ok {
+		t.Fatalf("expected red current-time badge %q in Day view", now.Format("15:04"))
 	}
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.18 (2026-11-23)
+
+### Kalender-Tagesansicht (24h-Zeitleiste) mit roter Jetzt-Linie
+- **Neue Ansicht `Tag` / `Day` (`Monat | Woche | Tag | Agenda`):** Echte 24-Stunden-Zeitleiste (`00:00–24:00`, `1 px = 1 Min.`) mit proportionalen Terminblöcken, automatischer Nebeneinander-Anordnung bei überschneidenden Terminen, Ganztags-Leiste oben, direktem Klick in freie Stunden zum Anlegen neuer Termine sowie automatischem Scroll zur aktuellen Uhrzeit (heute) bzw. zum ersten Termin.
+- **Minutengenaue rote Jetzt-Linie:** Bei Ansicht des heutigen Tages zeigt eine rote horizontale Linie mit Punkt und rotem Uhrzeit-Badge (`HH:MM`) die aktuelle Uhrzeit an und wandert jede Minute live mit (ohne Klicks auf darunterliegende Termine zu blockieren). Auch die Wochenansicht markiert die aktuelle Stunde des heutigen Tages mit einer roten Linie.
+- **Schnellwechsel in die Tagesansicht:** Klick auf `+N weitere` im Monatsraster oder auf einen Tageskopf in der Wochenansicht springt direkt in die Tagesansicht des jeweiligen Tages.
+
 ## 0.7.17 (2026-11-23)
 
 ### Sichtbarer RSVP-Status bei Termineinladungen & keine doppelten Kalendereinträge
