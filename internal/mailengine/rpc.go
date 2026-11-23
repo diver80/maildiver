@@ -361,6 +361,7 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 		if evs, perr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(m.ICSBody)); perr == nil && len(evs) > 0 {
 			ev := storedEventToBridge(evs[0])
 			ev.Organizer, ev.Attendees = ParseICSInviteMeta(m.ICSBody)
+			ev.ResponseStatus, ev.InCalendarName = e.resolveICSInviteStatus(ctx, detail.ID, m.ICSBody, evs[0])
 			detail.ICSInvite = &ev
 		}
 	}
@@ -378,6 +379,7 @@ func (e *Engine) applyDecryptedPayload(dp ParsedMessage, format string, detail *
 		if evs, ierr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(dp.ICSBody)); ierr == nil && len(evs) > 0 {
 			ev := storedEventToBridge(evs[0])
 			ev.Organizer, ev.Attendees = ParseICSInviteMeta(dp.ICSBody)
+			ev.ResponseStatus, ev.InCalendarName = e.resolveICSInviteStatus(context.Background(), detail.ID, dp.ICSBody, evs[0])
 			detail.ICSInvite = &ev
 		}
 	}

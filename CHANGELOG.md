@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.17 (2026-11-23)
+
+### Sichtbarer RSVP-Status bei Termineinladungen & keine doppelten Kalendereinträge
+- **Status-Anzeige im `.ics`-Einladungsbanner (Desktop & Handy):** Einladungen zeigen jetzt direkt ein farbiges Status-Badge (z. B. `✓ Zugesagt · Frank Hess (avono AG)`, `? Vorläufig`, `✕ Abgesagt`, `Antwort offen` oder `✓ Im Kalender`) sowie einen hervorgehobenen aktiven Antwort-Button.
+- **Automatischer Abgleich mit synchronisierten Kalendern:** Der RSVP-Status wird aus Google Calendar (`attendees[].responseStatus`), CalDAV (`PARTSTAT`), direkt in MailDiver gegebenen Antworten sowie dem `.ics`-Anhang ermittelt; bei bestehenden Datenbanken wird der Google-Calendar-Sync einmalig zurückgesetzt, um bestehende Einladungs-Antworten nachzuladen.
+- **Keine doppelten Termine mehr in `Persönlich`:** Wenn ein Termin bereits in einem synchronisierten externen Kalender (z. B. Google Calendar) vorhanden ist, dupliziert *Zusagen* / *Vielleicht* ihn nicht mehr zusätzlich in den lokalen Kalender `Persönlich`, und der Button *Nur übernehmen* wird ausgeblendet. Bei *Absagen* wird eine eventuell vorhandene lokale Kopie aus `Persönlich` entfernt.
+
 ## 0.7.16 (2026-11-23)
 
 ### Schneller Pull-to-Refresh & genauer Fokus-Zähler

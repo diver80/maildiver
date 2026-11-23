@@ -2012,6 +2012,9 @@ func (a *App) ImportMailICS(ctx context.Context, msgID string) {
 				return
 			}
 			a.toast(a.trf("%d Termin(e) in den Kalender übernommen", "Added %d event(s) to calendar", n), "success")
+			if a.selectedMsg != nil && a.selectedMsg.ID == msgID {
+				a.reloadMessage(context.Background(), msgID)
+			}
 			a.RefreshAll(context.Background())
 		})
 	}()
@@ -2292,6 +2295,17 @@ func (a *App) RespondMailICS(ctx context.Context, msgID, status string) {
 			}
 			if res.ImportedCount > 0 {
 				detail = a.tr(" · im Kalender gespeichert", " · saved to calendar") + detail
+			} else if res.AlreadyInCalendar != "" {
+				detail = a.trf(" · bereits in %s", " · already in %s", res.AlreadyInCalendar) + detail
+			}
+			if a.selectedMsg != nil && a.selectedMsg.ID == msgID {
+				if a.selectedMsg.ICSInvite != nil {
+					a.selectedMsg.ICSInvite.ResponseStatus = res.Status
+					if res.AlreadyInCalendar != "" && a.selectedMsg.ICSInvite.InCalendarName == "" {
+						a.selectedMsg.ICSInvite.InCalendarName = res.AlreadyInCalendar
+					}
+				}
+				a.reloadMessage(context.Background(), msgID)
 			}
 			a.toast(verb+detail, "success")
 			a.RefreshAll(context.Background())

@@ -398,6 +398,8 @@ type CalendarEvent struct {
 	IsRecurring    bool     `json:"isRecurring,omitempty"`
 	Organizer      string   `json:"organizer,omitempty"`
 	Attendees      []string `json:"attendees,omitempty"`
+	ResponseStatus string   `json:"responseStatus,omitempty"` // "", "accepted", "tentative", "declined", "needsAction", "imported"
+	InCalendarName string   `json:"inCalendarName,omitempty"`
 }
 
 type CalendarEventsResponse struct {

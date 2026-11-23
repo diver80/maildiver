@@ -429,6 +429,7 @@ func storedEventToBridge(ev StoredEvent) backend.CalendarEvent {
 		RecurrenceID:   ev.RecurrenceID,
 		RecurrenceRule: ev.RRule,
 		IsRecurring:    ev.IsRecurring || ev.RRule != "",
+		ResponseStatus: ev.SelfResponse,
 	}
 }
 
@@ -483,6 +484,45 @@ func ParseICSInviteMeta(rawICS string) (organizer string, attendees []string) {
 		break
 	}
 	return organizer, attendees
+}
+
+// ParseICSSelfPartStat extracts the current user's RFC 5545 PARTSTAT from an .ics VEVENT
+// ("accepted", "tentative", "declined", "needsAction", or "").
+func ParseICSSelfPartStat(rawICS string, ownEmails []string) string {
+	if strings.TrimSpace(rawICS) == "" || len(ownEmails) == 0 {
+		return ""
+	}
+	want := make(map[string]bool, len(ownEmails))
+	for _, em := range ownEmails {
+		if e := strings.ToLower(strings.TrimSpace(em)); e != "" {
+			want[e] = true
+		}
+	}
+	dec := ical.NewDecoder(strings.NewReader(rawICS))
+	cal, err := dec.Decode()
+	if err != nil {
+		return ""
+	}
+	for _, ev := range cal.Events() {
+		for _, att := range ev.Props.Values(ical.PropAttendee) {
+			email := strings.ToLower(cleanMailto(att.Value))
+			if !want[email] {
+				continue
+			}
+			switch strings.ToUpper(strings.TrimSpace(att.Params.Get(ical.ParamParticipationStatus))) {
+			case "ACCEPTED":
+				return "accepted"
+			case "TENTATIVE":
+				return "tentative"
+			case "DECLINED":
+				return "declined"
+			case "NEEDS-ACTION":
+				return "needsAction"
+			}
+		}
+		break
+	}
+	return ""
 }
 
 // BuildICSRSVP creates an RFC 5546 iTIP METHOD:REPLY calendar payload for an incoming .ics invite.

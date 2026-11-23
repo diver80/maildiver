@@ -223,6 +223,20 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 		t.Fatalf("expected .ics event title in invitation banner")
 	}
 
+	// Verify RSVP status badge & hidden Import Only when invite is already accepted in an external calendar.
+	app.selectedMsg.ICSInvite.ResponseStatus = "accepted"
+	app.selectedMsg.ICSInvite.InCalendarName = "Frank Hess (avono AG)"
+	tt.Frame()
+	if _, ok := tt.Find("✓ Zugesagt · Frank Hess (avono AG)"); !ok {
+		t.Fatalf("expected accepted status badge with calendar name in .ics banner")
+	}
+	if _, ok := tt.Find("Zugesagt"); !ok {
+		t.Fatalf("expected accepted button label in .ics banner")
+	}
+	if _, ok := tt.Find("Nur übernehmen"); ok {
+		t.Fatalf("expected Import Only button to be hidden when event is already in a calendar")
+	}
+
 	// Test Reply All, Forward, Draft edit & BCC prefill
 	app.OpenComposeReplyAll(app.selectedMsg, "")
 	if !strings.Contains(app.composeTo, "max@beispiel.de") || !strings.Contains(app.composeCC, "boss@beispiel.de") {

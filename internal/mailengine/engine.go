@@ -1367,15 +1367,116 @@ func (e *Engine) ImportMessageICS(ctx context.Context, msgID, calendarID string)
 
 // ICSRespondResult summarizes the outcome of an RSVP response to an .ics invitation.
 type ICSRespondResult struct {
-	Status         string
-	ImportedCount  int
-	ReplySent      bool
-	OrganizerEmail string
-	ReplyError     string
+	Status            string
+	ImportedCount     int
+	AlreadyInCalendar string
+	ReplySent         bool
+	OrganizerEmail    string
+	ReplyError        string
+}
+
+func (e *Engine) ownEmails() []string {
+	cfg := e.loadConfig()
+	seen := make(map[string]struct{}, len(cfg.Direct.Accounts)+2)
+	var out []string
+	add := func(raw string) {
+		em := strings.ToLower(strings.TrimSpace(raw))
+		if em == "" {
+			return
+		}
+		if _, ok := seen[em]; ok {
+			return
+		}
+		seen[em] = struct{}{}
+		out = append(out, em)
+	}
+	for _, acc := range cfg.Direct.Accounts {
+		add(acc.Email)
+		for _, al := range acc.Aliases {
+			add(al.Email)
+		}
+	}
+	add(cfg.Direct.GoogleCalendar.AccountEmail)
+	return out
+}
+
+// resolveICSInviteStatus determines the current RSVP/calendar state of an email's .ics invitation
+// from synced calendars (Google Calendar / CalDAV / local), MailDiver's recorded RSVPs, and the
+// .ics payload itself. Returns (status, calendarName).
+func (e *Engine) resolveICSInviteStatus(ctx context.Context, msgID, rawICS string, ev StoredEvent) (string, string) {
+	own := e.ownEmails()
+	matches, _ := e.store.FindEventsByUIDOrMatch(ctx, ev.UID, ev.Title, ev.StartUnix)
+
+	bestPriority := -1
+	var bestMatch StoredEvent
+	bestResp := ""
+	hasMatch := false
+
+	for _, me := range matches {
+		resp := strings.TrimSpace(me.SelfResponse)
+		if resp == "" && strings.TrimSpace(me.RawICS) != "" {
+			resp = ParseICSSelfPartStat(me.RawICS, own)
+		}
+		isExternal := me.CalendarID != LocalCalendarID
+		explicit := resp == "accepted" || resp == "tentative" || resp == "declined"
+		prio := 0
+		if isExternal {
+			prio += 10
+		}
+		if explicit {
+			prio += 4
+		} else if resp == "needsAction" {
+			prio += 2
+		}
+		if prio > bestPriority {
+			bestPriority = prio
+			bestMatch = me
+			bestResp = resp
+			hasMatch = true
+		}
+	}
+
+	calName := ""
+	if hasMatch {
+		calName = strings.TrimSpace(bestMatch.CalendarName)
+	}
+
+	// 1. Authoritative explicit status from a non-local synced calendar (e.g. Google Calendar / CalDAV).
+	if hasMatch && bestMatch.CalendarID != LocalCalendarID && (bestResp == "accepted" || bestResp == "tentative" || bestResp == "declined") {
+		return bestResp, calName
+	}
+
+	// 2. RSVP explicitly recorded in MailDiver.
+	if rec := e.store.GetICSRSVP(ctx, ev.UID, msgID); rec == "accepted" || rec == "tentative" || rec == "declined" {
+		return rec, calName
+	}
+
+	// 3. Local calendar event with an explicit SelfResponse.
+	if hasMatch && (bestResp == "accepted" || bestResp == "tentative" || bestResp == "declined") {
+		return bestResp, calName
+	}
+
+	// 4. Incoming .ics itself already lists our email with an explicit PARTSTAT.
+	if rawResp := ParseICSSelfPartStat(rawICS, own); rawResp == "accepted" || rawResp == "tentative" || rawResp == "declined" {
+		return rawResp, calName
+	}
+
+	// 5. Event exists in a calendar awaiting action, or already imported.
+	if hasMatch {
+		if bestResp == "needsAction" {
+			return "needsAction", calName
+		}
+		return "imported", calName
+	}
+
+	return "", ""
 }
 
 // RespondMessageICS responds to a message's .ics invitation ("accepted", "tentative", or "declined"):
-//   - For accepted/tentative: imports the event into calendarID (defaults to LocalCalendarID).
+//   - Records the RSVP choice locally so the invitation banner immediately reflects the status.
+//   - For accepted/tentative: imports the event into calendarID (defaults to LocalCalendarID),
+//     skipping local import when a synced external calendar (e.g. Google Calendar) already holds the event.
+//   - For declined: removes any local duplicate in LocalCalendarID and marks cached matches declined.
 //   - If an ORGANIZER is present and an outgoing SMTP account is available: sends an RFC 5546
 //     METHOD:REPLY email via SMTP so the organizer's calendar updates automatically.
 func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, status string) (ICSRespondResult, error) {
@@ -1408,13 +1509,60 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 		calendarID = LocalCalendarID
 	}
 
+	parsedEvs, _ := ParseICS(calendarID, "Persönlich", false, strings.NewReader(m.ICSBody))
+	var inviteUID, inviteTitle string
+	var inviteStart int64
+	if len(parsedEvs) > 0 {
+		inviteUID = parsedEvs[0].UID
+		inviteTitle = parsedEvs[0].Title
+		inviteStart = parsedEvs[0].StartUnix
+	}
+	matches, _ := e.store.FindEventsByUIDOrMatch(ctx, inviteUID, inviteTitle, inviteStart)
+	var externalCalName string
+	for _, me := range matches {
+		if me.CalendarID != LocalCalendarID {
+			externalCalName = strings.TrimSpace(me.CalendarName)
+			if externalCalName == "" {
+				externalCalName = me.CalendarID
+			}
+			break
+		}
+	}
+
+	e.store.SetICSRSVP(ctx, inviteUID, msgID, status)
+
 	res := ICSRespondResult{Status: status}
 	if status == "accepted" || status == "tentative" {
-		n, err := e.ImportICSBytes(ctx, calendarID, []byte(m.ICSBody))
-		if err != nil {
-			return res, err
+		if calendarID == LocalCalendarID && externalCalName != "" {
+			// Avoid duplicating an event that already exists in a synced external calendar (e.g. Google Calendar).
+			res.AlreadyInCalendar = externalCalName
+			for _, me := range matches {
+				e.store.SetEventSelfResponse(ctx, me.ID, status)
+			}
+		} else {
+			n, err := e.ImportICSBytes(ctx, calendarID, []byte(m.ICSBody))
+			if err != nil {
+				return res, err
+			}
+			res.ImportedCount = n
+			for _, pe := range parsedEvs {
+				e.store.SetEventSelfResponse(ctx, pe.ID, status)
+			}
 		}
-		res.ImportedCount = n
+	} else if status == "declined" {
+		deletedLocal := false
+		for _, me := range matches {
+			if me.CalendarID == LocalCalendarID {
+				if derr := e.store.DeleteEvent(ctx, LocalCalendarID, me.ID); derr == nil {
+					deletedLocal = true
+				}
+			} else {
+				e.store.SetEventSelfResponse(ctx, me.ID, "declined")
+			}
+		}
+		if deletedLocal {
+			e.emitCalendarChanged()
+		}
 	}
 
 	acc, ok := e.findAccount(m.AccountID)

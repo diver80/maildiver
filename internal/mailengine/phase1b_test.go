@@ -334,4 +334,85 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	if res.ImportedCount != 1 || res.Status != "accepted" {
 		t.Fatalf("expected 1 imported event on accept, got %+v", res)
 	}
+
+	// messages.get should now surface ResponseStatus="accepted" and InCalendarName="Persönlich".
+	rawGet, err := eng.Call(ctx, "messages.get", json.RawMessage(`{"id":"m-invite"}`))
+	if err != nil {
+		t.Fatalf("messages.get: %v", err)
+	}
+	var detail backend.MessageDetail
+	if err := json.Unmarshal(rawGet, &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if detail.ICSInvite == nil || detail.ICSInvite.ResponseStatus != "accepted" || detail.ICSInvite.InCalendarName != "Persönlich" {
+		t.Fatalf("expected accepted/Persönlich on ICSInvite, got %+v", detail.ICSInvite)
+	}
+
+	// Declining should remove the local calendar copy and record status="declined".
+	decRes, err := eng.RespondMessageICS(ctx, "m-invite", LocalCalendarID, "declined")
+	if err != nil {
+		t.Fatalf("RespondMessageICS decline: %v", err)
+	}
+	if decRes.Status != "declined" {
+		t.Fatalf("expected declined, got %+v", decRes)
+	}
+	localEvs, _ := eng.store.ListRawEvents(ctx, []string{LocalCalendarID})
+	if len(localEvs) != 0 {
+		t.Fatalf("expected local copy deleted on decline, got %d", len(localEvs))
+	}
+	rawGet2, _ := eng.Call(ctx, "messages.get", json.RawMessage(`{"id":"m-invite"}`))
+	var detail2 backend.MessageDetail
+	_ = json.Unmarshal(rawGet2, &detail2)
+	if detail2.ICSInvite == nil || detail2.ICSInvite.ResponseStatus != "declined" {
+		t.Fatalf("expected declined status after decline, got %+v", detail2.ICSInvite)
+	}
+
+	// When a synced external calendar (e.g. Google Calendar) already holds the event,
+	// messages.get should report its authoritative status & name, and RespondMessageICS
+	// must NOT create a duplicate in LocalCalendarID.
+	if err := eng.store.UpsertCalendar(ctx, StoredCalendar{
+		ID:     "gcal-work",
+		Name:   "Frank Hess (avono AG)",
+		Source: "google",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.store.UpsertEvent(ctx, StoredEvent{
+		ID:           "gcal-work::ev-1",
+		CalendarID:   "gcal-work",
+		CalendarName: "Frank Hess (avono AG)",
+		UID:          "invite-42@acme.de",
+		Title:        "Architektur-Review",
+		StartISO:     "2026-11-25T14:00:00Z",
+		EndISO:       "2026-11-25T15:00:00Z",
+		StartUnix:    time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC).Unix(),
+		EndUnix:      time.Date(2026, 11, 25, 15, 0, 0, 0, time.UTC).Unix(),
+		Status:       "confirmed",
+		SelfResponse: "accepted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rawGet3, _ := eng.Call(ctx, "messages.get", json.RawMessage(`{"id":"m-invite"}`))
+	var detail3 backend.MessageDetail
+	_ = json.Unmarshal(rawGet3, &detail3)
+	if detail3.ICSInvite == nil || detail3.ICSInvite.ResponseStatus != "accepted" || detail3.ICSInvite.InCalendarName != "Frank Hess (avono AG)" {
+		t.Fatalf("expected Google Calendar accepted status + name, got %+v", detail3.ICSInvite)
+	}
+	accRes, err := eng.RespondMessageICS(ctx, "m-invite", LocalCalendarID, "tentative")
+	if err != nil {
+		t.Fatalf("RespondMessageICS tentative with external cal: %v", err)
+	}
+	if accRes.ImportedCount != 0 || accRes.AlreadyInCalendar != "Frank Hess (avono AG)" {
+		t.Fatalf("expected no local duplicate when external calendar has event, got %+v", accRes)
+	}
+	localEvs2, _ := eng.store.ListRawEvents(ctx, []string{LocalCalendarID})
+	if len(localEvs2) != 0 {
+		t.Fatalf("expected 0 local events (no duplicate), got %d", len(localEvs2))
+	}
+
+	// ParseICSSelfPartStat extracts PARTSTAT for own emails.
+	psICS := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:ps-1\r\nDTSTART:20261125T140000Z\r\nSUMMARY:Test\r\nATTENDEE;CN=Frank;PARTSTAT=TENTATIVE:mailto:frank@firma.de\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	if got := ParseICSSelfPartStat(psICS, []string{"frank@firma.de"}); got != "tentative" {
+		t.Fatalf("ParseICSSelfPartStat = %q, want tentative", got)
+	}
 }

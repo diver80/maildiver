@@ -113,6 +113,7 @@ type StoredEvent struct {
 	ETag         string
 	RawICS       string
 	Status       string
+	SelfResponse string
 }
 
 // StoredFilter represents a local OmaThunder rule executed directly on IMAP messages.
@@ -267,6 +268,7 @@ func (s *Store) migrate() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_events_cal_range ON calendar_events(calendar_id, start_unix, end_unix);`,
 		`CREATE INDEX IF NOT EXISTS idx_events_ext ON calendar_events(calendar_id, external_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_events_uid ON calendar_events(lower(uid));`,
 
 		`CREATE TABLE IF NOT EXISTS contacts (
 			id TEXT PRIMARY KEY,
@@ -314,6 +316,15 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migrate sqlite: %w", err)
 		}
+	}
+	// Idempotent column addition for existing databases.
+	if _, err := s.db.Exec(`ALTER TABLE calendar_events ADD COLUMN self_response TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("migrate calendar_events.self_response: %w", err)
+		}
+	} else {
+		// Newly added column on an existing DB: trigger one full Google Calendar sync to backfill self_response.
+		_, _ = s.db.Exec(`UPDATE calendars SET sync_token = '' WHERE source = 'google'`)
 	}
 	if err := s.rethreadOnce(); err != nil {
 		return fmt.Errorf("rethread messages: %w", err)
@@ -1287,8 +1298,8 @@ func (s *Store) UpsertEvent(ctx context.Context, e StoredEvent) error {
 		INSERT INTO calendar_events(
 			id, calendar_id, external_id, uid, title, start_iso, end_iso, start_unix, end_unix,
 			all_day, location, description, rrule, exdates_json, recurrence_id, is_recurring,
-			read_only, etag, raw_ics, status
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			read_only, etag, raw_ics, status, self_response
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			start_iso=excluded.start_iso,
@@ -1305,10 +1316,11 @@ func (s *Store) UpsertEvent(ctx context.Context, e StoredEvent) error {
 			read_only=excluded.read_only,
 			etag=excluded.etag,
 			raw_ics=excluded.raw_ics,
-			status=excluded.status`,
+			status=excluded.status,
+			self_response=excluded.self_response`,
 		e.ID, e.CalendarID, e.ExternalID, e.UID, e.Title, e.StartISO, e.EndISO, e.StartUnix, e.EndUnix,
 		boolInt(e.AllDay), e.Location, e.Description, e.RRule, string(exJSON), e.RecurrenceID,
-		boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status,
+		boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse,
 	)
 	return err
 }
@@ -1332,11 +1344,11 @@ func (s *Store) ReplaceCalendarEvents(ctx context.Context, calendarID string, ev
 			INSERT OR REPLACE INTO calendar_events(
 				id, calendar_id, external_id, uid, title, start_iso, end_iso, start_unix, end_unix,
 				all_day, location, description, rrule, exdates_json, recurrence_id, is_recurring,
-				read_only, etag, raw_ics, status
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				read_only, etag, raw_ics, status, self_response
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID, e.CalendarID, e.ExternalID, e.UID, e.Title, e.StartISO, e.EndISO, e.StartUnix, e.EndUnix,
 			boolInt(e.AllDay), e.Location, e.Description, e.RRule, string(exJSON), e.RecurrenceID,
-			boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status,
+			boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse,
 		)
 		if err != nil {
 			return err
@@ -1349,7 +1361,7 @@ func (s *Store) GetEvent(ctx context.Context, calendarID, eventID string) (Store
 	row := s.db.QueryRowContext(ctx, `
 		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
 		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 		WHERE e.calendar_id=? AND (e.id=? OR e.external_id=?)`, calendarID, eventID, eventID)
 	return scanStoredEvent(row)
@@ -1364,7 +1376,7 @@ func (s *Store) ListRawEvents(ctx context.Context, calendarIDs []string) ([]Stor
 	q := `
 		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
 		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 		WHERE e.status != 'cancelled'`
 	var args []any
@@ -1393,6 +1405,94 @@ func (s *Store) ListRawEvents(ctx context.Context, calendarIDs []string) ([]Stor
 	return out, rows.Err()
 }
 
+// FindEventsByUIDOrMatch finds non-cancelled calendar events matching an invitation's iCal UID,
+// or falling back to exact title + start timestamp (±2 min) when UIDs differ across providers.
+func (s *Store) FindEventsByUIDOrMatch(ctx context.Context, uid, title string, startUnix int64) ([]StoredEvent, error) {
+	uid = strings.TrimSpace(uid)
+	if uid != "" {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
+			       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
+			       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+			FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
+			WHERE e.status != 'cancelled' AND e.uid != '' AND lower(e.uid) = lower(?)`, uid)
+		if err != nil {
+			return nil, err
+		}
+		var out []StoredEvent
+		for rows.Next() {
+			if ev, serr := scanStoredEvent(rows); serr == nil {
+				out = append(out, ev)
+			}
+		}
+		_ = rows.Close()
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" || startUnix <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
+		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
+		WHERE e.status != 'cancelled' AND lower(trim(e.title)) = lower(trim(?)) AND abs(e.start_unix - ?) <= 120`, title, startUnix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StoredEvent
+	for rows.Next() {
+		if ev, serr := scanStoredEvent(rows); serr == nil {
+			out = append(out, ev)
+		}
+	}
+	return out, rows.Err()
+}
+
+// SetEventSelfResponse updates the cached attendee response status for a stored calendar event.
+func (s *Store) SetEventSelfResponse(ctx context.Context, eventID, status string) {
+	eventID = strings.TrimSpace(eventID)
+	status = strings.TrimSpace(status)
+	if eventID == "" {
+		return
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE calendar_events SET self_response=? WHERE id=?`, status, eventID)
+}
+
+// SetICSRSVP records the user's RSVP choice ("accepted", "tentative", "declined") for an invite.
+func (s *Store) SetICSRSVP(ctx context.Context, uid, msgID, status string) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		return
+	}
+	if u := strings.ToLower(strings.TrimSpace(uid)); u != "" {
+		_, _ = s.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv_meta(k, v) VALUES(?, ?)`, "ics_rsvp:"+u, status)
+	}
+	if m := strings.TrimSpace(msgID); m != "" {
+		_, _ = s.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv_meta(k, v) VALUES(?, ?)`, "ics_rsvp_msg:"+m, status)
+	}
+}
+
+// GetICSRSVP returns a previously recorded RSVP status ("accepted", "tentative", "declined") or "".
+func (s *Store) GetICSRSVP(ctx context.Context, uid, msgID string) string {
+	var v string
+	if u := strings.ToLower(strings.TrimSpace(uid)); u != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT v FROM kv_meta WHERE k=?`, "ics_rsvp:"+u).Scan(&v); err == nil && v != "" {
+			return v
+		}
+	}
+	if m := strings.TrimSpace(msgID); m != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT v FROM kv_meta WHERE k=?`, "ics_rsvp_msg:"+m).Scan(&v); err == nil && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func scanStoredEvent(row interface{ Scan(dest ...any) error }) (StoredEvent, error) {
 	var e StoredEvent
 	var exJSON string
@@ -1400,7 +1500,7 @@ func scanStoredEvent(row interface{ Scan(dest ...any) error }) (StoredEvent, err
 	err := row.Scan(
 		&e.ID, &e.CalendarID, &e.CalendarName, &e.ExternalID, &e.UID, &e.Title,
 		&e.StartISO, &e.EndISO, &e.StartUnix, &e.EndUnix, &allDay, &e.Location, &e.Description,
-		&e.RRule, &exJSON, &e.RecurrenceID, &isRec, &ro, &e.ETag, &e.RawICS, &e.Status,
+		&e.RRule, &exJSON, &e.RecurrenceID, &isRec, &ro, &e.ETag, &e.RawICS, &e.Status, &e.SelfResponse,
 	)
 	if err != nil {
 		return StoredEvent{}, err

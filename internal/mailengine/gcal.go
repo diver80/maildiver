@@ -395,6 +395,11 @@ type gcalEventPayload struct {
 		Date     string `json:"date,omitempty"`
 		TimeZone string `json:"timeZone,omitempty"`
 	} `json:"end"`
+	Attendees []struct {
+		Email          string `json:"email,omitempty"`
+		Self           bool   `json:"self,omitempty"`
+		ResponseStatus string `json:"responseStatus,omitempty"`
+	} `json:"attendees,omitempty"`
 }
 
 func (e *Engine) syncSingleGoogleCalendar(ctx context.Context, hc *http.Client, calID, calName, googleCalID string, readOnly bool, syncToken string) error {
@@ -512,6 +517,23 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 		}
 	}
 
+	selfResp := ""
+	for _, att := range it.Attendees {
+		if att.Self {
+			switch strings.ToLower(strings.TrimSpace(att.ResponseStatus)) {
+			case "accepted":
+				selfResp = "accepted"
+			case "tentative":
+				selfResp = "tentative"
+			case "declined":
+				selfResp = "declined"
+			case "needsaction":
+				selfResp = "needsAction"
+			}
+			break
+		}
+	}
+
 	return StoredEvent{
 		ID:           calID + "::" + it.ID,
 		CalendarID:   calID,
@@ -531,6 +553,7 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 		ReadOnly:     readOnly,
 		ETag:         it.ETag,
 		Status:       it.Status,
+		SelfResponse: selfResp,
 	}
 }
 

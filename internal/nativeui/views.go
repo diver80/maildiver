@@ -907,15 +907,60 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
 	// .ics Calendar Invitation Banner (RSVP Accept/Tentative/Decline + 1-click import, 0 AI tokens)
 	if msg.HasICS {
-		ui.Column(c.Key("ics-banner")).FillWidth().Padding(10, 12).Radius(8).Background(withAlpha(t.Accent, 0.12)).Border(1, withAlpha(t.Accent, 0.45)).Gap(8).Children(func() {
+		status := ""
+		inCal := ""
+		if msg.ICSInvite != nil {
+			status = strings.TrimSpace(msg.ICSInvite.ResponseStatus)
+			inCal = strings.TrimSpace(msg.ICSInvite.InCalendarName)
+		}
+
+		bannerTint := t.Accent
+		badgeText := ""
+		badgeFg := t.Accent
+		badgeBg := withAlpha(t.Accent, 0.16)
+		switch status {
+		case "accepted":
+			bannerTint = t.Success
+			badgeText = a.tr("✓ Zugesagt", "✓ Accepted")
+			badgeFg = t.Success
+			badgeBg = withAlpha(t.Success, 0.18)
+		case "tentative":
+			bannerTint = t.Warning
+			badgeText = a.tr("? Vorläufig", "? Tentative")
+			badgeFg = t.Warning
+			badgeBg = withAlpha(t.Warning, 0.20)
+		case "declined":
+			bannerTint = t.Danger
+			badgeText = a.tr("✕ Abgesagt", "✕ Declined")
+			badgeFg = t.Danger
+			badgeBg = withAlpha(t.Danger, 0.18)
+		case "needsAction":
+			badgeText = a.tr("Antwort offen", "Pending")
+			badgeFg = t.Accent
+			badgeBg = withAlpha(t.Accent, 0.16)
+		case "imported":
+			badgeText = a.tr("✓ Im Kalender", "✓ In Calendar")
+			badgeFg = t.Success
+			badgeBg = withAlpha(t.Success, 0.16)
+		}
+		if badgeText != "" && inCal != "" && status != "declined" {
+			badgeText += " · " + inCal
+		}
+
+		ui.Column(c.Key("ics-banner")).FillWidth().Padding(10, 12).Radius(8).Background(withAlpha(bannerTint, 0.10)).Border(1, withAlpha(bannerTint, 0.45)).Gap(8).Children(func() {
 			ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, iconCal).Size(18, 18).TextColor(t.Accent).Shrink(0)
+				ui.Icon(c, iconCal).Size(18, 18).TextColor(bannerTint).Shrink(0)
 				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 					invTitle := a.tr("Termineinladung (.ics)", "Calendar Invitation (.ics)")
 					if msg.ICSInvite != nil && msg.ICSInvite.Title != "" {
 						invTitle = msg.ICSInvite.Title
 					}
-					ui.Text(c, invTitle).FontSize(12.5).Bold().Selectable()
+					ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, invTitle).FontSize(12.5).Bold().Selectable()
+						if badgeText != "" {
+							pillBadge(c, badgeText, badgeBg, badgeFg)
+						}
+					})
 					if msg.ICSInvite != nil {
 						var parts []string
 						if msg.ICSInvite.Start != "" {
@@ -942,18 +987,47 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 			})
 			if a.isDirectMode() {
 				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-					if iconLabelBtn(c.Key("ics-accept"), iconCheck, a.tr("Zusagen", "Accept"), true, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply")).Clicked() {
+					acceptPrimary := status == "" || status == "needsAction" || status == "imported"
+					acceptLabel := a.tr("Zusagen", "Accept")
+					if status == "accepted" {
+						acceptLabel = a.tr("Zugesagt", "Accepted")
+					}
+					acceptBtn := iconLabelBtn(c.Key("ics-accept"), iconCheck, acceptLabel, acceptPrimary, a.tr("Einladung annehmen, in Kalender übernehmen & Antwort senden", "Accept invitation, add to calendar & send RSVP reply"))
+					if status == "accepted" {
+						acceptBtn.Background(withAlpha(t.Success, 0.22)).Border(1, t.Success).TextColor(t.Success)
+					}
+					if acceptBtn.Clicked() {
 						a.RespondMailICS(context.Background(), msg.ID, "accepted")
 					}
-					if ui.Button(c.Key("ics-tentative"), a.tr("Vielleicht", "Tentative")).Clicked() {
+
+					tentLabel := a.tr("Vielleicht", "Tentative")
+					if status == "tentative" {
+						tentLabel = a.tr("✓ Vielleicht", "✓ Tentative")
+					}
+					tentBtn := ui.Button(c.Key("ics-tentative"), tentLabel)
+					if status == "tentative" {
+						tentBtn.Background(withAlpha(t.Warning, 0.22)).Border(1, t.Warning).TextColor(t.Warning)
+					}
+					if tentBtn.Clicked() {
 						a.RespondMailICS(context.Background(), msg.ID, "tentative")
 					}
-					if ui.Button(c.Key("ics-decline"), a.tr("Absagen", "Decline")).TextColor(t.Danger).Clicked() {
+
+					declLabel := a.tr("Absagen", "Decline")
+					if status == "declined" {
+						declLabel = a.tr("✕ Abgesagt", "✕ Declined")
+					}
+					declBtn := ui.Button(c.Key("ics-decline"), declLabel).TextColor(t.Danger)
+					if status == "declined" {
+						declBtn.Background(withAlpha(t.Danger, 0.22)).Border(1, t.Danger)
+					}
+					if declBtn.Clicked() {
 						a.RespondMailICS(context.Background(), msg.ID, "declined")
 					}
-					ui.Spacer(c)
-					if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
-						a.ImportMailICS(context.Background(), msg.ID)
+					if inCal == "" {
+						ui.Spacer(c)
+						if iconLabelBtn(c.Key("ics-adopt"), iconCalPlus, a.tr("Nur übernehmen", "Import Only"), false, a.tr("Termin ohne E-Mail-Antwort in den Kalender übernehmen", "Import event into calendar without sending RSVP")).Clicked() {
+							a.ImportMailICS(context.Background(), msg.ID)
+						}
 					}
 				})
 			}
