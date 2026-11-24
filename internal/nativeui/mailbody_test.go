@@ -241,3 +241,54 @@ func TestMailBodyRendersHeadless(t *testing.T) {
 		t.Fatalf("j after clicking the body must open the next mail, open=%q", app.selectedID)
 	}
 }
+
+func TestMailSourceViewShowsHeadersAndRawPlaintext(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.selectedID = "m1"
+	app.selectedMsg = &backend.MessageDetail{
+		MessageHeader: app.messages[0],
+		Headers: map[string]string{
+			"x-jira-fingerprint": "abc123fingerprint",
+			"list-id":            "<dev.lists.example.org>",
+		},
+		BodyText: "Raw plaintext body line",
+		BodyHtml: confluenceHTML,
+	}
+	tt := ui.NewTester(app.RenderMain, 1380, 1400)
+	tt.Frame()
+
+	// Switch to Quelltext (Source) view via the segmented button.
+	if err := tt.Click("Quelltext"); err != nil {
+		t.Fatalf("click Quelltext: %v (texts=%v)", err, tt.Texts())
+	}
+	tt.Frame()
+	if !app.readerSource {
+		t.Fatal("expected readerSource=true after clicking Quelltext")
+	}
+	texts := strings.Join(tt.Texts(), "\n")
+	for _, want := range []string{"x-jira-fingerprint: abc123fingerprint", "list-id: <dev.lists.example.org>", "Raw plaintext body line", "Nur Header", "Kopieren"} {
+		if !strings.Contains(texts, want) {
+			t.Errorf("source view missing %q; texts:\n%s", want, texts)
+		}
+	}
+
+	// Switch to Headers-only submode + filter by "jira".
+	if err := tt.Click("Nur Header"); err != nil {
+		t.Fatalf("click Nur Header: %v", err)
+	}
+	app.readerSourceFilter = "jira"
+	tt.Frame()
+	texts = strings.Join(tt.Texts(), "\n")
+	if !strings.Contains(texts, "x-jira-fingerprint: abc123fingerprint") || strings.Contains(texts, "Raw plaintext body line") {
+		t.Errorf("headers-only filtered view unexpected; texts:\n%s", texts)
+	}
+
+	// Return to Formatiert cleanly.
+	if err := tt.Click("Formatiert"); err != nil {
+		t.Fatalf("click Formatiert: %v", err)
+	}
+	tt.Frame()
+	if app.readerSource || app.readerPlain {
+		t.Fatalf("expected Formatiert mode restored, source=%v plain=%v", app.readerSource, app.readerPlain)
+	}
+}

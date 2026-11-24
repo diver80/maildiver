@@ -380,8 +380,15 @@ type App struct {
 	focusTotal  int
 	selectedID  string
 	selectedMsg *backend.MessageDetail
-	readerBody  readerBody // selectedMsg's body as Markdown (mailbody.go)
-	readerPlain bool       // show the text version of HTML mails
+	readerBody          readerBody // selectedMsg's body as Markdown (mailbody.go)
+	readerPlain         bool       // show the text version of HTML mails
+	readerSource        bool       // show raw RFC 5322 plaintext + all headers ("Quelltext")
+	readerSourceOnlyHdr bool       // true = show decoded headers only; false = full raw plaintext + headers
+	readerSourceFilter  string     // live case-insensitive filter for headers/source lines
+	readerSourceMsgID   string     // message ID currently loaded into readerSourceData
+	readerSourceBusy    bool       // async fetch of raw source in progress
+	readerSourceErr     string     // error loading raw source (if any)
+	readerSourceData    mailengine.MessageSource
 
 	// Reader image state (mutex-guarded because markdown.Options.LoadImage runs on worker goroutines)
 	readerImgMu      sync.RWMutex

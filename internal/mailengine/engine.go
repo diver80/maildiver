@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1360,7 +1361,100 @@ func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName,
 	return writeBytesToDownloads(sanitizeDownloadFilename(name), data)
 }
 
-const maxExportEMLBytes = 50 << 20
+const (
+	maxExportEMLBytes            = 50 << 20
+	maxMessageSourceDisplayBytes = 128 << 10
+)
+
+// ReadMessageSource returns all RFC 5322 headers and the raw plaintext source for a message
+// (fetching from IMAP if not cached locally). Very large bodies (e.g. base64 attachments) are
+// truncated after 128 KiB while always keeping the complete header section intact.
+func (e *Engine) ReadMessageSource(ctx context.Context, msgID string) (MessageSource, error) {
+	m, err := e.getOrFetchStoredMessage(ctx, msgID)
+	if err != nil {
+		return MessageSource{}, err
+	}
+	if len(m.RawEML) > 0 {
+		hdrs := ExtractRawHeaderLines(m.RawEML)
+		norm := strings.ReplaceAll(string(m.RawEML), "\r\n", "\n")
+		total := len(m.RawEML)
+		truncated := false
+		if len(norm) > maxMessageSourceDisplayBytes {
+			hdrPart, _ := splitRawHeaderAndBody(m.RawEML)
+			hdrNormLen := len(strings.ReplaceAll(string(hdrPart), "\r\n", "\n"))
+			cut := maxMessageSourceDisplayBytes
+			if hdrNormLen+4096 > cut {
+				cut = hdrNormLen + 4096
+			}
+			if cut < len(norm) {
+				// Avoid splitting in the middle of a UTF-8 rune.
+				for cut > 0 && cut < len(norm) && (norm[cut]&0xC0) == 0x80 {
+					cut--
+				}
+				norm = norm[:cut]
+				truncated = true
+			}
+		}
+		return MessageSource{
+			MessageID:  m.ID,
+			Headers:    hdrs,
+			RawSource:  norm,
+			TotalBytes: total,
+			Truncated:  truncated,
+		}, nil
+	}
+
+	// Fallback when RawEML is absent (e.g. synthetic or offline-only stored message).
+	var hdrs []MessageHeaderLine
+	addHdr := func(name, val string) {
+		val = strings.TrimSpace(val)
+		if val != "" {
+			hdrs = append(hdrs, MessageHeaderLine{Name: name, Value: val})
+		}
+	}
+	addHdr("From", m.From)
+	if len(m.To) > 0 {
+		addHdr("To", strings.Join(m.To, ", "))
+	}
+	if len(m.CC) > 0 {
+		addHdr("Cc", strings.Join(m.CC, ", "))
+	}
+	addHdr("Date", m.DateISO)
+	addHdr("Subject", m.Subject)
+	if m.MessageID != "" {
+		addHdr("Message-ID", "<"+m.MessageID+">")
+	}
+	addHdr("In-Reply-To", m.InReplyTo)
+	addHdr("References", m.References)
+	keys := make([]string, 0, len(m.Headers))
+	for k := range m.Headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		addHdr(k, m.Headers[k])
+	}
+	var sb strings.Builder
+	for _, h := range hdrs {
+		sb.WriteString(h.Name)
+		sb.WriteString(": ")
+		sb.WriteString(h.Value)
+		sb.WriteByte('\n')
+	}
+	sb.WriteByte('\n')
+	body := m.BodyText
+	if strings.TrimSpace(body) == "" {
+		body = m.BodyHTML
+	}
+	sb.WriteString(body)
+	raw := sb.String()
+	return MessageSource{
+		MessageID:  m.ID,
+		Headers:    hdrs,
+		RawSource:  raw,
+		TotalBytes: len(raw),
+	}, nil
+}
 
 // SaveMessageEMLToDownloads exports the raw RFC 5322 message as an .eml file into ~/Downloads.
 func (e *Engine) SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error) {

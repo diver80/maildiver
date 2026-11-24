@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/diver80/maildiver/internal/triage"
 )
 
 func TestSaveMessageEMLAndReadAttachmentPreview(t *testing.T) {
@@ -154,5 +156,89 @@ func TestParseCSVAttachmentRFC2231AndMalformedDisposition(t *testing.T) {
 	}
 	if len(parsed2.Attachments) != 1 || parsed2.Attachments[0].Name != "report final 2026.csv" {
 		t.Fatalf("expected fallback-parsed attachment, got %+v", parsed2.Attachments)
+	}
+}
+
+func TestReadMessageSourceAndCustomHeaderFilterMatch(t *testing.T) {
+	rawEML := strings.Join([]string{
+		"Return-Path: <bounce+jira@atlassian.rewe-group.com>",
+		"Received: from mx1.example.net by mail.avono.de; Tue, 24 Nov 2026 09:30:00 +0100",
+		"Received: from mx2.example.net by mx1.example.net; Tue, 24 Nov 2026 09:29:59 +0100",
+		"From: =?UTF-8?Q?David_Reif_(Jira)?= <jira@atlassian.rewe-group.com>",
+		"To: Frank Hess <frank.hess@avono.de>",
+		"Subject: [JIRA] Updates for WORMS-4103",
+		"X-Jira-FingerPrint: 9f86d081884c7d659a2feaa0c55ad015",
+		"X-Custom-Multi: part-one",
+		" part-two",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Hallo Frank, bitte prüfen.",
+		"",
+	}, "\r\n")
+
+	st, err := OpenStore(filepath.Join(t.TempDir(), "mail.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer st.Close()
+
+	eng := &Engine{store: st}
+	ctx := context.Background()
+	sm := StoredMessage{
+		ID:          "msg-src-1",
+		AccountID:   "acc-1",
+		Subject:     "[JIRA] Updates for WORMS-4103",
+		From:        "David Reif (Jira) <jira@atlassian.rewe-group.com>",
+		BodyFetched: true,
+		RawEML:      []byte(rawEML),
+	}
+	if err := st.UpsertMessage(ctx, sm); err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+
+	src, err := eng.ReadMessageSource(ctx, "msg-src-1")
+	if err != nil {
+		t.Fatalf("ReadMessageSource: %v", err)
+	}
+	if src.Truncated || src.TotalBytes != len(rawEML) {
+		t.Fatalf("unexpected size/truncation: %+v", src)
+	}
+	if len(src.Headers) != 10 {
+		t.Fatalf("expected 10 RFC 5322 headers in wire order, got %d: %+v", len(src.Headers), src.Headers)
+	}
+	if src.Headers[0].Name != "Return-Path" || src.Headers[6].Name != "X-Jira-FingerPrint" {
+		t.Fatalf("unexpected header order: %+v", src.Headers)
+	}
+	if src.Headers[7].Name != "X-Custom-Multi" || src.Headers[7].Value != "part-one part-two" {
+		t.Fatalf("folded header not unfolded cleanly: %+v", src.Headers[7])
+	}
+	if !strings.Contains(src.RawSource, "X-Jira-FingerPrint: 9f86d081884c7d659a2feaa0c55ad015") || !strings.Contains(src.RawSource, "Hallo Frank, bitte prüfen.") {
+		t.Fatalf("RawSource missing expected content: %q", src.RawSource)
+	}
+
+	// Verify that a custom Header filter rule (e.g. X-Jira-FingerPrint discovered in Source view) matches via RawEML!
+	flt := StoredFilter{
+		Name:     "Jira Fingerprint",
+		Enabled:  true,
+		MatchAll: true,
+		Conditions: []triage.NativeCondition{
+			{Field: "header", HeaderName: "X-Jira-FingerPrint", Op: "contains", Value: "9f86d081884c"},
+		},
+	}
+	if !matchFilterAgainstMessage(flt, sm) {
+		t.Fatal("expected custom header filter rule to match X-Jira-FingerPrint from RawEML")
+	}
+	// Multi-line Received header should also match across all Received lines.
+	fltRecv := StoredFilter{
+		Name:     "Received Hop",
+		Enabled:  true,
+		MatchAll: true,
+		Conditions: []triage.NativeCondition{
+			{Field: "header", HeaderName: "Received", Op: "contains", Value: "mx2.example.net"},
+		},
+	}
+	if !matchFilterAgainstMessage(fltRecv, sm) {
+		t.Fatal("expected Received header filter rule to match second Received line")
 	}
 }

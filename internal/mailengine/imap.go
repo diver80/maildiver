@@ -1683,11 +1683,32 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 	return remaining
 }
 
+func filterHasHeaderCondition(conds []triage.NativeCondition) bool {
+	for _, c := range conds {
+		if strings.EqualFold(strings.TrimSpace(c.Field), "header") {
+			return true
+		}
+	}
+	return false
+}
+
 func matchFilterAgainstMessage(flt StoredFilter, m StoredMessage) bool {
 	attNames := make([]string, 0, len(m.Attachments))
 	for _, a := range m.Attachments {
 		if strings.TrimSpace(a.Name) != "" {
 			attNames = append(attNames, a.Name)
+		}
+	}
+	hdrs := m.Headers
+	if len(m.RawEML) > 0 && filterHasHeaderCondition(flt.Conditions) {
+		if allHdrs := ExtractAllHeadersMap(m.RawEML); len(allHdrs) > 0 {
+			for k, v := range m.Headers {
+				lk := strings.ToLower(strings.TrimSpace(k))
+				if lk != "" && allHdrs[lk] == "" {
+					allHdrs[lk] = v
+				}
+			}
+			hdrs = allHdrs
 		}
 	}
 	in := triage.MessageInput{
@@ -1699,7 +1720,7 @@ func matchFilterAgainstMessage(flt StoredFilter, m StoredMessage) bool {
 		To:          m.To,
 		CC:          m.CC,
 		Date:        m.DateISO,
-		Headers:     m.Headers,
+		Headers:     hdrs,
 		BodyText:    m.BodyText,
 		BodyHTML:    m.BodyHTML,
 		Unread:      !m.Read,

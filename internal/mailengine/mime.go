@@ -26,6 +26,97 @@ import (
 
 const maxParsedPartBytes = 8 * 1024 * 1024
 
+// MessageHeaderLine represents a single RFC 5322 header line in original wire order.
+type MessageHeaderLine struct {
+	Name  string
+	Value string
+}
+
+// MessageSource holds all RFC 5322 headers and raw plaintext source of a message for inspection.
+type MessageSource struct {
+	MessageID  string
+	Headers    []MessageHeaderLine
+	RawSource  string
+	TotalBytes int
+	Truncated  bool
+}
+
+// splitRawHeaderAndBody splits an RFC 5322 message into its raw header section and body section.
+func splitRawHeaderAndBody(raw []byte) (headerPart []byte, bodyPart []byte) {
+	if idx := bytes.Index(raw, []byte("\r\n\r\n")); idx >= 0 {
+		return raw[:idx], raw[idx+4:]
+	}
+	if idx := bytes.Index(raw, []byte("\n\n")); idx >= 0 {
+		return raw[:idx], raw[idx+2:]
+	}
+	return raw, nil
+}
+
+// ExtractRawHeaderLines parses every RFC 5322 header field from raw in original wire order,
+// unfolding continuation lines and decoding RFC 2047 encoded words for readability.
+func ExtractRawHeaderLines(raw []byte) []MessageHeaderLine {
+	hdrBytes, _ := splitRawHeaderAndBody(raw)
+	if len(hdrBytes) == 0 {
+		return nil
+	}
+	norm := strings.ReplaceAll(string(hdrBytes), "\r\n", "\n")
+	rawLines := strings.Split(norm, "\n")
+	var out []MessageHeaderLine
+	for _, line := range rawLines {
+		if line == "" {
+			break
+		}
+		if (line[0] == ' ' || line[0] == '\t') && len(out) > 0 {
+			// RFC 5322 folded continuation line
+			cont := strings.TrimSpace(line)
+			if cont != "" {
+				if out[len(out)-1].Value != "" {
+					out[len(out)-1].Value += " " + cont
+				} else {
+					out[len(out)-1].Value = cont
+				}
+			}
+			continue
+		}
+		colon := strings.IndexByte(line, ':')
+		if colon <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:colon])
+		val := strings.TrimSpace(line[colon+1:])
+		if name == "" {
+			continue
+		}
+		out = append(out, MessageHeaderLine{Name: name, Value: val})
+	}
+	for i := range out {
+		out[i].Value = decodeHeader(out[i].Value)
+	}
+	return out
+}
+
+// ExtractAllHeadersMap extracts every RFC 5322 header from raw into a lowercase-keyed map.
+// Duplicate headers (such as multiple Received lines) are joined with "\n".
+func ExtractAllHeadersMap(raw []byte) map[string]string {
+	lines := ExtractRawHeaderLines(raw)
+	if len(lines) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(lines))
+	for _, ln := range lines {
+		k := strings.ToLower(strings.TrimSpace(ln.Name))
+		if k == "" {
+			continue
+		}
+		if prev, exists := out[k]; exists && prev != "" {
+			out[k] = prev + "\n" + ln.Value
+		} else {
+			out[k] = ln.Value
+		}
+	}
+	return out
+}
+
 // ParsedMessage holds extracted text, HTML, attachments, headers, and optional .ics invite.
 type ParsedMessage struct {
 	Subject     string

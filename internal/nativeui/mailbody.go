@@ -1,13 +1,17 @@
 package nativeui
 
 import (
+	"context"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/egoist/mygo/ui/markdown/parser"
@@ -15,6 +19,7 @@ import (
 	"golang.org/x/net/html/atom"
 
 	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/mailengine"
 )
 
 // Mail body
@@ -1089,58 +1094,77 @@ func (a *App) renderMailBody(c *ui.Context, msg *backend.MessageDetail) {
 	}
 	body := &a.readerBody
 	md := body.Markdown
-	plain := body.FromHTML && a.readerPlain
+	plain := body.FromHTML && a.readerPlain && !a.readerSource
 	if plain {
 		md = body.Plain
 	}
 	a.renderSecurityNote(c, msg)
-	if body.FromHTML || body.BlockedImages > 0 || body.RemoteImages > 0 {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
-			if body.BlockedImages > 0 && !plain {
-				ui.Icon(c, iconImageOff).Size(13, 13).TextColor(t.TextMuted)
-				ui.Text(c, a.trf("%d Bilder nicht geladen", "%d images not loaded", body.BlockedImages)).FontSize(11.5).TextColor(t.TextMuted).
-					Tooltip(a.tr("Externe Bilder sind aus Datenschutzgründen blockiert, bis du sie für diese Mail erlaubst.", "Remote images are blocked for privacy until you allow them for this email."))
-				if iconLabelBtn(c.Key("img-show"), iconImage, a.tr("Bilder anzeigen", "Show Images"), false, a.tr("Externe Bilder für diese Mail laden", "Load remote images for this email")).Clicked() {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Wrap().Children(func() {
+		if body.BlockedImages > 0 && !plain && !a.readerSource {
+			ui.Icon(c, iconImageOff).Size(13, 13).TextColor(t.TextMuted)
+			ui.Text(c, a.trf("%d Bilder nicht geladen", "%d images not loaded", body.BlockedImages)).FontSize(11.5).TextColor(t.TextMuted).
+				Tooltip(a.tr("Externe Bilder sind aus Datenschutzgründen blockiert, bis du sie für diese Mail erlaubst.", "Remote images are blocked for privacy until you allow them for this email."))
+			if iconLabelBtn(c.Key("img-show"), iconImage, a.tr("Bilder anzeigen", "Show Images"), false, a.tr("Externe Bilder für diese Mail laden", "Load remote images for this email")).Clicked() {
+				a.setReaderRemoteImagesAllowed(msg.ID, true)
+				a.readerBody = buildReaderBodyWithImages(msg, true)
+			}
+			if extractSenderEmail(msg.From) != "" {
+				if ui.Button(c.Key("img-allow-sender"), a.tr("Absender immer erlauben", "Always allow sender")).Padding(2, 7).Clicked() {
+					a.SetSenderRemoteImagesAllowed(msg.From, true)
 					a.setReaderRemoteImagesAllowed(msg.ID, true)
 					a.readerBody = buildReaderBodyWithImages(msg, true)
+					a.toast(a.trf("Bilder von %s werden ab jetzt immer geladen", "Remote images from %s will always load", extractSenderEmail(msg.From)), "success")
 				}
-				if extractSenderEmail(msg.From) != "" {
-					if ui.Button(c.Key("img-allow-sender"), a.tr("Absender immer erlauben", "Always allow sender")).Padding(2, 7).Clicked() {
-						a.SetSenderRemoteImagesAllowed(msg.From, true)
-						a.setReaderRemoteImagesAllowed(msg.ID, true)
-						a.readerBody = buildReaderBodyWithImages(msg, true)
-						a.toast(a.trf("Bilder von %s werden ab jetzt immer geladen", "Remote images from %s will always load", extractSenderEmail(msg.From)), "success")
-					}
-				}
-			} else if body.ShowRemote && body.RemoteImages > 0 && !plain {
-				ui.Icon(c, iconImage).Size(13, 13).TextColor(t.Accent)
-				lbl := a.tr("Externe Bilder geladen", "Remote images shown")
-				if senderAllowed {
-					lbl = a.tr("Bilder erlaubt (Absender-Allowlist)", "Images allowed (sender allowlist)")
-				}
-				ui.Text(c, lbl).FontSize(11.5).TextColor(t.TextMuted)
-				if senderAllowed {
-					if ui.Button(c.Key("img-revoke-sender"), a.tr("Absender blockieren", "Block sender")).Padding(2, 7).Clicked() {
-						a.SetSenderRemoteImagesAllowed(msg.From, false)
-						a.setReaderRemoteImagesAllowed(msg.ID, false)
-						a.readerBody = buildReaderBodyWithImages(msg, false)
-					}
-				} else if ui.Button(c.Key("img-hide"), a.tr("Ausblenden", "Hide")).Padding(2, 7).Clicked() {
+			}
+		} else if body.ShowRemote && body.RemoteImages > 0 && !plain && !a.readerSource {
+			ui.Icon(c, iconImage).Size(13, 13).TextColor(t.Accent)
+			lbl := a.tr("Externe Bilder geladen", "Remote images shown")
+			if senderAllowed {
+				lbl = a.tr("Bilder erlaubt (Absender-Allowlist)", "Images allowed (sender allowlist)")
+			}
+			ui.Text(c, lbl).FontSize(11.5).TextColor(t.TextMuted)
+			if senderAllowed {
+				if ui.Button(c.Key("img-revoke-sender"), a.tr("Absender blockieren", "Block sender")).Padding(2, 7).Clicked() {
+					a.SetSenderRemoteImagesAllowed(msg.From, false)
 					a.setReaderRemoteImagesAllowed(msg.ID, false)
 					a.readerBody = buildReaderBodyWithImages(msg, false)
 				}
+			} else if ui.Button(c.Key("img-hide"), a.tr("Ausblenden", "Hide")).Padding(2, 7).Clicked() {
+				a.setReaderRemoteImagesAllowed(msg.ID, false)
+				a.readerBody = buildReaderBodyWithImages(msg, false)
 			}
-			ui.Spacer(c)
-			if body.FromHTML {
-				idx := 0
-				if a.readerPlain {
-					idx = 1
-				}
-				if ui.Segmented(c, &idx, a.tr("Formatiert", "Formatted"), a.tr("Text", "Text")).Changed() {
-					a.readerPlain = idx == 1
+		}
+		ui.Spacer(c)
+		if body.FromHTML {
+			idx := 0
+			if a.readerSource {
+				idx = 2
+			} else if a.readerPlain {
+				idx = 1
+			}
+			if ui.Segmented(c.Key("body-view-mode"), &idx, a.tr("Formatiert", "Formatted"), a.tr("Text", "Text"), a.tr("Quelltext", "Source")).Changed() {
+				a.readerPlain = idx == 1
+				a.readerSource = idx == 2
+				if a.readerSource {
+					a.ensureMessageSourceLoaded(context.Background(), msg)
 				}
 			}
-		})
+		} else {
+			idx := 0
+			if a.readerSource {
+				idx = 1
+			}
+			if ui.Segmented(c.Key("body-view-mode-txt"), &idx, a.tr("Text", "Text"), a.tr("Quelltext", "Source")).Changed() {
+				a.readerSource = idx == 1
+				if a.readerSource {
+					a.ensureMessageSourceLoaded(context.Background(), msg)
+				}
+			}
+		}
+	})
+	if a.readerSource {
+		a.renderMailSource(c, msg)
+		return
 	}
 	if strings.TrimSpace(md) == "" {
 		if !msg.Security.Readable() {
@@ -1151,6 +1175,223 @@ func (a *App) renderMailBody(c *ui.Context, msg *backend.MessageDetail) {
 		return
 	}
 	markdown.View(c.Key("mail-body-"+msg.ID), md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
+}
+
+func buildFallbackMessageSource(msg *backend.MessageDetail) mailengine.MessageSource {
+	if msg == nil {
+		return mailengine.MessageSource{}
+	}
+	var hdrs []mailengine.MessageHeaderLine
+	add := func(name, val string) {
+		val = strings.TrimSpace(val)
+		if val != "" {
+			hdrs = append(hdrs, mailengine.MessageHeaderLine{Name: name, Value: val})
+		}
+	}
+	add("From", msg.From)
+	if len(msg.To) > 0 {
+		add("To", strings.Join(msg.To, ", "))
+	}
+	if len(msg.CC) > 0 {
+		add("Cc", strings.Join(msg.CC, ", "))
+	}
+	if len(msg.BCC) > 0 {
+		add("Bcc", strings.Join(msg.BCC, ", "))
+	}
+	add("Date", msg.Date)
+	add("Subject", msg.Subject)
+	if msg.MessageID != "" {
+		add("Message-ID", "<"+msg.MessageID+">")
+	}
+	if len(msg.Headers) > 0 {
+		keys := make([]string, 0, len(msg.Headers))
+		for k := range msg.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			add(k, msg.Headers[k])
+		}
+	}
+	var sb strings.Builder
+	for _, h := range hdrs {
+		sb.WriteString(h.Name)
+		sb.WriteString(": ")
+		sb.WriteString(h.Value)
+		sb.WriteByte('\n')
+	}
+	sb.WriteByte('\n')
+	body := msg.BodyText
+	if strings.TrimSpace(body) == "" {
+		body = msg.BodyHtml
+	}
+	sb.WriteString(body)
+	raw := sb.String()
+	return mailengine.MessageSource{
+		MessageID:  msg.ID,
+		Headers:    hdrs,
+		RawSource:  raw,
+		TotalBytes: len(raw),
+	}
+}
+
+func (a *App) ensureMessageSourceLoaded(ctx context.Context, msg *backend.MessageDetail) {
+	if msg == nil || msg.ID == "" {
+		return
+	}
+	if a.readerSourceMsgID == msg.ID && (a.readerSourceBusy || a.readerSourceData.MessageID == msg.ID || a.readerSourceErr != "") {
+		return
+	}
+	a.readerSourceMsgID = msg.ID
+	a.readerSourceErr = ""
+	a.readerSourceData = mailengine.MessageSource{}
+	dc := a.opts.Direct
+	if dc == nil {
+		a.readerSourceBusy = false
+		a.readerSourceData = buildFallbackMessageSource(msg)
+		return
+	}
+	msgID := msg.ID
+	a.readerSourceBusy = true
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		src, err := dc.ReadMessageSource(c, msgID)
+		a.emitUpdate(func() {
+			if a.readerSourceMsgID != msgID {
+				return
+			}
+			a.readerSourceBusy = false
+			if err != nil {
+				a.readerSourceErr = err.Error()
+				return
+			}
+			a.readerSourceData = src
+		})
+	}()
+}
+
+// fencedCodeMarkdown wraps text in a Markdown tilde code fence longer than any tilde run in text.
+func fencedCodeMarkdown(text string) string {
+	maxRun := 2
+	run := 0
+	for i := 0; i < len(text); i++ {
+		if text[i] == '~' {
+			run++
+			if run > maxRun {
+				maxRun = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("~", maxRun+1)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return fence + "text\n" + text + fence
+}
+
+func formatSourceDisplayText(src mailengine.MessageSource, onlyHeaders bool, filter string) (text string, matchedCount int, totalCount int) {
+	q := strings.ToLower(strings.TrimSpace(filter))
+	if onlyHeaders {
+		totalCount = len(src.Headers)
+		var sb strings.Builder
+		for _, h := range src.Headers {
+			line := h.Name + ": " + h.Value
+			if q != "" && !strings.Contains(strings.ToLower(line), q) {
+				continue
+			}
+			matchedCount++
+			sb.WriteString(line)
+			sb.WriteByte('\n')
+		}
+		return sb.String(), matchedCount, totalCount
+	}
+	raw := src.RawSource
+	if q == "" {
+		return raw, 0, len(src.Headers)
+	}
+	lines := strings.Split(raw, "\n")
+	totalCount = len(lines)
+	var sb strings.Builder
+	for _, ln := range lines {
+		if strings.Contains(strings.ToLower(ln), q) {
+			matchedCount++
+			sb.WriteString(ln)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String(), matchedCount, totalCount
+}
+
+func (a *App) renderMailSource(c *ui.Context, msg *backend.MessageDetail) {
+	t := c.Theme()
+	a.ensureMessageSourceLoaded(context.Background(), msg)
+
+	src := a.readerSourceData
+	if src.MessageID != msg.ID && !a.readerSourceBusy {
+		src = buildFallbackMessageSource(msg)
+	}
+	displayText, matchedCount, totalCount := formatSourceDisplayText(src, a.readerSourceOnlyHdr, a.readerSourceFilter)
+
+	ui.Column(c.Key("mail-src-box-"+msg.ID)).FillWidth().Gap(8).Children(func() {
+		// Compact toolbar: Full Raw vs Headers-Only, live filter, and 1-click Copy.
+		ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+			subIdx := 0
+			if a.readerSourceOnlyHdr {
+				subIdx = 1
+			}
+			if ui.Segmented(c.Key("src-submode"), &subIdx, a.tr("Header + Quelltext", "Headers + Raw"), a.tr("Nur Header", "Headers only")).Changed() {
+				a.readerSourceOnlyHdr = subIdx == 1
+			}
+			ui.TextInput(c.Key("src-filter"), &a.readerSourceFilter).
+				Placeholder(a.tr("Header / Text filtern (z. B. X-, List-Id, Received)…", "Filter headers / text (e.g. X-, List-Id, Received)…")).
+				Grow(1)
+			if ui.Button(c.Key("src-copy"), a.tr("Kopieren", "Copy")).Padding(3, 9).Clicked() {
+				if displayText != "" {
+					mygo.Clipboard.WriteText(displayText)
+					a.toast(a.tr("Quelltext / Header in Zwischenablage kopiert", "Source / headers copied to clipboard"), "success")
+				}
+			}
+		})
+
+		if a.readerSourceBusy {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Padding(8, 0).Children(func() {
+				ui.Spinner(c)
+				ui.Text(c, a.tr("Lade vollständige Header & Quelltext…", "Loading full headers & raw source…")).FontSize(12).TextColor(t.TextMuted)
+			})
+			return
+		}
+		if a.readerSourceErr != "" {
+			ui.Row(c).FillWidth().Padding(8, 10).Radius(6).Background(withAlpha(t.Danger, 0.12)).Border(1, withAlpha(t.Danger, 0.35)).Children(func() {
+				ui.Text(c, a.tr("Quelltext konnte nicht geladen werden: ", "Could not load raw source: ")+a.readerSourceErr).FontSize(12).TextColor(t.Danger).Grow(1)
+			})
+		}
+
+		// Summary metadata line
+		metaParts := []string{
+			a.trf("%d Header", "%d headers", len(src.Headers)),
+			formatByteSize(int64(src.TotalBytes)),
+		}
+		if strings.TrimSpace(a.readerSourceFilter) != "" {
+			if a.readerSourceOnlyHdr {
+				metaParts = append(metaParts, a.trf("%d / %d Treffer", "%d / %d matches", matchedCount, totalCount))
+			} else {
+				metaParts = append(metaParts, a.trf("%d passende Zeilen", "%d matching lines", matchedCount))
+			}
+		}
+		if src.Truncated {
+			metaParts = append(metaParts, a.tr("Gekürzt ab 128 KB (komplett über „Als .eml speichern“)", "Truncated at 128 KB (use “Save as .eml” for full file)"))
+		}
+		ui.Text(c, strings.Join(metaParts, " · ")).FontSize(11).TextColor(t.TextMuted)
+
+		if strings.TrimSpace(displayText) == "" {
+			ui.Text(c, a.tr("Keine passenden Header oder Zeilen gefunden.", "No matching headers or lines found.")).FontSize(12.5).TextColor(t.TextMuted)
+			return
+		}
+		markdown.View(c.Key("mail-src-view-"+msg.ID), fencedCodeMarkdown(displayText), a.bodyMarkdownOpts()).FillWidth().MaxWidth(980)
+	})
 }
 
 // renderSecurityNote says that a mail is encrypted or signed.

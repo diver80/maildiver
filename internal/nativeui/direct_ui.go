@@ -44,6 +44,7 @@ type DirectController interface {
 	MoveFilter(ctx context.Context, accountID, name string, delta int) error
 	SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error)
 	SaveMessageEMLToDownloads(ctx context.Context, msgID string) (string, error)
+	ReadMessageSource(ctx context.Context, msgID string) (mailengine.MessageSource, error)
 	ReadAttachmentPreview(ctx context.Context, msgID, partName, filename string) (mailengine.AttachmentPreviewData, error)
 	ReadInlineImage(ctx context.Context, msgID, cid string) (string, []byte, error)
 	ReadAllInlineImages(ctx context.Context, msgID string) (map[string]mailengine.InlineImage, error)

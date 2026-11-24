@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.26 (2026-11-24)
+
+### Quelltext- & Voll-Header-Ansicht im Mail-Reader (+ alle Header für Filterregeln)
+- **Neuer Modus „Quelltext“ (`Source`) direkt im Reader:** Direkt neben *Formatiert / Text* (und auch bei reinen Text-Mails neben *Text*) gibt es jetzt **Quelltext** – mit Umschalter zwischen **Header + Quelltext** (kompletter RFC-5322-Rohtext inkl. aller Header, ab 128 KB für flüssige Darstellung sauber gekürzt) und **Nur Header** (alle Header in Originalreihenfolge, RFC-2047-dekodiert), Live-Suchfilter (`X-`, `List-Id`, `Received`, …) und 1-Klick-**Kopieren**-Button (Desktop & Handy).
+- **Alle benutzerdefinierten Header in Filterregeln nutzbar:** `Header-Feld`-Filterregeln prüfen jetzt neben den Standard-Headern auch alle übrigen RFC-5322-Header direkt aus `RawEML` (z. B. `X-Jira-FingerPrint`, `Return-Path`, `Delivered-To`, `Authentication-Results`, mehrzeilige `Received`-Header), sodass jeder in der Quelltext-Ansicht gefundene Header direkt als Regel funktioniert.
+
 ## 0.7.25 (2026-11-24)
 
 ### Atlassian-/Jira-Web-Vorschau öffnet Work Items direkt per Key
