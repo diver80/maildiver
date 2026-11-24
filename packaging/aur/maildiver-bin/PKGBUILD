@@ -1,6 +1,6 @@
 # Maintainer: Frank Hess <https://github.com/diver80>
 pkgname=maildiver-bin
-pkgver=0.7.28
+pkgver=0.7.29
 pkgrel=1
 pkgdesc="Native Go + MyGo IMAP/SMTP email, calendar & contacts client with optional local/cloud AI and live Omarchy theme sync"
 arch=('x86_64' 'aarch64')
@@ -36,10 +36,10 @@ sha256sums=(
   'fda5e66167cbadd34a7c8023e3c424f861a0762205cfc1871ad5907017f266e2'
 )
 sha256sums_x86_64=(
-  'bef6b0187c76ce205a9cdf60c5ac0a4924cf98f1707ed96993050fe992f8a929'
+  'f8f9bd81e174f34387bb632105ad8ed8db7a0833714a140dd0ba765fa156a432'
 )
 sha256sums_aarch64=(
-  'e30a01b7e87de5a4bbe42eb7871dced03897139dab8674ecced0f180ce62b294'
+  '6eb7447b07e67d966e46c798c61b1d7f3a955ce3347cbc88bf5b67e9686e5486'
 )
 
 package() {
