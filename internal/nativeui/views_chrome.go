@@ -103,9 +103,6 @@ func (a *App) renderToolbar(c *ui.Context) {
 						a.LoadOutbox(context.Background())
 					}
 				}
-				if iconLabelBtn(c.Key("tb-direct"), iconMail, a.tr("Konten", "Accounts"), false, a.tr("IMAP/SMTP-Konten, Google Kalender & .ics verwalten", "Manage IMAP/SMTP accounts, Google Calendar & .ics")).Clicked() {
-					a.OpenDirectModal(0)
-				}
 			}
 			if iconLabelBtn(c.Key("tb-compose"), iconCompose, a.tr("Verfassen", "Compose"), false, a.tr("Neue E-Mail (c / ⌘N)", "New email (c / ⌘N)")).Clicked() {
 				a.OpenComposeNew()

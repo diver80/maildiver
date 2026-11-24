@@ -2285,8 +2285,8 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 					// Maintenance notice
 					ui.Row(c).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
 						notice := a.tr(
-							"Hinweis: Die Regel wird lokal in MailDiver gespeichert, sofort auf die passenden Mails angewendet und künftig automatisch bei neu eintreffenden Posteingangs-Mails ausgeführt. Verwalten & Löschen unter Konten → Filterregeln.",
-							"Note: The rule is saved locally in MailDiver, applied right away to matching emails, and executed automatically on newly arriving inbox mail. Manage or delete rules under Accounts → Filter Rules.",
+							"Hinweis: Die Regel wird lokal in MailDiver gespeichert, sofort auf die passenden Mails angewendet und künftig automatisch bei neu eintreffenden Posteingangs-Mails ausgeführt. Verwalten & Löschen unter Einstellungen → Konten → Regeln.",
+							"Note: The rule is saved locally in MailDiver, applied right away to matching emails, and executed automatically on newly arriving inbox mail. Manage or delete rules under Settings → Accounts → Rules.",
 						)
 						ui.Text(c, notice).FontSize(11.5).TextColor(t.TextMuted)
 					})
@@ -2541,7 +2541,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 							for _, line := range []string{
 								a.tr("• Workflow: Mehrere ähnliche Mails per Checkbox (oder ⌘-Klick / Shift-Klick) markieren → „Quick-Regel“ klicken → Live-Preview prüfen → speichern & sofort anwenden.", "• Workflow: Check multiple similar emails (or ⌘-click / Shift-click) → click “Quick Rule” → review live preview → save & apply immediately."),
 								a.tr("• Sichere Voreinstellung: Standardaktion ist „In Papierkorb verschieben“, damit versehentliche Treffer wiederherstellbar bleiben. Breite Regeln brauchen eine zweite Bestätigung.", "• Safe default: Default action is “Move to Trash” so any unexpected match remains recoverable. Broad rules require a second confirmation."),
-								a.tr("• Verwaltung: Alle gespeicherten Regeln findest du unter Konten → Filterregeln (Pausieren, manuell Ausführen oder Löschen).", "• Management: View, pause, manually run, or delete all saved rules under Accounts → Filter Rules."),
+								a.tr("• Verwaltung: Alle gespeicherten Regeln findest du unter Einstellungen → Konten → Regeln (Pausieren, manuell Ausführen oder Löschen).", "• Management: View, pause, manually run, or delete all saved rules under Settings → Accounts → Rules."),
 							} {
 								ui.Text(c, line).FontSize(12).TextColor(t.TextMuted)
 							}

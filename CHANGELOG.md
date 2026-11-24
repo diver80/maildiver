@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.27 (2026-11-24)
+
+### Konten, Kalender, Regeln & S/MIME direkt in die Einstellungen integriert
+- **Aufgeräumte Toolbar (Desktop & Handy):** Der separate **Konten**-Button in der oberen Desktop-Toolbar (und das zweite Konten-Icon im Handy-Header) wurde entfernt, sodass oben nur noch die täglichen Aktionen bleiben.
+- **Ein zentrales Einstellungsfenster (`⌘,`):** **Konten** (inkl. der Unter-Tabs *E-Mail*, *Kalender*, *Regeln*, *TB-Import* und *S/MIME & PGP*) ist jetzt ein eigener Tab direkt in **Einstellungen**. Alle Direkteinstiege (*Konten & Kalender…* und *Filterregeln verwalten…* im ☰ Menü, Sync-Fehler-Banner, Onboarding, Regel-Assistent) springen direkt in den passenden Unter-Tab der Einstellungen.
+
 ## 0.7.26 (2026-11-24)
 
 ### Quelltext- & Voll-Header-Ansicht im Mail-Reader (+ alle Header für Filterregeln)

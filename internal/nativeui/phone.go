@@ -316,9 +316,6 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 				ui.Text(c, v).FontSize(10.5).TextColor(withAlpha(t.TextMuted, 0.70)).Margin(verTop, 0, 0, 0).SingleLine()
 			}
 			ui.Spacer(c)
-			if a.isDirectMode() && phoneIconButton(c.Key("ph-accounts"), iconUsers, a.tr("Konten", "Accounts"), ui.Color{}).Clicked() {
-				a.OpenDirectModal(0)
-			}
 			if phoneIconButton(c.Key("ph-settings"), iconSettings, a.tr("Einstellungen", "Settings"), ui.Color{}).Clicked() {
 				a.OpenSettings()
 			}

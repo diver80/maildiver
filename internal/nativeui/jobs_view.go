@@ -365,8 +365,8 @@ func (a *App) renderArchiveModal(c *ui.Context) {
 			ui.Text(c, stats).FontSize(11.5).TextColor(t.TextMuted)
 
 			if len(ar.accountLabels) == 0 {
-				ui.Text(c, a.tr("Kein Konto eingerichtet. Füge zuerst unter „Konten & Regeln“ ein IMAP-Konto hinzu.",
-					"No account configured. Add an IMAP account under “Accounts & Rules” first.")).FontSize(12).TextColor(t.Warning)
+				ui.Text(c, a.tr("Kein Konto eingerichtet. Füge zuerst unter „Einstellungen → Konten“ ein IMAP-Konto hinzu.",
+					"No account configured. Add an IMAP account under “Settings → Accounts” first.")).FontSize(12).TextColor(t.Warning)
 				return
 			}
 			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {

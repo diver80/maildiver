@@ -244,15 +244,13 @@ func (a *App) isDirectMode() bool {
 	return a.opts.Direct != nil
 }
 
-// OpenDirectModal opens the standalone accounts/calendars/rules/import manager on the given tab
-// (0 = IMAP/SMTP, 1 = Google & iCal, 2 = Filter Rules, 3 = Thunderbird Import). UI thread only.
-func (a *App) OpenDirectModal(tab int) {
+// initDirectTabState prepares presets, Thunderbird options, and reloads live accounts/calendars/rules/certs.
+func (a *App) initDirectTabState(tab int) {
 	if !a.isDirectMode() {
 		return
 	}
 	d := &a.direct
-	d.open = true
-	if tab >= 0 && tab <= 3 {
+	if tab >= 0 && tab <= 4 {
 		d.tab = tab
 	}
 	if !d.tbInitDone {
@@ -269,7 +267,25 @@ func (a *App) OpenDirectModal(tab int) {
 	if d.tab == 3 {
 		a.discoverThunderbirdProfiles()
 	}
+	if d.tab == 4 {
+		a.reloadSMIMECerts()
+		a.reloadPGPKeys()
+	}
 	a.reloadDirectState(context.Background())
+}
+
+// OpenDirectModal opens the unified Settings dialog directly on the Accounts tab with the requested sub-tab
+// (0 = IMAP/SMTP, 1 = Google & iCal, 2 = Filter Rules, 3 = Thunderbird Import, 4 = S/MIME & PGP). UI thread only.
+func (a *App) OpenDirectModal(tab int) {
+	if !a.isDirectMode() {
+		return
+	}
+	if !a.settings.open {
+		a.OpenSettings()
+	}
+	a.settings.tab = settingsTabAccounts
+	a.direct.open = false
+	a.initDirectTabState(tab)
 }
 
 func (a *App) applyDirectPreset(p config.MailProviderPreset) {
@@ -1132,7 +1148,70 @@ func (a *App) renderDirectOnboarding(c *ui.Context) {
 	})
 }
 
-// renderDirectModal renders the 4-tab modal for IMAP/SMTP accounts, Google/iCal calendars, local filter rules, and Thunderbird import.
+// renderDirectContent renders the sub-tabs (Email, Calendar, Rules, TB Import, S/MIME & PGP)
+// and active pane inside Settings → Accounts (or the standalone modal used by direct screenshot tests).
+func (a *App) renderDirectContent(c *ui.Context) {
+	if !a.isDirectMode() {
+		return
+	}
+	d := &a.direct
+	// d.tab is the view (3 the Thunderbird import); a phone has no Thunderbird to import from,
+	// and without that tab the others fit its width.
+	views := []int{0, 1, 2, 3, 4}
+	labels := []string{a.tr("E-Mail", "Email"), a.tr("Kalender", "Calendar"), a.tr("Regeln", "Rules"), a.tr("TB-Import", "TB Import"), "S/MIME & PGP"}
+	if isMobileOS() {
+		views = []int{0, 1, 2, 4}
+		labels = append(labels[:3:3], labels[4])
+	}
+	sel := 0
+	for i, v := range views {
+		if v == d.tab {
+			sel = i
+		}
+	}
+	var tabsChanged bool
+	if a.isPhone() {
+		// Four segments do not fit a phone's width: a drop-down.
+		lbl := labels[sel]
+		if ui.Select(c.Key("dir-tabs-sel"), &lbl, labels).FillWidth().Changed() {
+			for i, l := range labels {
+				if l == lbl {
+					sel = i
+				}
+			}
+			tabsChanged = true
+		}
+	} else {
+		tabsChanged = ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed()
+	}
+	if tabsChanged {
+		d.tab = views[sel]
+		if d.tab == 3 && len(d.tbProfiles) == 0 && d.tbProfilePath == "" {
+			a.discoverThunderbirdProfiles()
+		}
+		if d.tab == 4 {
+			a.reloadSMIMECerts()
+			a.reloadPGPKeys()
+		}
+	}
+
+	ui.Column(c).FillWidth().Gap(12).Children(func() {
+		switch d.tab {
+		case 0:
+			a.renderDirectMailTab(c)
+		case 1:
+			a.renderDirectCalendarTab(c)
+		case 2:
+			a.renderDirectRulesTab(c)
+		case 3:
+			a.renderDirectTBImportTab(c)
+		default:
+			a.renderDirectSMIMETab(c)
+		}
+	})
+}
+
+// renderDirectModal renders the standalone modal wrapper when direct.open is set explicitly (e.g. legacy tests).
 func (a *App) renderDirectModal(c *ui.Context) {
 	if !a.isDirectMode() {
 		return
@@ -1149,60 +1228,9 @@ func (a *App) renderDirectModal(c *ui.Context) {
 				}
 			})
 
-			// d.tab is the view (3 the Thunderbird import); a phone has no Thunderbird to import from,
-			// and without that tab the others fit its width.
-			views := []int{0, 1, 2, 3, 4}
-			labels := []string{a.tr("E-Mail", "Email"), a.tr("Kalender", "Calendar"), a.tr("Regeln", "Rules"), a.tr("TB-Import", "TB Import"), "S/MIME & PGP"}
-			if isMobileOS() {
-				views = []int{0, 1, 2, 4}
-				labels = append(labels[:3:3], labels[4])
-			}
-			sel := 0
-			for i, v := range views {
-				if v == d.tab {
-					sel = i
-				}
-			}
-			var tabsChanged bool
-			if a.isPhone() {
-				// Four segments do not fit a phone's width: a drop-down.
-				lbl := labels[sel]
-				if ui.Select(c.Key("dir-tabs-sel"), &lbl, labels).FillWidth().Changed() {
-					for i, l := range labels {
-						if l == lbl {
-							sel = i
-						}
-					}
-					tabsChanged = true
-				}
-			} else {
-				tabsChanged = ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed()
-			}
-			if tabsChanged {
-				d.tab = views[sel]
-				if d.tab == 3 && len(d.tbProfiles) == 0 && d.tbProfilePath == "" {
-					a.discoverThunderbirdProfiles()
-				}
-				if d.tab == 4 {
-					a.reloadSMIMECerts()
-					a.reloadPGPKeys()
-				}
-			}
-
 			ui.Scroll(c.Key("dir-scroll")).TrackScroll(&a.widgets.directScroll).Grow(1).MinHeight(0).MaxHeight(590).FillWidth().Children(func() {
 				ui.Column(c).FillWidth().Gap(12).Padding(0, 6, 0, 0).Children(func() {
-					switch d.tab {
-					case 0:
-						a.renderDirectMailTab(c)
-					case 1:
-						a.renderDirectCalendarTab(c)
-					case 2:
-						a.renderDirectRulesTab(c)
-					case 3:
-						a.renderDirectTBImportTab(c)
-					default:
-						a.renderDirectSMIMETab(c)
-					}
+					a.renderDirectContent(c)
 				})
 			})
 

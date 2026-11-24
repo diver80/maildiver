@@ -35,11 +35,12 @@ type accountFolderPref struct {
 }
 
 const (
-	settingsTabGeneral = 0
-	settingsTabCompose = 1
-	settingsTabFolders = 2
-	settingsTabPrivacy = 3
-	settingsTabAI      = 4
+	settingsTabGeneral  = 0
+	settingsTabCompose  = 1
+	settingsTabFolders  = 2
+	settingsTabPrivacy  = 3
+	settingsTabAI       = 4
+	settingsTabAccounts = 5
 )
 
 type settingsUI struct {
@@ -116,9 +117,11 @@ type triageAccountRow struct {
 }
 
 func (a *App) OpenSettings() {
-	cfg, err := a.opts.ConfigLoader()
-	if err != nil {
-		cfg = a.cfg
+	cfg := a.cfg
+	if a.opts.ConfigLoader != nil {
+		if loaded, err := a.opts.ConfigLoader(); err == nil {
+			cfg = loaded
+		}
 	}
 	lpRules := make([]config.LinkPreviewRule, len(cfg.App.LinkPreview.Rules))
 	copy(lpRules, cfg.App.LinkPreview.Rules)
@@ -503,7 +506,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 		maxScrollH = min(560, max(220, a.winH-220))
 	}
 	a.modal(c, &s.open, func() {
-		ui.Column(c).Width(a.modalW(700)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(760)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
 				if v := a.versionTag(); v != "" {
@@ -514,22 +517,40 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 					s.open = false
 				}
 			})
-			tabLabels := []string{
-				a.tr("Allgemein", "General"),
-				a.tr("Verfassen", "Compose"),
-				a.tr("Ordner", "Folders"),
-				a.tr("Web & Bilder", "Web & Images"),
-				a.tr("KI & Sync", "AI & Sync"),
+			type tabSpec struct {
+				id    int
+				label string
 			}
+			tabs := []tabSpec{
+				{settingsTabGeneral, a.tr("Allgemein", "General")},
+			}
+			if a.isDirectMode() {
+				tabs = append(tabs, tabSpec{settingsTabAccounts, a.tr("Konten", "Accounts")})
+			}
+			tabs = append(tabs,
+				tabSpec{settingsTabCompose, a.tr("Verfassen", "Compose")},
+				tabSpec{settingsTabFolders, a.tr("Ordner", "Folders")},
+				tabSpec{settingsTabPrivacy, a.tr("Web & Bilder", "Web & Images")},
+				tabSpec{settingsTabAI, a.tr("KI & Sync", "AI & Sync")},
+			)
+			tabLabels := make([]string, len(tabs))
+			selIdx := 0
+			for i, tb := range tabs {
+				tabLabels[i] = tb.label
+				if tb.id == s.tab {
+					selIdx = i
+				}
+			}
+			prevTab := s.tab
 			if a.isPhone() {
 				ui.Row(c.Key("set-tabs-ph")).FillWidth().Wrap().Gap(6).Children(func() {
-					for i, lbl := range tabLabels {
-						idx := i
+					for i, tb := range tabs {
+						idx := tb.id
 						var btn ui.Element
 						if s.tab == idx {
-							btn = ui.PrimaryButton(c.Key(fmt.Sprintf("set-tab-%d", idx)), lbl).Padding(4, 10)
+							btn = ui.PrimaryButton(c.Key(fmt.Sprintf("set-tab-%d", i)), tb.label).Padding(4, 10)
 						} else {
-							btn = ui.Button(c.Key(fmt.Sprintf("set-tab-%d", idx)), lbl).Padding(4, 10)
+							btn = ui.Button(c.Key(fmt.Sprintf("set-tab-%d", i)), tb.label).Padding(4, 10)
 						}
 						if btn.Clicked() {
 							s.tab = idx
@@ -537,26 +558,46 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 					}
 				})
 			} else {
-				ui.Segmented(c.Key("set-tabs"), &s.tab, tabLabels...)
+				if ui.Segmented(c.Key("set-tabs"), &selIdx, tabLabels...).Changed() && selIdx >= 0 && selIdx < len(tabs) {
+					s.tab = tabs[selIdx].id
+				}
 			}
-			ui.Scroll(c.Key(fmt.Sprintf("set-scroll-%d", s.tab))).FillWidth().MaxHeight(maxScrollH).Children(func() {
+			if s.tab == settingsTabAccounts && prevTab != settingsTabAccounts {
+				a.initDirectTabState(a.direct.tab)
+			}
+			sc := ui.Scroll(c.Key(fmt.Sprintf("set-scroll-%d", s.tab))).FillWidth().MaxHeight(maxScrollH)
+			if s.tab == settingsTabAccounts {
+				sc = sc.TrackScroll(&a.widgets.directScroll)
+			}
+			sc.Children(func() {
 				ui.Column(c).FillWidth().Gap(8).Padding(0, 6, 0, 0).Children(func() {
 					a.renderSettingsBody(c)
 				})
 			})
-			if s.err != "" {
+			if s.err != "" && s.tab != settingsTabAccounts {
 				ui.Text(c, s.err).FontSize(12).TextColor(t.Danger)
 			}
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.Spacer(c)
-				if ui.Button(c.Key("set-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
-					a.stopLANQRSession()
-					s.open = false
-				}
-				if ui.PrimaryButton(c.Key("set-save"), a.tr("Speichern", "Save")).Clicked() {
-					a.SaveSettings()
-				}
-			})
+			if s.tab == settingsTabAccounts {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
+					ui.Text(c, a.tr("Passwörter & OAuth-Tokens werden sicher im System-Schlüsselbund gespeichert.", "Passwords & OAuth tokens are stored securely in your system keychain.")).FontSize(11).TextColor(t.TextMuted).Grow(1)
+					if ui.Button(c.Key("set-close"), a.tr("Schließen", "Close")).Clicked() {
+						a.stopLANQRSession()
+						s.open = false
+					}
+				})
+			} else {
+				ui.Row(c).FillWidth().Gap(8).Children(func() {
+					ui.Spacer(c)
+					if ui.Button(c.Key("set-cancel"), a.tr("Abbrechen", "Cancel")).Clicked() {
+						a.stopLANQRSession()
+						s.open = false
+					}
+					if ui.PrimaryButton(c.Key("set-save"), a.tr("Speichern", "Save")).Clicked() {
+						a.SaveSettings()
+					}
+				})
+			}
 		})
 	})
 	if wasOpen && !s.open && s.lanSession != nil {
@@ -586,6 +627,8 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 	}
 
 	switch s.tab {
+	case settingsTabAccounts:
+		a.renderDirectContent(c)
 	case settingsTabGeneral:
 		a.settingsSection(c, a.tr("Darstellung & Sprache", "Appearance & Language"))
 		field("set-lang", a.tr("Sprache", "Language"), func() {

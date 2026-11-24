@@ -1416,15 +1416,15 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
 			}
 		case sec.PGP:
-			msgErr := a.tr("OpenPGP-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Schlüssel unter Konten → S/MIME & PGP importieren).",
-				"OpenPGP encrypted. MailDiver could not decrypt this email (import secret key under Accounts → S/MIME & PGP).")
+			msgErr := a.tr("OpenPGP-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Schlüssel unter Einstellungen → Konten → S/MIME & PGP importieren).",
+				"OpenPGP encrypted. MailDiver could not decrypt this email (import secret key under Settings → Accounts → S/MIME & PGP).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}
 			lines = append(lines, msgErr)
 		default:
-			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Konten → S/MIME & PGP importieren).",
-				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Accounts → S/MIME & PGP).")
+			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Einstellungen → Konten → S/MIME & PGP importieren).",
+				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Settings → Accounts → S/MIME & PGP).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}

@@ -311,8 +311,15 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	}
 	app.composeOpen = false
 
-	// 5. Direct modal: Tab 0 (IMAP/SMTP), Tab 1 (Google & iCal), Tab 2 (Filter Rules), Tab 3 (TB-Import)
+	// 5. Accounts button is no longer in the top toolbar; OpenDirectModal opens unified Settings on the Accounts tab.
+	tt.Frame()
+	if _, ok := tt.Find("Konten"); ok {
+		t.Fatalf("did not expect standalone 'Konten' button in top toolbar; texts=%v", tt.Texts())
+	}
 	app.OpenDirectModal(0)
+	if !app.settings.open || app.settings.tab != settingsTabAccounts || app.direct.open {
+		t.Fatalf("expected OpenDirectModal(0) to open unified Settings on Accounts tab, got settings.open=%v tab=%d direct.open=%v", app.settings.open, app.settings.tab, app.direct.open)
+	}
 	select {
 	case fn := <-updates:
 		fn()
@@ -320,6 +327,9 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 		t.Fatalf("timed out waiting for reloadDirectState")
 	}
 	tt.Frame()
+	if _, ok := tt.Find("Einstellungen"); !ok {
+		t.Fatalf("expected unified Settings modal title")
+	}
 	if _, ok := tt.Find("Neues IMAP/SMTP-Konto hinzufügen"); !ok {
 		t.Fatalf("expected IMAP/SMTP form in tab 0")
 	}
