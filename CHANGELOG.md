@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.23 (2026-11-24)
+
+### S/MIME-Entschlüsselung (macOS-Keychain-Chunking) & S/MIME-Bulk-Import für Teams
+- **Fix: S/MIME-Entschlüsselung auf macOS bei großen Zertifikatsketten (z. B. SwissSign):** `/usr/bin/security -i` schneidet Eingabezeilen auf macOS still bei 4.096 Bytes ab, wodurch komplette S/MIME-Schlüsselpakete (~13 KB mit Zertifikatskette) beim Speichern im Schlüsselbund abgeschnitten wurden. `keychainStore` ([internal/secretstore/store.go](internal/secretstore/store.go)) speichert große Secrets jetzt automatisch in geprüften Chunks (`≤ 2.800 Bytes`) mit SHA-256-Prüfsumme, erkennt früher abgeschnittene Keychain-Einträge und repariert sie beim ersten Lesen selbstständig aus dem Fallback – ohne erneuten `.p12`-Import.
+- **Klarere S/MIME-Fehlermeldungen:** Wenn ein eigenes Zertifikat zwar registriert ist, sein privater Schlüssel aber nicht geladen werden kann, zeigt MailDiver jetzt den konkreten Ladefehler statt fälschlich *„kein S/MIME-Zertifikat zum Entschlüsseln installiert“*.
+- **Bulk-Import für S/MIME-Empfänger-Zertifikate:** Unter *Konten → S/MIME & PGP* lassen sich jetzt ganze Mitarbeiter-Verzeichnisse auf einmal importieren – per **Dateien wählen…** (Mehrfachauswahl), **Ordner wählen…** (rekursiver Ordner-Scan), Multi-Zertifikat-`.pem`-Dateien, PKCS#7-Bundles (`.p7b`/`.p7c`, inkl. automatischem Überspringen von CA-Zertifikaten) oder `.zip`-Archiven. Die Kontakt-Zertifikatsliste ist ab mehreren Einträgen scrollbar und durchsuchbar.
+
 ## 0.7.22 (2026-11-24)
 
 - **„Bei neuer Mail automatisch scannen“ funktioniert wieder:** Neu eingetroffene Inbox-Mails (kein Nachladen älterer Mails) starten wieder einen Triage-Scan, wenn die Einstellung aktiv ist; verschlüsselte Mails werden dabei weiterhin nie entschlüsselt.

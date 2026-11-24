@@ -134,66 +134,138 @@ func (a *App) renderDirectSMIMESection(c *ui.Context) {
 		})
 	})
 
-	// Section 2: Contact public certificates (.cer/.crt/.pem)
+	// Section 2: Contact public certificates (.cer/.crt/.pem/.p7b/.zip — single or bulk import)
 	ui.Column(c.Key("smime-ct-sec")).FillWidth().Padding(12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
-		ui.Text(c, a.tr("Empfänger-Zertifikate (.cer / .crt / .pem)", "Recipient Certificates (.cer / .crt / .pem)")).FontSize(13).Bold()
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			hdr := a.trf("Empfänger-Zertifikate (%d)", "Recipient Certificates (%d)", len(d.smimeContacts))
+			ui.Text(c, hdr).FontSize(13).Bold().Grow(1)
+			ui.Text(c, ".cer / .crt / .pem / .p7b / .zip").FontSize(11).TextColor(t.TextMuted)
+		})
 		ui.Text(c, a.tr(
-			"Zertifikate aus gültig signierten eingehenden Mails werden automatisch ergänzt.",
-			"Certificates from verified signed incoming emails are collected automatically.",
+			"Zertifikate aus gültig signierten eingehenden Mails werden automatisch ergänzt. Für ganze Teams können mehrere Dateien, ein Ordner, ein .p7b/.pem-Bundle oder ein .zip-Archiv auf einmal importiert werden.",
+			"Certificates from verified signed incoming emails are collected automatically. For teams, you can bulk-import multiple files, an entire folder, a .p7b/.pem bundle, or a .zip archive at once.",
 		)).FontSize(11.5).TextColor(t.TextMuted)
+
+		runBulkImport := func(paths []string) {
+			if d.smimeBusy || len(paths) == 0 {
+				return
+			}
+			d.smimeBusy = true
+			go func() {
+				res, err := a.opts.Direct.ImportSMIMECertPaths(paths)
+				a.emitUpdate(func() {
+					d.smimeBusy = false
+					if err != nil {
+						d.smimeMsg = err.Error()
+						d.smimeErr = true
+						return
+					}
+					d.smimeCertPath = ""
+					var parts []string
+					if res.Imported > 0 {
+						parts = append(parts, a.trf("%d neu importiert", "%d imported", res.Imported))
+					}
+					if res.Updated > 0 {
+						parts = append(parts, a.trf("%d aktualisiert", "%d updated", res.Updated))
+					}
+					if res.Skipped > 0 {
+						parts = append(parts, a.trf("%d übersprungen", "%d skipped", res.Skipped))
+					}
+					if res.Failed > 0 {
+						parts = append(parts, a.trf("%d fehlerhaft", "%d failed", res.Failed))
+					}
+					d.smimeMsg = a.tr("Empfänger-Zertifikate: ", "Recipient certificates: ") + strings.Join(parts, " · ")
+					d.smimeErr = false
+					a.reloadSMIMECerts()
+				})
+			}()
+		}
+
+		if len(d.smimeContacts) > 4 {
+			ui.SearchField(c.Key("sm-ct-filter"), &d.smimeCertFilter).Placeholder(a.tr("Empfänger-Zertifikate filtern (Name, E-Mail, Aussteller)…", "Filter recipient certificates (name, email, issuer)…")).FillWidth()
+		}
+
+		flt := strings.ToLower(strings.TrimSpace(d.smimeCertFilter))
+		filtered := d.smimeContacts
+		if flt != "" {
+			filtered = nil
+			for _, ct := range d.smimeContacts {
+				hay := strings.ToLower(ct.Email + " " + ct.Subject + " " + ct.Issuer)
+				if strings.Contains(hay, flt) {
+					filtered = append(filtered, ct)
+				}
+			}
+		}
+
 		if len(d.smimeContacts) == 0 {
 			ui.Text(c, a.tr("Noch keine Empfänger-Zertifikate gespeichert.", "No recipient certificates stored yet.")).FontSize(12).TextColor(t.TextMuted)
+		} else if len(filtered) == 0 {
+			ui.Text(c, a.tr("Keine passenden Empfänger-Zertifikate gefunden.", "No matching recipient certificates.")).FontSize(12).TextColor(t.TextMuted)
 		} else {
-			for i, ct := range d.smimeContacts {
-				ctCopy := ct
-				ui.Row(c.Key(fmt.Sprintf("sm-ct-%d", i))).FillWidth().Padding(8, 10).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Accent)
-					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-						ui.Text(c, ctCopy.Email+" · "+ctCopy.Subject).FontSize(12.5).Bold().SingleLine()
-						ui.Text(c, a.trf("Aussteller: %s · Gültig bis: %s", "Issuer: %s · Valid until: %s", ctCopy.Issuer, truncateText(ctCopy.NotAfter, 10))).FontSize(11).TextColor(t.TextMuted).SingleLine()
-					})
-					if iconBtn(c.Key(fmt.Sprintf("sm-ct-del-%d", i)), iconTrash, a.tr("Zertifikat entfernen", "Remove certificate"), t.Danger, false).Clicked() {
-						_ = a.opts.Direct.DeleteSMIMEContact(ctCopy.Email)
-						a.reloadSMIMECerts()
+			renderContactRows := func() {
+				ui.Column(c).FillWidth().Gap(6).Children(func() {
+					for i, ct := range filtered {
+						ctCopy := ct
+						ui.Row(c.Key(fmt.Sprintf("sm-ct-%d-%s", i, ctCopy.Email))).FillWidth().Padding(8, 10).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(8).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconSignature).Size(14, 14).TextColor(t.Accent)
+							ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+								ui.Text(c, ctCopy.Email+" · "+ctCopy.Subject).FontSize(12.5).Bold().SingleLine()
+								ui.Text(c, a.trf("Aussteller: %s · Gültig bis: %s", "Issuer: %s · Valid until: %s", ctCopy.Issuer, truncateText(ctCopy.NotAfter, 10))).FontSize(11).TextColor(t.TextMuted).SingleLine()
+							})
+							if iconBtn(c.Key(fmt.Sprintf("sm-ct-del-%d-%s", i, ctCopy.Email)), iconTrash, a.tr("Zertifikat entfernen", "Remove certificate"), t.Danger, false).Clicked() {
+								_ = a.opts.Direct.DeleteSMIMEContact(ctCopy.Email)
+								a.reloadSMIMECerts()
+							}
+						})
 					}
 				})
+			}
+			if len(filtered) > 5 {
+				ui.Scroll(c.Key("sm-ct-scroll")).FillWidth().MaxHeight(240).Children(renderContactRows)
+			} else {
+				renderContactRows()
 			}
 		}
 
 		ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-			if ui.Button(c.Key("sm-ct-pick"), a.tr("Datei wählen…", "Choose file…")).Clicked() {
+			pickFilesBtn := ui.Button(c.Key("sm-ct-pick"), a.tr("Dateien wählen…", "Choose files…"))
+			if d.smimeBusy {
+				pickFilesBtn.Disabled(true)
+			}
+			if pickFilesBtn.Clicked() && !d.smimeBusy {
 				a.pickFile(FilePickRequest{
-					Mode:  "open",
-					Title: a.tr("Öffentliches Zertifikat (.cer/.crt/.pem)", "Public Certificate (.cer/.crt/.pem)"),
+					Mode:  "open-multi",
+					Title: a.tr("Empfänger-Zertifikate auswählen (.cer/.crt/.pem/.p7b/.zip)", "Select Recipient Certificates (.cer/.crt/.pem/.p7b/.zip)"),
 				}, func(paths []string) {
-					if len(paths) > 0 {
+					if len(paths) == 1 {
 						a.direct.smimeCertPath = paths[0]
+					}
+					if len(paths) > 0 {
+						runBulkImport(paths)
 					}
 				})
 			}
-			ui.TextInput(c.Key("sm-ct-path"), &d.smimeCertPath).Placeholder("~/contact.pem").Grow(1)
+			pickDirBtn := ui.Button(c.Key("sm-ct-pick-dir"), a.tr("Ordner wählen…", "Choose folder…"))
+			if d.smimeBusy {
+				pickDirBtn.Disabled(true)
+			}
+			if pickDirBtn.Clicked() && !d.smimeBusy {
+				a.pickFile(FilePickRequest{
+					Mode:  "dir",
+					Title: a.tr("Zertifikats-Ordner für Bulk-Import auswählen", "Select Certificate Folder for Bulk Import"),
+				}, func(paths []string) {
+					if len(paths) > 0 {
+						runBulkImport(paths)
+					}
+				})
+			}
+			ui.TextInput(c.Key("sm-ct-path"), &d.smimeCertPath).Placeholder(a.tr("~/certs/ oder ~/mitarbeiter.p7b / .zip", "~/certs/ or ~/team.p7b / .zip")).Grow(1)
 			ctImpBtn := ui.Button(c.Key("sm-ct-imp"), a.tr("Importieren", "Import"))
 			if d.smimeBusy {
 				ctImpBtn.Disabled(true)
 			}
 			if ctImpBtn.Clicked() && !d.smimeBusy && strings.TrimSpace(d.smimeCertPath) != "" {
-				path := strings.TrimSpace(d.smimeCertPath)
-				d.smimeBusy = true
-				go func() {
-					info, err := a.opts.Direct.ImportSMIMECertFile(path)
-					a.emitUpdate(func() {
-						d.smimeBusy = false
-						if err != nil {
-							d.smimeMsg = err.Error()
-							d.smimeErr = true
-							return
-						}
-						d.smimeCertPath = ""
-						d.smimeMsg = a.trf("Empfänger-Zertifikat für %s gespeichert", "Saved recipient certificate for %s", info.Email)
-						d.smimeErr = false
-						a.reloadSMIMECerts()
-					})
-				}()
+				runBulkImport([]string{strings.TrimSpace(d.smimeCertPath)})
 			}
 		})
 	})

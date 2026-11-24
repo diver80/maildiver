@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,11 +96,22 @@ func TestKeychainEncodingAndKeyValidation(t *testing.T) {
 	// Base64 round-trip for umlauts, quotes, and newlines
 	secret := "Pässwört!\"'\nLine2"
 	encoded := keychainB64Prefix + "UMOkc3N3w7ZydCEiJwpMaW5lMg=="
-	if got := decodeKeychainSecret(encoded + "\n"); got != secret {
-		t.Fatalf("decodeKeychainSecret(b64) = %q, want %q", got, secret)
+	if got, ok := decodeKeychainSecret(encoded + "\n"); !ok || got != secret {
+		t.Fatalf("decodeKeychainSecret(b64) = %q (ok=%v), want %q", got, ok, secret)
+	}
+	// Truncated/corrupted b64: payload must be rejected so fallback/self-heal can recover it.
+	if _, ok := decodeKeychainSecret(keychainB64Prefix + "abc"); ok {
+		t.Fatalf("expected truncated b64: payload to return ok=false")
+	}
+	// Chunk manifest parser
+	if n, sum, ok := parseKeychainChunkManifest(keychainChunkPrefix + "5:" + strings.Repeat("a", 64)); !ok || n != 5 || len(sum) != 64 {
+		t.Fatalf("parseKeychainChunkManifest failed: n=%d sum=%q ok=%v", n, sum, ok)
+	}
+	if _, _, ok := parseKeychainChunkManifest(keychainChunkPrefix + "0:" + strings.Repeat("a", 64)); ok {
+		t.Fatalf("expected 0-chunk manifest to be rejected")
 	}
 	// Legacy plaintext passthrough
-	if got := decodeKeychainSecret("plain-legacy-secret\n"); got != "plain-legacy-secret" {
-		t.Fatalf("decodeKeychainSecret(plain) = %q", got)
+	if got, ok := decodeKeychainSecret("plain-legacy-secret\n"); !ok || got != "plain-legacy-secret" {
+		t.Fatalf("decodeKeychainSecret(plain) = %q (ok=%v)", got, ok)
 	}
 }

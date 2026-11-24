@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smallstep/pkcs7"
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 
 	"github.com/diver80/maildiver/internal/secretstore"
@@ -255,26 +256,87 @@ func (m *Manager) ImportPKCS12(p12Data []byte, password string) (CertInfo, error
 	return info, nil
 }
 
-// ImportPublicCert imports a contact's public X.509 certificate (PEM or DER) for encrypting emails to them.
+// ImportPublicCert imports a contact's public X.509 certificate (PEM, DER, or PKCS#7) for encrypting emails to them.
 func (m *Manager) ImportPublicCert(data []byte) (CertInfo, error) {
+	infos, err := m.ImportPublicCerts(data)
+	if err != nil {
+		return CertInfo{}, err
+	}
+	return infos[0], nil
+}
+
+// ImportPublicCerts extracts and stores one or more public recipient X.509 certificates from
+// a single PEM/DER cert, a multi-certificate PEM bundle, or a PKCS#7 (.p7b/.p7c) bundle.
+// Pure CA certificates without email addresses in bundles are silently skipped.
+func (m *Manager) ImportPublicCerts(data []byte) ([]CertInfo, error) {
 	if len(data) == 0 {
-		return CertInfo{}, fmt.Errorf("leere Zertifikatsdatei")
+		return nil, fmt.Errorf("leere Zertifikatsdatei")
 	}
-	var cert *x509.Certificate
-	if block, _ := pem.Decode(data); block != nil {
-		c, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return CertInfo{}, fmt.Errorf("ungültiges PEM-Zertifikat: %w", err)
+	var parsed []*x509.Certificate
+	rest := data
+	foundPEM := false
+	for {
+		block, next := pem.Decode(rest)
+		if block == nil {
+			break
 		}
-		cert = c
-	} else {
-		c, err := x509.ParseCertificate(data)
-		if err != nil {
-			return CertInfo{}, fmt.Errorf("ungültiges X.509-Zertifikat: %w", err)
+		foundPEM = true
+		rest = next
+		switch strings.ToUpper(strings.TrimSpace(block.Type)) {
+		case "CERTIFICATE", "X509 CERTIFICATE", "TRUSTED CERTIFICATE":
+			if c, err := x509.ParseCertificate(block.Bytes); err == nil {
+				parsed = append(parsed, c)
+			}
+		case "PKCS7", "CMS":
+			if p7, err := pkcs7.Parse(block.Bytes); err == nil {
+				parsed = append(parsed, p7.Certificates...)
+			}
 		}
-		cert = c
 	}
-	return m.saveContactCert(cert)
+	if !foundPEM {
+		if c, err := x509.ParseCertificate(data); err == nil {
+			parsed = append(parsed, c)
+		} else if p7, perr := pkcs7.Parse(data); perr == nil && len(p7.Certificates) > 0 {
+			parsed = append(parsed, p7.Certificates...)
+		} else {
+			return nil, fmt.Errorf("ungültiges X.509-/PKCS#7-Zertifikat: %w", err)
+		}
+	}
+	if len(parsed) == 0 {
+		return nil, fmt.Errorf("keine gültigen Zertifikate in Datei gefunden")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var imported []CertInfo
+	for _, cert := range parsed {
+		if cert == nil {
+			continue
+		}
+		emails := certEmails(cert)
+		if len(emails) == 0 {
+			// Skip CA/intermediate certificates bundled alongside end-entity certificates.
+			continue
+		}
+		info := buildCertInfo(cert, false)
+		certPEM := encodeCertPEM(cert)
+		for _, em := range emails {
+			recInfo := info
+			recInfo.Email = em
+			m.state.Contacts[em] = storedCertRecord{
+				Info:    recInfo,
+				CertPEM: certPEM,
+			}
+			imported = append(imported, recInfo)
+		}
+	}
+	if len(imported) == 0 {
+		return nil, fmt.Errorf("Zertifikat enthält keine E-Mail-Adresse (SAN/CN)")
+	}
+	if err := m.saveDiskLocked(); err != nil {
+		return nil, err
+	}
+	return imported, nil
 }
 
 func (m *Manager) saveContactCert(cert *x509.Certificate) (CertInfo, error) {
@@ -455,17 +517,31 @@ func (m *Manager) LoadIdentity(email string) (*Identity, error) {
 
 // AllIdentities loads all installed personal S/MIME identities (used for decrypting incoming mail).
 func (m *Manager) AllIdentities() []*Identity {
+	ids, _ := m.AllIdentitiesWithErr()
+	return ids
+}
+
+// AllIdentitiesWithErr loads all installed personal S/MIME identities and surfaces any key-loading
+// error when identities are registered on disk but none could be loaded from secretstore.
+func (m *Manager) AllIdentitiesWithErr() ([]*Identity, error) {
 	if m == nil {
-		return nil
+		return nil, nil
 	}
 	infos := m.ListIdentities()
 	out := make([]*Identity, 0, len(infos))
+	var lastErr error
 	for _, inf := range infos {
-		if id, err := m.LoadIdentity(inf.Email); err == nil {
+		id, err := m.LoadIdentity(inf.Email)
+		if err == nil {
 			out = append(out, id)
+		} else {
+			lastErr = err
 		}
 	}
-	return out
+	if len(out) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	return out, nil
 }
 
 // LookupRecipientCerts resolves X.509 certificates for each recipient email (searching

@@ -65,6 +65,7 @@ type DirectController interface {
 	ApplyThunderbirdImport(ctx context.Context, profilePath string, opts mailengine.TBImportOptions) (mailengine.TBImportReport, error)
 	ImportSMIMEP12File(path, password string) (smime.CertInfo, error)
 	ImportSMIMECertFile(path string) (smime.CertInfo, error)
+	ImportSMIMECertPaths(paths []string) (mailengine.SMIMEBulkImportResult, error)
 	ListSMIMEIdentities() []smime.CertInfo
 	ListSMIMEContacts() []smime.CertInfo
 	DeleteSMIMEIdentity(email string) error
@@ -203,6 +204,7 @@ type directUI struct {
 	smimeP12Path    string
 	smimeP12Pass    string
 	smimeCertPath   string
+	smimeCertFilter string
 	smimeMsg        string
 	smimeErr        bool
 

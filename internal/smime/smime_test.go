@@ -153,4 +153,25 @@ func TestSMIMEImportSignVerifyEncryptDecryptRoundTrip(t *testing.T) {
 	if innerVR == nil || !innerVR.Valid || !innerVR.Trusted || innerVR.SignerEmail != "alice@example.com" {
 		t.Fatalf("expected valid inner signature after decrypt, got %+v", innerVR)
 	}
+
+	// Verify multi-cert PEM bundle import (with CA cert included and skipped cleanly).
+	bundlePEM := append([]byte(encodeCertPEM(caCert)), '\n')
+	bundlePEM = append(bundlePEM, []byte(encodeCertPEM(aliceCert))...)
+	bundlePEM = append(bundlePEM, '\n')
+	bundlePEM = append(bundlePEM, []byte(encodeCertPEM(bobCert))...)
+	bulkMgr := NewManager(t.TempDir(), secretstore.NewMemoryStore())
+	imported, err := bulkMgr.ImportPublicCerts(bundlePEM)
+	if err != nil {
+		t.Fatalf("ImportPublicCerts multi-PEM: %v", err)
+	}
+	if len(imported) != 2 {
+		t.Fatalf("expected 2 end-entity certs imported (CA skipped), got %d: %+v", len(imported), imported)
+	}
+
+	// Verify AllIdentitiesWithErr surfaces secretstore load errors instead of silently returning empty.
+	brokenSecrets := secretstore.NewMemoryStore()
+	brokenMgr := NewManager(bobMgr.dir, brokenSecrets) // has bob's metadata on disk, but missing secret in brokenSecrets
+	if ids, err := brokenMgr.AllIdentitiesWithErr(); err == nil || len(ids) != 0 {
+		t.Fatalf("expected error from AllIdentitiesWithErr when keychain entry missing, got ids=%d err=%v", len(ids), err)
+	}
 }

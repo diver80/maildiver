@@ -479,7 +479,14 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 			detail.Attachments = nil
 			return
 		}
-		decrypted, vr, derr := smime.DecryptMIME(rawEML, e.smime.AllIdentities(), nil)
+		ids, idErr := e.smime.AllIdentitiesWithErr()
+		if len(ids) == 0 && idErr != nil {
+			detail.Security.SMIME = true
+			detail.Security.Decryption = "fail"
+			detail.Security.Error = idErr.Error()
+			return
+		}
+		decrypted, vr, derr := smime.DecryptMIME(rawEML, ids, nil)
 		if derr != nil {
 			detail.Security.SMIME = true
 			detail.Security.Decryption = "fail"

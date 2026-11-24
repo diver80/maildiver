@@ -3,6 +3,7 @@ package secretstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -256,8 +258,14 @@ func (f *FileStore) Delete(key string) error {
 }
 
 const (
-	keychainB64Prefix = "b64:"
-	keychainTimeout   = 8 * time.Second
+	keychainB64Prefix   = "b64:"
+	keychainChunkPrefix = "b64c:"
+	keychainPartPrefix  = "b64p:"
+	// macOS `/usr/bin/security -i` truncates interactive stdin lines at 4096 bytes.
+	// Keeping each encoded chunk <= 2800 bytes leaves ample room for command/service/account framing.
+	keychainMaxChunkB64 = 2800
+	keychainMaxChunks   = 128
+	keychainTimeout     = 8 * time.Second
 )
 
 func validKeychainKey(key string) bool {
@@ -273,14 +281,32 @@ func validKeychainKey(key string) bool {
 	return true
 }
 
-func decodeKeychainSecret(raw string) string {
+func decodeKeychainSecret(raw string) (string, bool) {
 	s := strings.TrimSuffix(raw, "\n")
 	if strings.HasPrefix(s, keychainB64Prefix) {
-		if b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, keychainB64Prefix)); err == nil {
-			return string(b)
+		b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, keychainB64Prefix))
+		if err != nil {
+			return "", false
 		}
+		return string(b), true
 	}
-	return s
+	return s, true
+}
+
+func parseKeychainChunkManifest(s string) (count int, shaHex string, ok bool) {
+	if !strings.HasPrefix(s, keychainChunkPrefix) {
+		return 0, "", false
+	}
+	rest := strings.TrimPrefix(s, keychainChunkPrefix)
+	nStr, sum, found := strings.Cut(rest, ":")
+	if !found || len(sum) != 64 {
+		return 0, "", false
+	}
+	n, err := strconv.Atoi(nStr)
+	if err != nil || n < 1 || n > keychainMaxChunks {
+		return 0, "", false
+	}
+	return n, sum, true
 }
 
 func runSecurityCmd(stdin string, args ...string) ([]byte, error) {
@@ -303,33 +329,132 @@ type keychainStore struct {
 	mu             sync.Mutex
 }
 
+func findKeychainRaw(service, key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-a", key, "-w").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(out), "\n"), nil
+}
+
+func (k *keychainStore) getFromServiceLocked(service, key string) (val string, ok bool, corrupted bool) {
+	if service == "" || !validKeychainKey(key) {
+		return "", false, false
+	}
+	raw, err := findKeychainRaw(service, key)
+	if err != nil {
+		return "", false, false
+	}
+	if strings.HasPrefix(raw, keychainChunkPrefix) {
+		n, wantSum, mok := parseKeychainChunkManifest(raw)
+		if !mok {
+			return "", false, true
+		}
+		var b64Buf strings.Builder
+		for i := 0; i < n; i++ {
+			partKey := fmt.Sprintf("%s#%d", key, i)
+			partRaw, perr := findKeychainRaw(service, partKey)
+			if perr != nil || !strings.HasPrefix(partRaw, keychainPartPrefix) {
+				return "", false, true
+			}
+			b64Buf.WriteString(strings.TrimPrefix(partRaw, keychainPartPrefix))
+		}
+		decoded, derr := base64.StdEncoding.DecodeString(b64Buf.String())
+		if derr != nil {
+			return "", false, true
+		}
+		gotSum := fmt.Sprintf("%x", sha256.Sum256(decoded))
+		if gotSum != wantSum {
+			return "", false, true
+		}
+		return string(decoded), true, false
+	}
+	dec, decOK := decodeKeychainSecret(raw)
+	if !decOK {
+		return "", false, true
+	}
+	return dec, true, false
+}
+
+func (k *keychainStore) setKeychainLocked(key, value string) bool {
+	if !validKeychainKey(key) {
+		return false
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(value))
+	if len(keychainB64Prefix)+len(b64) <= keychainMaxChunkB64 {
+		// Small secret: single interactive command line (well below 4096-byte buffer).
+		script := fmt.Sprintf("add-generic-password -U -s %q -a %q -w %q\n", k.service, key, keychainB64Prefix+b64)
+		out, err := runSecurityCmd(script, "-i")
+		return err == nil && !bytes.Contains(bytes.ToLower(out), []byte("security:"))
+	}
+
+	// Large secret (e.g. S/MIME identity bundle or OpenPGP private key): split into chunks <= 2800 bytes
+	// plus a SHA-256 manifest so `/usr/bin/security -i` never silently truncates at 4096 bytes.
+	n := (len(b64) + keychainMaxChunkB64 - 1) / keychainMaxChunkB64
+	if n > keychainMaxChunks {
+		return false
+	}
+	var script strings.Builder
+	for i := 0; i < n; i++ {
+		start := i * keychainMaxChunkB64
+		end := start + keychainMaxChunkB64
+		if end > len(b64) {
+			end = len(b64)
+		}
+		partKey := fmt.Sprintf("%s#%d", key, i)
+		fmt.Fprintf(&script, "add-generic-password -U -s %q -a %q -w %q\n", k.service, partKey, keychainPartPrefix+b64[start:end])
+	}
+	sum := sha256.Sum256([]byte(value))
+	manifest := fmt.Sprintf("%s%d:%x", keychainChunkPrefix, n, sum)
+	fmt.Fprintf(&script, "add-generic-password -U -s %q -a %q -w %q\n", k.service, key, manifest)
+
+	out, err := runSecurityCmd(script.String(), "-i")
+	if err != nil || bytes.Contains(bytes.ToLower(out), []byte("security:")) {
+		return false
+	}
+	// Verify integrity by reading back before deleting fallback.
+	got, ok, _ := k.getFromServiceLocked(k.service, key)
+	return ok && got == value
+}
+
+func (k *keychainStore) deleteKeychainChunksLocked(service, key string) {
+	if service == "" || !validKeychainKey(key) {
+		return
+	}
+	if raw, err := findKeychainRaw(service, key); err == nil {
+		if n, _, ok := parseKeychainChunkManifest(raw); ok {
+			for i := 0; i < n; i++ {
+				_, _ = runSecurityCmd("", "delete-generic-password", "-s", service, "-a", fmt.Sprintf("%s#%d", key, i))
+			}
+		}
+	}
+	_, _ = runSecurityCmd("", "delete-generic-password", "-s", service, "-a", key)
+}
+
 func (k *keychainStore) Get(key string) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if key == "" {
 		return "", ErrNotFound
 	}
-	if validKeychainKey(key) {
-		ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
-		out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", k.service, "-a", key, "-w").Output()
-		cancel()
-		if err == nil {
-			return decodeKeychainSecret(string(out)), nil
-		}
+	v, ok, corrupted := k.getFromServiceLocked(k.service, key)
+	if ok {
+		return v, nil
 	}
-	// Check MailDiver fallback before legacy service so newly saved fallback secrets are never shadowed by older legacy Keychain entries.
+	// Check MailDiver fallback before legacy service so newly saved fallback secrets are never shadowed
+	// by older legacy Keychain entries, and self-heal any previously truncated Keychain entry.
 	if k.fallback != nil {
-		if v, ferr := k.fallback.Get(key); ferr == nil {
-			return v, nil
+		if fv, ferr := k.fallback.Get(key); ferr == nil {
+			if corrupted && k.setKeychainLocked(key, fv) {
+				_ = k.fallback.Delete(key)
+			}
+			return fv, nil
 		}
 	}
-	if k.legacyService != "" && validKeychainKey(key) {
-		ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
-		out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", k.legacyService, "-a", key, "-w").Output()
-		cancel()
-		if err == nil {
-			return decodeKeychainSecret(string(out)), nil
-		}
+	if lv, lok, _ := k.getFromServiceLocked(k.legacyService, key); lok {
+		return lv, nil
 	}
 	if k.legacyFallback != nil {
 		if v, ferr := k.legacyFallback.Get(key); ferr == nil {
@@ -345,19 +470,11 @@ func (k *keychainStore) Set(key, value string) error {
 	if key == "" {
 		return fmt.Errorf("empty secret key")
 	}
-	if validKeychainKey(key) {
-		// Store a printable-ASCII b64:-prefixed payload via `security -i` stdin so:
-		// 1) secrets never appear in argv (`ps`),
-		// 2) `security find-generic-password -w` never switches to raw hex output for non-ASCII/umlaut/newline passwords,
-		// 3) empty values are stored reliably.
-		encoded := keychainB64Prefix + base64.StdEncoding.EncodeToString([]byte(value))
-		script := fmt.Sprintf("add-generic-password -U -s %q -a %q -w %q\n", k.service, key, encoded)
-		if out, err := runSecurityCmd(script, "-i"); err == nil && !bytes.Contains(bytes.ToLower(out), []byte("security:")) {
-			if k.fallback != nil {
-				_ = k.fallback.Delete(key)
-			}
-			return nil
+	if k.setKeychainLocked(key, value) {
+		if k.fallback != nil {
+			_ = k.fallback.Delete(key)
 		}
+		return nil
 	}
 	if k.fallback != nil {
 		return k.fallback.Set(key, value)
@@ -371,11 +488,9 @@ func (k *keychainStore) Delete(key string) error {
 	if key == "" {
 		return nil
 	}
-	if validKeychainKey(key) {
-		_, _ = runSecurityCmd("", "delete-generic-password", "-s", k.service, "-a", key)
-		if k.legacyService != "" {
-			_, _ = runSecurityCmd("", "delete-generic-password", "-s", k.legacyService, "-a", key)
-		}
+	k.deleteKeychainChunksLocked(k.service, key)
+	if k.legacyService != "" {
+		k.deleteKeychainChunksLocked(k.legacyService, key)
 	}
 	if k.legacyFallback != nil {
 		_ = k.legacyFallback.Delete(key)
