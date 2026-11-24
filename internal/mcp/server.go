@@ -276,7 +276,7 @@ func (s *Server) Tools() []mcpTool {
 					"accountId": map[string]any{"type": "string"},
 					"folderId":  map[string]any{"type": "string"},
 					"unread":    map[string]any{"type": "boolean"},
-					"days":      map[string]any{"type": "integer", "description": "Lookback in days (default 30, max 365)"},
+					"days":      map[string]any{"type": "integer", "description": "Optional lookback in days (default: no limit)"},
 					"limit":     map[string]any{"type": "integer", "description": "Max results (default 20, max 50)"},
 				},
 			},
@@ -348,11 +348,13 @@ func (s *Server) Tools() []mcpTool {
 
 	if s.draftsAllowed() {
 		tools = append(tools, mcpTool{
-			Name:        "create_draft",
-			Description: "Save an email draft (new email, reply, replyAll, or forward) into the Drafts folder. NEVER sends the email.",
+			Name: "create_draft",
+			Description: "Save an email draft (new email, reply, replyAll, or forward) into the Drafts folder. NEVER sends the email. " +
+				"With replyToMessageId the draft uses that email's account and gets its recipients, Re:/Fwd: subject and the quoted original; to, cc and subject override them. A forward needs to.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"accountId":        map[string]any{"type": "string", "description": "Optional account to write from (default: the replied-to email's account, else the first account)"},
 					"replyToMessageId": map[string]any{"type": "string", "description": "Optional message ID to reply to or forward"},
 					"replyType":        map[string]any{"type": "string", "enum": []string{"reply", "replyAll", "forward"}},
 					"to":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -502,11 +504,15 @@ func (s *Server) callTool(ctx context.Context, name string, rawArgs json.RawMess
 			Limit     int    `json:"limit"`
 		}
 		_ = json.Unmarshal(rawArgs, &args)
-		if args.Limit <= 0 || args.Limit > 50 {
+		// The newest hits come first and their number is capped, so no day limit is needed
+		// unless the caller asks for one.
+		if args.Limit <= 0 {
 			args.Limit = 20
+		} else if args.Limit > 50 {
+			args.Limit = 50
 		}
-		if args.Days <= 0 || args.Days > 365 {
-			args.Days = 30
+		if args.Days < 0 {
+			args.Days = 0
 		}
 		c, cancel := callCtx(15 * time.Second)
 		defer cancel()
@@ -691,6 +697,7 @@ func (s *Server) callTool(ctx context.Context, name string, rawArgs json.RawMess
 
 func (s *Server) execCreateDraft(ctx context.Context, bc *backend.Client, rawArgs json.RawMessage) toolCallResult {
 	var args struct {
+		AccountID        string   `json:"accountId"`
 		ReplyToMessageID string   `json:"replyToMessageId"`
 		ReplyType        string   `json:"replyType"`
 		To               []string `json:"to"`
@@ -746,25 +753,93 @@ func (s *Server) execCreateDraft(ctx context.Context, bc *backend.Client, rawArg
 	} else {
 		replyType = ""
 	}
-	c, cancel := context.WithTimeout(ctx, 20*time.Second)
+	accountID := strings.TrimSpace(args.AccountID)
+	subject := strings.TrimSpace(args.Subject)
+	var sources []backend.SourceAttachment
+	note := "Saved to Drafts folder in MailDiver (not sent)."
+	if replyID != "" {
+		oc, ocancel := context.WithTimeout(ctx, 15*time.Second)
+		// Never decrypt S/MIME or OpenPGP messages over MCP.
+		orig, oerr := bc.MessageWithOptions(oc, replyID, backend.MessageOptions{Format: "text", Decrypt: false})
+		ocancel()
+		if oerr != nil {
+			return errText(oerr.Error())
+		}
+		encrypted := orig.Security.Encrypted
+		if accountID == "" {
+			accountID = orig.AccountID
+		}
+		if replyType == "forward" {
+			if encrypted {
+				return errText("an encrypted email cannot be forwarded over MCP (it is never decrypted here)")
+			}
+			if len(to) == 0 {
+				return errText("to is required for a forward")
+			}
+			if subject == "" {
+				subject = prefixedSubject(orig.Subject, "Fwd: ", "fwd:", "fw:", "wg:")
+			}
+			body += forwardBlock(orig)
+			for _, att := range orig.Attachments {
+				sources = append(sources, backend.SourceAttachment{MessageID: orig.ID, PartName: att.PartName, Name: att.Name})
+			}
+		} else {
+			own := map[string]bool{}
+			ac, acancel := context.WithTimeout(ctx, 10*time.Second)
+			accs, _ := bc.Accounts(ac)
+			acancel()
+			for _, acc := range accs {
+				if acc.ID != orig.AccountID {
+					continue
+				}
+				for _, id := range acc.Identities {
+					own[addrKey(id.Email)] = true
+				}
+			}
+			rto, rcc := replyRecipients(orig, own, replyType == "replyAll")
+			if len(to) == 0 {
+				to = rto
+			}
+			if len(cc) == 0 {
+				cc = rcc
+			}
+			if len(to) == 0 {
+				return errText("the original email has no sender to reply to; pass to")
+			}
+			if subject == "" {
+				subject = prefixedSubject(orig.Subject, "Re: ", "re:", "aw:")
+			}
+			if encrypted {
+				note += " The original is encrypted and was not quoted."
+			} else {
+				body += replyQuote(orig)
+			}
+		}
+	}
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	_, err = bc.ComposeDraft(c, backend.ComposeRequest{
-		To:               to,
-		CC:               cc,
-		Subject:          strings.TrimSpace(args.Subject),
-		Body:             body,
-		ReplyToMessageID: replyID,
-		ReplyType:        replyType,
-		IdempotencyKey:   backend.NewIdempotencyKey(),
+		AccountID:         accountID,
+		To:                to,
+		CC:                cc,
+		Subject:           subject,
+		Body:              body,
+		SourceAttachments: sources,
+		ReplyToMessageID:  replyID,
+		ReplyType:         replyType,
+		IdempotencyKey:    backend.NewIdempotencyKey(),
 	})
 	if err != nil {
 		return errText(err.Error())
 	}
 	b, _ := json.Marshal(map[string]any{
-		"status":  "draft_saved",
-		"sent":    false,
-		"subject": strings.TrimSpace(args.Subject),
-		"note":    "Saved to Drafts folder in MailDiver (not sent).",
+		"status":    "draft_saved",
+		"sent":      false,
+		"accountId": accountID,
+		"to":        to,
+		"cc":        cc,
+		"subject":   subject,
+		"note":      note,
 	})
 	return okText(string(b))
 }

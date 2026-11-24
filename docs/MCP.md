@@ -46,14 +46,14 @@ You can also copy this snippet directly inside **MailDiver → Settings (`⌘,`)
 |---|---|---|
 | **Default (Read-Only)** | `list_accounts` | List configured email accounts & identities |
 | **Default (Read-Only)** | `list_folders` | List folders with exact paths & unread counts |
-| **Default (Read-Only)** | `search_messages` | Local SQLite FTS5 search (`from:`, `to:`, `subject:`, `unread`, `days`, `accountId`) |
+| **Default (Read-Only)** | `search_messages` | Local SQLite FTS5 search (`from:`, `to:`, `subject:`, `unread`, `accountId`, optional `days`; newest first, max 50) |
 | **Default (Read-Only)** | `get_message` | Read plain-text body, headers & attachment list by ID *(never decrypts S/MIME/PGP)* |
 | **Default (Read-Only)** | `get_thread` | Read chronological conversation thread by message ID |
 | **Default (Read-Only)** | `list_calendars` | List local, Google, CalDAV & iCal calendars |
 | **Default (Read-Only)** | `list_calendar_events` | List events for a time range (default: today + 7 days) |
 | **Default (Read-Only)** | `search_contacts` | Search unified local, Google & CardDAV contacts |
 | **Default (Read-Only)** | `triage_summary` | Read MailDiver local triage bucket counts |
-| **`--allow-drafts`** *(or `--allow-writes`)* | `create_draft` | Save a new email / reply / forward into Drafts *(never sends)* |
+| **`--allow-drafts`** *(or `--allow-writes`)* | `create_draft` | Save a new email / reply / forward into Drafts *(never sends)*. A reply uses the original's account, recipients, `Re:` subject and quote; encrypted originals are never quoted or forwarded |
 | **`--allow-writes`** | `create_calendar_event` | Create a calendar event in a writable calendar |
 | **`--allow-writes`** | `mark_message_read` | Mark emails as read or unread (`ExpectedMessageID`-guarded) |
 | **`--allow-writes`** | `move_message` | Move or archive emails to a folder *(never permanently deletes)* |

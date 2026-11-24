@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.30 (2026-11-24)
+
+### MCP-Server: Korrekturen
+- **Antwort-Entwürfe sind vollständig:** `create_draft` mit `replyToMessageId` füllt jetzt Empfänger, „Re:“/„Fwd:“-Betreff und das Zitat der Originalmail aus; `replyAll` setzt die übrigen Empfänger in Kopie, `forward` übernimmt Text und Anhänge. Verschlüsselte Originale werden nie zitiert oder weitergeleitet.
+- **Richtiges Konto:** Antworten werden im Konto der Originalmail angelegt statt immer im ersten Konto; neu ist der optionale Parameter `accountId`.
+- **Sauberes Beenden:** `maildiver --mcp` beendet sich jetzt bei SIGTERM und Ctrl-C, nicht erst wenn stdin geschlossen wird.
+- **Suche ohne Zeitgrenze:** `search_messages` findet auch Mails, die älter als ein Jahr sind (`days` ist optional); ein `limit` über 50 wird auf 50 gekürzt statt auf 20.
+
 ## 0.7.29 (2026-11-24)
 
 ### Eingebauter lokaler MCP-Server (`maildiver --mcp`) & aktualisierte Dokumentation

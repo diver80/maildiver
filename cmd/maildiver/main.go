@@ -21,7 +21,7 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-var version = "0.7.29-dev"
+var version = "0.7.30-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -153,7 +153,16 @@ func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
 		AllowDrafts: allowDrafts,
 		AllowWrites: allowWrites,
 	})
-	return srv.Serve(ctx, os.Stdin, os.Stdout)
+	// A read of stdin cannot be interrupted, so Serve runs beside the wait for a signal: the
+	// server ends when the client closes stdin or on SIGINT/SIGTERM, whichever comes first.
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, os.Stdin, os.Stdout) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // filterLaunchArgs drops the -psn_* process serial number older macOS versions pass to apps
