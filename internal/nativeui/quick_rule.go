@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 const (
@@ -903,7 +903,7 @@ func (a *App) quickRuleSaveBlockReason(preview triage.QuickRulePreviewReport) st
 	return ""
 }
 
-// SaveAndApplyQuickRule saves the MailDiver filter rule and applies its action to the
+// SaveAndApplyQuickRule saves the PostDive filter rule and applies its action to the
 // marked mails it actually matches (plus, opt-in, the preview hits) (UI thread). A destructive
 // rule with broad warnings needs a second, explicit click.
 func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
@@ -970,7 +970,7 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 
 	name := strings.TrimSpace(a.quickRuleName)
 	if name == "" {
-		name = a.tr("MailDiver Quick-Regel", "MailDiver Quick Rule")
+		name = a.tr("PostDive Quick-Regel", "PostDive Quick Rule")
 	}
 	req := buildQuickRuleUpsert(a.quickRuleTarget, a.quickRuleTargetMode, backend.FilterUpsertRequest{
 		Mode:       "create",

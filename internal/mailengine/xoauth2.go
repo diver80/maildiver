@@ -13,7 +13,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // XOAUTH2Mechanism is the SASL mechanism name used by Gmail and Microsoft 365 IMAP/SMTP.
@@ -155,7 +155,7 @@ func (e *Engine) StartMailOAuth2(ctx context.Context, acc config.DirectAccount, 
 			_ = e.secrets.Set(mailOAuthTokenKey(acc.ID), string(raw))
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte("<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#121212;color:#eee'><h2>MailDiver OAuth2 verbunden ✓</h2><p>Du kannst dieses Browserfenster jetzt schließen.</p></body></html>"))
+		_, _ = w.Write([]byte("<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#121212;color:#eee'><h2>PostDive OAuth2 verbunden ✓</h2><p>Du kannst dieses Browserfenster jetzt schließen.</p></body></html>"))
 		go func() {
 			// Signing in is the user connecting the account: a paused one (imported from
 			// Thunderbird without credentials) starts syncing, as with a first password.

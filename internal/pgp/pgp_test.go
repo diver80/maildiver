@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestGenerateExportImportSignVerifyEncryptDecryptPGPMIME(t *testing.T) {

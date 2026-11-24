@@ -55,7 +55,7 @@ func TestMemoryStoreRoundTrip(t *testing.T) {
 
 func TestFallbackStoreLegacyReadAndDelete(t *testing.T) {
 	dir := t.TempDir()
-	primary := NewFileStore(filepath.Join(dir, "maildiver", "secrets.json"))
+	primary := NewFileStore(filepath.Join(dir, "postdive", "secrets.json"))
 	legacy := NewFileStore(filepath.Join(dir, "omathunder", "secrets.json"))
 	if err := legacy.Set("account:ionos", "s3cret!"); err != nil {
 		t.Fatal(err)

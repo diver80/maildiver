@@ -7,8 +7,8 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 type contactsUI struct {
@@ -252,7 +252,7 @@ func (a *App) exportContactsVCF(ctx context.Context) {
 	}
 	p := strings.TrimSpace(ct.vcfPath)
 	if p == "" {
-		p = "~/Downloads/maildiver-kontakte.vcf"
+		p = "~/Downloads/postdive-kontakte.vcf"
 	}
 	ct.syncBusy = true
 	ct.statusMsg = ""
@@ -373,7 +373,7 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 						a.pickFile(FilePickRequest{
 							Mode:        "save",
 							Title:       a.tr("Kontakte als vCard (.vcf) exportieren", "Export Contacts as vCard (.vcf)"),
-							DefaultPath: "maildiver-kontakte.vcf",
+							DefaultPath: "postdive-kontakte.vcf",
 							FilterName:  "vCard (.vcf)",
 							Extensions:  []string{"vcf"},
 						}, func(paths []string) {

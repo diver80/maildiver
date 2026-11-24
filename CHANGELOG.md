@@ -1,17 +1,28 @@
 # Changelog
 
+## 0.7.31 (2026-11-24)
+
+### Umbenennung zu PostDive + Linux / Omarchy (Wayland & Hyprland) Fixes & Polish
+- **Neuer Name: PostDive (`postdive`):** Umbenannt von MailDiver zu **PostDive** (`github.com/diver80/postdive`, `dev.postdive.app`, `postdive.db`, `postdive-bin`). Bestehende Konfigurationen, Datenbanken und macOS-Keychain-Einträge von MailDiver/OmaThunder werden automatisch weiter erkannt bzw. übernommen.
+- **Kein schwarzes Fenster mehr unter Wayland / Hyprland (Omarchy):** Auf Linux-Wayland-Sessions nutzt PostDive standardmäßig den inkrementellen Cairo-Renderer (`MYGO_GPU=0`), sodass GTK 3's `GtkGLArea`-Wayland-Bug nicht mehr zu einem schwarzen Fenster führt und natives Wayland-Scaling erhalten bleibt. Explizite Overrides (`MYGO_GPU=1` oder `GDK_BACKEND=x11`) werden weiterhin respektiert.
+- **Kein `SIGUSR1`/WebKit-Konflikt mehr beim Start:** Auf Linux wird WebKitGTK erst bei Bedarf geladen (beim Öffnen von Compose-Editor oder Web-Vorschau) und `JSC_SIGNAL_FOR_GC=12` voreingestellt – das spart beim Start ca. 75 Bibliotheken und verhindert die `Overriding existing handler for signal 10`-Warnung.
+- **Sauberes Fenster-Chrome auf Linux:** Die leere graue GTK-Menüleiste (`Edit  Window`) wird auf Linux per `AutoHideMenuBar` ausgeblendet (weiterhin über `Alt` erreichbar).
+- **Plattform-korrekte Tastenkürzel-Labels:** Auf Linux und Windows zeigen alle Hinweise, Tooltips, die Copilot-Eingabe und die Compose-Toolbar jetzt `Ctrl+…` statt `⌘…`.
+- **Welcome-Card Layout:** Die Einrichtungs-Buttons auf der Startkarte passen sich jetzt sauber der Kartenbreite an und ragen in schmalen Spalten nicht mehr über den Rand hinaus.
+- **Arch/Omarchy Installationsanleitung:** `README.md` verweist jetzt auf das funktionierende `makepkg -si` aus `packaging/aur/postdive-bin`.
+
 ## 0.7.30 (2026-11-24)
 
 ### MCP-Server: Korrekturen
 - **Antwort-Entwürfe sind vollständig:** `create_draft` mit `replyToMessageId` füllt jetzt Empfänger, „Re:“/„Fwd:“-Betreff und das Zitat der Originalmail aus; `replyAll` setzt die übrigen Empfänger in Kopie, `forward` übernimmt Text und Anhänge. Verschlüsselte Originale werden nie zitiert oder weitergeleitet.
 - **Richtiges Konto:** Antworten werden im Konto der Originalmail angelegt statt immer im ersten Konto; neu ist der optionale Parameter `accountId`.
-- **Sauberes Beenden:** `maildiver --mcp` beendet sich jetzt bei SIGTERM und Ctrl-C, nicht erst wenn stdin geschlossen wird.
+- **Sauberes Beenden:** `postdive --mcp` beendet sich jetzt bei SIGTERM und Ctrl-C, nicht erst wenn stdin geschlossen wird.
 - **Suche ohne Zeitgrenze:** `search_messages` findet auch Mails, die älter als ein Jahr sind (`days` ist optional); ein `limit` über 50 wird auf 50 gekürzt statt auf 20.
 
 ## 0.7.29 (2026-11-24)
 
-### Eingebauter lokaler MCP-Server (`maildiver --mcp`) & aktualisierte Dokumentation
-- **Lokaler stdio-MCP-Server (`maildiver --mcp`):** Externe KI-Agenten (**Claude Code**, **Claude Desktop**, **Cursor**, **Antigravity**, **T3 Code**) können jetzt direkt über lokales stdio auf MailDivers Postfach, Kalender, Kontakte und Triage zugreifen – ohne zweites Binary, ohne offene Netzwerk-Ports und ohne Weitergabe von IMAP-Passwörtern oder OAuth-Tokens.
+### Eingebauter lokaler MCP-Server (`postdive --mcp`) & aktualisierte Dokumentation
+- **Lokaler stdio-MCP-Server (`postdive --mcp`):** Externe KI-Agenten (**Claude Code**, **Claude Desktop**, **Cursor**, **Antigravity**, **T3 Code**) können jetzt direkt über lokales stdio auf PostDives Postfach, Kalender, Kontakte und Triage zugreifen – ohne zweites Binary, ohne offene Netzwerk-Ports und ohne Weitergabe von IMAP-Passwörtern oder OAuth-Tokens.
   - **9 Read-Only-Tools standardmäßig:** `list_accounts`, `list_folders`, `search_messages`, `get_message`, `get_thread`, `list_calendars`, `list_calendar_events`, `search_contacts`, `triage_summary`.
   - **Explizite Opt-in-Flags:** `--allow-drafts` (aktiviert `create_draft`, sendet niemals) und `--allow-writes` (zusätzlich `create_calendar_event`, `mark_message_read`, `move_message`, `flag_message` – niemals Senden oder endgültiges Löschen).
   - **Sicherheit:** Verschlüsselte S/MIME- & OpenPGP-Mails werden über MCP niemals entschlüsselt; `mailbox.readOnly` aus `config.json` wird respektiert; alle Daten werden in `<untrusted_...>`-Blöcken gekapselt; sicherer Parallelbetrieb zur laufenden GUI-App über SQLite WAL.
@@ -57,7 +68,7 @@
 
 ### S/MIME-Entschlüsselung (macOS-Keychain-Chunking) & S/MIME-Bulk-Import für Teams
 - **Fix: S/MIME-Entschlüsselung auf macOS bei großen Zertifikatsketten (z. B. SwissSign):** `/usr/bin/security -i` schneidet Eingabezeilen auf macOS still bei 4.096 Bytes ab, wodurch komplette S/MIME-Schlüsselpakete (~13 KB mit Zertifikatskette) beim Speichern im Schlüsselbund abgeschnitten wurden. `keychainStore` ([internal/secretstore/store.go](internal/secretstore/store.go)) speichert große Secrets jetzt automatisch in geprüften Chunks (`≤ 2.800 Bytes`) mit SHA-256-Prüfsumme, erkennt früher abgeschnittene Keychain-Einträge und repariert sie beim ersten Lesen selbstständig aus dem Fallback – ohne erneuten `.p12`-Import.
-- **Klarere S/MIME-Fehlermeldungen:** Wenn ein eigenes Zertifikat zwar registriert ist, sein privater Schlüssel aber nicht geladen werden kann, zeigt MailDiver jetzt den konkreten Ladefehler statt fälschlich *„kein S/MIME-Zertifikat zum Entschlüsseln installiert“*.
+- **Klarere S/MIME-Fehlermeldungen:** Wenn ein eigenes Zertifikat zwar registriert ist, sein privater Schlüssel aber nicht geladen werden kann, zeigt PostDive jetzt den konkreten Ladefehler statt fälschlich *„kein S/MIME-Zertifikat zum Entschlüsseln installiert“*.
 - **Bulk-Import für S/MIME-Empfänger-Zertifikate:** Unter *Konten → S/MIME & PGP* lassen sich jetzt ganze Mitarbeiter-Verzeichnisse auf einmal importieren – per **Dateien wählen…** (Mehrfachauswahl), **Ordner wählen…** (rekursiver Ordner-Scan), Multi-Zertifikat-`.pem`-Dateien, PKCS#7-Bundles (`.p7b`/`.p7c`, inkl. automatischem Überspringen von CA-Zertifikaten) oder `.zip`-Archiven. Die Kontakt-Zertifikatsliste ist ab mehreren Einträgen scrollbar und durchsuchbar.
 
 ## 0.7.22 (2026-11-24)
@@ -106,14 +117,14 @@
 ## 0.7.20 (2026-11-23)
 
 ### Korrekter `Sent`-Ordner (RFC 6154 Special-Use) & sofortige Anzeige gesendeter Mails
-- **RFC-6154-Special-Use hat Vorrang (`FindFolderByType`):** Wenn ein Postfach mehrere gleichartig benannte Ordner besitzt (z. B. altes `Gesendet` neben dem offiziellen Server-Ordner `Sent` bzw. `Gesendete Objekte` mit `\Sent`-Flag), wählt MailDiver jetzt zuverlässig den vom IMAP-Server deklarierten Special-Use-Ordner (`\Sent`, `\Drafts`, `\Trash`, `\Junk`, `\Archive`) statt den alphabetisch ersten Namen.
+- **RFC-6154-Special-Use hat Vorrang (`FindFolderByType`):** Wenn ein Postfach mehrere gleichartig benannte Ordner besitzt (z. B. altes `Gesendet` neben dem offiziellen Server-Ordner `Sent` bzw. `Gesendete Objekte` mit `\Sent`-Flag), wählt PostDive jetzt zuverlässig den vom IMAP-Server deklarierten Special-Use-Ordner (`\Sent`, `\Drafts`, `\Trash`, `\Junk`, `\Archive`) statt den alphabetisch ersten Namen.
 - **Gesendete Mails sofort sichtbar (`appendToSentFolder`):** Nach dem Versand (direkt und aus dem Offline-Postausgang) wird die per `IMAP APPEND` im `Sent`-Ordner abgelegte Kopie direkt im lokalen SQLite-Cache gespeichert, sodass sie ohne Warten auf den nächsten Hintergrund-Sync sofort in *Gesendet* und im Konversations-Thread erscheint.
 
 ## 0.7.19 (2026-11-23)
 
 ### Zielkalender-Auswahl beim Annehmen von `.ics`-Einladungen (inkl. Google Calendar & CalDAV)
 - **Kalender-Auswahl direkt im `.ics`-Einladungsbanner (Desktop & Handy):** Bei mehreren schreibbaren Kalendern zeigt das Einladungsbanner jetzt ein `Kalender:`-Dropdown für *Zusagen*, *Vielleicht* und *Nur übernehmen*.
-- **Intelligente Vorauswahl:** MailDiver wählt automatisch den passenden schreibbaren Kalender vor (1. Kalender, in dem der Termin bereits liegt, 2. passender Kalender zur Empfänger-Mail/Domain wie `avono.de` → `Frank Hess (avono AG)`, 3. zuletzt gewählter Kalender, 4. erster externer Kalender statt lokalem `Persönlich`).
+- **Intelligente Vorauswahl:** PostDive wählt automatisch den passenden schreibbaren Kalender vor (1. Kalender, in dem der Termin bereits liegt, 2. passender Kalender zur Empfänger-Mail/Domain wie `avono.de` → `Frank Hess (avono AG)`, 3. zuletzt gewählter Kalender, 4. erster externer Kalender statt lokalem `Persönlich`).
 - **Direkter Sync in Google Calendar & CalDAV:** `ImportICSBytes` und `RespondMessageICS` schreiben Einladungen jetzt direkt in den gewählten Google-Kalender (via `events.import` mit `iCalUID` zur Duplikat-Vermeidung) oder per CalDAV-PUT statt immer nur in den lokalen Kalender `Persönlich`.
 
 ## 0.7.18 (2026-11-23)
@@ -127,7 +138,7 @@
 
 ### Sichtbarer RSVP-Status bei Termineinladungen & keine doppelten Kalendereinträge
 - **Status-Anzeige im `.ics`-Einladungsbanner (Desktop & Handy):** Einladungen zeigen jetzt direkt ein farbiges Status-Badge (z. B. `✓ Zugesagt · Frank Hess (avono AG)`, `? Vorläufig`, `✕ Abgesagt`, `Antwort offen` oder `✓ Im Kalender`) sowie einen hervorgehobenen aktiven Antwort-Button.
-- **Automatischer Abgleich mit synchronisierten Kalendern:** Der RSVP-Status wird aus Google Calendar (`attendees[].responseStatus`), CalDAV (`PARTSTAT`), direkt in MailDiver gegebenen Antworten sowie dem `.ics`-Anhang ermittelt; bei bestehenden Datenbanken wird der Google-Calendar-Sync einmalig zurückgesetzt, um bestehende Einladungs-Antworten nachzuladen.
+- **Automatischer Abgleich mit synchronisierten Kalendern:** Der RSVP-Status wird aus Google Calendar (`attendees[].responseStatus`), CalDAV (`PARTSTAT`), direkt in PostDive gegebenen Antworten sowie dem `.ics`-Anhang ermittelt; bei bestehenden Datenbanken wird der Google-Calendar-Sync einmalig zurückgesetzt, um bestehende Einladungs-Antworten nachzuladen.
 - **Keine doppelten Termine mehr in `Persönlich`:** Wenn ein Termin bereits in einem synchronisierten externen Kalender (z. B. Google Calendar) vorhanden ist, dupliziert *Zusagen* / *Vielleicht* ihn nicht mehr zusätzlich in den lokalen Kalender `Persönlich`, und der Button *Nur übernehmen* wird ausgeblendet. Bei *Absagen* wird eine eventuell vorhandene lokale Kopie aus `Persönlich` entfernt.
 
 ## 0.7.16 (2026-11-23)
@@ -147,13 +158,13 @@
 ## 0.7.14 (2026-11-23)
 
 ### Dezentere Versionsanzeige (Handy & Desktop)
-- **Kleine, zurückhaltende Versionsnummer:** Auf dem Handy ([internal/nativeui/phone.go](internal/nativeui/phone.go)) wird die Versionsnummer jetzt nicht mehr im großen 22pt-Fett-Titel gerendert, sondern klein (`10.5pt`) und gedimmt hinter **MailDiver** (zugleich entfällt der leere linke Platzhalter auf dem Startbildschirm). Auf dem Desktop ([internal/nativeui/views_chrome.go](internal/nativeui/views_chrome.go)) sowie in Einstellungen und Hilfe ist die Versionsnummer ebenfalls kleiner (`9.5–10.5pt`) und dezenter gestaltet.
+- **Kleine, zurückhaltende Versionsnummer:** Auf dem Handy ([internal/nativeui/phone.go](internal/nativeui/phone.go)) wird die Versionsnummer jetzt nicht mehr im großen 22pt-Fett-Titel gerendert, sondern klein (`10.5pt`) und gedimmt hinter **PostDive** (zugleich entfällt der leere linke Platzhalter auf dem Startbildschirm). Auf dem Desktop ([internal/nativeui/views_chrome.go](internal/nativeui/views_chrome.go)) sowie in Einstellungen und Hilfe ist die Versionsnummer ebenfalls kleiner (`9.5–10.5pt`) und dezenter gestaltet.
 
 ## 0.7.13 (2026-11-22)
 
 ### UI-Versionsanzeige, Lokale-KI-Doku (MTPLX / Inkling 2 Mini) & Komplett-Review-Fixes
-- **Versionsnummer direkt in der UI:** MailDiver zeigt jetzt die aktuelle Version (`v0.7.13`) dezent direkt hinter **MailDiver** in der Desktop-Toolbar, im Handy-Header, im `☰`-Menü sowie im Einstellungs- und Hilfe-Dialog.
-- **Lokale KI mit MTPLX & Inkling 2 Mini dokumentiert (`docs/LOCAL_AI.md`):** Neue deutsch-/englischsprachige Anleitung zu `brew install youssofal/mtplx/mtplx`, `mtplx --version`, `mtplx serve --model Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed`, MailDiver-Konfiguration auf `http://127.0.0.1:8000/v1`, Ollama sowie Hinweis zu `mtplx connect opencode` für OpenCode / T3 Code.
+- **Versionsnummer direkt in der UI:** PostDive zeigt jetzt die aktuelle Version (`v0.7.13`) dezent direkt hinter **PostDive** in der Desktop-Toolbar, im Handy-Header, im `☰`-Menü sowie im Einstellungs- und Hilfe-Dialog.
+- **Lokale KI mit MTPLX & Inkling 2 Mini dokumentiert (`docs/LOCAL_AI.md`):** Neue deutsch-/englischsprachige Anleitung zu `brew install youssofal/mtplx/mtplx`, `mtplx --version`, `mtplx serve --model Youssofal/Inkling-2-Mini-MTPLX-Optimized-Speed`, PostDive-Konfiguration auf `http://127.0.0.1:8000/v1`, Ollama sowie Hinweis zu `mtplx connect opencode` für OpenCode / T3 Code.
 - **Lokale KI & Copilot-Synchronisierung:**
   - *Zusammenfassen / Entwurf / Termin / Kontakte* im Inspector übernehmen jetzt den in der Copilot-Seitenleiste gewählten Provider & das gewählte Modell (`AnalyzeRequest.Backend`/`Model`).
   - Streaming-Chat (`ChatStream`) beherrscht jetzt ebenfalls den automatischen Retry ohne `response_format=json_object` (inkl. `guided decoding`/`llguidance`-Erkennung), und der Copilot fällt automatisch ohne `tools` zurück, wenn ein lokales Modell kein Function-Calling unterstützt.
@@ -172,12 +183,12 @@
 ## 0.7.12 (2026-11-22)
 
 ### KI-Fallback bei Servern ohne `response_format: json_object` (z. B. MTPLX)
-- **Automatischer Retry ohne `response_format` (`internal/ai/anyllm.go`):** Lehnt ein lokaler OpenAI-kompatibler Server (wie `mtplx serve` ohne optionales `llguidance`) `response_format: {"type": "json_object"}` mit `400 Bad Request` ab, wiederholt MailDiver die Anfrage automatisch einmal ohne `response_format` und wertet die JSON-Antwort des Modells normal aus.
+- **Automatischer Retry ohne `response_format` (`internal/ai/anyllm.go`):** Lehnt ein lokaler OpenAI-kompatibler Server (wie `mtplx serve` ohne optionales `llguidance`) `response_format: {"type": "json_object"}` mit `400 Bad Request` ab, wiederholt PostDive die Anfrage automatisch einmal ohne `response_format` und wertet die JSON-Antwort des Modells normal aus.
 
 ## 0.7.11 (2026-11-22)
 
 ### Gelöschte Mails automatisch als gelesen markieren
-- **Kein Ungelesen-Zähler mehr im Papierkorb:** Beim Verschieben von Mails in den Papierkorb (Einzel-Löschen, Mehrfachauswahl/Batch, Wischen auf dem Handy sowie Filterregeln mit Ziel Papierkorb) setzt MailDiver jetzt vor dem IMAP-`MOVE`/`COPY` automatisch das `\Seen`-Flag (`Read: true`), sodass gelöschte ungelesene Mails nicht mehr als ungelesen im Papierkorb liegen bleiben.
+- **Kein Ungelesen-Zähler mehr im Papierkorb:** Beim Verschieben von Mails in den Papierkorb (Einzel-Löschen, Mehrfachauswahl/Batch, Wischen auf dem Handy sowie Filterregeln mit Ziel Papierkorb) setzt PostDive jetzt vor dem IMAP-`MOVE`/`COPY` automatisch das `\Seen`-Flag (`Read: true`), sodass gelöschte ungelesene Mails nicht mehr als ungelesen im Papierkorb liegen bleiben.
 
 ## 0.7.10 (2026-11-22)
 
@@ -189,8 +200,8 @@
 ## 0.7.9 (2026-11-22)
 
 ### Android-Hintergrund-, Standby- & Offline-Sync-Fix (`no such host`)
-- **IMAP IDLE bei Hintergrund / Suspend / Offline sauber pausieren (`SetWorkersPaused`):** Auf Android blockiert die System-Firewall (`netd` / App Standby / Doze) Netzwerk & DNS, sobald die App im Hintergrund liegt — bisher liefen die IMAP-IDLE-Worker trotzdem weiter, liefen in `dial tcp: lookup …: no such host`, zeigten einen roten Sync-Fehler-Banner und schliefen bis zu 60 s im Backoff. Jetzt pausiert MailDiver alle IDLE- und Perioden-Worker sofort bei `OnSuspend` sowie im Offline-Zustand (und startet beim Headless-WorkManager-Wake keine dauerhaften IDLE-Sockets).
-- **Sofortiger Reconnect bei Rückkehr in den Vordergrund & Netzwechsel:** Bei `OnResume` / `OnDidBecomeActive` und `mygo.Network.OnChanged` wartet MailDiver kurz (500 ms auf Mobilgeräten), bis Android Netzwerk & DNS wieder freigibt, räumt alte transiente Netz-/DNS-Fehler auf und verbindet IMAP IDLE sofort ohne Backoff neu.
+- **IMAP IDLE bei Hintergrund / Suspend / Offline sauber pausieren (`SetWorkersPaused`):** Auf Android blockiert die System-Firewall (`netd` / App Standby / Doze) Netzwerk & DNS, sobald die App im Hintergrund liegt — bisher liefen die IMAP-IDLE-Worker trotzdem weiter, liefen in `dial tcp: lookup …: no such host`, zeigten einen roten Sync-Fehler-Banner und schliefen bis zu 60 s im Backoff. Jetzt pausiert PostDive alle IDLE- und Perioden-Worker sofort bei `OnSuspend` sowie im Offline-Zustand (und startet beim Headless-WorkManager-Wake keine dauerhaften IDLE-Sockets).
+- **Sofortiger Reconnect bei Rückkehr in den Vordergrund & Netzwechsel:** Bei `OnResume` / `OnDidBecomeActive` und `mygo.Network.OnChanged` wartet PostDive kurz (500 ms auf Mobilgeräten), bis Android Netzwerk & DNS wieder freigibt, räumt alte transiente Netz-/DNS-Fehler auf und verbindet IMAP IDLE sofort ohne Backoff neu.
 - **Transiente Mobil-DNS-Wiederholung & Offline-Anzeige:** `dialIMAP` wiederholt auf Android/iOS einen einmaligen transienten DNS-/Netz-Fehler nach 1,5 s automatisch (z. B. beim WLAN↔5G-Wechsel), und bei fehlendem Netz zeigt die App einen ruhigen *Offline — warte auf Netzwerkverbindung*-Hinweis statt roter `no such host`-Fehlermeldungen.
 
 ## 0.7.8 (2026-11-22)
@@ -273,7 +284,7 @@
 - **IMAP-Stabilität:** Socket-Deadlines (`context.AfterFunc`) gegen hängende Verbindungen, Ordner umbenennen & löschen (unter Beachtung von Server-Trennern und Special-Use-Schutz), `OR (Subject, From)` + ASCII-Suchfallback bei `BADCHARSET`, verlässlicher `lastFull`-Retry nach Sync-Fehlern.
 - **Verschlüsselte Secrets auf Linux & Windows:** Linux (`secret-tool`/libsecret + AES-256-GCM) und Windows (DPAPI `CryptProtectData` + AES-256-GCM) statt unverschlüsseltem `secrets.json`.
 - **S/MIME & OpenPGP-Hinweis:** Signatur-Zertifikat-vs-Absender-Abgleich (`SignerAddressMismatch`), automatische S/MIME-Verschlüsselung beim Antworten falls Empfängerzertifikat vorliegt, Identitätsbereinigung beim Kontolöschen sowie sauberer PGP/MIME Phase-2-Hinweis ohne irreführenden S/MIME-Importdialog.
-- **KI, Archiv & Konfig:** `gemini-2.5-flash` Standardmodell, `<maildiver_instructions>` Prompt-Wrapper, `.maildiver-index.json` (mit Legacy-Fallback).
+- **KI, Archiv & Konfig:** `gemini-2.5-flash` Standardmodell, `<postdive_instructions>` Prompt-Wrapper, `.postdive-index.json` (mit Legacy-Fallback).
 
 ### Desktop, Compose & Mobile Parität
 - **1-Klick Newsletter-Abmeldung:** `List-Unsubscribe` (`https://`, RFC 8058 One-Click POST, `mailto:`) direkt in Desktop- & Phone-Leseansicht.
@@ -302,18 +313,18 @@
 ### Android
 - **Telefon-Ansicht:** ein Bildschirm nach dem anderen – Postfächer, Mail-Liste, Mail – mit der Zurück-Geste; Wischen zum Archivieren, Löschen und Gelesen-Markieren; Ziehen zum Aktualisieren; Verfassen im Vollbild. Erscheint auf Android und in Desktop-Fenstern unter 640 px Breite; Dialoge passen sich der Bildschirmbreite an.
 - **Konten per QR-Code übernehmen:** „Vom Computer übernehmen (QR-Code)“ öffnet die Kamera des Systems (ohne Kamera-Berechtigung) und liest den Übertragungscode, den der Computer unter *Einstellungen → Geräte-Übertragung* zeigt.
-- **Neue Mails im Hintergrund:** Android weckt MailDiver etwa alle 15 Minuten (mit Netz); neue Mails im Posteingang erscheinen als Benachrichtigung – jede einmal, und keine, die du in der geöffneten App schon gesehen hast.
+- **Neue Mails im Hintergrund:** Android weckt PostDive etwa alle 15 Minuten (mit Netz); neue Mails im Posteingang erscheinen als Benachrichtigung – jede einmal, und keine, die du in der geöffneten App schon gesehen hast.
 - **Passwörter im Android-Keystore:** Zugangsdaten liegen in einer Datei, die mit einem vom Android-Keystore geschützten Schlüssel (AES-256-GCM) verschlüsselt ist; eine unverschlüsselte Datei früherer Builds wird übernommen und gelöscht.
 - Links und Anhänge öffnen über das System.
 
 ## 0.5.0 (2026-11-20)
 
-### Umbau: MailDiver – eigenständig, ohne Thunderbird
-OmaThunder heißt jetzt **MailDiver** und ist ein eigener Mail-Client: Er spricht IMAP und SMTP direkt und hält eine lokale SQLite-Kopie mit Volltextsuche. Thunderbird wird nicht mehr gebraucht.
-- **Entfernt:** Thunderbird-Add-on, Native-Messaging-Host, lokale HTTP-Bridge (`bridge.json`, Token, SSE) und `docs/BRIDGE.md`. Mail-Engine, KI und Oberfläche laufen in einem Prozess (`maildiver` / `MailDiver.app`) und reden direkt miteinander – schneller und deutlich weniger Code.
+### Umbau: PostDive – eigenständig, ohne Thunderbird
+OmaThunder heißt jetzt **PostDive** und ist ein eigener Mail-Client: Er spricht IMAP und SMTP direkt und hält eine lokale SQLite-Kopie mit Volltextsuche. Thunderbird wird nicht mehr gebraucht.
+- **Entfernt:** Thunderbird-Add-on, Native-Messaging-Host, lokale HTTP-Bridge (`bridge.json`, Token, SSE) und `docs/BRIDGE.md`. Mail-Engine, KI und Oberfläche laufen in einem Prozess (`postdive` / `PostDive.app`) und reden direkt miteinander – schneller und deutlich weniger Code.
 - **Konten:** IMAP/SMTP nur über TLS oder erzwungenes STARTTLS, Anmeldung per SASL PLAIN (Umlaute im Passwort funktionieren) mit Rückfall auf LOGIN. Passwörter liegen im macOS-Schlüsselbund bzw. unter Linux in einer nur für dich lesbaren Datei. Neue Mails kommen per IMAP IDLE sofort an, ohne IDLE alle 45 Sekunden.
 - **Thunderbird-Import** liest ein Profil nur lesend und übernimmt Konten, Signaturen, Kalender, Kontakte und Filterregeln (ohne Passwörter).
-- **Konfiguration:** `bridge.*` entfällt; ältere Dateien laden weiter. Einstellungen liegen unter `~/Library/Application Support/maildiver` bzw. `~/.config/maildiver`.
+- **Konfiguration:** `bridge.*` entfällt; ältere Dateien laden weiter. Einstellungen liegen unter `~/Library/Application Support/postdive` bzw. `~/.config/postdive`.
 
 ### Neu
 - **Unterhaltungen, neueste Mail oben:** Eine Mail öffnet sich in ihrer Unterhaltung – neuere Mails darüber, ältere darunter, zugeklappt auf Absender, Datum und Textanfang, bis du sie anklickst. Listenzeilen zeigen, wie viele Mails ihre Unterhaltung hat. Gruppiert wird über `References`/`In-Reply-To`, auch wenn Antworten vor der Mail ankommen, auf die sie antworten; deine gesendeten Antworten gehören dazu, Kopien im Papierkorb nicht. Bestehende Mails werden beim ersten Start einmal neu gruppiert.
@@ -329,7 +340,7 @@ OmaThunder heißt jetzt **MailDiver** und ist ein eigener Mail-Client: Er sprich
 
 ### Alltagstauglich
 - **Alle Mails erreichbar:** Ordner und Suche reichen bis zur ersten Mail zurück, nicht mehr nur 30 Tage. Die Liste lädt beim Scrollen jeweils 100 weitere Mails nach, und neue Mail setzt sie nicht auf die erste Seite zurück.
-- **Ganzes Postfach statt der neuesten 250:** MailDiver holt ältere Mails im Hintergrund nach, 1000 pro Ordner und Durchgang, bis das Postfach vollständig ist; auf dem Server gelöschte ältere Mails verschwinden auch lokal. Flags werden für die neuesten 500 Mails bei jedem Abgleich verglichen.
+- **Ganzes Postfach statt der neuesten 250:** PostDive holt ältere Mails im Hintergrund nach, 1000 pro Ordner und Durchgang, bis das Postfach vollständig ist; auf dem Server gelöschte ältere Mails verschwinden auch lokal. Flags werden für die neuesten 500 Mails bei jedem Abgleich verglichen.
 - **Änderungen von anderen Geräten sofort:** gelesen/Stern vom Handy kommen per IDLE an statt nach bis zu 15 Minuten. Server ohne IDLE gleichen alle Ordner regelmäßig ab, nicht nur den Posteingang.
 - **„Neue Mail“ nur für neue Mails:** alte Mails, die nach einem Löschen ins Abgleichsfenster rutschen, lösen keine Meldung und keine Filter mehr aus.
 - **Nichts geht beim Schreiben verloren:** Esc, ein Klick neben das Fenster oder ✕ schließen eine geänderte Mail nicht mehr, sondern fragen: *Als Entwurf speichern*, *Verwerfen* oder *Weiter schreiben*.
@@ -341,10 +352,10 @@ OmaThunder heißt jetzt **MailDiver** und ist ein eigener Mail-Client: Er sprich
 - **Entwürfe vollständig:** Erneutes Speichern ersetzt den bisherigen Entwurf statt Kopien anzuhäufen; nach dem Senden wird der Entwurf automatisch entfernt; beim Wiederöffnen bleiben BCC und Anhänge erhalten.
 - **Weiterleiten mit Anhängen & HTML:** Original-Anhänge werden beim Weiterleiten automatisch übernommen (einzeln abwählbar); bei HTML-Mails bleibt optional die Original-Formatierung als `multipart/alternative` (Text + HTML) erhalten.
 - **Bilder im Lesebereich:** Eingebettete Bilder (`cid:` / `data:image/`) erscheinen direkt und ohne Netzwerkanfrage; für externe Bilder gibt es pro Mail den Schalter *Bilder anzeigen* / *Ausblenden* (standardmäßig blockiert).
-- **Suche auf dem IMAP-Server:** Über *Auf Server suchen* durchsucht MailDiver per IMAP `SEARCH TEXT` auch ältere Mails, deren Text noch nicht lokal geladen ist.
+- **Suche auf dem IMAP-Server:** Über *Auf Server suchen* durchsucht PostDive per IMAP `SEARCH TEXT` auch ältere Mails, deren Text noch nicht lokal geladen ist.
 - **Schnelle Sammelaktionen & Rückgängig (`⌘Z`):** Mehrere Mails (Löschen, Archivieren, Verschieben, Gelesen, Stern, Filterlauf) werden pro Konto über eine einzige IMAP-Verbindung gebündelt; rückgängig machbare Aktionen lassen sich per Leiste oder `⌘Z` direkt zurücknehmen.
-- **Komfort:** Ungelesen-Zähler pro Ordner in der Seitenleiste, *Alle als gelesen markieren*, `⌘↩` zum Senden im Verfassen-Dialog, *Mail drucken* (`⌘P`), `mailto:`-Links direkt in MailDiver öffnen (inkl. macOS URL-Handler) sowie Absender-Aliase pro Konto.
-- **Sicherer Datenbank-Speicherort:** `maildiver.db` (inkl. lokalem Kalender, Kontakten & Filtern) liegt jetzt im persistenten Datenordner (`~/Library/Application Support/maildiver` unter macOS bzw. `~/.local/share/maildiver` unter Linux) statt im Caches-Ordner; vorhandene Datenbanken werden beim Start automatisch migriert.
+- **Komfort:** Ungelesen-Zähler pro Ordner in der Seitenleiste, *Alle als gelesen markieren*, `⌘↩` zum Senden im Verfassen-Dialog, *Mail drucken* (`⌘P`), `mailto:`-Links direkt in PostDive öffnen (inkl. macOS URL-Handler) sowie Absender-Aliase pro Konto.
+- **Sicherer Datenbank-Speicherort:** `postdive.db` (inkl. lokalem Kalender, Kontakten & Filtern) liegt jetzt im persistenten Datenordner (`~/Library/Application Support/postdive` unter macOS bzw. `~/.local/share/postdive` unter Linux) statt im Caches-Ordner; vorhandene Datenbanken werden beim Start automatisch migriert.
 
 ### Schneller
 - Mail-Listen laden nur noch Kopfzeilen; Texte werden erst beim Öffnen gelesen.

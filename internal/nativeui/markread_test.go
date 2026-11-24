@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 const unreadGet = `{"id":"m1","messageId":"m1@x","accountId":"acc1","folder":"INBOX","subject":"Eins","from":"Alice <alice@acme.de>","bodyText":"Hallo","read":false,"unread":true}`

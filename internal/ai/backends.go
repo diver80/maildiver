@@ -18,7 +18,7 @@ import (
 	"github.com/mozilla-ai/any-llm-go/providers/openai"
 	"github.com/mozilla-ai/any-llm-go/providers/zai"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 const (
@@ -95,7 +95,7 @@ var backendRegistry = []backendSpec{
 		OfficialURL: "https://api.openai.com/v1", Timeout: apiTimeout, Streaming: true, Tools: true,
 		newProvider: wrapProvider(openai.New)},
 	// OpenAI-compatible servers get their own key variable: OPENAI_API_KEY never leaves for a non-OpenAI host.
-	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "maildiver-local",
+	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "postdive-local",
 		Timeout: apiTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(openai.New)},
 	{ID: "deepseek", Kind: kindAPI, DefaultModel: "deepseek-chat", EnvKeys: []string{"DEEPSEEK_API_KEY"},
 		OfficialURL: "https://api.deepseek.com", Timeout: apiTimeout, Streaming: true, Tools: true,

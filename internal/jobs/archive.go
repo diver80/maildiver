@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/diver80/maildiver/internal/archive"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/archive"
+	"github.com/diver80/postdive/internal/config"
 )
 
 const (

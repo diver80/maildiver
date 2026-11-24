@@ -5,7 +5,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // The settings dialog writes only its own fields; keys go to the key file and apply at once.

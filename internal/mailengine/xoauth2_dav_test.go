@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestXOAUTH2SASLAndConfig(t *testing.T) {
@@ -96,7 +96,7 @@ UID:dav-ev-1@example.org
 DTSTART:20261122T090000Z
 DTEND:20261122T100000Z
 SUMMARY:CalDAV Sprint Review
-LOCATION:https://meet.jit.si/maildiver
+LOCATION:https://meet.jit.si/postdive
 END:VEVENT
 END:VCALENDAR</c:calendar-data>
       </d:prop>

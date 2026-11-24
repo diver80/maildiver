@@ -8,10 +8,10 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // composeTailStart returns the index of the first line of what follows the user's own text in a
@@ -117,7 +117,7 @@ func (a *App) resetComposeAIState() {
 	a.composeAIUndoReady = false
 }
 
-// RunComposeAI invokes MailDiver's configured AI provider (local or cloud) directly from the
+// RunComposeAI invokes PostDive's configured AI provider (local or cloud) directly from the
 // open Compose/Reply window to draft, improve, shorten, formalize, translate, or review the mail.
 func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 	if a.composeAILoading {

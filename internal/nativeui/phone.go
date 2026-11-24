@@ -10,7 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/mobile"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // The phone layout: one screen at a time, as mail apps on phones show it – mailboxes, then the
@@ -139,7 +139,7 @@ func (a *App) renderPhone(c *ui.Context) {
 				rt.Title(a.currentViewTitle())
 				a.renderPhoneList(c)
 			default:
-				rt.Title("MailDiver")
+				rt.Title("PostDive")
 				a.renderPhoneMailboxes(c)
 			}
 		}).FillWidth().Grow(1).MinHeight(0)
@@ -311,7 +311,7 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 			verTop = 5
 		}
 		ui.Row(c.Key("ph-home-bar")).FillWidth().Height(barH).Background(t.Surface).Padding(0, 6, 0, 16).Gap(6).AlignItems(ui.Center).Shrink(0).Role(ui.RoleGroup).Children(func() {
-			ui.Text(c, "MailDiver").FontSize(titleSz).FontWeight(600).SingleLine().Role(ui.RoleHeading).Level(1)
+			ui.Text(c, "PostDive").FontSize(titleSz).FontWeight(600).SingleLine().Role(ui.RoleHeading).Level(1)
 			if v := a.versionTag(); v != "" {
 				ui.Text(c, v).FontSize(10.5).TextColor(withAlpha(t.TextMuted, 0.70)).Margin(verTop, 0, 0, 0).SingleLine()
 			}

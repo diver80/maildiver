@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // Desktop mail list comfort: a right-click menu on every row and dragging rows onto sidebar

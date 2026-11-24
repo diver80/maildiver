@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestLANQREncryptedOneShotTransfer(t *testing.T) {
@@ -37,7 +37,7 @@ func TestLANQREncryptedOneShotTransfer(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if !strings.HasPrefix(sess.URI, "maildiver-pair://v1?") {
+	if !strings.HasPrefix(sess.URI, "postdive-pair://v1?") {
 		t.Fatalf("unexpected pairing URI: %q", sess.URI)
 	}
 	if len(sess.QRPNG) < 200 {
@@ -71,7 +71,7 @@ func TestLANQREncryptedOneShotTransfer(t *testing.T) {
 	}
 
 	// Non-LAN public IP must be rejected.
-	if _, _, err := ImportFromPairingURI(context.Background(), "maildiver-pair://v1?url=https://8.8.8.8/transfer&t=abc&k=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", config.Default(), nil); err == nil {
+	if _, _, err := ImportFromPairingURI(context.Background(), "postdive-pair://v1?url=https://8.8.8.8/transfer&t=abc&k=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", config.Default(), nil); err == nil {
 		t.Fatal("public internet URL must be rejected for LAN transfer")
 	}
 }

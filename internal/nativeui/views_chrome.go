@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 // Window chrome: the slim toolbar on top (menu, search, primary actions) and the status bar at
@@ -18,7 +18,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 	ui.Row(c).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 			a.renderAppMenuButton(c)
-			ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
+			ui.Text(c, "PostDive").FontSize(14).Bold().SingleLine()
 			if v := a.versionTag(); v != "" {
 				ui.Text(c, v).FontSize(9.5).TextColor(withAlpha(t.TextMuted, 0.68)).Margin(2, 0, 0, 0).SingleLine()
 			}
@@ -187,7 +187,7 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		}
 		if v := a.versionTag(); v != "" {
 			m.Separator()
-			m.Item("MailDiver " + v).Disabled(true)
+			m.Item("PostDive " + v).Disabled(true)
 		}
 	})
 }

@@ -69,17 +69,18 @@ var envCache struct {
 }
 
 // readEnvFile returns the file's keys, re-reading it only when it changed.
-// Falls back to the legacy omathunder env file if maildiver's env file does not exist yet.
+// Falls back to the legacy omathunder env file if postdive's env file does not exist yet.
 func readEnvFile() map[string]string {
 	path := EnvFilePath()
 	envCache.Lock()
 	defer envCache.Unlock()
 	st, err := os.Stat(path)
-	if (err != nil || path == "") && err != nil {
-		if legacyDir, lerr := LegacyConfigDir(); lerr == nil {
+	if err != nil {
+		for _, legacyDir := range LegacyConfigDirs() {
 			legacyPath := filepath.Join(legacyDir, "env")
 			if lst, lstatErr := os.Stat(legacyPath); lstatErr == nil {
 				path, st, err = legacyPath, lst, nil
+				break
 			}
 		}
 	}
@@ -165,10 +166,11 @@ func SetEnvFileKeys(updates map[string]string) error {
 		if !os.IsNotExist(err) {
 			return err
 		}
-		// First write after migrating from omathunder -> maildiver: seed from legacy env file so existing keys are preserved.
-		if legacyDir, lerr := LegacyConfigDir(); lerr == nil {
+		// First write after migrating from maildiver/omathunder -> postdive: seed from legacy env file so existing keys are preserved.
+		for _, legacyDir := range LegacyConfigDirs() {
 			if ldata, rerr := os.ReadFile(filepath.Join(legacyDir, "env")); rerr == nil {
 				data = ldata
+				break
 			}
 		}
 	}

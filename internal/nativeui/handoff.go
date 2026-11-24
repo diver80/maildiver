@@ -15,12 +15,12 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/transfer"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
-// "Open in…": the open mail's conversation as Markdown, for an AI assistant outside MailDiver –
+// "Open in…": the open mail's conversation as Markdown, for an AI assistant outside PostDive –
 // copied, handed to Claude Code in a terminal, opened in Antigravity, or pasted into Claude.
 // Each is an explicit action on one conversation, as the AI actions are: what the assistant's
 // provider receives is the user's choice. Files for the assistants live in the app's state
@@ -137,8 +137,8 @@ func conversationMarkdown(open *backend.MessageDetail, thread []triage.MessageIn
 	n := max(len(thread), 1)
 	fmt.Fprintf(&b, "# %s\n\n", subj)
 	fmt.Fprintf(&b, "%s\n", tr(
-		fmt.Sprintf("E-Mail-Unterhaltung, %d Mail(s), älteste zuerst. Exportiert aus MailDiver am %s.", n, time.Now().Format("02.01.2006 15:04")),
-		fmt.Sprintf("Email conversation, %d message(s), oldest first. Exported from MailDiver on %s.", n, time.Now().Format("2006-01-02 15:04"))))
+		fmt.Sprintf("E-Mail-Unterhaltung, %d Mail(s), älteste zuerst. Exportiert aus PostDive am %s.", n, time.Now().Format("02.01.2006 15:04")),
+		fmt.Sprintf("Email conversation, %d message(s), oldest first. Exported from PostDive on %s.", n, time.Now().Format("2006-01-02 15:04"))))
 
 	if len(thread) == 0 {
 		body := open.BodyText

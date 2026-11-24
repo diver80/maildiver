@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // "Move to…" picker (v) and archive (e)

@@ -12,7 +12,7 @@ Item {
     property int pendingProposals: 0
     property string topHeadline: ""
 
-    readonly property string summaryPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/maildiver/bar-summary.json"
+    readonly property string summaryPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/postdive/bar-summary.json"
 
     Timer {
         interval: 3000
@@ -40,7 +40,7 @@ Item {
 
     Process {
         id: launchApp
-        command: ["sh", "-c", "hyprctl dispatch focuswindow class:maildiver || maildiver &"]
+        command: ["sh", "-c", "hyprctl dispatch focuswindow class:postdive || postdive &"]
     }
 
     Rectangle {

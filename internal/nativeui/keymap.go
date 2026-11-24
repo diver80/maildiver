@@ -18,7 +18,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // keyHint is one entry of the footer's shortcut legend.
@@ -76,7 +76,7 @@ func (a *App) currentKeyContext() keyContext {
 // footer drops entries from the end when the window is too narrow. Write actions are left out
 // in read-only mode, where their keys only report that the change is blocked.
 func (a *App) footerHints() []keyHint {
-	h := func(keys, de, en string) keyHint { return keyHint{Keys: keys, Label: a.tr(de, en)} }
+	h := func(keys, de, en string) keyHint { return keyHint{Keys: formatShortcuts(keys), Label: a.tr(de, en)} }
 	ro := a.readOnly
 	var out []keyHint
 	switch a.currentKeyContext() {
@@ -543,7 +543,7 @@ func (a *App) escapeKey() {
 
 // shortcutHelpRows is the full keyboard reference shown in the help modal.
 func (a *App) shortcutHelpRows() []keyHint {
-	h := func(keys, de, en string) keyHint { return keyHint{Keys: keys, Label: a.tr(de, en)} }
+	h := func(keys, de, en string) keyHint { return keyHint{Keys: formatShortcuts(keys), Label: a.tr(de, en)} }
 	return []keyHint{
 		h("j / k", "Nächste / vorige Mail öffnen", "Open next / previous email"),
 		h("shift+j / k", "Lesebereich scrollen", "Scroll the reading pane"),

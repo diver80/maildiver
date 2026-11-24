@@ -48,7 +48,7 @@ func (a *App) RenderStatusWidget(c *ui.Context) {
 				statusTxt = a.tr("Nicht verbunden", "Offline")
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-				ui.Text(c, "MailDiver").FontSize(14).Bold().SingleLine()
+				ui.Text(c, "PostDive").FontSize(14).Bold().SingleLine()
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					statusDot(c, dotClr, 7)
 					ui.Text(c, statusTxt).FontSize(11).TextColor(t.TextMuted).SingleLine()
@@ -60,7 +60,7 @@ func (a *App) RenderStatusWidget(c *ui.Context) {
 			if iconBtn(c.Key("tw-ref"), iconRefresh, a.tr("Aktualisieren", "Refresh"), ui.Color{}, false).Clicked() {
 				a.RefreshAll(context.Background())
 			}
-			if iconLabelBtn(c.Key("tw-open"), iconExternal, a.tr("Öffnen", "Open"), true, a.tr("MailDiver öffnen", "Open MailDiver")).Clicked() {
+			if iconLabelBtn(c.Key("tw-open"), iconExternal, a.tr("Öffnen", "Open"), true, a.tr("PostDive öffnen", "Open PostDive")).Clicked() {
 				openMainAt(a.navID)
 			}
 		})

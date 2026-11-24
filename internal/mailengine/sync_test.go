@@ -11,9 +11,9 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func countFolder(t *testing.T, e *Engine, accID, path string) int {

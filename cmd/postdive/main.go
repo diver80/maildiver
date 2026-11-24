@@ -1,4 +1,4 @@
-// Command maildiver is the standalone native MailDiver desktop application
+// Command postdive is the standalone native PostDive desktop application
 // (IMAP/SMTP + SQLite + Contacts + Google Calendar/Contacts & iCal + AI Assistant).
 package main
 
@@ -12,16 +12,16 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/jobs"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/mcp"
-	"github.com/diver80/maildiver/internal/nativeui"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/jobs"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/mcp"
+	"github.com/diver80/postdive/internal/nativeui"
+	"github.com/diver80/postdive/internal/triage"
 )
 
-var version = "0.7.30-dev"
+var version = "0.7.31-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -33,7 +33,7 @@ func main() {
 func run() error {
 	config.LoadEnvFile()
 
-	fs := flag.NewFlagSet("maildiver", flag.ExitOnError)
+	fs := flag.NewFlagSet("postdive", flag.ExitOnError)
 	minimized := fs.Bool("minimized", false, "Nur als Menüleisten-/Tray-Status-Widget starten")
 	noTray := fs.Bool("no-tray", false, "Menüleisten-/Tray-Status-Widget deaktivieren")
 	showVersion := fs.Bool("version", false, "Version ausgeben")
@@ -43,7 +43,7 @@ func run() error {
 	_ = fs.Parse(filterLaunchArgs(os.Args[1:]))
 
 	if *showVersion {
-		fmt.Println("maildiver", version)
+		fmt.Println("postdive", version)
 		return nil
 	}
 
@@ -76,7 +76,7 @@ func run() error {
 		ConfigSaver:  config.Save,
 	})
 	if err != nil {
-		return fmt.Errorf("Fehler beim Starten der MailDiver-Engine: %w", err)
+		return fmt.Errorf("Fehler beim Starten der PostDive-Engine: %w", err)
 	}
 	// On Android/iOS, keep persistent IMAP IDLE workers paused until the Activity is active
 	// and online: headless WorkManager wakes use SyncInboxes directly and must not leave IDLE
@@ -118,7 +118,7 @@ func run() error {
 	return nil
 }
 
-// runMCP starts MailDiver as a local stdio Model Context Protocol (MCP) server without launching
+// runMCP starts PostDive as a local stdio Model Context Protocol (MCP) server without launching
 // the GUI or persistent IMAP IDLE loops (so it coexists cleanly with a running desktop app via SQLite WAL).
 func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
@@ -126,7 +126,7 @@ func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
 
 	store, err := triage.OpenStore()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "maildiver --mcp: triage store warning: %v\n", err)
+		fmt.Fprintf(os.Stderr, "postdive --mcp: triage store warning: %v\n", err)
 	}
 
 	eng, err := mailengine.New(mailengine.Options{
@@ -134,7 +134,7 @@ func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
 		ConfigSaver:  config.Save,
 	})
 	if err != nil {
-		return fmt.Errorf("maildiver --mcp: engine init failed: %w", err)
+		return fmt.Errorf("postdive --mcp: engine init failed: %w", err)
 	}
 	defer func() { _ = eng.Close() }()
 

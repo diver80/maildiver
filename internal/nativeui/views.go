@@ -11,12 +11,12 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
-// RenderMain builds the entire native GPU-accelerated MailDiver UI.
+// RenderMain builds the entire native GPU-accelerated PostDive UI.
 func (a *App) RenderMain(c *ui.Context) {
 	if a.uiTheme != nil && a.uiTheme.theme != nil {
 		c.SetTheme(a.uiTheme.theme)
@@ -681,8 +681,8 @@ func (a *App) renderOfflineBanner(c *ui.Context) {
 	ui.Column(c).Fill().Center().Padding(28).Gap(10).Children(func() {
 		ui.Text(c, a.tr("Mail-Engine startet…", "Starting mail engine…")).FontSize(15).Bold()
 		ui.Text(c, a.tr(
-			"MailDiver verbindet sich lokal mit der IMAP/SMTP-Engine. Falls ein Fehler auftritt, prüfe deine Kontoeinstellungen.",
-			"MailDiver is connecting to the local IMAP/SMTP engine. If an error occurs, check your account settings.",
+			"PostDive verbindet sich lokal mit der IMAP/SMTP-Engine. Falls ein Fehler auftritt, prüfe deine Kontoeinstellungen.",
+			"PostDive is connecting to the local IMAP/SMTP engine. If an error occurs, check your account settings.",
 		)).FontSize(12.5).TextColor(t.TextMuted)
 		if a.lastError != "" {
 			ui.Text(c, a.lastError).FontSize(11.5).TextColor(t.Danger)
@@ -1958,8 +1958,8 @@ func (a *App) renderInspectorContacts(c *ui.Context) {
 						ui.Text(c, prompt).FontSize(12).Bold().TextColor(t.Warning)
 					} else {
 						ui.Text(c, a.tr(
-							"Neuer Kontakt im Footer erkannt — in dein MailDiver-Adressbuch importieren?",
-							"New contact detected in footer — import into your MailDiver address book?",
+							"Neuer Kontakt im Footer erkannt — in dein PostDive-Adressbuch importieren?",
+							"New contact detected in footer — import into your PostDive address book?",
 						)).FontSize(12).Bold().TextColor(t.Accent)
 					}
 
@@ -2289,8 +2289,8 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 					// Maintenance notice
 					ui.Row(c).FillWidth().Padding(8, 10).Radius(8).Background(t.Background).Border(1, t.Border).Children(func() {
 						notice := a.tr(
-							"Hinweis: Die Regel wird lokal in MailDiver gespeichert, sofort auf die passenden Mails angewendet und künftig automatisch bei neu eintreffenden Posteingangs-Mails ausgeführt. Verwalten & Löschen unter Einstellungen → Konten → Regeln.",
-							"Note: The rule is saved locally in MailDiver, applied right away to matching emails, and executed automatically on newly arriving inbox mail. Manage or delete rules under Settings → Accounts → Rules.",
+							"Hinweis: Die Regel wird lokal in PostDive gespeichert, sofort auf die passenden Mails angewendet und künftig automatisch bei neu eintreffenden Posteingangs-Mails ausgeführt. Verwalten & Löschen unter Einstellungen → Konten → Regeln.",
+							"Note: The rule is saved locally in PostDive, applied right away to matching emails, and executed automatically on newly arriving inbox mail. Manage or delete rules under Settings → Accounts → Rules.",
 						)
 						ui.Text(c, notice).FontSize(11.5).TextColor(t.TextMuted)
 					})
@@ -2307,7 +2307,7 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 			}
 
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-				if iconLabelBtn(c.Key("qr-open-tb"), iconFilter, a.tr("Filterregeln verwalten", "Manage Filter Rules"), false, a.tr("Gespeicherte MailDiver-Regeln anzeigen und verwalten", "View and manage saved MailDiver filter rules")).Clicked() {
+				if iconLabelBtn(c.Key("qr-open-tb"), iconFilter, a.tr("Filterregeln verwalten", "Manage Filter Rules"), false, a.tr("Gespeicherte PostDive-Regeln anzeigen und verwalten", "View and manage saved PostDive filter rules")).Clicked() {
 					a.OpenFilterRules(context.Background())
 				}
 				ui.Spacer(c)
@@ -2487,10 +2487,10 @@ func (a *App) renderHelpModal(c *ui.Context) {
 				ui.Column(c).FillWidth().Gap(10).Children(func() {
 					if show("overview") {
 						helpSection(c, iconBookOpen, t.Accent,
-							a.tr("Was MailDiver macht · Überblick", "What MailDiver Does · Overview"),
+							a.tr("Was PostDive macht · Überblick", "What PostDive Does · Overview"),
 							[]string{
-								a.tr("• MailDiver ist dein eigenständiger nativer E-Mail-, Kalender- & Kontakte-Client: direkte IMAP/SMTP-Anbindung mit Echtzeit-Sync (IDLE), Google Kalender & iCal (.ics), Adressbuch und optionale KI-Hilfe in einer schnellen Desktop-App.", "• MailDiver is your standalone native email, calendar & contacts client: direct IMAP/SMTP with real-time sync (IDLE), Google Calendar & iCal (.ics), address book, and optional AI assistance in one fast desktop app."),
-								a.tr("• Aufräumen statt manuell löschen: Wiederkehrende Mails per Multi-Select bündeln, mit dem Quick-Regel-Assistenten inklusive Preview prüfen und als automatische MailDiver-Filterregel speichern.", "• Clean up instead of daily manual deletes: batch-select recurring emails, preview matches with the Quick-Rule Wizard, and automate them as MailDiver filter rules."),
+								a.tr("• PostDive ist dein eigenständiger nativer E-Mail-, Kalender- & Kontakte-Client: direkte IMAP/SMTP-Anbindung mit Echtzeit-Sync (IDLE), Google Kalender & iCal (.ics), Adressbuch und optionale KI-Hilfe in einer schnellen Desktop-App.", "• PostDive is your standalone native email, calendar & contacts client: direct IMAP/SMTP with real-time sync (IDLE), Google Calendar & iCal (.ics), address book, and optional AI assistance in one fast desktop app."),
+								a.tr("• Aufräumen statt manuell löschen: Wiederkehrende Mails per Multi-Select bündeln, mit dem Quick-Regel-Assistenten inklusive Preview prüfen und als automatische PostDive-Filterregel speichern.", "• Clean up instead of daily manual deletes: batch-select recurring emails, preview matches with the Quick-Rule Wizard, and automate them as PostDive filter rules."),
 								a.tr("• KI bleibt strikt opt-in: Solange du keinen KI-Button klickst, läuft die App 100 % lokal direkt über IMAP/SMTP ohne Token-Verbrauch.", "• AI stays strictly opt-in: until you trigger an AI action, everything runs 100% locally via IMAP/SMTP with zero token usage."),
 							},
 						)
@@ -2558,7 +2558,7 @@ func (a *App) renderHelpModal(c *ui.Context) {
 							[]string{
 								a.tr("• Eigene Kontakte-Ansicht in der Seitenleiste: Kontakte suchen, anlegen, bearbeiten, löschen und mit 1 Klick eine E-Mail schreiben.", "• Dedicated Contacts view in the sidebar: search, create, edit, delete contacts, and compose an email with 1 click."),
 								a.tr("• Import & Sync: vCard-Dateien (.vcf) importieren/exportieren oder Google Kontakte (über deine Google-Anmeldung) synchronisieren.", "• Import & Sync: import/export vCard (.vcf) files or sync Google Contacts using your Google sign-in."),
-								a.tr("• Autocomplete im Verfassen-Dialog: Beim Tippen in „An:“ oder „CC:“ schlägt MailDiver passende Kontakte und letzte Absender vor.", "• Compose autocomplete: typing in “To:” or “CC:” suggests matching contacts and recent senders."),
+								a.tr("• Autocomplete im Verfassen-Dialog: Beim Tippen in „An:“ oder „CC:“ schlägt PostDive passende Kontakte und letzte Absender vor.", "• Compose autocomplete: typing in “To:” or “CC:” suggests matching contacts and recent senders."),
 								a.tr("• KI-Footer-Erkennung: Klicke in einer Mail auf „Kontakte“, um Kontaktdaten aus der Signatur automatisch zu erkennen und nach Bestätigung zu importieren oder fehlende Felder zu ergänzen.", "• AI footer extraction: click “Contacts” on any email to extract signature details and import or fill missing fields after confirmation."),
 							},
 						)

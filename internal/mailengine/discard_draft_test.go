@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // A discarded compose window deletes the draft it auto-saved, on the server and in the cache.

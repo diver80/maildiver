@@ -1,6 +1,6 @@
-# MailDiver MCP Server (`maildiver --mcp`)
+# PostDive MCP Server (`postdive --mcp`)
 
-Connect external AI agents (**Claude Code**, **Claude Desktop**, **Antigravity**, **T3 Code**, **Cursor**, **Windsurf**, etc.) directly to your local MailDiver mailbox, calendar, contacts, and triage state via the **Model Context Protocol (MCP)** over local **stdio** — zero open network ports, zero separate daemon, and your IMAP passwords / OAuth tokens never leave MailDiver's OS Keychain.
+Connect external AI agents (**Claude Code**, **Claude Desktop**, **Antigravity**, **T3 Code**, **Cursor**, **Windsurf**, etc.) directly to your local PostDive mailbox, calendar, contacts, and triage state via the **Model Context Protocol (MCP)** over local **stdio** — zero open network ports, zero separate daemon, and your IMAP passwords / OAuth tokens never leave PostDive's OS Keychain.
 
 *(Deutsche Version weiter unten / German guide below.)*
 
@@ -12,31 +12,31 @@ Connect external AI agents (**Claude Code**, **Claude Desktop**, **Antigravity**
 
 ```bash
 # Read-only (recommended default)
-claude mcp add maildiver -- maildiver --mcp
+claude mcp add postdive -- postdive --mcp
 
 # Optional: allow saving drafts (never sends)
-claude mcp add maildiver -- maildiver --mcp --allow-drafts
+claude mcp add postdive -- postdive --mcp --allow-drafts
 
 # Optional: allow drafts + calendar events + mark-read/move/star (never sends or deletes)
-claude mcp add maildiver -- maildiver --mcp --allow-writes
+claude mcp add postdive -- postdive --mcp --allow-writes
 ```
 
 ### 2. Claude Desktop / Cursor / Antigravity / T3 Code (`mcpServers` JSON)
 
-You can also copy this snippet directly inside **MailDiver → Settings (`⌘,`) → AI & Sync → Local MCP Server**:
+You can also copy this snippet directly inside **PostDive → Settings (`⌘,`) → AI & Sync → Local MCP Server**:
 
 ```json
 {
   "mcpServers": {
-    "maildiver": {
-      "command": "maildiver",
+    "postdive": {
+      "command": "postdive",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-*(If `maildiver` is not on your GUI app's `PATH`, use the full path such as `/opt/homebrew/bin/maildiver` on Apple Silicon macOS or `~/.local/bin/maildiver` on Linux.)*
+*(If `postdive` is not on your GUI app's `PATH`, use the full path such as `/opt/homebrew/bin/postdive` on Apple Silicon macOS or `~/.local/bin/postdive` on Linux.)*
 
 ---
 
@@ -52,7 +52,7 @@ You can also copy this snippet directly inside **MailDiver → Settings (`⌘,`)
 | **Default (Read-Only)** | `list_calendars` | List local, Google, CalDAV & iCal calendars |
 | **Default (Read-Only)** | `list_calendar_events` | List events for a time range (default: today + 7 days) |
 | **Default (Read-Only)** | `search_contacts` | Search unified local, Google & CardDAV contacts |
-| **Default (Read-Only)** | `triage_summary` | Read MailDiver local triage bucket counts |
+| **Default (Read-Only)** | `triage_summary` | Read PostDive local triage bucket counts |
 | **`--allow-drafts`** *(or `--allow-writes`)* | `create_draft` | Save a new email / reply / forward into Drafts *(never sends)*. A reply uses the original's account, recipients, `Re:` subject and quote; encrypted originals are never quoted or forwarded |
 | **`--allow-writes`** | `create_calendar_event` | Create a calendar event in a writable calendar |
 | **`--allow-writes`** | `mark_message_read` | Mark emails as read or unread (`ExpectedMessageID`-guarded) |
@@ -68,22 +68,22 @@ You can also copy this snippet directly inside **MailDiver → Settings (`⌘,`)
 - **Encrypted emails stay protected:** `get_message` and `get_thread` never decrypt S/MIME or OpenPGP messages over MCP, preventing prompt injections from exfiltrating encrypted mail.
 - **Respects `mailbox.readOnly`:** If `mailbox.readOnly` is `true` in `config.json`, write tools are blocked even if `--allow-drafts` / `--allow-writes` is passed.
 - **Prompt-injection boundary:** Every mail, calendar, contact, and triage payload is wrapped in `<untrusted_...>` tags and size-capped (UTF-8 safe).
-- **Safe coexistence with the desktop app:** `maildiver --mcp` does not start a GUI or duplicate IMAP IDLE loops and shares `maildiver.db` cleanly via SQLite WAL + `busy_timeout`.
+- **Safe coexistence with the desktop app:** `postdive --mcp` does not start a GUI or duplicate IMAP IDLE loops and shares `postdive.db` cleanly via SQLite WAL + `busy_timeout`.
 
 ---
 
 ## Kurzanleitung (DE)
 
-Mit `maildiver --mcp` stellt MailDiver einen lokalen **Model-Context-Protocol-(MCP)-Server über stdio** bereit – direkt aus demselben Binary, ohne offenen Port und ohne dass externe Agenten Zugriff auf deine IMAP-Passwörter oder OAuth-Tokens bekommen.
+Mit `postdive --mcp` stellt PostDive einen lokalen **Model-Context-Protocol-(MCP)-Server über stdio** bereit – direkt aus demselben Binary, ohne offenen Port und ohne dass externe Agenten Zugriff auf deine IMAP-Passwörter oder OAuth-Tokens bekommen.
 
 ### Einrichtung
 
-1. **In MailDiver:** Öffne **Einstellungen (`⌘,`) → KI & Sync → Lokaler MCP-Server**, wähle den gewünschten Modus (**Nur Lesen**, **+ Entwürfe** oder **+ Kalender & Sortieren**) und klicke auf **MCP-Config kopieren** oder **Claude-CLI-Befehl kopieren**.
+1. **In PostDive:** Öffne **Einstellungen (`⌘,`) → KI & Sync → Lokaler MCP-Server**, wähle den gewünschten Modus (**Nur Lesen**, **+ Entwürfe** oder **+ Kalender & Sortieren**) und klicke auf **MCP-Config kopieren** oder **Claude-CLI-Befehl kopieren**.
 2. **Per Claude Code CLI:**
    ```bash
-   claude mcp add maildiver -- maildiver --mcp
+   claude mcp add postdive -- postdive --mcp
    # oder mit Entwurfserlaubnis (sendet niemals):
-   claude mcp add maildiver -- maildiver --mcp --allow-drafts
+   claude mcp add postdive -- postdive --mcp --allow-drafts
    ```
 
 ### Sicherheits-Leitplanken

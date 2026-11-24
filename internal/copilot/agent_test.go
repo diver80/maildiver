@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 type stubBridgeRPC struct{}
@@ -139,7 +139,7 @@ func TestBuildSystemPromptLocalization(t *testing.T) {
 	cfg := config.Default()
 
 	dePrompt := BuildSystemPrompt("de", cfg, true, "", "")
-	if !strings.Contains(dePrompt, "MailDiver KI-Assistent") {
+	if !strings.Contains(dePrompt, "PostDive KI-Assistent") {
 		t.Fatalf("expected German assistant title in DE prompt, got %q", dePrompt)
 	}
 	if strings.Contains(strings.ToLower(dePrompt), "co-pilot") {
@@ -147,7 +147,7 @@ func TestBuildSystemPromptLocalization(t *testing.T) {
 	}
 
 	enPrompt := BuildSystemPrompt("en", cfg, false, "acc1", "m1")
-	if !strings.Contains(enPrompt, "MailDiver AI Assistant") {
+	if !strings.Contains(enPrompt, "PostDive AI Assistant") {
 		t.Fatalf("expected English assistant title in EN prompt, got %q", enPrompt)
 	}
 	if strings.Contains(strings.ToLower(enPrompt), "co-pilot") {

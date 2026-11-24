@@ -15,11 +15,11 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // parityRPC is an engine with three mails in pages of two: messages.get answers any id,
@@ -520,7 +520,7 @@ func assertNoClipping(t *testing.T, tt *ui.Tester, w float32, what string) {
 }
 
 // B6: the accounts dialog, the rule editor and the event form fit a 380-point phone; with
-// MAILDIVER_RENDER set, their screenshots are written there.
+// POSTDIVE_RENDER set, their screenshots are written there.
 func TestPhoneDialogsFitAt380(t *testing.T) {
 	app := newParityApp(t, &eventDirect{}, nil)
 	app.engineReady = true
@@ -530,7 +530,7 @@ func TestPhoneDialogsFitAt380(t *testing.T) {
 		{AccountID: "acc1", Name: "Arbeit", Email: "max.muster@example.org", State: "idle", MessageCount: 1234},
 		{AccountID: "acc2", Name: "Privat mit langem Kontonamen", Email: "max.muster.privat@example.org", State: "error", LastError: "Anmeldung fehlgeschlagen"},
 	}
-	shots := os.Getenv("MAILDIVER_RENDER")
+	shots := os.Getenv("POSTDIVE_RENDER")
 	shot := func(name string, view func(*ui.Context)) {
 		t.Helper()
 		tt := ui.NewTester(func(c *ui.Context) {
@@ -557,7 +557,7 @@ func TestPhoneDialogsFitAt380(t *testing.T) {
 	}
 
 	d.tab = 0
-	shot("maildiver-phone-accounts.png", app.renderDirectModal)
+	shot("postdive-phone-accounts.png", app.renderDirectModal)
 
 	d.tab = 2
 	d.ruleEditOpen = true
@@ -569,9 +569,9 @@ func TestPhoneDialogsFitAt380(t *testing.T) {
 	}
 	d.ruleEditMove = true
 	d.ruleEditMoveFolder = "INBOX/Rechnungen"
-	shot("maildiver-phone-rule-editor.png", app.renderDirectModal)
+	shot("postdive-phone-rule-editor.png", app.renderDirectModal)
 	app.widgets.directScroll.Y = 900 // the editor's actions further down
-	shot("maildiver-phone-rule-editor-actions.png", app.renderDirectModal)
+	shot("postdive-phone-rule-editor-actions.png", app.renderDirectModal)
 	d.open = false
 
 	app.calendars = []backend.Calendar{{ID: mailengine.LocalCalendarID, Name: "Persönlich", Type: "local"}}
@@ -581,5 +581,5 @@ func TestPhoneDialogsFitAt380(t *testing.T) {
 	app.OpenNewEventModal(nil)
 	app.eventTitle = "Quartalsplanung"
 	app.eventRecurrence = 4
-	shot("maildiver-phone-event-form.png", app.renderEventModal)
+	shot("postdive-phone-event-form.png", app.renderEventModal)
 }

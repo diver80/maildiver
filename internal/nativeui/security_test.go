@@ -7,7 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // The reading pane notes encrypted/signed mail clearly without Thunderbird dependencies.
@@ -52,12 +52,12 @@ func TestReaderSecurityNotes(t *testing.T) {
 		t.Fatalf("expected verified S/MIME badge in reader")
 	}
 
-	// Not decrypted: no "(Kein Textinhalt)", clear MailDiver message.
+	// Not decrypted: no "(Kein Textinhalt)", clear PostDive message.
 	app.selectedMsg = &backend.MessageDetail{MessageHeader: app.messages[0], Security: backend.MessageSecurity{Encrypted: true, Decryption: "fail"}}
 	app.readerBody = readerBody{} // the converted body is cached per mail ID
 	tt.Frame()
 	texts = strings.Join(tt.Texts(), "\n")
-	for _, want := range []string{"(Inhalt verschlüsselt)", "MailDiver konnte den Inhalt nicht entschlüsseln"} {
+	for _, want := range []string{"(Inhalt verschlüsselt)", "PostDive konnte den Inhalt nicht entschlüsseln"} {
 		if !strings.Contains(texts, want) {
 			t.Errorf("undecrypted mail lacks %q; texts:\n%s", want, texts)
 		}
@@ -70,12 +70,12 @@ func TestReaderSecurityNotes(t *testing.T) {
 	app.selectedMsg = &backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "Hallo"}
 	app.readerBody = readerBody{}
 	tt.Frame()
-	if tt.HasText("MailDiver konnte den Inhalt nicht entschlüsseln") || tt.HasText("Signiert (PGP/S/MIME)") {
+	if tt.HasText("PostDive konnte den Inhalt nicht entschlüsseln") || tt.HasText("Signiert (PGP/S/MIME)") {
 		t.Error("a plain mail must not show a security note")
 	}
 }
 
-// Replying to an encrypted email shows an explicit MailDiver SMTP notice and saves drafts cleanly.
+// Replying to an encrypted email shows an explicit PostDive SMTP notice and saves drafts cleanly.
 func TestComposeSignAndEncryptedReply(t *testing.T) {
 	app, loop, st := keymapApp(t)
 	msg := &backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "x", Security: backend.MessageSecurity{Encrypted: true, Decryption: "success"}}

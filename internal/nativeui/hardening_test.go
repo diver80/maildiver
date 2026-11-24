@@ -17,12 +17,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/copilot"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/jobs"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/copilot"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/jobs"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // --- shared test harness -------------------------------------------------------------

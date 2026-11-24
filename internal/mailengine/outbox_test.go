@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestOutboxEnqueueRetryAndTransientDetection(t *testing.T) {

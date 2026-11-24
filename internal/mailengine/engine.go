@@ -17,11 +17,11 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/pgp"
-	"github.com/diver80/maildiver/internal/secretstore"
-	"github.com/diver80/maildiver/internal/smime"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/pgp"
+	"github.com/diver80/postdive/internal/secretstore"
+	"github.com/diver80/postdive/internal/smime"
 )
 
 // Options configures a standalone direct mail/calendar Engine.
@@ -55,7 +55,7 @@ type AccountTestResult struct {
 }
 
 // Engine is the standalone Go IMAP/SMTP + SQLite + iCal + Google Calendar/Contacts backend.
-// It implements bridge.RPCClient directly so the entire MailDiver native UI, AI
+// It implements bridge.RPCClient directly so the entire PostDive native UI, AI
 // assistant, triage, archive, and Quick-Rule stack runs in-process.
 type Engine struct {
 	store   *Store
@@ -99,8 +99,10 @@ func New(opts Options) (*Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		if legacyPath, lerr := config.LegacyDirectDBPath(); lerr == nil && legacyPath != "" && legacyPath != p {
-			migrateDBIfNeeded(legacyPath, p)
+		for _, legacyPath := range config.LegacyDirectDBPaths() {
+			if legacyPath != "" && legacyPath != p {
+				migrateDBIfNeeded(legacyPath, p)
+			}
 		}
 		dbPath = p
 	}
@@ -1241,9 +1243,9 @@ func writableDownloadsDir() (string, error) {
 	var downloadsDir string
 	if runtime.GOOS == "android" || runtime.GOOS == "ios" {
 		if cache, err := os.UserCacheDir(); err == nil && cache != "" {
-			downloadsDir = filepath.Join(cache, "maildiver-attachments")
+			downloadsDir = filepath.Join(cache, "postdive-attachments")
 		} else {
-			downloadsDir = filepath.Join(os.TempDir(), "maildiver-attachments")
+			downloadsDir = filepath.Join(os.TempDir(), "postdive-attachments")
 		}
 	} else {
 		downloadsDir = os.TempDir()
@@ -1252,7 +1254,7 @@ func writableDownloadsDir() (string, error) {
 		}
 	}
 	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
-		fallback := filepath.Join(os.TempDir(), "maildiver-attachments")
+		fallback := filepath.Join(os.TempDir(), "postdive-attachments")
 		if ferr := os.MkdirAll(fallback, 0o755); ferr != nil {
 			return "", err
 		}
@@ -1636,7 +1638,7 @@ func (e *Engine) ownEmails() []string {
 }
 
 // resolveICSInviteStatus determines the current RSVP/calendar state of an email's .ics invitation
-// from synced calendars (Google Calendar / CalDAV / local), MailDiver's recorded RSVPs, and the
+// from synced calendars (Google Calendar / CalDAV / local), PostDive's recorded RSVPs, and the
 // .ics payload itself. Returns (status, calendarName).
 func (e *Engine) resolveICSInviteStatus(ctx context.Context, msgID, rawICS string, ev StoredEvent) (string, string) {
 	own := e.ownEmails()
@@ -1681,7 +1683,7 @@ func (e *Engine) resolveICSInviteStatus(ctx context.Context, msgID, rawICS strin
 		return bestResp, calName
 	}
 
-	// 2. RSVP explicitly recorded in MailDiver.
+	// 2. RSVP explicitly recorded in PostDive.
 	if rec := e.store.GetICSRSVP(ctx, ev.UID, msgID); rec == "accepted" || rec == "tentative" || rec == "declined" {
 		return rec, calName
 	}
@@ -2048,7 +2050,7 @@ func (e *Engine) EmptySpam(ctx context.Context, accountID string) (int, error) {
 }
 
 // migrateDBIfNeeded safely migrates a pre-existing SQLite database (including any
-// uncheckpointed WAL pages) from legacyPath (formerly ~/Library/Caches/maildiver on macOS)
+// uncheckpointed WAL pages) from legacyPath (formerly ~/Library/Caches/postdive on macOS)
 // into targetPath (Application Support / DataDir) when targetPath does not yet exist.
 // Uses SQLite VACUUM INTO a temp file followed by atomic rename so WAL data is never lost
 // or split across filesystems.

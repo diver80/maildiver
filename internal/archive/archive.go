@@ -15,13 +15,15 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 const (
-	indexFileName       = ".maildiver-index.json"
+	indexFileName       = ".postdive-index.json"
 	legacyIndexFileName = ".omathunder-index.json"
 )
+
+var legacyIndexFileNames = []string{".maildiver-index.json", legacyIndexFileName}
 
 type ExportRequest struct {
 	ArchiveDir      string `json:"archiveDir,omitempty"`
@@ -261,9 +263,16 @@ func loadIndex(indexPath string) map[string]indexEntry {
 	out := map[string]indexEntry{}
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
-		// Fall back seamlessly to legacy index filename from earlier builds.
-		legacyPath := filepath.Join(filepath.Dir(indexPath), legacyIndexFileName)
-		if data, err = os.ReadFile(legacyPath); err != nil {
+		// Fall back seamlessly to legacy index filenames from earlier builds (MailDiver / OmaThunder).
+		found := false
+		for _, name := range legacyIndexFileNames {
+			legacyPath := filepath.Join(filepath.Dir(indexPath), name)
+			if data, err = os.ReadFile(legacyPath); err == nil {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return out
 		}
 	}
@@ -383,7 +392,7 @@ func Export(req ExportRequest) (ExportResult, error) {
 		return ExportResult{}, err
 	}
 
-	tmpFile, err := os.CreateTemp(parentDir, ".maildiver-*.tmp")
+	tmpFile, err := os.CreateTemp(parentDir, ".postdive-*.tmp")
 	if err != nil {
 		return ExportResult{}, err
 	}

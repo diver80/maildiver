@@ -134,25 +134,50 @@ func MailProviderPresets() []MailProviderPreset {
 	}
 }
 
-// DirectDBPath returns the default local SQLite database path for the MailDiver engine.
-// Stored in DataDir() (~/Library/Application Support/maildiver on macOS, ~/.local/share/maildiver on Linux)
+// DirectDBPath returns the default local SQLite database path for the PostDive engine.
+// Stored in DataDir() (~/Library/Application Support/postdive on macOS, ~/.local/share/postdive on Linux)
 // so local calendars, contacts, and filter rules are never wiped by cache-cleaning tools.
 func DirectDBPath() (string, error) {
 	dir, err := DataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "maildiver.db"), nil
+	return filepath.Join(dir, "postdive.db"), nil
 }
 
-// LegacyDirectDBPath returns the pre-0.5 database path under StateDir() (formerly ~/Library/Caches/maildiver on macOS)
+// LegacyDirectDBPath returns the pre-0.5 database path under StateDir() (formerly ~/Library/Caches/postdive on macOS)
 // used for automatic one-time migration into DataDir().
 func LegacyDirectDBPath() (string, error) {
 	dir, err := StateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "maildiver.db"), nil
+	return filepath.Join(dir, "postdive.db"), nil
+}
+
+// LegacyDirectDBPaths returns candidate legacy SQLite DB paths (from MailDiver and pre-0.5 StateDir)
+// in priority order for automatic one-time migration into DirectDBPath().
+func LegacyDirectDBPaths() []string {
+	var out []string
+	add := func(p string) {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if dir, err := DataDir(); err == nil {
+		add(filepath.Join(dir, "maildiver.db"))
+	}
+	if dir, err := dataDirFor("maildiver"); err == nil {
+		add(filepath.Join(dir, "maildiver.db"))
+	}
+	if dir, err := StateDir(); err == nil {
+		add(filepath.Join(dir, "postdive.db"))
+		add(filepath.Join(dir, "maildiver.db"))
+	}
+	if dir, err := stateDirFor("maildiver"); err == nil {
+		add(filepath.Join(dir, "maildiver.db"))
+	}
+	return out
 }
 
 func normalizeDirect(d DirectConfig) DirectConfig {

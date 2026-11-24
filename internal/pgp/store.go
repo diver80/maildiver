@@ -25,7 +25,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 const (

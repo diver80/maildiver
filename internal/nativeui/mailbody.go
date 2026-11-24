@@ -18,8 +18,8 @@ import (
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 // Mail body
@@ -1416,15 +1416,15 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
 			}
 		case sec.PGP:
-			msgErr := a.tr("OpenPGP-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Schlüssel unter Einstellungen → Konten → S/MIME & PGP importieren).",
-				"OpenPGP encrypted. MailDiver could not decrypt this email (import secret key under Settings → Accounts → S/MIME & PGP).")
+			msgErr := a.tr("OpenPGP-verschlüsselt. PostDive konnte den Inhalt nicht entschlüsseln (Schlüssel unter Einstellungen → Konten → S/MIME & PGP importieren).",
+				"OpenPGP encrypted. PostDive could not decrypt this email (import secret key under Settings → Accounts → S/MIME & PGP).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}
 			lines = append(lines, msgErr)
 		default:
-			msgErr := a.tr("S/MIME-verschlüsselt. MailDiver konnte den Inhalt nicht entschlüsseln (Zertifikat unter Einstellungen → Konten → S/MIME & PGP importieren).",
-				"S/MIME encrypted. MailDiver could not decrypt this email (import certificate under Settings → Accounts → S/MIME & PGP).")
+			msgErr := a.tr("S/MIME-verschlüsselt. PostDive konnte den Inhalt nicht entschlüsseln (Zertifikat unter Einstellungen → Konten → S/MIME & PGP importieren).",
+				"S/MIME encrypted. PostDive could not decrypt this email (import certificate under Settings → Accounts → S/MIME & PGP).")
 			if sec.Error != "" {
 				msgErr += " (" + sec.Error + ")"
 			}

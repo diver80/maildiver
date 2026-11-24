@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/mailengine"
 	"log"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -34,9 +35,38 @@ type desktopShell struct {
 	mu              sync.Mutex
 }
 
+// linuxUsesWayland reports whether GTK will pick its Wayland backend given the environment.
+func linuxUsesWayland(getenv func(string) string) bool {
+	if strings.TrimSpace(getenv("WAYLAND_DISPLAY")) == "" {
+		return false
+	}
+	backend, _, _ := strings.Cut(strings.TrimSpace(getenv("GDK_BACKEND")), ",")
+	return backend == "" || backend == "*" || strings.EqualFold(backend, "wayland")
+}
+
+// configureLinuxRuntimeEnv applies safe Linux runtime defaults before GTK/mygo initializes.
+// User-provided environment variables are always respected.
+func configureLinuxRuntimeEnv(goos string, getenv func(string) string, setenv func(string, string) error) {
+	if goos != "linux" {
+		return
+	}
+	// GTK 3's GtkGLArea on Wayland compositors (e.g. Hyprland/Omarchy) can render a pitch-black
+	// surface even when OpenGL draws without errors. Defaulting to mygo's incremental Cairo
+	// renderer keeps crisp native Wayland scaling & input; users can opt in with MYGO_GPU=1
+	// or run under XWayland via GDK_BACKEND=x11.
+	if getenv("MYGO_GPU") == "" && linuxUsesWayland(getenv) {
+		_ = setenv("MYGO_GPU", "0")
+	}
+	// Prevent WebKitGTK's JavaScriptCore from overriding signal 10 (SIGUSR1) when WebView loads.
+	if getenv("JSC_SIGNAL_FOR_GC") == "" {
+		_ = setenv("JSC_SIGNAL_FOR_GC", "12")
+	}
+}
+
 // Run starts the native mygo desktop UI (main window, menu bar status widget, and native notifications).
 func Run(ctx context.Context, opts Options) error {
-	mygo.App.SetName("MailDiver")
+	configureLinuxRuntimeEnv(runtime.GOOS, os.Getenv, os.Setenv)
+	mygo.App.SetName("PostDive")
 	if isMobileOS() {
 		mailengine.BrowserOpener = mygo.Shell.OpenExternal
 	}
@@ -131,12 +161,13 @@ func (s *desktopShell) ready(opts Options) {
 		_ = mygo.App.Dock.SetIcon(s.appIcon)
 	}
 	winOpts := mygo.WindowOptions{
-		Title:    s.mainTitle(),
-		Width:    1380,
-		Height:   860,
-		Hidden:   opts.StartHidden && !isMobile,
-		StateKey: "maildiver-main",
-		Content:  ui.View(s.app.RenderMain),
+		Title:           s.mainTitle(),
+		Width:           1380,
+		Height:          860,
+		Hidden:          opts.StartHidden && !isMobile,
+		AutoHideMenuBar: runtime.GOOS == "linux",
+		StateKey:        "postdive-main",
+		Content:         ui.View(s.app.RenderMain),
 	}
 	if !isMobile {
 		winOpts.MinWidth = 960
@@ -213,7 +244,10 @@ func (s *desktopShell) ready(opts Options) {
 	s.app.SetPrintHook(func(title, htmlDoc string) {
 		s.printHTMLDocument(title, htmlDoc)
 	})
-	if !isMobile && mygo.WebViewAvailable() {
+	// On Linux, avoid calling mygo.WebViewAvailable() eagerly at startup because it dlopens
+	// WebKitGTK/JavaScriptCore (~75 shared libraries) before any WebView is opened. Hosts probe
+	// availability lazily on first use and fall back cleanly when webkit2gtk-4.1 is absent.
+	if !isMobile && (runtime.GOOS == "linux" || mygo.WebViewAvailable()) {
 		previewHost := newMygoPreviewHost(s.mainWin, s.app)
 		s.app.SetWebPreviewHost(previewHost)
 		composeHost := newMygoComposeHost(func() *mygo.Window {
@@ -231,14 +265,14 @@ func (s *desktopShell) ready(opts Options) {
 
 	if !opts.DisableTray && !isMobile {
 		tray, err := mygo.NewTray(mygo.TrayOptions{
-			ID:             "maildiver-tray",
+			ID:             "postdive-tray",
 			Icon:           s.trayIcon,
 			IconIsTemplate: true,
 			Title:          s.app.TrayTitle(),
 			ToolTip:        s.app.TrayTooltip(),
 		})
 		if err != nil {
-			log.Printf("maildiver tray: %v", err)
+			log.Printf("postdive tray: %v", err)
 		} else {
 			s.tray = tray
 			s.flyoutWin = mygo.NewFlyout(mygo.FlyoutOptions{
@@ -305,13 +339,14 @@ func (s *desktopShell) syncComposeWindow() {
 		s.composeWinSeq = s.app.composeWindowSeq
 		if s.composeWin == nil || s.composeWin.IsDestroyed() {
 			win := mygo.NewWindow(mygo.WindowOptions{
-				Title:     s.app.ComposeWindowTitle(),
-				Width:     720,
-				Height:    640,
-				MinWidth:  540,
-				MinHeight: 460,
-				StateKey:  "maildiver-compose",
-				Content:   ui.View(s.app.RenderComposeWindow),
+				Title:           s.app.ComposeWindowTitle(),
+				Width:           720,
+				Height:          640,
+				MinWidth:        540,
+				MinHeight:       460,
+				AutoHideMenuBar: runtime.GOOS == "linux",
+				StateKey:        "postdive-compose",
+				Content:         ui.View(s.app.RenderComposeWindow),
 			})
 			if win == nil {
 				return
@@ -359,13 +394,14 @@ func (s *desktopShell) syncEventWindow() {
 		s.eventWinSeq = s.app.eventWindowSeq
 		if s.eventWin == nil || s.eventWin.IsDestroyed() {
 			win := mygo.NewWindow(mygo.WindowOptions{
-				Title:     s.app.EventWindowTitle(),
-				Width:     560,
-				Height:    580,
-				MinWidth:  460,
-				MinHeight: 460,
-				StateKey:  "maildiver-event",
-				Content:   ui.View(s.app.RenderEventWindow),
+				Title:           s.app.EventWindowTitle(),
+				Width:           560,
+				Height:          580,
+				MinWidth:        460,
+				MinHeight:       460,
+				AutoHideMenuBar: runtime.GOOS == "linux",
+				StateKey:        "postdive-event",
+				Content:         ui.View(s.app.RenderEventWindow),
 			})
 			if win == nil {
 				return
@@ -452,7 +488,7 @@ func (s *desktopShell) printHTMLDocument(title, htmlDoc string) {
 }
 
 func (s *desktopShell) mainTitle() string {
-	return s.app.tr("MailDiver — E-Mail, Kalender & Kontakte", "MailDiver — Mail, Calendar & Contacts")
+	return s.app.tr("PostDive — E-Mail, Kalender & Kontakte", "PostDive — Mail, Calendar & Contacts")
 }
 
 func (s *desktopShell) appMenu() *mygo.Menu {
@@ -579,7 +615,7 @@ func (s *desktopShell) sendNativeNotification(item AlertItem) {
 	if !mygo.NotificationsSupported() {
 		return
 	}
-	group := "maildiver-" + item.Kind
+	group := "postdive-" + item.Kind
 	n := mygo.NewNotification(mygo.NotificationOptions{
 		ID:       item.ID,
 		Title:    item.Title,
@@ -589,7 +625,7 @@ func (s *desktopShell) sendNativeNotification(item AlertItem) {
 	})
 	go func() {
 		if err := n.ShowContext(s.ctx); err != nil {
-			log.Printf("maildiver notification: %v", err)
+			log.Printf("postdive notification: %v", err)
 		}
 	}()
 }
@@ -637,7 +673,7 @@ func (s *desktopShell) runFileDialog(req FilePickRequest, onDone func(paths []st
 		})
 	}
 	if err != nil {
-		log.Printf("maildiver dialog: %v", err)
+		log.Printf("postdive dialog: %v", err)
 		return
 	}
 	if len(paths) == 0 || onDone == nil {
@@ -649,7 +685,7 @@ func (s *desktopShell) runFileDialog(req FilePickRequest, onDone func(paths []st
 }
 
 // mygoPreviewHost embeds a native mygo.WebView inside the main window for the mail split preview panel.
-// It uses a dedicated persistent session ("maildiver-preview") so Atlassian/Jira/Confluence/GitHub logins
+// It uses a dedicated persistent session ("postdive-preview") so Atlassian/Jira/Confluence/GitHub logins
 // stay authenticated, while setting Untrusted: true so remote pages can never call Go bindings or access local files.
 type mygoPreviewHost struct {
 	mu  sync.Mutex
@@ -677,7 +713,7 @@ func (h *mygoPreviewHost) ensure() (*mygo.WebView, error) {
 	}
 
 	pageOpts := mygo.PageOptions{
-		Session:         mygo.NewSession("maildiver-preview"),
+		Session:         mygo.NewSession("postdive-preview"),
 		Untrusted:       true,
 		SwipeNavigation: true,
 	}
@@ -850,6 +886,7 @@ type mygoComposeHost struct {
 	app         *App
 	wv          *mygo.WebView
 	pendingHTML string
+	unavailable bool
 }
 
 func newMygoComposeHost(winFn func() *mygo.Window, app *App) *mygoComposeHost {
@@ -862,6 +899,10 @@ func (h *mygoComposeHost) Ensure() error {
 		return fmt.Errorf("compose window unavailable")
 	}
 	h.mu.Lock()
+	if h.unavailable {
+		h.mu.Unlock()
+		return fmt.Errorf("webview unavailable")
+	}
 	if h.wv != nil && !h.wv.IsDestroyed() && h.win == targetWin {
 		h.mu.Unlock()
 		return nil
@@ -875,6 +916,13 @@ func (h *mygoComposeHost) Ensure() error {
 		oldWV.Destroy()
 	}
 
+	if !mygo.WebViewAvailable() {
+		h.mu.Lock()
+		h.unavailable = true
+		h.mu.Unlock()
+		return fmt.Errorf("webview unavailable")
+	}
+
 	wv, err := targetWin.NewWebView(mygo.WebViewOptions{
 		Page: mygo.PageOptions{Untrusted: true},
 	})
@@ -883,7 +931,7 @@ func (h *mygoComposeHost) Ensure() error {
 	}
 	p := wv.Page()
 	p.OnWillNavigate(func(e *mygo.NavigateEvent) {
-		if e.URL == "about:blank" || strings.HasPrefix(e.URL, "https://compose.maildiver.local/") {
+		if e.URL == "about:blank" || strings.HasPrefix(e.URL, "https://compose.postdive.local/") {
 			return
 		}
 		e.PreventDefault()
@@ -910,7 +958,7 @@ func (h *mygoComposeHost) Ensure() error {
 	h.mu.Unlock()
 
 	if pending != "" {
-		p.LoadHTML(pending, "https://compose.maildiver.local/")
+		p.LoadHTML(pending, "https://compose.postdive.local/")
 	}
 	return nil
 }
@@ -942,7 +990,7 @@ func (h *mygoComposeHost) LoadContent(initialHTML string, pal ComposeThemePalett
 	if pal.Bg != "" {
 		_ = wv.SetBackgroundColor(pal.Bg)
 	}
-	wv.Page().LoadHTML(doc, "https://compose.maildiver.local/")
+	wv.Page().LoadHTML(doc, "https://compose.postdive.local/")
 	return nil
 }
 

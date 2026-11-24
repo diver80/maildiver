@@ -29,19 +29,19 @@ import (
 	"github.com/egoist/mygo/ui"
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/copilot"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/theme"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/copilot"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/theme"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 const (
-	alertMailPrefix      = "maildiver-mail-"
-	alertMailBatchPrefix = "maildiver-mail-batch-"
-	alertCalPrefix       = "maildiver-cal-"
+	alertMailPrefix      = "postdive-mail-"
+	alertMailBatchPrefix = "postdive-mail-batch-"
+	alertCalPrefix       = "postdive-cal-"
 )
 
 type Options struct {
@@ -2595,7 +2595,7 @@ func (a *App) PrintSelectedMessage(ctx context.Context) {
 		doc := BuildPrintHTML(&msgCopy, lang, inlineImgs, allowRemote, onPrint == nil)
 		title := msgCopy.Subject
 		if strings.TrimSpace(title) == "" {
-			title = "MailDiver"
+			title = "PostDive"
 		}
 		a.emitUpdate(func() {
 			if a.onPrint != nil {
@@ -4248,12 +4248,12 @@ func (a *App) TrayTitle() string {
 // TrayTooltip returns a rich status summary tooltip for the menu bar icon (UI thread).
 func (a *App) TrayTooltip() string {
 	if !a.engineReady {
-		return a.tr("MailDiver — Mail-Dienst offline", "MailDiver — Mail engine offline")
+		return a.tr("PostDive — Mail-Dienst offline", "PostDive — Mail engine offline")
 	}
 	today := a.todayEvents()
 	return a.trf(
-		"MailDiver Live · %d ungelesen · %d Action · %d Termine heute",
-		"MailDiver Live · %d unread · %d action · %d events today",
+		"PostDive Live · %d ungelesen · %d Action · %d Termine heute",
+		"PostDive Live · %d unread · %d action · %d events today",
 		a.unreadCount(), a.barSummary.ActionCount, len(today),
 	)
 }

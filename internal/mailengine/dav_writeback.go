@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // discoverDAVCollectionURL resolves a base server URL or /.well-known/{caldav,carddav} endpoint

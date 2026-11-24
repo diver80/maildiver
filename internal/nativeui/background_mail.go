@@ -10,9 +10,9 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/background"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 // Mail while the app is not open (phones). Android pauses an app in the background, so its IMAP
@@ -269,7 +269,7 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 	mygo.App.WhenReady(func() {
 		go func() {
 			if err := background.Schedule(ctx, backgroundMailTask, background.Options{Every: backgroundMailEvery, Network: true}); err != nil {
-				log.Printf("maildiver: background mail: %v", err)
+				log.Printf("postdive: background mail: %v", err)
 			}
 		}()
 	})
@@ -283,7 +283,7 @@ func (s *desktopShell) notifyBackgroundMail(ctx context.Context, msgs []mailengi
 		return
 	}
 	if err := mygo.NewNotification(opts).ShowContext(ctx); err != nil {
-		log.Printf("maildiver notification: %v", err)
+		log.Printf("postdive notification: %v", err)
 	}
 }
 
@@ -296,12 +296,12 @@ func (s *desktopShell) notifyBackgroundEvents(ctx context.Context, bc background
 	}
 	evs, err := bc.TakeDueEventReminders(ctx, time.Now(), backgroundReminderWithin, cfg.App.HiddenCalendars)
 	if err != nil {
-		log.Printf("maildiver: calendar reminders: %v", err)
+		log.Printf("postdive: calendar reminders: %v", err)
 		return
 	}
 	for _, opts := range s.app.backgroundEventNotifications(evs, time.Now()) {
 		if err := mygo.NewNotification(opts).ShowContext(ctx); err != nil {
-			log.Printf("maildiver notification: %v", err)
+			log.Printf("postdive notification: %v", err)
 		}
 	}
 }
@@ -333,7 +333,7 @@ func (a *App) backgroundEventNotifications(evs []backend.CalendarEvent, now time
 			Title:    ev.Title,
 			Subtitle: a.eventReminderSubtitle(ev, start, now),
 			Body:     ev.Calendar,
-			Group:    "maildiver-calendar",
+			Group:    "postdive-calendar",
 		})
 	}
 	return out
@@ -353,12 +353,12 @@ func (a *App) backgroundMailNotification(msgs []mailengine.StoredMessage) (mygo.
 		m := msgs[0]
 		return mygo.NotificationOptions{
 			ID: alertMailPrefix + m.ID, Title: shortSender(m.From),
-			Subtitle: a.tr("Neue E-Mail", "New Email"), Body: m.Subject, Group: "maildiver-mail",
+			Subtitle: a.tr("Neue E-Mail", "New Email"), Body: m.Subject, Group: "postdive-mail",
 		}, true
 	}
 	return mygo.NotificationOptions{
 		ID:       fmt.Sprintf("%s%d", alertMailBatchPrefix, time.Now().UnixNano()),
 		Title:    a.trf("%d neue E-Mails", "%d new emails", len(msgs)),
-		Subtitle: shortSender(msgs[0].From), Body: msgs[0].Subject, Group: "maildiver-mail",
+		Subtitle: shortSender(msgs[0].From), Body: msgs[0].Subject, Group: "postdive-mail",
 	}, true
 }

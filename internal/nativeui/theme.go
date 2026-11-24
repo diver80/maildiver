@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/theme"
+	"github.com/diver80/postdive/internal/theme"
 )
 
 // PaletteToUITheme maps an Omarchy palette directly into a native mygo/ui Theme.

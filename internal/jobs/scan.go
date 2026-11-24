@@ -6,10 +6,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/config"
-	evhub "github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/config"
+	evhub "github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 const (

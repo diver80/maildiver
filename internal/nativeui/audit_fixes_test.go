@@ -13,12 +13,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // recordRPC answers every engine call (canned answers or "{}") and records it.

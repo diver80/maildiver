@@ -14,7 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 const (

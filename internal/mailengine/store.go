@@ -14,14 +14,14 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 const (
 	LocalCalendarID      = "local-default"
 	LocalAddressBookID   = "local-ab"
-	LocalAddressBookName = "MailDiver Kontakte"
+	LocalAddressBookName = "PostDive Kontakte"
 )
 
 // Store wraps the local SQLite database (+ FTS5) for instant reads, search,
@@ -1741,7 +1741,7 @@ func (s *Store) UpsertFilter(ctx context.Context, req backend.FilterUpsertReques
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		name = "MailDiver Filter"
+		name = "PostDive Filter"
 	}
 	switch req.Mode {
 	case "toggle":

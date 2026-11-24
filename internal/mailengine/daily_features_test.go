@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func setupTestEngineWithIMAPAndSMTP(t *testing.T, aliases []config.AccountAlias) (*Engine, config.DirectAccount, interface{}, *[]string, *string, func()) {
@@ -41,7 +41,7 @@ func setupTestEngineWithIMAPAndSMTP(t *testing.T, aliases []config.AccountAlias)
 	cfg := config.Default()
 	var mu sync.Mutex
 	eng, err := New(Options{
-		DBPath:       filepath.Join(t.TempDir(), "maildiver.db"),
+		DBPath:       filepath.Join(t.TempDir(), "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		Events:       events.NewHub(),
 		ConfigLoader: func() (config.Config, error) { mu.Lock(); defer mu.Unlock(); return cfg, nil },
@@ -162,8 +162,8 @@ func TestMigrateDBIfNeeded(t *testing.T) {
 	ctx := context.Background()
 	legacyDir := t.TempDir()
 	targetDir := t.TempDir()
-	legacyDB := filepath.Join(legacyDir, "maildiver.db")
-	targetDB := filepath.Join(targetDir, "maildiver.db")
+	legacyDB := filepath.Join(legacyDir, "postdive.db")
+	targetDB := filepath.Join(targetDir, "postdive.db")
 
 	// Create a real WAL-mode SQLite DB in legacyDir with a contact row.
 	st, err := OpenStore(legacyDB)
@@ -702,7 +702,7 @@ func TestTrashMarksUnreadMessagesRead(t *testing.T) {
 func TestFindFolderByTypePrefersSpecialUseAndSentCache(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	store, err := OpenStore(filepath.Join(dir, "maildiver.db"))
+	store, err := OpenStore(filepath.Join(dir, "postdive.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

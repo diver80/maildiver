@@ -156,10 +156,10 @@ func TestDirectDBPathUsesDataDirAndNormalizesAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbPath != filepath.Join(dataDir, AppID, "maildiver.db") {
+	if dbPath != filepath.Join(dataDir, AppID, "postdive.db") {
 		t.Fatalf("DirectDBPath = %q, want under XDG_DATA_HOME", dbPath)
 	}
-	if legacyPath != filepath.Join(stateDir, AppID, "maildiver.db") {
+	if legacyPath != filepath.Join(stateDir, AppID, "postdive.db") {
 		t.Fatalf("LegacyDirectDBPath = %q, want under XDG_STATE_HOME", legacyPath)
 	}
 

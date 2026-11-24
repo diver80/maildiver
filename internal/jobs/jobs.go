@@ -1,4 +1,4 @@
-// Package jobs runs MailDiver's automatic work in the app process: triage scans (manually or
+// Package jobs runs PostDive's automatic work in the app process: triage scans (manually or
 // when new mail arrives) and archive & cleanup runs. Mail access goes through the engine's job
 // methods ("host.*"), which check the mailbox policy (enabled accounts, read-only). Encrypted
 // mails are never decrypted for these jobs.
@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // Caller is the mail engine: the job methods ("host.*") read and change mails for the jobs.

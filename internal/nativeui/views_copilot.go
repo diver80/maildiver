@@ -8,8 +8,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/copilot"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/copilot"
 )
 
 func (a *App) renderCopilotPane(c *ui.Context) {

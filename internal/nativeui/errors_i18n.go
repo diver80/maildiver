@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 // errorCode classifies err into a contract error code (§2) or a client-side code.

@@ -17,16 +17,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // ErrNotFound is returned when a secret key does not exist in the store.
 var ErrNotFound = errors.New("secret not found")
 
 const (
-	keychainService       = "dev.maildiver.app"
-	legacyKeychainService = "dev.omathunder.direct"
+	keychainService       = "dev.postdive.app"
+	legacyKeychainService = "dev.maildiver.app"
 )
+
+var legacyKeychainServices = []string{"dev.maildiver.app", "dev.omathunder.direct"}
 
 // Store persists sensitive credentials (IMAP/SMTP passwords, OAuth tokens)
 // outside of config.json.
@@ -38,8 +40,8 @@ type Store interface {
 
 // Default returns the platform credential store: macOS Keychain with automatic
 // fallback to a 0600 file in the config directory on headless macOS or other OSes.
-// Reads transparently fall back to legacy OmaThunder entries so existing passwords
-// and OAuth tokens continue working seamlessly after rebranding to MailDiver.
+// Reads transparently fall back to legacy MailDiver and OmaThunder entries so existing passwords
+// and OAuth tokens continue working seamlessly after rebranding to PostDive.
 func Default() Store {
 	if d := defaultOverride.Load(); d != nil {
 		return *d
@@ -49,39 +51,59 @@ func Default() Store {
 		dir = "."
 	}
 	fb := NewFileStore(filepath.Join(dir, "secrets.json"))
-	var legacyFB *FileStore
-	if legacyDir, lerr := config.LegacyConfigDir(); lerr == nil && legacyDir != dir {
-		legacyFB = NewFileStore(filepath.Join(legacyDir, "secrets.json"))
+	var legacyFBs []*FileStore
+	for _, legacyDir := range config.LegacyConfigDirs() {
+		if legacyDir != "" && legacyDir != dir {
+			legacyFBs = append(legacyFBs, NewFileStore(filepath.Join(legacyDir, "secrets.json")))
+		}
 	}
 	if runtime.GOOS == "darwin" {
+		var legacyFB *FileStore
+		if len(legacyFBs) > 0 {
+			legacyFB = legacyFBs[0]
+		}
 		return &keychainStore{
-			service:        keychainService,
-			legacyService:  legacyKeychainService,
-			fallback:       fb,
-			legacyFallback: legacyFB,
+			service:         keychainService,
+			legacyService:   legacyKeychainService,
+			legacyServices:  legacyKeychainServices,
+			fallback:        fb,
+			legacyFallback:  legacyFB,
+			legacyFallbacks: legacyFBs,
 		}
 	}
 	var primary Store = fb
-	if ps := newPlatformSecretStore("MailDiver", filepath.Join(dir, "secrets.seal"), filepath.Join(dir, "secrets.json")); ps != nil {
+	if ps := newPlatformSecretStore("PostDive", filepath.Join(dir, "secrets.seal"), filepath.Join(dir, "secrets.json")); ps != nil {
 		primary = ps
 	}
-	if legacyFB != nil {
-		return &fallbackStore{primary: primary, legacy: legacyFB}
+	if len(legacyFBs) > 0 {
+		stores := make([]Store, 0, len(legacyFBs))
+		for _, lfb := range legacyFBs {
+			stores = append(stores, lfb)
+		}
+		return &fallbackStore{primary: primary, legacy: legacyFBs[0], legacies: stores}
 	}
 	return primary
 }
 
-// fallbackStore reads from primary first, falling back to legacy on ErrNotFound.
+// fallbackStore reads from primary first, falling back to legacy stores on ErrNotFound.
 type fallbackStore struct {
-	primary Store
-	legacy  Store
+	primary  Store
+	legacy   Store
+	legacies []Store
 }
 
 func (s *fallbackStore) Get(key string) (string, error) {
 	if v, err := s.primary.Get(key); err == nil {
 		return v, nil
 	}
-	if s.legacy != nil {
+	for _, l := range s.legacies {
+		if l != nil {
+			if v, err := l.Get(key); err == nil {
+				return v, nil
+			}
+		}
+	}
+	if len(s.legacies) == 0 && s.legacy != nil {
 		if v, err := s.legacy.Get(key); err == nil {
 			return v, nil
 		}
@@ -94,7 +116,12 @@ func (s *fallbackStore) Set(key, value string) error {
 }
 
 func (s *fallbackStore) Delete(key string) error {
-	if s.legacy != nil {
+	for _, l := range s.legacies {
+		if l != nil {
+			_ = l.Delete(key)
+		}
+	}
+	if len(s.legacies) == 0 && s.legacy != nil {
 		_ = s.legacy.Delete(key)
 	}
 	return s.primary.Delete(key)
@@ -322,11 +349,13 @@ func runSecurityCmd(stdin string, args ...string) ([]byte, error) {
 // keychainStore uses macOS /usr/bin/security (pure Go, CGO_ENABLED=0 compatible)
 // and falls back to FileStore when Keychain is locked or unavailable.
 type keychainStore struct {
-	service        string
-	legacyService  string
-	fallback       *FileStore
-	legacyFallback *FileStore
-	mu             sync.Mutex
+	service         string
+	legacyService   string
+	legacyServices  []string
+	fallback        *FileStore
+	legacyFallback  *FileStore
+	legacyFallbacks []*FileStore
+	mu              sync.Mutex
 }
 
 func findKeychainRaw(service, key string) (string, error) {
@@ -443,7 +472,7 @@ func (k *keychainStore) Get(key string) (string, error) {
 	if ok {
 		return v, nil
 	}
-	// Check MailDiver fallback before legacy service so newly saved fallback secrets are never shadowed
+	// Check PostDive fallback before legacy service so newly saved fallback secrets are never shadowed
 	// by older legacy Keychain entries, and self-heal any previously truncated Keychain entry.
 	if k.fallback != nil {
 		if fv, ferr := k.fallback.Get(key); ferr == nil {
@@ -453,10 +482,24 @@ func (k *keychainStore) Get(key string) (string, error) {
 			return fv, nil
 		}
 	}
-	if lv, lok, _ := k.getFromServiceLocked(k.legacyService, key); lok {
-		return lv, nil
+	for _, ls := range k.legacyServices {
+		if lv, lok, _ := k.getFromServiceLocked(ls, key); lok {
+			return lv, nil
+		}
 	}
-	if k.legacyFallback != nil {
+	if len(k.legacyServices) == 0 {
+		if lv, lok, _ := k.getFromServiceLocked(k.legacyService, key); lok {
+			return lv, nil
+		}
+	}
+	for _, lfb := range k.legacyFallbacks {
+		if lfb != nil {
+			if v, ferr := lfb.Get(key); ferr == nil {
+				return v, nil
+			}
+		}
+	}
+	if len(k.legacyFallbacks) == 0 && k.legacyFallback != nil {
 		if v, ferr := k.legacyFallback.Get(key); ferr == nil {
 			return v, nil
 		}
@@ -489,10 +532,18 @@ func (k *keychainStore) Delete(key string) error {
 		return nil
 	}
 	k.deleteKeychainChunksLocked(k.service, key)
-	if k.legacyService != "" {
+	for _, ls := range k.legacyServices {
+		k.deleteKeychainChunksLocked(ls, key)
+	}
+	if len(k.legacyServices) == 0 && k.legacyService != "" {
 		k.deleteKeychainChunksLocked(k.legacyService, key)
 	}
-	if k.legacyFallback != nil {
+	for _, lfb := range k.legacyFallbacks {
+		if lfb != nil {
+			_ = lfb.Delete(key)
+		}
+	}
+	if len(k.legacyFallbacks) == 0 && k.legacyFallback != nil {
 		_ = k.legacyFallback.Delete(key)
 	}
 	if k.fallback != nil {

@@ -20,8 +20,8 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 // Bundle is the encrypted JSON payload transferred once over the local LAN.
@@ -230,7 +230,7 @@ func StartSession(parent context.Context, bundle Bundle, listenHost string, ttl 
 	q.Set("url", fetchURL)
 	q.Set("t", token)
 	q.Set("k", base64.RawURLEncoding.EncodeToString(key))
-	pairURI := "maildiver-pair://v1?" + q.Encode()
+	pairURI := "postdive-pair://v1?" + q.Encode()
 
 	qrPNG, err := qrcode.Encode(pairURI, qrcode.Medium, 256)
 	if err != nil {
@@ -290,8 +290,8 @@ func StartSession(parent context.Context, bundle Bundle, listenHost string, ttl 
 // and merges the transferred accounts, credentials, calendars, and app preferences into cfg and secrets.
 func ImportFromPairingURI(ctx context.Context, pairURI string, curCfg config.Config, secrets secretstore.Store) (config.Config, int, error) {
 	u, err := url.Parse(strings.TrimSpace(pairURI))
-	if err != nil || !strings.EqualFold(u.Scheme, "maildiver-pair") {
-		return curCfg, 0, fmt.Errorf("ungültiger MailDiver-Pairing-Code")
+	if err != nil || !strings.EqualFold(u.Scheme, "postdive-pair") {
+		return curCfg, 0, fmt.Errorf("ungültiger PostDive-Pairing-Code")
 	}
 	fetchRaw := u.Query().Get("url")
 	token := u.Query().Get("t")
@@ -348,7 +348,7 @@ func ImportFromPairingURI(ctx context.Context, pairURI string, curCfg config.Con
 		merged.Direct.Accounts = append(merged.Direct.Accounts, a)
 		existingAcc[em] = true
 		added++
-		// As an account added in the accounts dialog: MailDiver may act on it.
+		// As an account added in the accounts dialog: PostDive may act on it.
 		if !merged.Mailbox.AccountEnabled(a.ID) {
 			merged.Mailbox.TriageAccountIDs = append(merged.Mailbox.TriageAccountIDs, a.ID)
 		}

@@ -18,8 +18,8 @@ import (
 	"github.com/emersion/go-ical"
 	"github.com/teambition/rrule-go"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // ParseICS parses RFC 5545 iCalendar VEVENT entries from r into StoredEvents.
@@ -159,7 +159,7 @@ const ReminderNone = backend.ReminderNone
 
 // propNoAlarm marks an event whose reminder the user turned off, so that a CalDAV round trip
 // (no VALARM) does not bring the default back.
-const propNoAlarm = "X-MAILDIVER-NO-ALARM"
+const propNoAlarm = "X-POSTDIVE-NO-ALARM"
 
 // icalReminder reads the first VALARM triggered before the start (TRIGGER:-PT15M) as minutes,
 // ReminderNone for an event marked without one, and 0 (the default) otherwise.
@@ -618,7 +618,7 @@ func BuildICSRSVP(rawICS, attendeeEmail, attendeeName, status string) (replyICS,
 
 	reply := ical.NewCalendar()
 	reply.Props.SetText(ical.PropVersion, "2.0")
-	reply.Props.SetText(ical.PropProductID, "-//MailDiver//Calendar//EN")
+	reply.Props.SetText(ical.PropProductID, "-//PostDive//Calendar//EN")
 	reply.Props.SetText(ical.PropMethod, "REPLY")
 
 	for _, ch := range inCal.Children {
@@ -689,7 +689,7 @@ func parseFlexibleEventTime(iso string, fallbackUnix int64) time.Time {
 func ExportEventsICS(calName string, events []StoredEvent) string {
 	cal := ical.NewCalendar()
 	cal.Props.SetText(ical.PropVersion, "2.0")
-	cal.Props.SetText(ical.PropProductID, "-//MailDiver//Calendar//EN")
+	cal.Props.SetText(ical.PropProductID, "-//PostDive//Calendar//EN")
 	if calName != "" {
 		cal.Props.SetText("X-WR-CALNAME", calName)
 	}
@@ -697,7 +697,7 @@ func ExportEventsICS(calName string, events []StoredEvent) string {
 		ev := ical.NewEvent()
 		uid := e.UID
 		if uid == "" {
-			uid = e.ID + "@maildiver.local"
+			uid = e.ID + "@postdive.local"
 		}
 		ev.Props.SetText(ical.PropUID, uid)
 		ev.Props.SetDateTime(ical.PropDateTimeStamp, time.Now().UTC())
@@ -934,7 +934,7 @@ func (e *Engine) SyncICalFeed(ctx context.Context, feed config.ICalFeedConfig) (
 		if rerr != nil {
 			return 0, rerr
 		}
-		req.Header.Set("User-Agent", "MailDiver/1.0")
+		req.Header.Set("User-Agent", "PostDive/1.0")
 		client := newSafeFeedHTTPClient(e.allowLoopbackICal)
 		resp, derr := client.Do(req)
 		if derr != nil {

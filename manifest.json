@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "maildiver",
-  "name": "MailDiver",
-  "version": "0.7.30",
+  "id": "postdive",
+  "name": "PostDive",
+  "version": "0.7.31",
   "author": "diver80",
   "license": "MIT",
   "description": "Standalone native IMAP/SMTP mail, calendar, contacts and AI assistant desktop app.",
@@ -12,10 +12,10 @@
     "barWidget": "omarchy/BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "MailDiver",
+    "displayName": "PostDive",
     "description": "Shows emails that actually need action (filtered from newsletters) and pending AI proposals.",
     "category": "Communication",
-    "aliases": ["maildiver", "mail", "email", "triage"],
+    "aliases": ["postdive", "mail", "email", "triage"],
     "allowMultiple": false,
     "defaultSection": "right"
   }

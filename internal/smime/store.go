@@ -17,7 +17,7 @@ import (
 	"github.com/smallstep/pkcs7"
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 // CertInfo is non-secret metadata for an S/MIME personal identity or contact public certificate.

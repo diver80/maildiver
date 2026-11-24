@@ -10,11 +10,11 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/secretstore"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/secretstore"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 func TestDirectModeUIEndToEnd(t *testing.T) {
@@ -30,7 +30,7 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	}
 
 	eng, err := mailengine.New(mailengine.Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: loadCfg,
 		ConfigSaver:  saveCfg,
@@ -43,7 +43,7 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	// Import a local .ics event so Calendar view has real data.
 	tomorrow := time.Now().Add(24 * time.Hour).UTC().Format("20060102")
 	icsPath := filepath.Join(dir, "test.ics")
-	icsContent := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//MailDiver//Test//EN\r\nBEGIN:VEVENT\r\nUID:ui-test-1@maildiver\r\nSUMMARY:Direkt-Test-Termin\r\nDTSTART:" + tomorrow + "T100000Z\r\nDTEND:" + tomorrow + "T110000Z\r\nLOCATION:Berlin\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	icsContent := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//PostDive//Test//EN\r\nBEGIN:VEVENT\r\nUID:ui-test-1@postdive\r\nSUMMARY:Direkt-Test-Termin\r\nDTSTART:" + tomorrow + "T100000Z\r\nDTEND:" + tomorrow + "T110000Z\r\nLOCATION:Berlin\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	if err := os.WriteFile(icsPath, []byte(icsContent), 0o600); err != nil {
 		t.Fatalf("write ics: %v", err)
 	}
@@ -109,13 +109,13 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 
 	tt := ui.NewTester(app.RenderMain, 1280, 820)
 
-	// 1. Onboarding card (no IMAP accounts yet) & MailDiver branding
+	// 1. Onboarding card (no IMAP accounts yet) & PostDive branding
 	tt.Frame()
-	if _, ok := tt.Find("MailDiver"); !ok {
-		t.Fatalf("expected MailDiver header")
+	if _, ok := tt.Find("PostDive"); !ok {
+		t.Fatalf("expected PostDive header")
 	}
 	if _, ok := tt.Find("IMAP/SMTP-Konto verbinden"); !ok {
-		t.Fatalf("expected MailDiver onboarding button")
+		t.Fatalf("expected PostDive onboarding button")
 	}
 	if _, ok := tt.Find("Verbunden (IMAP)"); !ok {
 		t.Fatalf("expected Verbunden (IMAP) footer status")

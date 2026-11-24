@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 type davMultistatus struct {
@@ -55,7 +55,7 @@ func davPasswordKey(id string) string {
 }
 
 // FetchCalDAVEvents executes a CalDAV calendar-query REPORT against calendarURL and parses
-// every returned VCALENDAR component into MailDiver StoredEvents.
+// every returned VCALENDAR component into PostDive StoredEvents.
 func FetchCalDAVEvents(ctx context.Context, hc *http.Client, calID, calName, calendarURL, username, password string, allowLoopback bool) ([]StoredEvent, error) {
 	safeURL, err := validateDAVURL(calendarURL, allowLoopback)
 	if err != nil {

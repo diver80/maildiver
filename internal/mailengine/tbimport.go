@@ -19,9 +19,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // TBProfileInfo describes a discovered local Thunderbird profile directory.
@@ -280,7 +280,7 @@ func InspectThunderbirdProfile(profileDir string) (TBImportPreview, error) {
 	return prev, nil
 }
 
-// ApplyThunderbirdImport imports the selected categories from profileDir into MailDiver.
+// ApplyThunderbirdImport imports the selected categories from profileDir into PostDive.
 // Existing accounts (matched by email+imapHost), feeds (matched by URL), contacts (matched by email),
 // and filters (matched by account+name) are preserved without creating duplicates.
 func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, opts TBImportOptions) (TBImportReport, error) {
@@ -307,7 +307,7 @@ func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, 
 				continue
 			}
 			// Imported accounts start enabled=false until the user enters their password & tests connection,
-			// so MailDiver doesn't hammer IMAP servers with missing credentials.
+			// so PostDive doesn't hammer IMAP servers with missing credentials.
 			a.Enabled = false
 			cfg.Direct.Accounts = append(cfg.Direct.Accounts, a)
 			if !cfg.Mailbox.AccountEnabled(a.ID) {
@@ -396,7 +396,7 @@ func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, 
 
 	// 5. Filter Rules
 	if opts.ImportFilters && len(prev.Filters) > 0 {
-		// Re-map Thunderbird account IDs to actual configured MailDiver account IDs when possible.
+		// Re-map Thunderbird account IDs to actual configured PostDive account IDs when possible.
 		configuredIDs := map[string]bool{}
 		accIDByEmail := map[string]string{}
 		for _, a := range cfg.Direct.Accounts {

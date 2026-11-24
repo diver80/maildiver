@@ -8,13 +8,13 @@ import (
 
 	"github.com/egoist/mygo"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 // secretsKeyName is the entry in the system's credential store holding the key of the sealed
 // secrets file on phones.
-const secretsKeyName = "maildiver-secrets-key"
+const secretsKeyName = "postdive-secrets-key"
 
 // SetupPlatformSecrets chooses where passwords and tokens go on platforms without a usable
 // keychain command. On Android they go to a file in the app's storage, encrypted with a key that

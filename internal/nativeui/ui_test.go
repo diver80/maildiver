@@ -16,12 +16,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/jobs"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/jobs"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 type stubBridgeRPC struct {
@@ -222,8 +222,8 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	// 2. Render Main Window across Mail, Calendar, Light/Dark themes, and Modals using ui.NewTester.
 	tt := ui.NewTester(app.RenderMain, 1380, 860)
 	tt.Frame()
-	if _, ok := tt.Find("MailDiver"); !ok {
-		t.Fatal("expected MailDiver header in main view")
+	if _, ok := tt.Find("PostDive"); !ok {
+		t.Fatal("expected PostDive header in main view")
 	}
 	if _, ok := tt.Find("Angebot Q4"); !ok {
 		t.Fatal("expected message subject in main view")
@@ -269,7 +269,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	// 3b. Open Help Modal and verify Overview, Interactive TOC, Filter rules note, and AI transparency.
 	app.helpOpen = true
 	tt.Frame()
-	if !tt.HasText("Was MailDiver macht · Überblick") || !tt.HasText("Inhalt:") || !tt.HasText("100% Lokal") || !tt.HasText("4. Quick-Regeln & Automatische Filter") || !tt.HasText("Filterregeln verwalten") {
+	if !tt.HasText("Was PostDive macht · Überblick") || !tt.HasText("Inhalt:") || !tt.HasText("100% Lokal") || !tt.HasText("4. Quick-Regeln & Automatische Filter") || !tt.HasText("Filterregeln verwalten") {
 		t.Fatalf("expected help modal overview, TOC, and filter rule sections rendered; texts=%v", tt.Texts())
 	}
 	app.helpTopic = "rules"
@@ -320,7 +320,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatal("expected calendar section in tray status widget")
 	}
 	assertNoLegacyCopilot(fly.Texts())
-	if !strings.Contains(app.TrayTitle(), "1") || !strings.Contains(app.TrayTooltip(), "MailDiver Live") {
+	if !strings.Contains(app.TrayTitle(), "1") || !strings.Contains(app.TrayTooltip(), "PostDive Live") {
 		t.Fatalf("unexpected tray strings: title=%q tip=%q", app.TrayTitle(), app.TrayTooltip())
 	}
 
@@ -344,7 +344,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 
 	app.helpOpen = true
 	tt.Frame()
-	if !tt.HasText("Help · Overview, Filter Rules & AI Transparency") || !tt.HasText("What MailDiver Does · Overview") || !tt.HasText("4. Quick Rules & Automatic Filters") || !tt.HasText("Manage Filter Rules") {
+	if !tt.HasText("Help · Overview, Filter Rules & AI Transparency") || !tt.HasText("What PostDive Does · Overview") || !tt.HasText("4. Quick Rules & Automatic Filters") || !tt.HasText("Manage Filter Rules") {
 		t.Fatalf("expected English help modal with overview, TOC, and filter rules; texts=%v", tt.Texts())
 	}
 	assertNoLegacyCopilot(tt.Texts())
@@ -422,16 +422,16 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	}
 }
 
-// TestRenderScreens renders high-DPI PNG screenshots into MAILDIVER_RENDER (or OMATHUNDER_RENDER):
+// TestRenderScreens renders high-DPI PNG screenshots into POSTDIVE_RENDER (or OMATHUNDER_RENDER):
 //
-//	MAILDIVER_RENDER=docs/screenshots go test ./internal/nativeui -run TestRenderScreens
+//	POSTDIVE_RENDER=docs/screenshots go test ./internal/nativeui -run TestRenderScreens
 func TestRenderScreens(t *testing.T) {
-	dir := os.Getenv("MAILDIVER_RENDER")
+	dir := os.Getenv("POSTDIVE_RENDER")
 	if dir == "" {
 		dir = os.Getenv("OMATHUNDER_RENDER")
 	}
 	if dir == "" {
-		t.Skip("MAILDIVER_RENDER not set")
+		t.Skip("POSTDIVE_RENDER not set")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -501,7 +501,7 @@ func TestRenderScreens(t *testing.T) {
 		},
 		{
 			ID: "m4", AccountID: "acc1", Folder: "INBOX",
-			From: "Sarah M\u00fcller <sarah@example.org>", Subject: "Review Notes: MailDiver Native UI",
+			From: "Sarah M\u00fcller <sarah@example.org>", Subject: "Review Notes: PostDive Native UI",
 			Date: now.AddDate(0, 0, -1).Format("2006-01-02") + "T16:45:00+01:00", Unread: false,
 		},
 	}
@@ -535,8 +535,8 @@ func TestRenderScreens(t *testing.T) {
 		{ID: "e4", CalendarID: "c1", Calendar: "Arbeit", Title: "Partner Architecture Review", Start: tomorrow + "T11:00:00+01:00", End: tomorrow + "T12:00:00+01:00", Location: "Teams"},
 	}
 	app.recentAlerts = []AlertItem{
-		{ID: "maildiver-mail-m1", Kind: "mail", Title: "Alice Meyer", Subtitle: "Neue E-Mail", Body: "Q4 Rollout & Budget-Freigabe"},
-		{ID: "maildiver-cal-e2", Kind: "calendar", Title: "Budget-Abstimmung", Subtitle: "Heute 14:00", Body: "Arbeit"},
+		{ID: "postdive-mail-m1", Kind: "mail", Title: "Alice Meyer", Subtitle: "Neue E-Mail", Body: "Q4 Rollout & Budget-Freigabe"},
+		{ID: "postdive-cal-e2", Kind: "calendar", Title: "Budget-Abstimmung", Subtitle: "Heute 14:00", Body: "Arbeit"},
 	}
 	app.chatEntries = []ChatEntry{
 		{ID: "u-1", Role: "user", Content: "Gib mir mein Tages-Briefing f\u00fcr heute."},
@@ -567,7 +567,7 @@ func TestRenderScreens(t *testing.T) {
 	}
 
 	saveShot("app-main.png", app.RenderMain, 1380, 860)
-	saveShot("maildiver-tray-widget.png", app.RenderStatusWidget, 400, 510)
+	saveShot("postdive-tray-widget.png", app.RenderStatusWidget, 400, 510)
 
 	// Screenshot 2: Footer Contact Discovery card in Inspector (1 existing to enrich + 1 new to import)
 	app.inspectorMode = "extract_contacts"
@@ -598,15 +598,15 @@ func TestRenderScreens(t *testing.T) {
 			Status: "new",
 		},
 	}
-	saveShot("maildiver-contacts-dark.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-contacts-dark.png", app.RenderMain, 1380, 860)
 
 	// Screenshot 3: Help Modal (Overview + Interactive TOC)
 	app.inspectorContacts = nil
 	app.helpTopic = "all"
 	app.helpOpen = true
-	saveShot("maildiver-help-dark.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-help-dark.png", app.RenderMain, 1380, 860)
 	app.helpTopic = "shortcuts"
-	saveShot("maildiver-help-shortcuts-dark.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-help-shortcuts-dark.png", app.RenderMain, 1380, 860)
 	app.helpTopic = "all"
 	app.helpOpen = false
 
@@ -639,7 +639,7 @@ func TestRenderScreens(t *testing.T) {
 
 	// Screenshot 3c: "Move to…" picker (v)
 	app.OpenMovePicker()
-	saveShot("maildiver-move-dark.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-move-dark.png", app.RenderMain, 1380, 860)
 	app.moveOpen = false
 
 	// Screenshot 3c1: the open mail inside its conversation (newest on top)
@@ -662,7 +662,7 @@ func TestRenderScreens(t *testing.T) {
 	app.composeBody = "Hallo Alice,\n\n14:00 passt, ich bringe die Freigabe mit." + strings.TrimPrefix(app.composeBody, "Hallo Alice,\n\n14:00 passt.")
 	app.composeOpen = false
 	app.guardComposeClose()
-	saveShot("maildiver-compose-ask-dark.png", app.RenderMain, 1380, 900)
+	saveShot("postdive-compose-ask-dark.png", app.RenderMain, 1380, 900)
 	app.closeCompose()
 
 	// Screenshot 3c2: settings and the archive dialog
@@ -704,7 +704,7 @@ func TestRenderScreens(t *testing.T) {
 	app.readerBody = readerBody{}
 	saveShot("app-reading-pane.png", app.RenderMain, 1380, 860)
 	app.readerPlain = true
-	saveShot("maildiver-mail-text-dark.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-mail-text-dark.png", app.RenderMain, 1380, 860)
 	app.readerPlain = false
 	app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft = prevDetail, prevMode, prevResult, prevDraft
 	app.readerBody = readerBody{}
@@ -712,29 +712,29 @@ func TestRenderScreens(t *testing.T) {
 	// Phone layout (Android, or a narrow window): mailboxes, a folder's mails, one mail, compose.
 	prevNav := app.navID
 	app.phone.router = ui.NewRouter(phoneRouteMailboxes)
-	saveShot("maildiver-phone-mailboxes.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-mailboxes.png", app.RenderMain, 390, 844)
 	app.navID = "focus"
 	app.phone.router = ui.NewRouter(phoneRouteList)
-	saveShot("maildiver-phone-list.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-list.png", app.RenderMain, 390, 844)
 	app.phone.router = ui.NewRouter(phoneRouteMail)
-	saveShot("maildiver-phone-mail.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-mail.png", app.RenderMain, 390, 844)
 	app.phone.more = true
-	saveShot("maildiver-phone-mail-more.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-mail-more.png", app.RenderMain, 390, 844)
 	app.phone.more = false
 	app.phone.router = ui.NewRouter(phoneRouteAssistant)
-	saveShot("maildiver-phone-assistant.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-assistant.png", app.RenderMain, 390, 844)
 	app.OpenComposeReply(app.selectedMsg, "")
-	saveShot("maildiver-phone-compose.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-compose.png", app.RenderMain, 390, 844)
 	app.closeCompose()
 	app.OpenSettings()
-	saveShot("maildiver-phone-settings.png", app.RenderMain, 390, 844)
+	saveShot("postdive-phone-settings.png", app.RenderMain, 390, 844)
 	app.settings.open = false
 	app.navID, app.phone.router = prevNav, nil
 
 	// Screenshot 4: English UI switch verification shot
 	app.SetLanguage("en")
 	app.inspectorMode = "summarize"
-	saveShot("maildiver-main-en.png", app.RenderMain, 1380, 860)
+	saveShot("postdive-main-en.png", app.RenderMain, 1380, 860)
 
 	app.SetLanguage("de")
 	app.applyThemeChoice("Catppuccin Latte (catppuccin-latte)")

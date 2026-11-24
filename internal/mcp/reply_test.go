@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // replyEngine answers like the mail engine for two accounts and records what is asked of it.

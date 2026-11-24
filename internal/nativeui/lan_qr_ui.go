@@ -10,11 +10,11 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/lansync"
-	"github.com/diver80/maildiver/internal/qrphoto"
-	"github.com/diver80/maildiver/internal/qrscan"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/lansync"
+	"github.com/diver80/postdive/internal/qrphoto"
+	"github.com/diver80/postdive/internal/qrscan"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func (a *App) stopLANQRSession() {
@@ -109,8 +109,8 @@ func (a *App) ScanPairingQR(ctx context.Context) {
 		if err == nil && path != "" {
 			uri, err = qrscan.DecodeFile(path)
 			_ = os.Remove(path)
-			if err == nil && !strings.HasPrefix(uri, "maildiver-pair://") {
-				err = errors.New(a.tr("Das ist kein MailDiver-Übertragungscode.", "This is not a MailDiver transfer code."))
+			if err == nil && !strings.HasPrefix(uri, "postdive-pair://") {
+				err = errors.New(a.tr("Das ist kein PostDive-Übertragungscode.", "This is not a PostDive transfer code."))
 			}
 		}
 		a.emitUpdate(func() {
@@ -170,7 +170,7 @@ func (a *App) renderSettingsLANQRSection(c *ui.Context) {
 
 		ui.Divider(c)
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("lan-imp-uri"), &s.lanImportURI).Placeholder("maildiver-pair://v1?…").Grow(1)
+			ui.TextInput(c.Key("lan-imp-uri"), &s.lanImportURI).Placeholder("postdive-pair://v1?…").Grow(1)
 			if ui.Button(c.Key("lan-imp-btn"), a.tr("Empfangen", "Import")).Disabled(s.lanBusy).Clicked() && strings.TrimSpace(s.lanImportURI) != "" {
 				a.importLANPairingURI(context.Background())
 			}

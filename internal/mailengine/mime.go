@@ -21,7 +21,7 @@ import (
 	_ "github.com/emersion/go-message/charset"
 	"golang.org/x/net/html"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 const maxParsedPartBytes = 8 * 1024 * 1024
@@ -795,7 +795,7 @@ func ExtractInlineDataURLImages(htmlBody string) (string, []OutgoingInlineImage)
 		}
 		var rnd [6]byte
 		_, _ = rand.Read(rnd[:])
-		cid := fmt.Sprintf("mdv-img-%d-%s@maildiver.local", idx, hex.EncodeToString(rnd[:]))
+		cid := fmt.Sprintf("mdv-img-%d-%s@postdive.local", idx, hex.EncodeToString(rnd[:]))
 		out = append(out, OutgoingInlineImage{
 			ContentID:   cid,
 			Filename:    fmt.Sprintf("image-%d.%s", idx, ext),
@@ -843,7 +843,7 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	domain := "maildiver.local"
+	domain := "postdive.local"
 	if _, d, ok := strings.Cut(strings.TrimSpace(msg.FromEmail), "@"); ok && d != "" {
 		domain = d
 	}
@@ -1032,7 +1032,7 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 func BuildCalendarReplyMIME(from, to, subject, textBody, replyICS, inReplyTo string) (msgID string, raw []byte) {
 	var rnd [12]byte
 	_, _ = rand.Read(rnd[:])
-	msgID = fmt.Sprintf("mdv-rsvp-%d-%s@maildiver.local", time.Now().UnixNano(), hex.EncodeToString(rnd[:]))
+	msgID = fmt.Sprintf("mdv-rsvp-%d-%s@postdive.local", time.Now().UnixNano(), hex.EncodeToString(rnd[:]))
 
 	var bndRnd [12]byte
 	_, _ = rand.Read(bndRnd[:])

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 const (
@@ -465,7 +465,7 @@ func (e *Engine) ExportVCFFile(ctx context.Context, filePath string) (int, error
 	p := expandHomePath(filePath)
 	if p == "" {
 		if home, err := os.UserHomeDir(); err == nil {
-			p = filepath.Join(home, "Downloads", "maildiver-kontakte.vcf")
+			p = filepath.Join(home, "Downloads", "postdive-kontakte.vcf")
 		}
 	}
 	recs, err := e.store.ListAllContacts(ctx)

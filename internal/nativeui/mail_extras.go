@@ -27,9 +27,9 @@ import (
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 const (
@@ -924,7 +924,7 @@ func cleanupStalePrintFiles(dir string) {
 	}
 	cutoff := time.Now().Add(-printFallbackTTL)
 	for _, ent := range entries {
-		if ent.IsDir() || !strings.HasPrefix(ent.Name(), "maildiver-print-") {
+		if ent.IsDir() || !strings.HasPrefix(ent.Name(), "postdive-print-") {
 			continue
 		}
 		if info, err := ent.Info(); err == nil && info.ModTime().Before(cutoff) {
@@ -936,7 +936,7 @@ func cleanupStalePrintFiles(dir string) {
 // openPrintHTMLFallback writes a self-contained print-ready HTML document to a private 0700 temp dir,
 // injects the auto-print script if needed, opens it in the system browser, and cleans up stale files.
 func openPrintHTMLFallback(htmlDoc string) error {
-	dir := filepath.Join(os.TempDir(), "maildiver-print")
+	dir := filepath.Join(os.TempDir(), "postdive-print")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -944,7 +944,7 @@ func openPrintHTMLFallback(htmlDoc string) error {
 	cleanupStalePrintFiles(dir)
 
 	doc := ensureAutoPrintScript(htmlDoc)
-	f, err := os.CreateTemp(dir, "maildiver-print-*.html")
+	f, err := os.CreateTemp(dir, "postdive-print-*.html")
 	if err != nil {
 		return err
 	}

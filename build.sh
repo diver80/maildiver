@@ -13,7 +13,7 @@ SKIP_TESTS=false
 
 usage() {
   cat <<EOF
-MailDiver Multi-Platform Build Script (mygo ${MYGO_VERSION})
+PostDive Multi-Platform Build Script (mygo ${MYGO_VERSION})
 
 Usage: ./build.sh [options]
   --packages     Build platform installers/packages via mygo build
@@ -57,7 +57,7 @@ TARGETS=(
   "windows/arm64"
 )
 
-echo "==> Cross-compiling MailDiver ($VERSION) for Desktop platforms..."
+echo "==> Cross-compiling PostDive ($VERSION) for Desktop platforms..."
 for target in "${TARGETS[@]}"; do
   GOOS="${target%/*}"
   GOARCH="${target#*/}"
@@ -65,11 +65,11 @@ for target in "${TARGETS[@]}"; do
   if [[ "$GOOS" == "windows" ]]; then
     EXE=".exe"
   fi
-  OUT_NAME="maildiver-${GOOS}-${GOARCH}${EXE}"
+  OUT_NAME="postdive-${GOOS}-${GOARCH}${EXE}"
   echo "  - building $OUT_NAME"
   (cd "$ROOT_DIR" && CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
-    -o "$DIST_DIR/$OUT_NAME" ./cmd/maildiver)
+    -o "$DIST_DIR/$OUT_NAME" ./cmd/postdive)
 done
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -95,20 +95,20 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     go run "github.com/egoist/mygo/cmd/mygo@${MYGO_VERSION}" build \
       -platform "${MAC_PLATFORM}" ${DMG_FLAG} -o "$DIST_DIR")
 
-  rm -rf "$DIST_DIR/MailDiver.app"
-  cp -R "$DIST_DIR/${MAC_OUT_SUB}/MailDiver.app" "$DIST_DIR/MailDiver.app"
+  rm -rf "$DIST_DIR/PostDive.app"
+  cp -R "$DIST_DIR/${MAC_OUT_SUB}/PostDive.app" "$DIST_DIR/PostDive.app"
   if compgen -G "$DIST_DIR/${MAC_OUT_SUB}/*.dmg" >/dev/null 2>&1; then
     mv "$DIST_DIR/${MAC_OUT_SUB}"/*.dmg "$DIST_DIR/"
   fi
   rm -rf "$DIST_DIR/${MAC_OUT_SUB}"
 
-  APP_VERSION="$("$DIST_DIR/MailDiver.app/Contents/MacOS/MailDiver" --version 2>/dev/null || true)"
-  if [[ "$APP_VERSION" != "maildiver ${VERSION}" ]]; then
-    echo "MailDiver.app reports '$APP_VERSION', expected 'maildiver ${VERSION}'" >&2
+  APP_VERSION="$("$DIST_DIR/PostDive.app/Contents/MacOS/PostDive" --version 2>/dev/null || true)"
+  if [[ "$APP_VERSION" != "postdive ${VERSION}" ]]; then
+    echo "PostDive.app reports '$APP_VERSION', expected 'postdive ${VERSION}'" >&2
     exit 1
   fi
   # Release asset: a zipped bundle keeps symlinks, permissions and extended attributes intact.
-  (cd "$DIST_DIR" && ditto -c -k --keepParent MailDiver.app "MailDiver-${MAC_OUT_SUB}.zip")
+  (cd "$DIST_DIR" && ditto -c -k --keepParent PostDive.app "PostDive-${MAC_OUT_SUB}.zip")
 fi
 
 if [[ "$BUILD_PACKAGES" == "true" ]]; then
@@ -144,7 +144,7 @@ fi
 echo "==> Writing SHA256 checksums..."
 shopt -s nullglob
 ASSETS=()
-for f in "$DIST_DIR"/maildiver-* "$DIST_DIR"/MailDiver-*.zip; do
+for f in "$DIST_DIR"/postdive-* "$DIST_DIR"/PostDive-*.zip; do
   [[ -f "$f" ]] && ASSETS+=("$(basename "$f")")
 done
 for sub in packages android; do

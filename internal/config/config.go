@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	AppID       = "maildiver"
+	AppID       = "postdive"
 	LegacyAppID = "omathunder"
 )
+
+// LegacyAppIDs lists previous application IDs in preference order for transparent migration.
+var LegacyAppIDs = []string{"maildiver", LegacyAppID}
 
 // LinkPreviewRule defines when an email should auto-load a matching link in the embedded browser preview panel.
 type LinkPreviewRule struct {
@@ -51,7 +54,7 @@ type ComposeTemplate struct {
 	Body    string `json:"body"`
 }
 
-// AppConfig holds preferences of the MailDiver app.
+// AppConfig holds preferences of the PostDive app.
 type AppConfig struct {
 	// MarkRead: when the app marks an opened unread mail as read – "" (at once),
 	// "delay" (after a few seconds) or "never".
@@ -185,18 +188,18 @@ type AIConfig struct {
 	CustomInstructions string `json:"customInstructions,omitempty"`
 }
 
-// FeatureFlags switches the three independent MailDiver building blocks on or off.
+// FeatureFlags switches the three independent PostDive building blocks on or off.
 type FeatureFlags struct {
 	Theme     bool `json:"theme"`     // Omarchy theme sync (chrome, message body, compose)
 	Assistant bool `json:"assistant"` // AI writing assistant (summarize, draft reply, review draft)
 	Triage    bool `json:"triage"`    // Triage scans: classification of the triage inboxes (app: action view)
 }
 
-// MailboxPolicy limits what MailDiver may read and change in connected mailboxes.
+// MailboxPolicy limits what PostDive may read and change in connected mailboxes.
 type MailboxPolicy struct {
 	// ReadOnly blocks every change to mails, folders and tags. Scans only report planned moves.
 	ReadOnly bool `json:"readOnly"`
-	// TriageAccountIDs lists the accounts MailDiver may change (mail actions, filters)
+	// TriageAccountIDs lists the accounts PostDive may change (mail actions, filters)
 	// and whose inboxes it scans and archives. Empty = none.
 	TriageAccountIDs []string `json:"triageAccountIds"`
 	// TriageExcludedAccountIDs lists accounts the user took out of triage scans and archive jobs.
@@ -217,9 +220,9 @@ type MailboxPolicy struct {
 func DefaultArchiveDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "MailDiver-Archiv"
+		return "PostDive-Archiv"
 	}
-	return filepath.Join(home, "MailDiver-Archiv")
+	return filepath.Join(home, "PostDive-Archiv")
 }
 
 // AccountEnabled reports whether triage/spaces/cleanup may access the given account.
@@ -258,7 +261,7 @@ func (p MailboxPolicy) HasTriageAccounts() bool {
 	return false
 }
 
-// CanWrite reports whether MailDiver may change mails, folders or tags in the given account.
+// CanWrite reports whether PostDive may change mails, folders or tags in the given account.
 func (p MailboxPolicy) CanWrite(accountID string) bool {
 	return !p.ReadOnly && p.AccountEnabled(accountID)
 }
@@ -396,9 +399,18 @@ func dataDirFor(appID string) (string, error) {
 
 func ConfigDir() (string, error)       { return configDirFor(AppID) }
 func LegacyConfigDir() (string, error) { return configDirFor(LegacyAppID) }
-func DataDir() (string, error)         { return dataDirFor(AppID) }
-func StateDir() (string, error)        { return stateDirFor(AppID) }
-func LegacyStateDir() (string, error)  { return stateDirFor(LegacyAppID) }
+func LegacyConfigDirs() []string {
+	var out []string
+	for _, id := range LegacyAppIDs {
+		if d, err := configDirFor(id); err == nil && d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+func DataDir() (string, error)        { return dataDirFor(AppID) }
+func StateDir() (string, error)       { return stateDirFor(AppID) }
+func LegacyStateDir() (string, error) { return stateDirFor(LegacyAppID) }
 
 func ConfigPath() (string, error) {
 	dir, err := ConfigDir()
@@ -417,7 +429,7 @@ func Load() (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if legacyDir, lerr := LegacyConfigDir(); lerr == nil {
+			for _, legacyDir := range LegacyConfigDirs() {
 				if ldata, rerr := os.ReadFile(filepath.Join(legacyDir, "config.json")); rerr == nil {
 					// Reset slice defaults before Unmarshal so encoding/json allocates fresh elements
 					// instead of mutating DefaultLinkPreviewRules() entries in-place.

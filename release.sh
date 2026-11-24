@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Publishes the version in ./VERSION: builds and tests, tags, pushes, creates the GitHub release
 # with the binaries and app packages, and prints the url/sha256 for the Homebrew formula
-# (diver80/homebrew-tap: Formula/maildiver.rb takes the binaries, Casks/maildiver.rb the .dmg).
+# (diver80/homebrew-tap: Formula/postdive.rb takes the binaries, Casks/postdive.rb the .dmg).
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 VERSION="$(cat VERSION)"
 TAG="v$VERSION"
-REPO="diver80/maildiver"
+REPO="diver80/postdive"
 
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "Working tree not clean – commit first." >&2
@@ -31,14 +31,14 @@ if [[ -n "${ANDROID_NDK_HOME:-}" || -d "${ANDROID_HOME:-$HOME/Library/Android/sd
 fi
 VERSION="$VERSION" ./build.sh ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"}
 
-git tag -a "$TAG" -m "MailDiver $VERSION"
+git tag -a "$TAG" -m "PostDive $VERSION"
 git push origin main "$TAG"
 
-# Upload files only: dist/ also holds the unpacked MailDiver.app directory used by install.sh.
+# Upload files only: dist/ also holds the unpacked PostDive.app directory used by install.sh.
 shopt -s nullglob
-ASSETS=(dist/maildiver-* dist/MailDiver-*.zip dist/android/*.apk dist/android/*.aab dist/android/*/*.apk dist/android/*/*.aab dist/packages/*/* dist/SHA256SUMS.txt)
+ASSETS=(dist/postdive-* dist/PostDive-*.zip dist/android/*.apk dist/android/*.aab dist/android/*/*.apk dist/android/*/*.aab dist/packages/*/* dist/SHA256SUMS.txt)
 shopt -u nullglob
-gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO" --title "MailDiver $VERSION" --generate-notes
+gh release create "$TAG" "${ASSETS[@]}" --repo "$REPO" --title "PostDive $VERSION" --generate-notes
 
 URL="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
 SHA="$(curl -fsSL "$URL" | shasum -a 256 | cut -d' ' -f1)"

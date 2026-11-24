@@ -1,0 +1,51 @@
+# Maintainer: Frank Hess <https://github.com/diver80>
+pkgname=postdive-bin
+pkgver=0.7.31
+pkgrel=1
+pkgdesc="Native Go + MyGo IMAP/SMTP email, calendar & contacts client with optional local/cloud AI and live Omarchy theme sync"
+arch=('x86_64' 'aarch64')
+url="https://diver80.github.io/postdive/"
+license=('MIT')
+provides=('postdive')
+conflicts=('postdive' 'postdive-git')
+depends=('gtk3' 'libsecret' 'libnotify')
+optdepends=(
+  'webkit2gtk-4.1: rich HTML compose editor and inline split-panel browser preview'
+  'libayatana-appindicator: system tray status widget'
+  'ollama: local private AI assistant'
+)
+options=('!strip' '!debug')
+
+source=(
+  "postdive.desktop"
+  "postdive-icon-${pkgver}.png::https://raw.githubusercontent.com/diver80/postdive/v${pkgver}/resources/icon.png"
+  "postdive-LICENSE-${pkgver}::https://raw.githubusercontent.com/diver80/postdive/v${pkgver}/LICENSE"
+  "postdive-BarWidget-${pkgver}.qml::https://raw.githubusercontent.com/diver80/postdive/v${pkgver}/omarchy/BarWidget.qml"
+)
+source_x86_64=(
+  "postdive-${pkgver}-x86_64::https://github.com/diver80/postdive/releases/download/v${pkgver}/postdive-linux-amd64"
+)
+source_aarch64=(
+  "postdive-${pkgver}-aarch64::https://github.com/diver80/postdive/releases/download/v${pkgver}/postdive-linux-arm64"
+)
+
+sha256sums=(
+  '30d8d8ababe548fc439969948a379156673188962fa2a2f0da2b1320cade3705'
+  '7488d5935ded2ad59ab168b507d8f71e6316c531a3ec534a21d5888e473b5147'
+  '1782e46e7aca33f3b5ea72c9a1a60b615b474e1319d32643d6fd0d151c924b19'
+  'c64bd7fd8fccc88360152ee74918af879427d37dba5463bceca7919432ecd567'
+)
+sha256sums_x86_64=(
+  'bc50a0d054e7ccfc8070766a7c7a5e5674c8711ada72644f76cf343ecac580fd'
+)
+sha256sums_aarch64=(
+  '7baa3e022f99e05d378d640cef9d4b881d0c21ae099efe4508ebbf307c6a06bb'
+)
+
+package() {
+  install -Dm755 "${srcdir}/postdive-${pkgver}-${CARCH}" "${pkgdir}/usr/bin/postdive"
+  install -Dm644 "${srcdir}/postdive.desktop" "${pkgdir}/usr/share/applications/postdive.desktop"
+  install -Dm644 "${srcdir}/postdive-icon-${pkgver}.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/postdive.png"
+  install -Dm644 "${srcdir}/postdive-BarWidget-${pkgver}.qml" "${pkgdir}/usr/share/postdive/omarchy/BarWidget.qml"
+  install -Dm644 "${srcdir}/postdive-LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

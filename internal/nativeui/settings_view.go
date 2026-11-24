@@ -12,9 +12,9 @@ import (
 	"github.com/egoist/mygo/ui"
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/lansync"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/lansync"
 )
 
 // The app's settings: reading behavior, embedded Web Preview auto-link rules, AI providers and keys,
@@ -1116,7 +1116,7 @@ func mcpConfigSnippet(mode int) string {
 	case 2:
 		args = `["--mcp", "--allow-writes"]`
 	}
-	return "{\n  \"mcpServers\": {\n    \"maildiver\": {\n      \"command\": \"maildiver\",\n      \"args\": " + args + "\n    }\n  }\n}"
+	return "{\n  \"mcpServers\": {\n    \"postdive\": {\n      \"command\": \"postdive\",\n      \"args\": " + args + "\n    }\n  }\n}"
 }
 
 func (a *App) renderSettingsMCPSection(c *ui.Context) {
@@ -1125,8 +1125,8 @@ func (a *App) renderSettingsMCPSection(c *ui.Context) {
 	a.settingsSection(c, a.tr("Lokaler MCP-Server (Claude Code, Cursor, Antigravity, Claude Desktop)", "Local MCP Server (Claude Code, Cursor, Antigravity, Claude Desktop)"))
 	ui.Column(c.Key("set-mcp-box")).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
 		ui.Text(c, a.tr(
-			"Externe KI-Agenten können lokal per stdio (maildiver --mcp) auf Postfach, Kalender & Kontakte zugreifen — ohne offene Ports, ohne direktes Senden/Löschen und ohne S/MIME-/PGP-Entschlüsselung.",
-			"External AI agents can query your local mailbox, calendar & contacts over stdio (maildiver --mcp) — zero open ports, never sends or permanently deletes, and never decrypts S/MIME/PGP.",
+			"Externe KI-Agenten können lokal per stdio (postdive --mcp) auf Postfach, Kalender & Kontakte zugreifen — ohne offene Ports, ohne direktes Senden/Löschen und ohne S/MIME-/PGP-Entschlüsselung.",
+			"External AI agents can query your local mailbox, calendar & contacts over stdio (postdive --mcp) — zero open ports, never sends or permanently deletes, and never decrypts S/MIME/PGP.",
 		)).FontSize(11.5).TextColor(t.TextMuted)
 		ui.Segmented(c.Key("set-mcp-mode"), &s.mcpMode,
 			a.tr("Nur Lesen", "Read-only"),
@@ -1142,7 +1142,7 @@ func (a *App) renderSettingsMCPSection(c *ui.Context) {
 				mygo.Clipboard.WriteText(snippet)
 				a.toast(a.tr("MCP-Konfiguration in Zwischenablage kopiert", "MCP config copied to clipboard"), "success")
 			}
-			cliCmd := "claude mcp add maildiver -- maildiver --mcp"
+			cliCmd := "claude mcp add postdive -- postdive --mcp"
 			if s.mcpMode == 1 {
 				cliCmd += " --allow-drafts"
 			} else if s.mcpMode == 2 {

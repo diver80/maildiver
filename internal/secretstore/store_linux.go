@@ -33,21 +33,23 @@ func newPlatformSecretStore(appName, sealedPath, plainPath string) Store {
 }
 
 func loadOrCreateLibsecretKey(appName string) ([]byte, bool) {
-	service := "maildiver-master"
+	service := "postdive-master"
 	if appName != "" {
 		service = strings.ToLower(strings.TrimSpace(appName)) + "-master"
 	}
-	out, err := exec.Command("secret-tool", "lookup", "service", service, "account", "master-key").Output()
-	if err == nil {
-		if raw, derr := hex.DecodeString(strings.TrimSpace(string(out))); derr == nil && len(raw) == 32 {
-			return raw, true
+	for _, svc := range []string{service, "maildiver-master"} {
+		out, err := exec.Command("secret-tool", "lookup", "service", svc, "account", "master-key").Output()
+		if err == nil {
+			if raw, derr := hex.DecodeString(strings.TrimSpace(string(out))); derr == nil && len(raw) == 32 {
+				return raw, true
+			}
 		}
 	}
 	key := make([]byte, 32)
 	if _, rerr := rand.Read(key); rerr != nil {
 		return nil, false
 	}
-	cmd := exec.Command("secret-tool", "store", "--label=MailDiver Master Key", "service", service, "account", "master-key")
+	cmd := exec.Command("secret-tool", "store", "--label=PostDive Master Key", "service", service, "account", "master-key")
 	cmd.Stdin = strings.NewReader(hex.EncodeToString(key))
 	if serr := cmd.Run(); serr != nil {
 		return nil, false
@@ -65,6 +67,6 @@ func deriveLinuxMachineKey(appName, sealedPath string) []byte {
 	if u, err := user.Current(); err == nil {
 		uname = u.Username
 	}
-	sum := sha256.Sum256([]byte("maildiver-linux-seal|" + appName + "|" + string(mid) + "|" + uid + "|" + uname + "|" + filepath.Dir(sealedPath)))
+	sum := sha256.Sum256([]byte("postdive-linux-seal|" + appName + "|" + string(mid) + "|" + uid + "|" + uname + "|" + filepath.Dir(sealedPath)))
 	return sum[:]
 }

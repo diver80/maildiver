@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 func rowSummary(rows []folderRow) string {

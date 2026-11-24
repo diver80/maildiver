@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/ai"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/jobs"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/ai"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/jobs"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // fakeEngine records calls and answers like the mail engine.

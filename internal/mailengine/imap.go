@@ -19,9 +19,9 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // IsTransientNetworkError reports whether err looks like a temporary DNS, offline, or socket
@@ -531,7 +531,7 @@ func (e *Engine) syncSingleFolderIMAP(ctx context.Context, c *imapclient.Client,
 
 	_ = e.store.UpdateFolderSyncState(ctx, f.ID, sel.UIDValidity, uint32(sel.UIDNext))
 
-	// Execute enabled local MailDiver filters on newly arrived INBOX and active INBOX/* subfolder messages.
+	// Execute enabled local PostDive filters on newly arrived INBOX and active INBOX/* subfolder messages.
 	if filterSource && len(newFilterMsgs) > 0 {
 		remaining := e.applyLocalFiltersOnNewMessages(ctx, c, acc, f, newFilterMsgs)
 		if f.Type == "inbox" {
@@ -1504,7 +1504,7 @@ func (e *Engine) emptyFolderIMAP(ctx context.Context, acc config.DirectAccount, 
 	return int(sel.NumMessages), nil
 }
 
-// isFilterSourceFolder reports whether local MailDiver filter rules should inspect messages
+// isFilterSourceFolder reports whether local PostDive filter rules should inspect messages
 // in f: INBOX itself plus active INBOX/* subfolders (excluding terminal folders like */done,
 // archive, trash, junk, sent, or drafts).
 func isFilterSourceFolder(f StoredFolder) bool {
@@ -1554,7 +1554,7 @@ func filtersNeedFullBody(filters []StoredFilter) bool {
 	return false
 }
 
-// applyLocalFiltersOnNewMessages evaluates enabled MailDiver filter rules directly on newly
+// applyLocalFiltersOnNewMessages evaluates enabled PostDive filter rules directly on newly
 // arrived INBOX / INBOX/* messages (using the active IMAP connection) and returns remaining messages.
 func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, folder StoredFolder, msgs []StoredMessage) []StoredMessage {
 	filters, err := e.store.ListFilters(ctx, acc.ID)

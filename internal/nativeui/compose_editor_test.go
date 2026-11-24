@@ -12,11 +12,11 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 type fakeComposeEditorHost struct {
@@ -301,8 +301,8 @@ func TestVersionDisplayedInUIAndCSVPreview(t *testing.T) {
 		app.renderToolbar(c)
 	}, 1280, 120)
 	tt.Frame()
-	if !tt.HasText("MailDiver") || !tt.HasText("v0.7.13") {
-		t.Fatalf("expected MailDiver + v0.7.13 in toolbar, texts=%v", tt.Texts())
+	if !tt.HasText("PostDive") || !tt.HasText("v0.7.13") {
+		t.Fatalf("expected PostDive + v0.7.13 in toolbar, texts=%v", tt.Texts())
 	}
 
 	app.applyComposeSuggestion("to", mailengine.RecipientSuggestion{DisplayName: "Bob", Email: "bob@example.com"})

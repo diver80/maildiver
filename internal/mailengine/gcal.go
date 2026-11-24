@@ -23,7 +23,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 const (
@@ -200,7 +200,7 @@ func (e *Engine) StartGoogleCalAuth(ctx context.Context, clientID, clientSecret 
 		e.emitCalendarChanged()
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, "<html><body style='font-family:system-ui;padding:32px;background:#1a1b26;color:#c0caf5'><h2>MailDiver × Google verbunden</h2><p>Die Anmeldung war erfolgreich. Du kannst dieses Fenster jetzt schließen.</p></body></html>")
+		_, _ = fmt.Fprint(w, "<html><body style='font-family:system-ui;padding:32px;background:#1a1b26;color:#c0caf5'><h2>PostDive × Google verbunden</h2><p>Die Anmeldung war erfolgreich. Du kannst dieses Fenster jetzt schließen.</p></body></html>")
 
 		// Immediately trigger sync in background tied to Engine lifecycle.
 		e.spawn(func(rootCtx context.Context) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 func TestSaveMessageEMLAndReadAttachmentPreview(t *testing.T) {

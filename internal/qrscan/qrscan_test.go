@@ -11,7 +11,7 @@ import (
 
 // A QR code as the desktop shows it, photographed small inside a large, grey photo.
 func TestDecodeCodeInsideLargePhoto(t *testing.T) {
-	want := "maildiver-pair://v1?h=192.168.1.20:41234&k=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+	want := "postdive-pair://v1?h=192.168.1.20:41234&k=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
 	code, err := qr.New(want, qr.Medium)
 	if err != nil {
 		t.Fatal(err)

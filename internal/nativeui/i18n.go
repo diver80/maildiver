@@ -28,7 +28,7 @@ var (
 
 func detectSystemLang() string {
 	sysLangOnce.Do(func() {
-		for _, env := range []string{"MAILDIVER_LANG", "OMATHUNDER_LANG", "LC_ALL", "LC_MESSAGES", "LANG"} {
+		for _, env := range []string{"POSTDIVE_LANG", "MAILDIVER_LANG", "OMATHUNDER_LANG", "LC_ALL", "LC_MESSAGES", "LANG"} {
 			v := strings.ToLower(strings.TrimSpace(os.Getenv(env)))
 			if v == "" || v == "c" || strings.HasPrefix(v, "c.") || v == "posix" {
 				continue
@@ -116,11 +116,30 @@ func langPrefForLabel(label string) string {
 	return "auto"
 }
 
+// formatShortcutsForOS adapts macOS ⌘ shortcut labels to Ctrl+ on Linux/Windows.
+func formatShortcutsForOS(s, goos string) string {
+	if goos == "darwin" || !strings.Contains(s, "⌘") {
+		return s
+	}
+	r := strings.NewReplacer(
+		"⌘⇧", "Ctrl+Shift+",
+		"⌘↩", "Ctrl+Enter",
+		"⌘/shift", "Ctrl/Shift",
+		"⌘-", "Ctrl-",
+		"⌘", "Ctrl+",
+	)
+	return r.Replace(s)
+}
+
+func formatShortcuts(s string) string {
+	return formatShortcutsForOS(s, runtime.GOOS)
+}
+
 func trLang(lang, de, en string) string {
 	if lang == "en" {
-		return en
+		return formatShortcuts(en)
 	}
-	return de
+	return formatShortcuts(de)
 }
 
 func (a *App) uiLang() string {

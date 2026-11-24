@@ -13,7 +13,7 @@ import (
 
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func generateTestCert(t *testing.T, email, name string, caCert *x509.Certificate, caKey *rsa.PrivateKey) (*x509.Certificate, *rsa.PrivateKey) {
@@ -58,7 +58,7 @@ func generateTestCert(t *testing.T, email, name string, caCert *x509.Certificate
 }
 
 func TestSMIMEImportSignVerifyEncryptDecryptRoundTrip(t *testing.T) {
-	caCert, caKey := generateTestCert(t, "", "MailDiver Test CA", nil, nil)
+	caCert, caKey := generateTestCert(t, "", "PostDive Test CA", nil, nil)
 	aliceCert, aliceKey := generateTestCert(t, "alice@example.com", "Alice", caCert, caKey)
 	bobCert, bobKey := generateTestCert(t, "bob@example.com", "Bob", caCert, caKey)
 

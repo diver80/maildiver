@@ -1,4 +1,4 @@
-module github.com/diver80/maildiver
+module github.com/diver80/postdive
 
 go 1.27.3
 

@@ -15,11 +15,11 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/emersion/go-imap/v2"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/pgp"
-	"github.com/diver80/maildiver/internal/smime"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/pgp"
+	"github.com/diver80/postdive/internal/smime"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // Call implements bridge.RPCClient so bridge.Server can serve every OmaThunder endpoint
@@ -1200,15 +1200,21 @@ func isBlockedSensitiveAttachmentPath(p string) bool {
 		absPath = resolved
 	}
 	base := strings.ToLower(filepath.Base(absPath))
-	for _, dirFn := range []func() (string, error){config.ConfigDir, config.LegacyConfigDir} {
-		if cfgDir, err := dirFn(); err == nil && isPathWithinDir(cfgDir, absPath) {
-			if base == "secrets.json" || base == "env" || base == "bridge.json" {
+	var cfgDirs []string
+	if d, err := config.ConfigDir(); err == nil && d != "" {
+		cfgDirs = append(cfgDirs, d)
+	}
+	cfgDirs = append(cfgDirs, config.LegacyConfigDirs()...)
+	for _, cfgDir := range cfgDirs {
+		if isPathWithinDir(cfgDir, absPath) {
+			if base == "secrets.json" || base == "secrets.seal" || base == "env" || base == "bridge.json" {
 				return true
 			}
 		}
 	}
 	if dataDir, err := config.DataDir(); err == nil && isPathWithinDir(dataDir, absPath) {
-		if base == "maildiver.db" || base == "maildiver.db-wal" || base == "maildiver.db-shm" {
+		if base == "postdive.db" || base == "postdive.db-wal" || base == "postdive.db-shm" ||
+			base == "maildiver.db" || base == "maildiver.db-wal" || base == "maildiver.db-shm" {
 			return true
 		}
 	}
@@ -1315,7 +1321,7 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 			continue
 		}
 		if isBlockedSensitiveAttachmentPath(p) {
-			return "", "", nil, nil, fmt.Errorf("Anhang %q ist eine geschützte MailDiver-Geheimdatei und kann nicht versendet werden", filepath.Base(p))
+			return "", "", nil, nil, fmt.Errorf("Anhang %q ist eine geschützte PostDive-Geheimdatei und kann nicht versendet werden", filepath.Base(p))
 		}
 		data, err := readBoundedRegularFile(p, maxOutgoingAttachmentBytes)
 		if err != nil {
@@ -1883,7 +1889,7 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 			startISO, endISO = st.Format("2006-01-02"), en.Format("2006-01-02")
 		}
 		rruleStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(req.RecurrenceRule), "RRULE:"))
-		uid := fmt.Sprintf("evt-%d@maildiver.local", time.Now().UnixNano())
+		uid := fmt.Sprintf("evt-%d@postdive.local", time.Now().UnixNano())
 		se = StoredEvent{
 			ID:           cal.ID + "::" + uid,
 			CalendarID:   cal.ID,
@@ -2401,7 +2407,7 @@ func (e *Engine) DeleteFilter(ctx context.Context, accountID, name string) error
 	return e.store.DeleteFilter(ctx, accountID, name)
 }
 
-// ToggleFilter enables or disables a local MailDiver rule.
+// ToggleFilter enables or disables a local PostDive rule.
 func (e *Engine) ToggleFilter(ctx context.Context, accountID, name string, enabled bool) error {
 	_, err := e.store.UpsertFilter(ctx, backend.FilterUpsertRequest{
 		Mode:         "toggle",

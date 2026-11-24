@@ -18,9 +18,9 @@ import (
 
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
-	"github.com/diver80/maildiver/internal/smime"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
+	"github.com/diver80/postdive/internal/smime"
 )
 
 func makeSelfSignedEmailCert(t *testing.T, cn, email string) (derBytes []byte, pemBytes []byte) {
@@ -48,7 +48,7 @@ func TestImportSMIMECertPathsBulkFolderAndZip(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
@@ -116,7 +116,7 @@ func TestEncryptedSMIMEInviteAndAttachmentExtract(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },

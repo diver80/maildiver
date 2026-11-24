@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/postdive/internal/backend"
 )
 
 func TestOutboxDueRespectsScheduleRetryAndForce(t *testing.T) {

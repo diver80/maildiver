@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/diver80/maildiver/internal/config"
-	evhub "github.com/diver80/maildiver/internal/events"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/config"
+	evhub "github.com/diver80/postdive/internal/events"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // fakeTB answers the add-on's host methods and records them.

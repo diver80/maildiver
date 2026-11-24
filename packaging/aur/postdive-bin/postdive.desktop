@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=MailDiver
+Name=PostDive
 GenericName=Email, Calendar & Contacts
 Comment=Native IMAP/SMTP email, calendar & contacts client with optional local/cloud AI
-Exec=/usr/bin/maildiver %u
-Icon=maildiver
+Exec=/usr/bin/postdive %u
+Icon=postdive
 Terminal=false
 Categories=Network;Email;Office;Calendar;
 MimeType=x-scheme-handler/mailto;
-StartupWMClass=maildiver
+StartupWMClass=postdive
 Keywords=email;mail;imap;smtp;calendar;contacts;pgp;smime;ai;

@@ -14,9 +14,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestThunderbirdProfileInspectAndImport(t *testing.T) {
@@ -157,7 +157,7 @@ condition="OR (from,contains,newsletter@shop.de) OR (subject,contains,Rabatt)"
 	dir := t.TempDir()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
@@ -199,7 +199,7 @@ func TestRecurringEventCreateUpdateAndExpand(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
@@ -302,7 +302,7 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },

@@ -15,12 +15,12 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/mailengine"
-	"github.com/diver80/maildiver/internal/pgp"
-	"github.com/diver80/maildiver/internal/smime"
-	"github.com/diver80/maildiver/internal/triage"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
+	"github.com/diver80/postdive/internal/pgp"
+	"github.com/diver80/postdive/internal/smime"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 // DirectController exposes the standalone Go mail/calendar/contacts engine to the native UI.
@@ -715,8 +715,8 @@ func (a *App) startGoogleCalendarConnect(ctx context.Context) {
 			a.direct.gcalBusy = false
 			a.direct.gcalSecret = ""
 			a.direct.gcalMsg = a.tr(
-				"Browser geöffnet — bitte Anmeldung bei Google bestätigen. MailDiver verbindet sich danach automatisch.",
-				"Browser opened — please complete Google sign-in. MailDiver will connect automatically.",
+				"Browser geöffnet — bitte Anmeldung bei Google bestätigen. PostDive verbindet sich danach automatisch.",
+				"Browser opened — please complete Google sign-in. PostDive will connect automatically.",
 			)
 			a.direct.gcalErr = false
 		})
@@ -1108,11 +1108,11 @@ func (a *App) runDirectRuleNow(ctx context.Context, accountID, name string) {
 // renderDirectOnboarding is shown when no IMAP/SMTP account is configured yet.
 func (a *App) renderDirectOnboarding(c *ui.Context) {
 	t := c.Theme()
-	ui.Column(c).Fill().Center().Padding(28).Gap(14).Children(func() {
-		ui.Column(c).MaxWidth(480).Padding(20).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
+	ui.Column(c).Fill().Center().Padding(16).Gap(14).Children(func() {
+		ui.Column(c).FillWidth().MaxWidth(460).Padding(16).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, iconMail).Size(22, 22).TextColor(t.Accent)
-				ui.Text(c, a.tr("Willkommen bei MailDiver", "Welcome to MailDiver")).FontSize(16).Bold()
+				ui.Text(c, a.tr("Willkommen bei PostDive", "Welcome to PostDive")).FontSize(16).Bold()
 			})
 			ui.Text(c, a.tr(
 				"Verbinde jetzt dein E-Mail-Postfach (z. B. IONOS, Gmail, iCloud) per IMAP/SMTP, deinen Google-/iCal-Kalender oder übernimm Konten, Signaturen, Kontakte & Regeln direkt aus einem vorhandenen Thunderbird-Profil.",
@@ -1133,14 +1133,14 @@ func (a *App) renderDirectOnboarding(c *ui.Context) {
 					})
 				}
 			}
-			ui.Row(c).FillWidth().Gap(8).Wrap().Children(func() {
-				if iconLabelBtn(c.Key("onb-mail"), iconMail, a.tr("IMAP/SMTP-Konto verbinden", "Connect IMAP/SMTP Account"), !isMobileOS(), "").Clicked() {
+			ui.Column(c).FillWidth().Gap(8).Children(func() {
+				if iconLabelBtn(c.Key("onb-mail"), iconMail, a.tr("IMAP/SMTP-Konto verbinden", "Connect IMAP/SMTP Account"), !isMobileOS(), "").FillWidth().Clicked() {
 					a.OpenDirectModal(0)
 				}
-				if !isMobileOS() && iconLabelBtn(c.Key("onb-tb"), iconDownload, a.tr("Aus Thunderbird importieren", "Import from Thunderbird"), false, a.tr("Konten, Signaturen, Kalender, Kontakte & Regeln nur lesend übernehmen", "Read-only import of accounts, signatures, calendars, contacts & rules")).Clicked() {
+				if !isMobileOS() && iconLabelBtn(c.Key("onb-tb"), iconDownload, a.tr("Aus Thunderbird importieren", "Import from Thunderbird"), false, a.tr("Konten, Signaturen, Kalender, Kontakte & Regeln nur lesend übernehmen", "Read-only import of accounts, signatures, calendars, contacts & rules")).FillWidth().Clicked() {
 					a.OpenDirectModal(3)
 				}
-				if iconLabelBtn(c.Key("onb-cal"), iconCal, a.tr("Google Kalender / .ics", "Google Calendar / .ics"), false, "").Clicked() {
+				if iconLabelBtn(c.Key("onb-cal"), iconCal, a.tr("Google Kalender / .ics", "Google Calendar / .ics"), false, "").FillWidth().Clicked() {
 					a.OpenDirectModal(1)
 				}
 			})
@@ -1869,8 +1869,8 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, a.tr(
-			"Lokale MailDiver-Filterregeln laufen automatisch auf neu eintreffenden Posteingangs- und Unterordner-Mails (z. B. INBOX, INBOX/Projekte).",
-			"Local MailDiver filter rules automatically run on newly arriving inbox and subfolder emails (e.g. INBOX, INBOX/Projects).",
+			"Lokale PostDive-Filterregeln laufen automatisch auf neu eintreffenden Posteingangs- und Unterordner-Mails (z. B. INBOX, INBOX/Projekte).",
+			"Local PostDive filter rules automatically run on newly arriving inbox and subfolder emails (e.g. INBOX, INBOX/Projects).",
 		)).FontSize(12).TextColor(t.TextMuted).Grow(1)
 		if ui.Button(c.Key("dir-new-rule"), a.tr("+ Neue Regel", "+ New Rule")).Clicked() {
 			a.openRuleEditor(nil)

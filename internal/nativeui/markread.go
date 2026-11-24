@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
 )
 
 // markReadDelay is how long a mail must stay open with MarkRead "delay".
@@ -13,7 +13,7 @@ var markReadDelay = 3 * time.Second
 
 // scheduleMarkRead marks the mail the user just opened as read, like mail clients do: at once,
 // after a delay, or never (☰ → Settings). Nothing happens in read-only mode or for accounts
-// MailDiver may not change – there the mail stays unread (UI thread).
+// PostDive may not change – there the mail stays unread (UI thread).
 func (a *App) scheduleMarkRead(ctx context.Context, id string) {
 	mode := a.cfg.App.MarkRead
 	if mode == config.MarkReadNever || a.readOnly {

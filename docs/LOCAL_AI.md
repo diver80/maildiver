@@ -1,6 +1,6 @@
-# Local AI Setup for MailDiver (100% Private, 0 Cloud Tokens)
+# Local AI Setup for PostDive (100% Private, 0 Cloud Tokens)
 
-MailDiver's AI features (email summaries, reply drafts, daily briefings, event & contact extraction, optional triage) work completely locally on Apple Silicon, Linux, and Windows — no email content ever leaves your machine.
+PostDive's AI features (email summaries, reply drafts, daily briefings, event & contact extraction, optional triage) work completely locally on Apple Silicon, Linux, and Windows — no email content ever leaves your machine.
 
 ---
 
@@ -25,7 +25,7 @@ On the first run, MTPLX downloads the model (~17 GB) and starts an OpenAI-compat
 
 *(Tip: stop `ollama serve` if it is running at the same time so both engines don't hold ~20 GB of unified memory simultaneously.)*
 
-### 3. Configure MailDiver
+### 3. Configure PostDive
 
 Open **Settings (`⌘,`) → AI & Sync**:
 
@@ -35,11 +35,11 @@ Open **Settings (`⌘,`) → AI & Sync**:
 - **API Key:** leave empty (no key required on localhost)
 - Click **Save**
 
-*(Optional: for strict server-side JSON schema enforcement in MTPLX you can install `llguidance` into MTPLX's venv, though MailDiver v0.7.12+ automatically falls back gracefully without it.)*
+*(Optional: for strict server-side JSON schema enforcement in MTPLX you can install `llguidance` into MTPLX's venv, though PostDive v0.7.12+ automatically falls back gracefully without it.)*
 
 ### Bonus: Using the same MTPLX server with OpenCode / T3 Code
 
-Not needed for MailDiver itself, but if you also want to wire the same local MTPLX server into OpenCode (or T3 Code):
+Not needed for PostDive itself, but if you also want to wire the same local MTPLX server into OpenCode (or T3 Code):
 
 ```bash
 mtplx connect opencode
@@ -54,7 +54,7 @@ mtplx connect opencode
    ollama pull qwen3:4b
    # or a larger model like qwen2.5:14b
    ```
-2. In MailDiver open **Settings (`⌘,`) → AI & Sync**:
+2. In PostDive open **Settings (`⌘,`) → AI & Sync**:
    - **Provider:** `ollama`
    - **Endpoint:** `http://127.0.0.1:11434` *(default)*
    - **Model:** pick any installed model from the dropdown

@@ -14,7 +14,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 // ComposeThemePalette passes the active app colors into the desktop WYSIWYG HTML compose surface.
@@ -244,7 +244,7 @@ func (a *App) pasteClipboardIntoCompose(inlineImage bool) {
 			})
 			return
 		}
-		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("maildiver-clipboard-%d.png", time.Now().UnixNano()))
+		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("postdive-clipboard-%d.png", time.Now().UnixNano()))
 		if werr := os.WriteFile(tmpFile, imgBytes, 0o600); werr != nil {
 			a.emitUpdate(func() {
 				a.toast(a.tr("Zwischenablage-Bild nicht speicherbar: ", "Could not save clipboard image: ")+werr.Error(), "error")
@@ -263,9 +263,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 	de := lang != "en"
 	lbl := func(d, e string) string {
 		if de {
-			return d
+			return formatShortcuts(d)
 		}
-		return e
+		return formatShortcuts(e)
 	}
 	initJSON, _ := json.Marshal(initialBodyHTML)
 
@@ -386,8 +386,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 </head>
 <body>
   <div class="tb" id="toolbar">
-    <button class="btn" id="btn-undo" data-cmd="undo" title="%s (⌘Z)">↶</button>
-    <button class="btn" id="btn-redo" data-cmd="redo" title="%s (⌘⇧Z)">↷</button>
+    <button class="btn" id="btn-undo" data-cmd="undo" title="%s">↶</button>
+    <button class="btn" id="btn-redo" data-cmd="redo" title="%s">↷</button>
     <span class="sep"></span>
     <select class="sel" id="blk" title="%s">
       <option value="P">%s</option>
@@ -404,9 +404,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
       <option value="5">%s</option>
     </select>
     <span class="sep"></span>
-    <button class="btn" data-cmd="bold" title="%s (⌘B)"><b>B</b></button>
-    <button class="btn" data-cmd="italic" title="%s (⌘I)"><i>I</i></button>
-    <button class="btn" data-cmd="underline" title="%s (⌘U)"><u>U</u></button>
+    <button class="btn" data-cmd="bold" title="%s"><b>B</b></button>
+    <button class="btn" data-cmd="italic" title="%s"><i>I</i></button>
+    <button class="btn" data-cmd="underline" title="%s"><u>U</u></button>
     <button class="btn" data-cmd="strikeThrough" title="%s"><s>S</s></button>
     <input class="clr" type="color" id="fg" value="%s" title="%s">
     <input class="clr" type="color" id="bg" value="%s" title="%s">
@@ -1313,8 +1313,8 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 </body>
 </html>`,
 		pal.Bg, pal.Surface, pal.Text, pal.Muted, pal.Border, pal.Accent, editorBg, editorFg,
-		lbl("Rückgängig", "Undo"),
-		lbl("Wiederholen", "Redo"),
+		lbl("Rückgängig (⌘Z)", "Undo (⌘Z)"),
+		lbl("Wiederholen (⌘⇧Z)", "Redo (⌘⇧Z)"),
 		lbl("Absatzformat", "Block format"),
 		lbl("Absatz", "Paragraph"),
 		lbl("Überschrift", "Heading"),
@@ -1326,9 +1326,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
 		lbl("Normal", "Normal"),
 		lbl("Groß", "Large"),
 		lbl("Sehr groß", "Huge"),
-		lbl("Fett", "Bold"),
-		lbl("Kursiv", "Italic"),
-		lbl("Unterstrichen", "Underline"),
+		lbl("Fett (⌘B)", "Bold (⌘B)"),
+		lbl("Kursiv (⌘I)", "Italic (⌘I)"),
+		lbl("Unterstrichen (⌘U)", "Underline (⌘U)"),
 		lbl("Durchgestrichen", "Strikethrough"),
 		editorFg,
 		lbl("Textfarbe", "Text color"),

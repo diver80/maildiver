@@ -6,16 +6,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func newAccountSettingsEngine(t *testing.T) (*Engine, func() config.Config) {
 	t.Helper()
 	cfg := config.Default()
 	eng, err := New(Options{
-		DBPath:       filepath.Join(t.TempDir(), "maildiver.db"),
+		DBPath:       filepath.Join(t.TempDir(), "postdive.db"),
 		Secrets:      secretstore.NewMemoryStore(),
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
 		ConfigSaver:  func(c config.Config) error { cfg = c; return nil },

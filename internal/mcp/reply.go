@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/copilot"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/copilot"
 )
 
 // A draft that answers or forwards a mail gets what a mail client fills in: the account the

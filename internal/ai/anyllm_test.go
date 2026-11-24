@@ -19,7 +19,7 @@ import (
 
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
-	"github.com/diver80/maildiver/internal/config"
+	"github.com/diver80/postdive/internal/config"
 )
 
 func TestSupportedProvidersComeFromRegistry(t *testing.T) {
@@ -233,7 +233,7 @@ func TestOpenAICompatNeverGetsOpenAIKey(t *testing.T) {
 	if _, err := Chat(context.Background(), cfg, ChatRequest{Messages: []anyllm.Message{{Role: anyllm.RoleUser, Content: "hi"}}}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := rec.header(0).Get("Authorization"); got != "Bearer maildiver-local" {
+	if got := rec.header(0).Get("Authorization"); got != "Bearer postdive-local" {
 		t.Fatalf("without OPENAICOMPAT_API_KEY a placeholder must be sent, got %q", got)
 	}
 	if got := rec.header(1).Get("Authorization"); got != "Bearer compat-key" {
@@ -439,7 +439,7 @@ func TestCLIChatKeepsContentOutOfArgv(t *testing.T) {
 		}
 	}
 	if !strings.Contains(string(stdin), "SECRET-MAIL-BODY") || !strings.Contains(string(stdin), "SECRET-QUESTION") ||
-		!strings.Contains(string(stdin), "<maildiver_instructions>") {
+		!strings.Contains(string(stdin), "<postdive_instructions>") {
 		t.Fatalf("system and user content must arrive via stdin, got %q", stdin)
 	}
 	for _, flag := range []string{"--tools", "--strict-mcp-config", "mcp__*", "--no-session-persistence"} {

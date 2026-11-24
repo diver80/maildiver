@@ -8,8 +8,8 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/jobs"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/jobs"
 )
 
 func enableTriage(st *testStack) {

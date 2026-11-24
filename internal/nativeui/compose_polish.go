@@ -11,9 +11,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 var missingAttachmentKeywordRE = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}_])(anhang|anhänge|anhängen|angehängt|angehangen|anbei|beigefügt|beigefuegt|beiliegend|dateianhang|attached|attachment|attachments|enclosed|enclosing)([^\p{L}\p{N}_]|$)`)

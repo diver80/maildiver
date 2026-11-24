@@ -12,13 +12,13 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/diver80/maildiver/internal/backend"
-	"github.com/diver80/maildiver/internal/config"
-	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/secretstore"
 )
 
 func TestMIMEAttachmentsRoundtrip(t *testing.T) {
-	payload := []byte("Hallo MailDiver Anhang PDF-Daten 12345!")
+	payload := []byte("Hallo PostDive Anhang PDF-Daten 12345!")
 	_, raw := BuildRawMessage(OutgoingMessage{
 		FromName:  "Frank",
 		FromEmail: "frank@example.de",
@@ -68,7 +68,7 @@ func TestContactsVCFAndGoogleContactsAndAutocomplete(t *testing.T) {
 	mem := secretstore.NewMemoryStore()
 
 	eng, err := New(Options{
-		DBPath:       filepath.Join(dir, "maildiver.db"),
+		DBPath:       filepath.Join(dir, "postdive.db"),
 		Secrets:      mem,
 		ConfigLoader: loadCfg,
 		ConfigSaver:  saveCfg,

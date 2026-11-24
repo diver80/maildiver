@@ -9,7 +9,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"github.com/diver80/maildiver/internal/theme"
+	"github.com/diver80/postdive/internal/theme"
 )
 
 type uiThemeState struct {
