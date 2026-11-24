@@ -411,14 +411,24 @@ func (a *App) renderRuleFolderTarget(c *ui.Context, keyPrefix, accID string, fol
 			break
 		}
 	}
+	phone := a.isPhone()
 	if len(paths) > 0 {
-		if ui.Select(c.Key(keyPrefix+"-pick"), &sel, opts).Width(200).Changed() {
-			if sel != customLbl {
-				*folder = sel
-			}
+		pick := ui.Select(c.Key(keyPrefix+"-pick"), &sel, opts)
+		if phone {
+			pick.FillWidth()
+		} else {
+			pick.Width(200)
+		}
+		if pick.Changed() && sel != customLbl {
+			*folder = sel
 		}
 	}
-	ui.TextInput(c.Key(keyPrefix+"-in"), folder).Placeholder("INBOX/atlassian/done").Grow(1)
+	in := ui.TextInput(c.Key(keyPrefix+"-in"), folder).Placeholder("INBOX/atlassian/done")
+	if phone {
+		in.FillWidth()
+	} else {
+		in.Grow(1)
+	}
 }
 
 func (a *App) renderRuleEditorPanel(c *ui.Context) {
@@ -444,23 +454,60 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 			}
 		})
 
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("re-name"), &d.ruleEditName).Placeholder(a.tr("Regelname…", "Rule name…")).Grow(1)
+		// A phone stacks what sits side by side on the desktop: its width takes one field a line.
+		phone := a.isPhone()
+		line := func(key string, fn func()) {
+			if phone {
+				ui.Column(c.Key(key)).FillWidth().Gap(6).Children(fn)
+			} else {
+				ui.Row(c.Key(key)).FillWidth().Gap(8).AlignItems(ui.Center).Children(fn)
+			}
+		}
+		// sized gives a control its desktop width, or the phone's full one.
+		sized := func(e ui.Element, w float32) ui.Element {
+			if phone {
+				return e.FillWidth()
+			}
+			return e.Width(w)
+		}
+		line("re-name-row", func() {
+			name := ui.TextInput(c.Key("re-name"), &d.ruleEditName).Placeholder(a.tr("Regelname…", "Rule name…"))
+			if phone {
+				name.FillWidth()
+			} else {
+				name.Grow(1)
+			}
 			if len(d.ruleEditAccountMap) > 1 {
 				labels := make([]string, 0, len(d.ruleEditAccountMap))
 				for lbl := range d.ruleEditAccountMap {
 					labels = append(labels, lbl)
 				}
 				sort.Strings(labels)
-				ui.Select(c.Key("re-acc"), &d.ruleEditAccountLbl, labels).Width(190)
+				acc := ui.Select(c.Key("re-acc"), &d.ruleEditAccountLbl, labels)
+				if phone {
+					acc.FillWidth()
+				} else {
+					acc.Width(190)
+				}
 			}
 			ui.Checkbox(c.Key("re-en"), &d.ruleEditEnabled, a.tr("Aktiv", "Enabled"))
 		})
 
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		line("re-match-row", func() {
 			ui.Text(c, a.tr("Verknüpfung:", "Match:")).FontSize(11.5).TextColor(t.TextMuted)
 			prevMode := d.ruleEditMatchMode
-			ui.Segmented(c.Key("re-match"), &d.ruleEditMatchMode, a.tr("Alle Bedingungen (UND)", "All conditions (AND)"), a.tr("Mind. eine (ODER)", "Any condition (OR)"))
+			matchLabels := []string{a.tr("Alle Bedingungen (UND)", "All conditions (AND)"), a.tr("Mind. eine (ODER)", "Any condition (OR)")}
+			if phone {
+				lbl := matchLabels[min(max(d.ruleEditMatchMode, 0), 1)]
+				if ui.Select(c.Key("re-match-sel"), &lbl, matchLabels).FillWidth().Changed() {
+					d.ruleEditMatchMode = 0
+					if lbl == matchLabels[1] {
+						d.ruleEditMatchMode = 1
+					}
+				}
+			} else {
+				ui.Segmented(c.Key("re-match"), &d.ruleEditMatchMode, matchLabels...)
+			}
 			if d.ruleEditMatchMode != prevMode {
 				isAnd := d.ruleEditMatchMode == 0
 				for idx := range d.ruleEditConds {
@@ -473,33 +520,40 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 			rmIdx := -1
 			for i := range d.ruleEditConds {
 				cd := &d.ruleEditConds[i]
-				ui.Row(c.Key(fmt.Sprintf("re-c-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				fieldOpValue := func() {
 					fLbl := fieldKeyToLbl[cd.Field]
 					if fLbl == "" {
 						fLbl = fieldLabels[0]
 					}
-					if ui.Select(c.Key(fmt.Sprintf("re-cf-%d", i)), &fLbl, fieldLabels).Width(130).Changed() {
+					if sized(ui.Select(c.Key(fmt.Sprintf("re-cf-%d", i)), &fLbl, fieldLabels), 130).Changed() {
 						if k, ok := fieldLblToKey[fLbl]; ok {
 							cd.Field = k
 						}
 					}
 					if cd.Field == "header" {
-						ui.TextInput(c.Key(fmt.Sprintf("re-ch-%d", i)), &cd.HeaderName).Placeholder("X-Header / List-Id").Width(120)
+						sized(ui.TextInput(c.Key(fmt.Sprintf("re-ch-%d", i)), &cd.HeaderName).Placeholder("X-Header / List-Id"), 120)
 					}
 					oLbl := opKeyToLbl[cd.Op]
 					if oLbl == "" {
 						oLbl = opLabels[0]
 					}
-					if ui.Select(c.Key(fmt.Sprintf("re-co-%d", i)), &oLbl, opLabels).Width(135).Changed() {
+					if sized(ui.Select(c.Key(fmt.Sprintf("re-co-%d", i)), &oLbl, opLabels), 135).Changed() {
 						if k, ok := opLblToKey[oLbl]; ok {
 							cd.Op = k
 						}
 					}
 					if cd.Op != "isEmpty" && cd.Op != "isNotEmpty" {
-						ui.TextInput(c.Key(fmt.Sprintf("re-cv-%d", i)), &cd.Value).Placeholder(a.tr("Wert (z. B. atlassian.net)", "Value (e.g. atlassian.net)")).Grow(1)
-					} else {
+						v := ui.TextInput(c.Key(fmt.Sprintf("re-cv-%d", i)), &cd.Value).Placeholder(a.tr("Wert (z. B. atlassian.net)", "Value (e.g. atlassian.net)"))
+						if phone {
+							v.FillWidth()
+						} else {
+							v.Grow(1)
+						}
+					} else if !phone {
 						ui.Spacer(c)
 					}
+				}
+				andRemove := func() {
 					if d.ruleEditMatchMode == 1 && i > 0 {
 						andLbl := a.tr("ODER", "OR")
 						if cd.BooleanAnd {
@@ -514,12 +568,28 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 							rmIdx = i
 						}
 					}
+				}
+				if phone {
+					// Field, operator and value one below the other in a card, AND/OR and ✕ beside
+					// its number.
+					ui.Column(c.Key(fmt.Sprintf("re-c-%d", i))).FillWidth().Gap(6).Padding(8).Radius(6).Border(1, t.Border).Children(func() {
+						ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, a.trf("Bedingung %d", "Condition %d", i+1)).FontSize(11.5).TextColor(t.TextMuted).Grow(1)
+							andRemove()
+						})
+						fieldOpValue()
+					})
+					continue
+				}
+				ui.Row(c.Key(fmt.Sprintf("re-c-%d", i))).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+					fieldOpValue()
+					andRemove()
 				})
 			}
 			if rmIdx >= 0 {
 				d.ruleEditConds = append(d.ruleEditConds[:rmIdx], d.ruleEditConds[rmIdx+1:]...)
 			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 				if ui.Button(c.Key("re-cadd"), a.tr("+ Bedingung", "+ Condition")).Padding(3, 8).Clicked() {
 					d.ruleEditConds = append(d.ruleEditConds, triage.NativeCondition{Field: "subject", Op: "contains", Value: "", BooleanAnd: d.ruleEditMatchMode == 0})
 				}
@@ -551,14 +621,14 @@ func (a *App) renderRuleEditorPanel(c *ui.Context) {
 			ui.Checkbox(c.Key("re-a-del"), &d.ruleEditDelete, a.tr("Löschen", "Delete"))
 			ui.Checkbox(c.Key("re-a-stop"), &d.ruleEditStop, a.tr("Weitere Regeln stoppen", "Stop further rules"))
 		})
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Checkbox(c.Key("re-a-move"), &d.ruleEditMove, a.tr("Verschieben nach:", "Move to folder:")).Width(150)
+		line("re-a-move-row", func() {
+			sized(ui.Checkbox(c.Key("re-a-move"), &d.ruleEditMove, a.tr("Verschieben nach:", "Move to folder:")), 150)
 			if d.ruleEditMove {
 				a.renderRuleFolderTarget(c, "re-mv", accID, &d.ruleEditMoveFolder)
 			}
 		})
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Checkbox(c.Key("re-a-copy"), &d.ruleEditCopy, a.tr("Kopieren nach:", "Copy to folder:")).Width(150)
+		line("re-a-copy-row", func() {
+			sized(ui.Checkbox(c.Key("re-a-copy"), &d.ruleEditCopy, a.tr("Kopieren nach:", "Copy to folder:")), 150)
 			if d.ruleEditCopy {
 				a.renderRuleFolderTarget(c, "re-cp", accID, &d.ruleEditCopyFolder)
 			}

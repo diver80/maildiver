@@ -91,7 +91,7 @@ func TestArchiveDialog(t *testing.T) {
 	}
 
 	// Deleting at the provider asks once more before it starts.
-	app.arch.modeLabel = app.archiveModeLabels()[3]
+	app.arch.modeLabel = app.archiveModeLabels()[2]
 	tt.Frame()
 	app.StartArchiveRun(context.Background())
 	if !app.arch.confirm || app.arch.running {

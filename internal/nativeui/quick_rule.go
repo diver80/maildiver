@@ -45,6 +45,10 @@ type quickRuleState struct {
 	quickRuleAISeq        uint64
 	quickRuleError        string
 	quickRuleInfo         string
+	// quickRuleTarget is an existing rule the AI proposed to fix instead of creating a new one
+	// (nil: create); quickRuleTargetMode is how ("append_or", "replace").
+	quickRuleTarget     *triage.NativeFilter
+	quickRuleTargetMode string
 }
 
 var quickRuleActions = []string{"trash", "mark_read_trash", "mark_read", "move"}
@@ -493,6 +497,7 @@ func (a *App) selectQuickRuleAccount(accID string) {
 	a.quickRuleSubjectText = strings.Join(draft.SubjectValues, ", ")
 	a.quickRuleConfirmSig = ""
 	a.quickRuleError = ""
+	a.quickRuleTarget, a.quickRuleTargetMode = nil, ""
 	if folders := a.quickRuleAccountFolderPaths(); len(folders) > 0 {
 		a.quickRuleFolderPath = folders[0]
 	} else {
@@ -642,7 +647,15 @@ func (a *App) quickRuleSignature() string {
 	return strings.Join([]string{
 		a.quickRuleAccount, a.quickRuleFromText, a.quickRuleSubjectText, fmt.Sprint(a.quickRuleMatchAll),
 		a.normalizedQuickRuleAction(), a.quickRuleFolderPath, fmt.Sprint(a.quickRuleApplyPreview),
+		a.quickRuleTargetMode + ":" + a.quickRuleTargetName(),
 	}, "\x00")
+}
+
+func (a *App) quickRuleTargetName() string {
+	if a.quickRuleTarget == nil {
+		return ""
+	}
+	return a.quickRuleTarget.Name
 }
 
 // quickRuleConfirmArmed reports whether the user already confirmed exactly this broad rule.
@@ -685,15 +698,20 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 			}
 			cancel()
 		}
-		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
-		resp, err := bc.AIAnalyze(c, ai.AnalyzeRequest{
+		req := ai.AnalyzeRequest{
 			Mode:           "suggest_filter",
-			Ephemeral:      true,
 			Language:       lang,
 			PrimaryMessage: marked[0],
 			ThreadMessages: marked,
 			NativeFilters:  nativeFilters,
-		})
+		}
+		if len(nativeFilters) > 0 {
+			// Why the existing rules missed this mail, so the model can fix one of them.
+			diag := triage.DiagnoseFilters(marked[0], nativeFilters)
+			req.FilterDiagnostic = &diag
+		}
+		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
+		resp, err := bc.AIAnalyze(c, req)
 		cancel()
 		a.emitUpdate(func() {
 			if seq != a.quickRuleAISeq || !a.quickRuleOpen {
@@ -709,6 +727,10 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 				return
 			}
 			sug := resp.FilterSuggestions[0]
+			a.quickRuleTarget, a.quickRuleTargetMode = nil, ""
+			if target, mode := quickRuleTargetFor(sug, nativeFilters, account); target != nil {
+				a.quickRuleTarget, a.quickRuleTargetMode = target, mode
+			}
 			if strings.TrimSpace(sug.Name) != "" {
 				a.quickRuleName = strings.TrimSpace(sug.Name)
 			}
@@ -835,7 +857,7 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 	if name == "" {
 		name = a.tr("MailDiver Quick-Regel", "MailDiver Quick Rule")
 	}
-	req := backend.FilterUpsertRequest{
+	req := buildQuickRuleUpsert(a.quickRuleTarget, a.quickRuleTargetMode, backend.FilterUpsertRequest{
 		Mode:       "create",
 		AccountID:  a.quickRuleAccount,
 		Name:       name,
@@ -843,7 +865,7 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 		MatchAll:   a.quickRuleMatchAll,
 		Conditions: a.quickRuleConditions(),
 		Actions:    actions,
-	}
+	})
 
 	a.quickRuleBusy = true
 	a.quickRuleError = ""
@@ -892,7 +914,89 @@ func (a *App) SaveAndApplyQuickRule(ctx context.Context) {
 	}()
 }
 
-// saveQuickRuleFilter creates the filter (mode "create", contract §6). If the create times out
+// quickRuleTargetFor returns the existing rule of accountID that an AI suggestion asks to
+// update (append_or, replace), and how; nil when it creates a new rule or names no existing
+// rule. fix_and_to_or is not taken: turning the user's AND rule into OR would widen it beyond
+// anything the wizard's preview shows (e.g. "@bank AND Newsletter → Trash" becoming all bank
+// mail), so such a suggestion becomes a new rule.
+func quickRuleTargetFor(sug ai.FilterRuleSuggestion, filters []triage.NativeFilter, accountID string) (*triage.NativeFilter, string) {
+	mode := strings.ToLower(strings.TrimSpace(sug.Action))
+	switch mode {
+	case "append_or", "replace":
+	default:
+		return nil, ""
+	}
+	name := strings.TrimSpace(sug.TargetFilterName)
+	if name == "" {
+		return nil, ""
+	}
+	for i := range filters {
+		f := filters[i]
+		if accountID != "" && f.AccountID != "" && f.AccountID != accountID {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(f.Name), name) {
+			// append_or keeps the rule's logic: an AND rule takes no extra OR term.
+			if mode == "append_or" && f.MatchAll && len(f.Conditions) > 1 {
+				return nil, ""
+			}
+			return &f, mode
+		}
+	}
+	return nil, ""
+}
+
+// quickRuleAppendable reports whether the wizard's rule can join an OR rule as OR terms without
+// matching more than the wizard previews: one condition, or conditions that are OR already. An
+// AND rule ("sender AND subject") split into OR terms would catch every mail of either.
+func quickRuleAppendable(create backend.FilterUpsertRequest) bool {
+	return !create.MatchAll || len(create.Conditions) <= 1
+}
+
+// buildQuickRuleUpsert turns the wizard's new rule into an update of target when the AI asked
+// for one: append_or adds the wizard's conditions to the rule's as OR terms and keeps its
+// actions (only when quickRuleAppendable; otherwise the rule is created new); replace puts the
+// wizard's rule in its place, under its name. Without target the new rule is created. The engine
+// creates a rule when the target vanished meanwhile.
+func buildQuickRuleUpsert(target *triage.NativeFilter, mode string, create backend.FilterUpsertRequest) backend.FilterUpsertRequest {
+	if target == nil || (mode == "append_or" && !quickRuleAppendable(create)) {
+		return create
+	}
+	req := create
+	req.Mode = "replace"
+	req.Name = target.Name
+	req.ExistingName = target.Name
+	switch mode {
+	case "append_or":
+		req.Enabled = target.Enabled
+		req.MatchAll = false
+		req.Conditions = nil
+		seen := map[string]bool{}
+		for _, c := range append(append([]triage.NativeCondition(nil), target.Conditions...), create.Conditions...) {
+			key := strings.ToLower(c.Field + "\x00" + c.HeaderName + "\x00" + c.Op + "\x00" + strings.TrimSpace(c.Value))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			c.BooleanAnd, c.MatchAll = false, false
+			req.Conditions = append(req.Conditions, c)
+		}
+		req.Actions = make([]backend.FilterActionSpec, 0, len(target.Actions))
+		for _, ac := range target.Actions {
+			req.Actions = append(req.Actions, backend.FilterActionSpec{Type: ac.Type, TargetFolderPath: ac.TargetFolderPath, TargetFolderURI: ac.TargetFolderURI})
+		}
+		if len(req.Actions) == 0 {
+			req.Actions = create.Actions
+		}
+	case "replace":
+	default:
+		return create
+	}
+	return req
+}
+
+// saveQuickRuleFilter creates the filter (mode "create", contract §6) or updates the rule the AI
+// named (mode "replace", which a retry repeats harmlessly). If the create times out
 // with an unknown outcome, the filter list is checked for a newly created filter of that name
 // before a single retry, so a retry can never produce a duplicate.
 func saveQuickRuleFilter(ctx context.Context, bc *backend.Client, req backend.FilterUpsertRequest) (string, error) {

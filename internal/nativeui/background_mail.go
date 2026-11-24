@@ -10,6 +10,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/background"
 
+	"github.com/diver80/maildiver/internal/backend"
+	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/mailengine"
 )
 
@@ -29,6 +31,15 @@ type backgroundMail interface {
 	TakeNewInboxMail(ctx context.Context) ([]mailengine.StoredMessage, error)
 	MarkInboxSeen(ctx context.Context) error
 }
+
+// backgroundCalendar is what the task needs of the engine for calendar reminders.
+type backgroundCalendar interface {
+	TakeDueEventReminders(ctx context.Context, now time.Time, within time.Duration, skipCalendars []string) ([]backend.CalendarEvent, error)
+}
+
+// backgroundReminderWithin is how early a wake-up reminds of an event: until the next wake-up
+// (about 15 minutes, often later) and a margin, so a reminder never falls between two.
+const backgroundReminderWithin = 20 * time.Minute
 
 type workerPauser interface {
 	SetWorkersPaused(paused bool)
@@ -170,6 +181,10 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		if seen != nil {
 			seen()
 		}
+		if mobile {
+			// Undo-Send waits in memory only: send now, before Android may kill the app.
+			s.app.emitUpdate(s.app.FlushPendingSendsOnSuspend)
+		}
 		reconcileWorkers(0, false)
 	}
 
@@ -226,11 +241,19 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		if ext, ok := opts.Direct.(interface{ SyncBackgroundExtras(context.Context) }); ok {
 			ext.SyncBackgroundExtras(c)
 		}
+		stateMu.Lock()
+		inForeground := foreground
+		stateMu.Unlock()
+		if bc, ok := opts.Direct.(backgroundCalendar); ok && !inForeground {
+			// Before the inboxes: a failing mail server must not swallow a meeting's reminder.
+			// Open, the app reminds itself (checkUpcomingMeetingReminders).
+			s.notifyBackgroundEvents(c, bc)
+		}
 		if err := bm.SyncInboxes(c); err != nil {
 			return err // runs again later
 		}
 		stateMu.Lock()
-		inForeground := foreground
+		inForeground = foreground
 		stateMu.Unlock()
 		if inForeground {
 			// Open: the app's own new-mail alerts have shown them.
@@ -255,25 +278,87 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 // notifyBackgroundMail shows one notification per new mail, or one for several. It runs off the
 // UI thread: the app may have been started for the task alone, without a window.
 func (s *desktopShell) notifyBackgroundMail(ctx context.Context, msgs []mailengine.StoredMessage) {
-	if len(msgs) == 0 || !mygo.NotificationsSupported() {
+	opts, ok := s.app.backgroundMailNotification(msgs)
+	if !ok || !mygo.NotificationsSupported() {
 		return
-	}
-	a := s.app
-	var opts mygo.NotificationOptions
-	if len(msgs) == 1 {
-		m := msgs[0]
-		opts = mygo.NotificationOptions{
-			ID: alertMailPrefix + m.ID, Title: shortSender(m.From),
-			Subtitle: a.tr("Neue E-Mail", "New Email"), Body: m.Subject, Group: "maildiver-mail",
-		}
-	} else {
-		opts = mygo.NotificationOptions{
-			ID:       fmt.Sprintf("%s%d", alertMailBatchPrefix, time.Now().UnixNano()),
-			Title:    a.trf("%d neue E-Mails", "%d new emails", len(msgs)),
-			Subtitle: shortSender(msgs[0].From), Body: msgs[0].Subject, Group: "maildiver-mail",
-		}
 	}
 	if err := mygo.NewNotification(opts).ShowContext(ctx); err != nil {
 		log.Printf("maildiver notification: %v", err)
 	}
+}
+
+// notifyBackgroundEvents shows a notification for each event whose reminder is due. With
+// notifications off it takes none, so they still remind once switched on again in time.
+func (s *desktopShell) notifyBackgroundEvents(ctx context.Context, bc backgroundCalendar) {
+	cfg, ok := s.app.backgroundConfig()
+	if !ok || !mygo.NotificationsSupported() {
+		return
+	}
+	evs, err := bc.TakeDueEventReminders(ctx, time.Now(), backgroundReminderWithin, cfg.App.HiddenCalendars)
+	if err != nil {
+		log.Printf("maildiver: calendar reminders: %v", err)
+		return
+	}
+	for _, opts := range s.app.backgroundEventNotifications(evs, time.Now()) {
+		if err := mygo.NewNotification(opts).ShowContext(ctx); err != nil {
+			log.Printf("maildiver notification: %v", err)
+		}
+	}
+}
+
+// backgroundConfig is the saved configuration, false when notifications are switched off. Safe
+// off the UI thread.
+func (a *App) backgroundConfig() (config.Config, bool) {
+	if a.opts.ConfigLoader == nil {
+		return config.Config{}, true
+	}
+	cfg, err := a.opts.ConfigLoader()
+	if err != nil {
+		return config.Config{}, true
+	}
+	return cfg, cfg.App.NotifyEnabled == nil || *cfg.App.NotifyEnabled
+}
+
+// backgroundEventNotifications are the reminders of evs as notifications, which open the
+// calendar when tapped (HandleNotificationClick).
+func (a *App) backgroundEventNotifications(evs []backend.CalendarEvent, now time.Time) []mygo.NotificationOptions {
+	out := make([]mygo.NotificationOptions, 0, len(evs))
+	for _, ev := range evs {
+		start, err := parseEventTime(ev.Start)
+		if err != nil {
+			continue
+		}
+		out = append(out, mygo.NotificationOptions{
+			ID:       alertCalPrefix + ev.ID,
+			Title:    ev.Title,
+			Subtitle: a.eventReminderSubtitle(ev, start, now),
+			Body:     ev.Calendar,
+			Group:    "maildiver-calendar",
+		})
+	}
+	return out
+}
+
+// backgroundMailNotification is the notification for mail that arrived in the background, or
+// false when there is none or the user turned notifications off. Safe off the UI thread: the
+// switch is read from the saved settings, not from the UI's state.
+func (a *App) backgroundMailNotification(msgs []mailengine.StoredMessage) (mygo.NotificationOptions, bool) {
+	if len(msgs) == 0 {
+		return mygo.NotificationOptions{}, false
+	}
+	if _, on := a.backgroundConfig(); !on {
+		return mygo.NotificationOptions{}, false
+	}
+	if len(msgs) == 1 {
+		m := msgs[0]
+		return mygo.NotificationOptions{
+			ID: alertMailPrefix + m.ID, Title: shortSender(m.From),
+			Subtitle: a.tr("Neue E-Mail", "New Email"), Body: m.Subject, Group: "maildiver-mail",
+		}, true
+	}
+	return mygo.NotificationOptions{
+		ID:       fmt.Sprintf("%s%d", alertMailBatchPrefix, time.Now().UnixNano()),
+		Title:    a.trf("%d neue E-Mails", "%d new emails", len(msgs)),
+		Subtitle: shortSender(msgs[0].From), Body: msgs[0].Subject, Group: "maildiver-mail",
+	}, true
 }

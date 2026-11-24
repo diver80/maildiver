@@ -25,7 +25,13 @@ const (
 	phoneRouteMailboxes = "/"
 	phoneRouteList      = "/list"
 	phoneRouteMail      = "/list/mail"
+	phoneRouteAssistant = "/assistant"
 )
+
+// phoneDetailQuery marks, on the list's route, a state inside the list screen that back must
+// leave before the screen: "?detail=contact" (a contact open) or "?detail=select" (mails
+// checked). The same path with a query is the same page to the router, keeping its state.
+const phoneDetailQuery = "detail"
 
 type phoneUI struct {
 	router  *ui.Router
@@ -34,6 +40,20 @@ type phoneUI struct {
 	swipes  phoneSwipes // mail rows slid aside
 	more    bool        // the open mail's sheet of further actions
 	search  bool        // the search field above the list
+
+	// stepAfter is the mail whose next one opens once the list's next page arrived (the next
+	// button at the end of what is loaded).
+	stepAfter string
+	// detail is the list state (phoneDetailQuery) the router's history was last given.
+	detail string
+
+	// A folder long-pressed: its sheet of actions, the rename dialog and the delete confirmation.
+	folder        backend.Folder
+	folderSheet   bool
+	bulkMore      bool // the selection bar's "More" sheet
+	folderRename  bool
+	folderNewName string
+	folderDelete  bool
 }
 
 // isPhone reports whether the window shows the phone layout.
@@ -41,13 +61,42 @@ func (a *App) isPhone() bool {
 	return runtime.GOOS == "android" || (a.winW > 0 && a.winW < phoneMaxWidth)
 }
 
-// modalW is a dialog's width: w on desktops, on phones the screen less the margins and padding
-// of ui.Modal's panel (40 points on each side).
+// modalW is a dialog's width: w on desktops, the screen's full width on phones, whose dialogs
+// (App.modal) have no margins of their own – the panel's padding keeps the content off the edges.
 func (a *App) modalW(w float32) float32 {
+	if a.isPhone() && a.winW > 0 {
+		return max(a.winW, 200)
+	}
 	if a.winW > 0 && a.winW-80 < w {
 		return max(a.winW-80, 200)
 	}
 	return w
+}
+
+// modalH is a dialog's greatest height: h on desktops, at most the screen within the system
+// bars on phones.
+func (a *App) modalH(c *ui.Context, h float32) float32 {
+	if !a.isPhone() || a.winH <= 0 {
+		return h
+	}
+	top, _, bottom, _ := c.SafeArea()
+	return max(min(h, a.winH-top-bottom), 200)
+}
+
+// modal shows a dialog as ui.Modal does. On phones it takes the screen's width (modalW) and at
+// most its height within the system bars, rather than ui.Modal's panel inset by 40 points, which
+// left 260 points for the content of a 380-point phone.
+func (a *App) modal(c *ui.Context, open *bool, fn func()) ui.Element {
+	if !a.isPhone() {
+		return ui.Modal(c, open, fn)
+	}
+	return ui.DialogBase(c, open, func(back, panel ui.Element) {
+		top, _, bottom, _ := c.SafeArea()
+		_, h := c.Size()
+		back.Background(ui.RGBA(0, 0, 0, 0.4)).Padding(top, 0, bottom, 0)
+		panel.MaxWidth(a.winW).MaxHeight(max(h-top-bottom, 200))
+		fn()
+	})
 }
 
 func (a *App) phoneRouter() *ui.Router {
@@ -76,19 +125,45 @@ func (a *App) renderPhone(c *ui.Context) {
 		}
 	}
 	r := a.phoneRouter()
-	r.View(c, func(rt *ui.Route) {
-		switch {
-		case rt.Match(phoneRouteMail):
-			rt.Title(a.tr("Mail", "Email"))
-			a.renderPhoneMail(c)
-		case rt.Match(phoneRouteList):
-			rt.Title(a.currentViewTitle())
-			a.renderPhoneList(c)
-		default:
-			rt.Title("MailDiver")
-			a.renderPhoneMailboxes(c)
-		}
-	}).Fill()
+	a.phoneSyncDetailRoute()
+	ui.Column(c.Key("ph-root")).Fill().Children(func() {
+		r.View(c, func(rt *ui.Route) {
+			switch {
+			case rt.Match(phoneRouteAssistant):
+				rt.Title(a.tr("KI-Assistent", "AI Assistant"))
+				a.renderPhoneAssistant(c)
+			case rt.Match(phoneRouteMail):
+				rt.Title(a.tr("Mail", "Email"))
+				a.renderPhoneMail(c)
+			case rt.Match(phoneRouteList):
+				rt.Title(a.currentViewTitle())
+				a.renderPhoneList(c)
+			default:
+				rt.Title("MailDiver")
+				a.renderPhoneMailboxes(c)
+			}
+		}).FillWidth().Grow(1).MinHeight(0)
+		// Below every screen: a mail sent from the open mail or archived from it must stay
+		// undoable after the screen changed.
+		a.renderPhoneUndoBars(c)
+	})
+}
+
+// renderPhoneUndoBars shows the undo-send countdowns and the undo of the last move/archive.
+func (a *App) renderPhoneUndoBars(c *ui.Context) {
+	t := c.Theme()
+	a.renderUndoSendBar(c)
+	if a.undo != nil && time.Since(a.undo.CreatedAt) <= undoExpiry {
+		ui.Row(c.Key("ph-undo")).FillWidth().Padding(6, 14).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.10)).Shrink(0).Children(func() {
+			ui.Text(c, a.undo.Label).FontSize(13).Grow(1).MinWidth(0).SingleLine()
+			if ui.Button(c.Key("ph-undo-do"), a.tr("Rückgängig", "Undo")).Clicked() && !a.undoBusy {
+				a.PerformUndo(context.Background())
+			}
+			if ui.Button(c.Key("ph-undo-x"), "✕").Padding(2, 6).Clicked() {
+				a.undo = nil
+			}
+		})
+	}
 }
 
 // phoneBar is the bar on top of a phone screen: back (when there is a screen to go back to), the
@@ -140,6 +215,74 @@ func (a *App) phoneOpenView(nav string) {
 		a.LoadMessages(context.Background())
 	}
 	a.phoneRouter().Push(phoneRouteList)
+}
+
+// phoneListDetail is the state of the list screen back has to leave first ("" for none).
+func (a *App) phoneListDetail() string {
+	switch a.navID {
+	case "contacts":
+		if a.contacts.editingNew || a.contacts.selectedID != "" {
+			return "contact"
+		}
+	case "calendar":
+	default:
+		if len(a.checkedIDs) > 0 {
+			return "select"
+		}
+	}
+	return ""
+}
+
+// phoneSyncDetailRoute keeps the list's history entry in step with phoneListDetail, so the
+// system's back (key, gesture or button) first closes an open contact or clears the checked
+// mails, and only then leaves the list: an entry "/list?detail=…" is pushed as the state
+// starts, the state is cleared when back took the entry away, and the entry is dropped when the
+// screen's own buttons cleared the state.
+func (a *App) phoneSyncDetailRoute() {
+	r := a.phoneRouter()
+	if r.Path() != phoneRouteList {
+		if r.Path() == phoneRouteMailboxes {
+			a.phone.detail = ""
+		}
+		return
+	}
+	cur := r.Query(phoneDetailQuery)
+	if a.phone.detail != "" && cur == "" {
+		// Back left the state's entry: leave the state too.
+		switch a.phone.detail {
+		case "contact":
+			a.contacts.selectedID, a.contacts.editingNew = "", false
+		case "select":
+			a.ClearMailSelection()
+		}
+		a.phone.detail = ""
+	}
+	want := a.phoneListDetail()
+	switch {
+	case want != "" && cur == "":
+		r.Push(phoneRouteList + "?" + phoneDetailQuery + "=" + want)
+	case want != "" && cur != want:
+		r.Replace(phoneRouteList + "?" + phoneDetailQuery + "=" + want)
+	case want == "" && cur != "":
+		r.Back()
+	}
+	a.phone.detail = want
+}
+
+// phoneShowRoutes rebuilds the phone's history as mailboxes → routes…, so a notification opens
+// its mail (or list) whatever screen was shown, and back still leads up to the mailboxes.
+func (a *App) phoneShowRoutes(routes ...string) {
+	if !a.isPhone() {
+		return
+	}
+	a.phone.more, a.phone.search = false, false
+	a.phone.swipes.closeAll()
+	r := a.phoneRouter()
+	r.Go(-(1 << 30)) // back to the first entry, then make it the mailboxes
+	r.Replace(phoneRouteMailboxes)
+	for _, p := range routes {
+		r.Push(p)
+	}
 }
 
 // --- mailboxes -----------------------------------------------------------------------------
@@ -214,12 +357,17 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 		box.Children(func() {
 			ui.Column(c).FillWidth().Padding(8, 0, 96, 0).Gap(4).Children(func() {
 				if len(a.outboxItems) > 0 {
-					obRow := ui.ButtonBase(c.Key("ph-outbox-btn")).FillWidth().Padding(10, 16).Gap(8).Background(withAlpha(t.Warning, 0.14)).Label(a.tr("Offline-Postausgang", "Offline Outbox"))
+					obLbl, onlyLater := a.outboxLabel()
+					obClr := t.Warning
+					if onlyLater {
+						obClr = t.Accent
+					}
+					obRow := ui.ButtonBase(c.Key("ph-outbox-btn")).FillWidth().Padding(10, 16).Gap(8).Background(withAlpha(obClr, 0.14)).Label(obLbl)
 					obRow.Children(func() {
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-							ui.Icon(c, iconSend).Size(18, 18).TextColor(t.Warning)
-							ui.Text(c, fmt.Sprintf("%s (%d)", a.tr("Postausgang warten auf Versand", "Outbox pending"), len(a.outboxItems))).FontSize(14).Bold().TextColor(t.Warning).Grow(1)
-							ui.Icon(c, iconChevronRt).Size(16, 16).TextColor(t.Warning)
+							ui.Icon(c, iconSend).Size(18, 18).TextColor(obClr)
+							ui.Text(c, obLbl).FontSize(14).Bold().TextColor(obClr).Grow(1)
+							ui.Icon(c, iconChevronRt).Size(16, 16).TextColor(obClr)
 						})
 					})
 					if obRow.Clicked() {
@@ -325,6 +473,15 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 						}
 					})
 				}
+				mobile.Section(c, a.tr("KI", "AI"), func() {
+					a.phoneToolRow(c, "ph-ai-chat", iconSparkles, t.Accent, a.tr("KI-Assistent", "AI Assistant"), func() {
+						a.phoneRouter().Push(phoneRouteAssistant)
+					})
+					a.phoneToolRow(c, "ph-ai-brief", iconBookOpen, t.Accent, a.tr("Tagesbriefing", "Daily briefing"), func() {
+						a.OpenDayBriefing(context.Background())
+						a.phoneRouter().Push(phoneRouteAssistant)
+					})
+				})
 				mobile.Section(c, a.tr("Werkzeuge", "Tools"), func() {
 					if a.cfg.Features.Triage {
 						scanLbl := a.tr("Triage-Scan starten", "Run triage scan")
@@ -367,6 +524,68 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 		})
 		a.phoneComposeButton(c)
 	})
+	a.renderPhoneFolderSheets(c)
+}
+
+// phoneToolRow is a row of the mailboxes screen that runs an action.
+func (a *App) phoneToolRow(c *ui.Context, key string, icon *ui.SVG, iconClr ui.Color, label string, run func()) {
+	b := ui.ButtonBase(c.Key(key)).FillWidth().Padding(10, 16).Label(label)
+	b.Children(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icon).Size(18, 18).TextColor(iconClr)
+			ui.Text(c, label).FontSize(14.5)
+		})
+	})
+	if b.Clicked() {
+		run()
+	}
+}
+
+// renderPhoneFolderSheets shows what a long press on a user folder offers: rename (in a dialog
+// with its name) and delete (after a confirmation), with the desktop folder menu's calls.
+func (a *App) renderPhoneFolderSheets(c *ui.Context) {
+	t := c.Theme()
+	f := a.phone.folder
+	name := f.Name
+	if name == "" {
+		name = cleanFolderPath(f.Path)
+	}
+	mobile.ActionSheet(c, &a.phone.folderSheet, mobile.ActionSheetOptions{Title: name, Cancel: a.tr("Abbrechen", "Cancel")},
+		mobile.Action{Label: a.tr("Umbenennen…", "Rename…"), OnTap: func() {
+			a.phone.folderNewName, a.phone.folderRename = name, true
+		}},
+		mobile.Action{Label: a.tr("Löschen…", "Delete…"), Destructive: true, OnTap: func() {
+			a.phone.folderDelete = true
+		}},
+	)
+	mobile.ActionSheet(c, &a.phone.folderDelete, mobile.ActionSheetOptions{
+		Title:   a.trf("Ordner „%s“ löschen?", "Delete folder “%s”?", name),
+		Message: a.tr("Der Ordner wird samt den Mails darin auf dem Server gelöscht.", "The folder and the emails in it are deleted on the server."),
+		Cancel:  a.tr("Abbrechen", "Cancel"),
+	}, mobile.Action{Label: a.tr("Ordner löschen", "Delete folder"), Destructive: true, OnTap: func() {
+		a.DeleteIMAPFolder(context.Background(), f.AccountID, f.ID)
+	}})
+	a.modal(c, &a.phone.folderRename, func() {
+		ui.Column(c.Key("ph-fold-rename")).Width(a.modalW(360)).Padding(18).Radius(12).Background(t.Surface).Gap(12).Children(func() {
+			ui.Text(c, a.tr("Ordner umbenennen", "Rename folder")).FontSize(16).Bold()
+			in := ui.TextInput(c.Key("ph-fold-rename-in"), &a.phone.folderNewName).Placeholder(a.tr("Neuer Name…", "New name…")).FillWidth()
+			ui.Row(c).FillWidth().Gap(8).Children(func() {
+				ui.Spacer(c)
+				if ui.Button(c.Key("ph-fold-rename-x"), a.tr("Abbrechen", "Cancel")).Clicked() {
+					a.phone.folderRename = false
+				}
+				newName := strings.TrimSpace(a.phone.folderNewName)
+				ok := ui.PrimaryButton(c.Key("ph-fold-rename-ok"), a.tr("Umbenennen", "Rename"))
+				if newName == "" || newName == name || a.direct.newFolderBusy {
+					ok.Disabled(true)
+				}
+				if (ok.Clicked() || in.Submitted()) && newName != "" && newName != name && !a.direct.newFolderBusy {
+					a.RenameIMAPFolder(context.Background(), f.AccountID, f.ID, newName)
+					a.phone.folderRename = false
+				}
+			})
+		})
+	})
 }
 
 func (a *App) phoneBoxRow(c *ui.Context, nav string, icon *ui.SVG, label string, badge, depth int) {
@@ -400,6 +619,13 @@ func (a *App) phoneFolderRow(c *ui.Context, row folderRow) {
 				ui.Badge(c, fmt.Sprintf("%d", f.UnreadCount))
 			}
 		})
+		if el.LongPressed() {
+			// As the desktop's folder menu: user folders can be renamed and deleted.
+			if a.isDirectMode() && !a.readOnly && isUserManageableFolder(f) {
+				a.phone.folder, a.phone.folderSheet = f, true
+			}
+			return
+		}
 		if el.Clicked() {
 			a.phoneOpenView("folder:" + f.ID)
 		}
@@ -548,18 +774,6 @@ func (a *App) renderPhoneList(c *ui.Context) {
 				}
 			})
 		}
-		a.renderUndoSendBar(c)
-		if a.undo != nil && time.Since(a.undo.CreatedAt) <= undoExpiry {
-			ui.Row(c.Key("ph-undo")).FillWidth().Padding(6, 14).Gap(8).AlignItems(ui.Center).Background(withAlpha(t.Accent, 0.10)).Children(func() {
-				ui.Text(c, a.undo.Label).FontSize(13).Grow(1).MinWidth(0).SingleLine()
-				if ui.Button(c.Key("ph-undo-do"), a.tr("Rückgängig", "Undo")).Clicked() && !a.undoBusy {
-					a.PerformUndo(context.Background())
-				}
-				if ui.Button(c.Key("ph-undo-x"), "✕").Padding(2, 6).Clicked() {
-					a.undo = nil
-				}
-			})
-		}
 		if len(a.messages) == 0 {
 			ui.Column(c).Fill().Center().Padding(24).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Keine Nachrichten in dieser Ansicht", "No messages in this view")).FontSize(15).Bold()
@@ -661,7 +875,29 @@ func (a *App) renderPhoneBulkBar(c *ui.Context, checked []backend.MessageHeader)
 		if bulkBtn("ph-bulk-delete", iconTrash, a.tr("Löschen", "Delete"), true).Clicked() {
 			a.trashMails(context.Background(), ids, "")
 		}
+		if bulkBtn("ph-bulk-more", iconDots, a.tr("Mehr", "More"), false).Clicked() {
+			a.phone.bulkMore = true
+		}
 	})
+	// Less frequent actions in a sheet, so the bar keeps fitting a phone's width.
+	var more []mobile.Action
+	if a.isDirectMode() {
+		more = append(more, mobile.Action{Label: a.tr("Als Spam markieren", "Mark as spam"), OnTap: func() {
+			a.MarkMailsSpam(context.Background(), ids)
+		}})
+	}
+	more = append(more,
+		mobile.Action{Label: a.tr("KI: Auswahl zusammenfassen", "AI: Summarize selection"), OnTap: func() {
+			a.RunSelectionSummary(context.Background())
+		}},
+		mobile.Action{Label: a.tr("Filterregel erstellen…", "Create filter rule…"), OnTap: func() {
+			a.OpenQuickRuleWizard()
+		}},
+	)
+	mobile.ActionSheet(c, &a.phone.bulkMore, mobile.ActionSheetOptions{
+		Title:  a.trf("%d ausgewählt", "%d selected", len(ids)),
+		Cancel: a.tr("Abbrechen", "Cancel"),
+	}, more...)
 }
 
 func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader, crossFolder, outbound, selecting bool) {
@@ -740,6 +976,9 @@ func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader
 						miniTag(c, m.Folder, t.TextMuted, t.Surface)
 					}
 				})
+				if m.Snippet != "" && a.cfg.App.EffectiveListSnippets() {
+					ui.Text(c, m.Snippet).FontSize(13).TextColor(t.TextMuted).FillWidth().MinWidth(0).SingleLine()
+				}
 			})
 		})
 		if !a.readOnly && row.LongPressed() {
@@ -768,10 +1007,29 @@ func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader
 func (a *App) renderPhoneMail(c *ui.Context) {
 	t := c.Theme()
 	msg := a.selectedMsg
+	a.phoneStepAfterLoad()
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
 		a.phoneBar(c, "", true, func() {
 			if msg == nil {
 				return
+			}
+			// Up and down through the list's order, as the desktop's j/k (‹ › would read as
+			// the back button's chevron).
+			if idx := a.currentIndex(); idx >= 0 {
+				prev := phoneIconButton(c.Key("ph-m-prev"), iconChevronUp, a.tr("Vorherige Mail", "Previous email"), ui.Color{})
+				if idx == 0 {
+					prev.Disabled(true)
+				}
+				if prev.Clicked() && idx > 0 {
+					a.phoneStepMail(-1)
+				}
+				next := phoneIconButton(c.Key("ph-m-next"), iconChevronDn, a.tr("Nächste Mail", "Next email"), ui.Color{})
+				if idx+1 >= len(a.messages) && a.nextCursor == "" {
+					next.Disabled(true)
+				}
+				if next.Clicked() {
+					a.phoneStepMail(1)
+				}
 			}
 			starIcon, starClr, flag := iconStar, ui.Color{}, true
 			if msg.Flagged {
@@ -835,6 +1093,91 @@ func (a *App) renderPhoneMail(c *ui.Context) {
 	a.renderPhoneMoreSheet(c, msg)
 }
 
+// afterOpenMailRemoved shows what follows once the open mail left its list (archived, moved,
+// deleted, spam): its neighbour openNext, as on the desktop, else the list. On a phone the
+// neighbour opens only while the mail screen shows, so a mail swiped away in the list never
+// opens one (marking it read) behind the list.
+func (a *App) afterOpenMailRemoved(ctx context.Context, openNext string) {
+	if openNext != "" && (!a.isPhone() || a.phoneRouter().Path() == phoneRouteMail) {
+		a.SelectMessage(ctx, openNext)
+		if a.isPhone() {
+			a.phone.more = false
+			if idx := a.currentIndex(); idx >= 0 {
+				a.phone.list.ScrollIntoView(idx)
+			}
+		}
+		return
+	}
+	a.syncPreviewForMessage(nil)
+	a.phonePopMailIfOpen()
+}
+
+// phoneStepMail opens the mail delta rows away in the list's order. At the end of what is
+// loaded the next page is loaded first, and the step taken as it arrives (phoneStepAfterLoad).
+func (a *App) phoneStepMail(delta int) {
+	idx := a.currentIndex()
+	if idx < 0 {
+		return
+	}
+	to := idx + delta
+	if to < 0 {
+		return
+	}
+	if to >= len(a.messages) {
+		if delta > 0 && a.nextCursor != "" {
+			a.phone.stepAfter = a.selectedID
+			a.loadMoreMessages(context.Background())
+		}
+		return
+	}
+	a.phone.more = false
+	a.SelectMessage(context.Background(), a.messages[to].ID)
+	a.phone.list.ScrollIntoView(to)
+	if to >= len(a.messages)-3 {
+		a.loadMoreMessages(context.Background()) // the next page before the end is reached
+	}
+}
+
+// phoneStepAfterLoad takes the step phoneStepMail waits for once the next page arrived, or
+// drops it when none came (UI thread, every frame of the mail screen).
+func (a *App) phoneStepAfterLoad() {
+	if a.phone.stepAfter == "" || a.loadingMore {
+		return
+	}
+	waited := a.phone.stepAfter
+	a.phone.stepAfter = ""
+	if waited != a.selectedID {
+		return // another mail was opened meanwhile
+	}
+	if idx := a.currentIndex(); idx >= 0 && idx+1 < len(a.messages) {
+		a.phoneStepMail(1)
+	}
+}
+
+// renderPhoneAssistant is the AI assistant's screen: the desktop's assistant pane at a phone's
+// width, with its stop and clear buttons in the bar.
+func (a *App) renderPhoneAssistant(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).Fill().Background(t.Surface).Children(func() {
+		a.phoneBar(c, a.tr("KI-Assistent", "AI Assistant"), true, func() {
+			if a.chatStreaming {
+				ui.Spinner(c)
+				if phoneIconButton(c.Key("ph-cp-stop"), iconStop, a.tr("Generierung stoppen", "Stop generating"), t.Danger).Clicked() && a.chatCancel != nil {
+					a.chatCancel()
+				}
+			} else if len(a.chatEntries) > 0 {
+				if phoneIconButton(c.Key("ph-cp-clear"), iconTrash, a.tr("Chat leeren", "Clear chat"), t.TextMuted).Clicked() {
+					a.ClearChat()
+				}
+			}
+		})
+		ui.Column(c.Key("ph-cp-controls")).FillWidth().Padding(8, 12).Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			a.renderCopilotControls(c, true)
+		})
+		a.renderCopilotChat(c, true)
+	})
+}
+
 // renderPhoneMailActions is the bar of the open mail's main actions at the bottom.
 func (a *App) renderPhoneMailActions(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
@@ -852,17 +1195,13 @@ func (a *App) renderPhoneMailActions(c *ui.Context, msg *backend.MessageDetail) 
 		if a.readOnly {
 			return
 		}
+		// Archive and delete open the next mail once done (afterOpenMailRemoved), the list
+		// when there is none.
 		if phoneIconButton(c.Key("ph-m-archive"), iconArchive, a.tr("Archivieren", "Archive"), ui.Color{}).Clicked() {
-			a.performMessageAction(context.Background(), msg.ID, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"), "")
-			a.phoneRouter().Back()
+			a.performMessageAction(context.Background(), msg.ID, backend.MessageActionsRequest{Archive: true}, a.tr("Archiviert", "Archived"), a.neighborAfterRemoval(msg.ID))
 		}
 		if phoneIconButton(c.Key("ph-m-trash"), iconTrash, a.tr("Löschen", "Delete"), t.Danger).Clicked() {
-			if !a.isTrashFolder(msg.FolderID) {
-				a.trashMails(context.Background(), nil, msg.ID)
-				a.phoneRouter().Back()
-			} else {
-				a.trashMails(context.Background(), nil, msg.ID) // asks for a second tap
-			}
+			a.trashMails(context.Background(), nil, msg.ID) // in the trash: asks for a second tap
 		}
 	})
 }
@@ -905,15 +1244,17 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 			} else {
 				actions = append(actions, mobile.Action{Label: a.tr("Als Spam markieren", "Mark as spam"), OnTap: func() {
 					a.MarkMailSpam(context.Background(), id)
-					a.phoneRouter().Back()
 				}})
 			}
 		}
 	}
-	actions = append(actions,
-		mobile.Action{Label: a.tr("Als .eml speichern", "Save as .eml"), OnTap: func() {
+	if a.isDirectMode() {
+		// The .eml export reads the engine's raw mail, as on the desktop.
+		actions = append(actions, mobile.Action{Label: a.tr("Als .eml speichern…", "Save as .eml…"), OnTap: func() {
 			a.SaveSelectedMessageEML(context.Background())
-		}},
+		}})
+	}
+	actions = append(actions,
 		mobile.Action{Label: a.tr("Filterregel erstellen…", "Create filter rule…"), OnTap: func() {
 			a.OpenQuickRuleWizard()
 		}},
@@ -923,6 +1264,7 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 		mobile.Action{Label: a.tr("KI: Zusammenfassen", "AI: Summarize"), OnTap: func() { a.RunInspectorAI(context.Background(), "summarize") }},
 		mobile.Action{Label: a.tr("KI: Antwort entwerfen", "AI: Draft reply"), OnTap: func() { a.RunInspectorAI(context.Background(), "draft_reply") }},
 		mobile.Action{Label: a.tr("KI: Termin erkennen", "AI: Find event"), OnTap: func() { a.RunInspectorAI(context.Background(), "extract_events") }},
+		mobile.Action{Label: a.tr("KI: Kontakte extrahieren", "AI: Extract contacts"), OnTap: func() { a.RunInspectorAI(context.Background(), "extract_contacts") }},
 	)
 	mobile.ActionSheet(c, &a.phone.more, mobile.ActionSheetOptions{Title: msg.Subject, Cancel: a.tr("Abbrechen", "Cancel")}, actions...)
 }

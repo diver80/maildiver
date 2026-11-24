@@ -20,7 +20,7 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-var version = "0.7.21-dev"
+var version = "0.7.22-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -82,6 +82,8 @@ func run() error {
 	var runner *jobs.Runner
 	if store != nil {
 		runner = jobs.New(ctx, eng, eng.Events(), store, config.Load)
+		// "Bei neuer Mail automatisch scannen": the runner checks the setting on every event.
+		runner.FollowNewMail(eng.Events())
 	}
 
 	// The app talks to the engine, the AI layer and the jobs directly, in this process.

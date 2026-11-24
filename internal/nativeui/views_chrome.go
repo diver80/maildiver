@@ -2,7 +2,6 @@ package nativeui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -94,8 +93,12 @@ func (a *App) renderToolbar(c *ui.Context) {
 			}
 			if a.isDirectMode() {
 				if len(a.outboxItems) > 0 {
-					obLbl := fmt.Sprintf("%s (%d)", a.tr("Postausgang", "Outbox"), len(a.outboxItems))
-					if ui.Button(c.Key("tb-outbox"), obLbl).TextColor(t.Warning).Tooltip(a.tr("Wartende E-Mails im Offline-Postausgang anzeigen & senden", "View & send queued offline Outbox emails")).Clicked() {
+					obLbl, onlyLater := a.outboxLabel()
+					obClr := t.Warning
+					if onlyLater {
+						obClr = t.Accent // mails sent later are planned, not a problem
+					}
+					if ui.Button(c.Key("tb-outbox"), obLbl).TextColor(obClr).Tooltip(a.tr("Wartende und geplante E-Mails im Postausgang anzeigen & senden", "View & send queued and scheduled Outbox emails")).Clicked() {
 						a.outboxOpen = true
 						a.LoadOutbox(context.Background())
 					}

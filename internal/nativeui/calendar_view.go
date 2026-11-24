@@ -946,7 +946,7 @@ func (a *App) renderCalendarDayView(c *ui.Context, byDay map[string][]backend.Ca
 
 		// 24-hour visual timeline with proportional event blocks and live red current-time line
 		ui.Scroll(c.Key("cal-day-scroll")).TrackScroll(&a.widgets.calDayScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			ui.Row(c.Key("cal-day-grid-"+dayKey)).FillWidth().Height(totalHeight).AlignItems(ui.Start).Children(func() {
+			ui.Row(c.Key("cal-day-grid-" + dayKey)).FillWidth().Height(totalHeight).AlignItems(ui.Start).Children(func() {
 				// Left hour-label gutter
 				ui.Box(c.Key("cal-day-gutter")).Width(58).Height(totalHeight).Shrink(0).Children(func() {
 					for h := 0; h < 24; h++ {
@@ -1020,7 +1020,7 @@ func (a *App) renderCalendarDayView(c *ui.Context, byDay map[string][]backend.Ca
 						joinURL, joinLabel := a.eventJoinLink(evCopy)
 
 						ui.Box(c.Key(fmt.Sprintf("cal-day-evwrap-%d", idx))).
-							Absolute().Top(blk.startMin + 1).Height(cardH).LeftPercent(colL).WidthPercent(colW).
+							Absolute().Top(blk.startMin+1).Height(cardH).LeftPercent(colL).WidthPercent(colW).
 							Padding(0, 4).ZIndex(10).
 							Children(func() {
 								card := ui.Row(c.Key(fmt.Sprintf("cal-day-ev-%d", idx))).
@@ -1081,7 +1081,7 @@ func (a *App) renderCalendarDayView(c *ui.Context, byDay map[string][]backend.Ca
 					// Live red current-time indicator line + dot (PassThrough so clicks reach events underneath)
 					if isToday {
 						ui.Box(c.Key("cal-day-now-dot")).
-							Absolute().Top(nowY - 5).Left(-5).Size(10, 10).Radius(5).
+							Absolute().Top(nowY-5).Left(-5).Size(10, 10).Radius(5).
 							Background(nowClr).ZIndex(31).PassThrough()
 						ui.Box(c.Key("cal-day-now-line")).
 							Absolute().Top(nowY - 1).Left(0).Right(0).Height(2).
@@ -1236,7 +1236,7 @@ func (a *App) renderEventModal(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	ui.Modal(c, &a.eventOpen, func() {
+	a.modal(c, &a.eventOpen, func() {
 		ui.Column(c).Width(a.modalW(520)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			a.renderEventFormContent(c, false)
 		})
@@ -1260,31 +1260,69 @@ func (a *App) renderEventFormContent(c *ui.Context, inWindow bool) {
 		ui.Text(c, a.tr("Kalender: ", "Calendar: ")+a.eventCalendar).FontSize(12).TextColor(t.TextMuted)
 	}
 	ui.TextInput(c.Key("ev-title"), &a.eventTitle).Placeholder(a.tr("Titel…", "Title…")).FillWidth()
-	ui.Row(c).FillWidth().Gap(8).Children(func() {
-		ui.TextInput(c.Key("ev-start"), &a.eventStart).Placeholder("Start (YYYY-MM-DDTHH:MM)").Grow(1)
-		ui.TextInput(c.Key("ev-end"), &a.eventEnd).Placeholder(a.tr("Ende (YYYY-MM-DDTHH:MM)", "End (YYYY-MM-DDTHH:MM)")).Grow(1)
-	})
+	a.renderEventTimeFields(c)
 	ui.Checkbox(c.Key("ev-allday"), &a.eventAllDay, a.tr("Ganztägiger Termin", "All-day event"))
 
 	// Recurrence selector (Serientermin / RRULE)
 	ui.Column(c).FillWidth().Gap(6).Children(func() {
 		ui.Text(c, a.tr("Wiederholung (Serientermin)", "Recurrence (Repeating Event)")).FontSize(11.5).TextColor(t.TextMuted)
-		ui.Segmented(
-			c.Key("ev-rec"),
-			&a.eventRecurrence,
+		recLabels := []string{
 			a.tr("Keine", "None"),
 			a.tr("Täglich", "Daily"),
 			a.tr("Wöchentlich", "Weekly"),
 			a.tr("Monatlich", "Monthly"),
 			a.tr("Jährlich", "Yearly"),
-		)
+		}
+		if a.isPhone() {
+			// Five segments do not fit a phone's width ("Jährlich" was cut off): a drop-down.
+			sel := recLabels[min(max(a.eventRecurrence, 0), len(recLabels)-1)]
+			if ui.Select(c.Key("ev-rec-sel"), &sel, recLabels).FillWidth().Changed() {
+				for i, l := range recLabels {
+					if l == sel {
+						a.eventRecurrence = i
+					}
+				}
+			}
+		} else {
+			ui.Segmented(c.Key("ev-rec"), &a.eventRecurrence, recLabels...)
+		}
 		if a.eventRecurrence > 0 {
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.TextInput(c.Key("ev-rec-cnt"), &a.eventRecCount).Placeholder(a.tr("Anzahl (optional, z. B. 10)", "Count (optional, e.g. 10)")).Grow(1)
-				ui.TextInput(c.Key("ev-rec-until"), &a.eventRecUntil).Placeholder(a.tr("Bis (JJJJ-MM-TT, optional)", "Until (YYYY-MM-DD, optional)")).Grow(1)
-			})
+			cnt := func() ui.Element {
+				return ui.TextInput(c.Key("ev-rec-cnt"), &a.eventRecCount).Placeholder(a.tr("Anzahl (optional, z. B. 10)", "Count (optional, e.g. 10)"))
+			}
+			until := func() ui.Element {
+				return ui.TextInput(c.Key("ev-rec-until"), &a.eventRecUntil).Placeholder(a.tr("Bis (JJJJ-MM-TT, optional)", "Until (YYYY-MM-DD, optional)"))
+			}
+			if a.isPhone() {
+				cnt().FillWidth()
+				until().FillWidth()
+			} else {
+				ui.Row(c).FillWidth().Gap(8).Children(func() {
+					cnt().Grow(1)
+					until().Grow(1)
+				})
+			}
 		}
 	})
+	if a.eventReminderSupported() && !a.eventAllDay {
+		ui.Row(c.Key("ev-rem-row")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.tr("Erinnerung", "Reminder")).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
+			labels, values := a.eventReminderOptions()
+			sel := labels[2] // 10 minutes, the default
+			for i, v := range values {
+				if v == a.eventReminder {
+					sel = labels[i]
+				}
+			}
+			if ui.Select(c.Key("ev-rem"), &sel, labels).Grow(1).MinWidth(0).Changed() {
+				for i, l := range labels {
+					if l == sel {
+						a.eventReminder = values[i]
+					}
+				}
+			}
+		})
+	}
 
 	ui.TextInput(c.Key("ev-loc"), &a.eventLocation).Placeholder(a.tr("Ort / Meeting-Link…", "Location / Meeting link…")).FillWidth()
 	descArea := ui.TextArea(c.Key("ev-desc"), &a.eventDesc).Placeholder(a.tr("Notizen…", "Notes…")).FillWidth()
@@ -1317,4 +1355,122 @@ func (a *App) renderEventFormContent(c *ui.Context, inWindow bool) {
 			a.SaveCalendarEvent(context.Background())
 		}
 	})
+}
+
+// eventInputLayout is the format of the form's start and end fields (local time).
+const eventInputLayout = "2006-01-02T15:04"
+
+// parseEventInput reads a start or end field: "2006-01-02T15:04", a date alone or RFC 3339.
+func parseEventInput(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{eventInputLayout, "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			return t, true
+		}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.Local(), true
+	}
+	return time.Time{}, false
+}
+
+// eventTimeError says what is wrong with the start and end ("" when nothing): the end must come
+// after the start (on or after its day for all-day events).
+func (a *App) eventTimeError() string {
+	start, okS := parseEventInput(a.eventStart)
+	end, okE := parseEventInput(a.eventEnd)
+	switch {
+	case !okS:
+		return a.tr("Ungültiger Beginn.", "Invalid start.")
+	case strings.TrimSpace(a.eventEnd) == "":
+		return ""
+	case !okE:
+		return a.tr("Ungültiges Ende.", "Invalid end.")
+	case a.eventAllDay:
+		sd := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.Local)
+		ed := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.Local)
+		if ed.Before(sd) {
+			return a.tr("Das Ende darf nicht vor dem Beginn liegen.", "The end must not be before the start.")
+		}
+	case !end.After(start):
+		return a.tr("Das Ende muss nach dem Beginn liegen.", "The end must be after the start.")
+	}
+	return ""
+}
+
+// renderEventTimeFields shows the start and end as a date and a time picker each (the time
+// hidden for all-day events) – no typing of "YYYY-MM-DDTHH:MM" – and what is wrong with them.
+func (a *App) renderEventTimeFields(c *ui.Context) {
+	t := c.Theme()
+	start, okS := parseEventInput(a.eventStart)
+	if !okS {
+		start = time.Now().Add(time.Hour).Truncate(time.Hour)
+	}
+	end, okE := parseEventInput(a.eventEnd)
+	if !okE {
+		end = start.Add(time.Hour)
+	}
+	field := func(key, label string, v *time.Time) bool {
+		changed := false
+		ui.Row(c.Key(key)).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, label).FontSize(12).TextColor(t.TextMuted).Width(52).Shrink(0)
+			if ui.DateInput(c.Key(key+"-date"), v).Label(label).Grow(1).MinWidth(0).Changed() {
+				changed = true
+			}
+			if !a.eventAllDay && ui.TimeInput(c.Key(key+"-time"), v).Label(label).Shrink(0).Changed() {
+				changed = true
+			}
+		})
+		return changed
+	}
+	was := start
+	if field("ev-start", a.tr("Beginn", "Start"), &start) {
+		// The end moves with the start, keeping the event's length.
+		if okE {
+			end = end.Add(start.Sub(was))
+		}
+		a.eventStart, a.eventEnd = start.Format(eventInputLayout), end.Format(eventInputLayout)
+	}
+	if field("ev-end", a.tr("Ende", "End"), &end) {
+		a.eventStart, a.eventEnd = start.Format(eventInputLayout), end.Format(eventInputLayout)
+	}
+	if msg := a.eventTimeError(); msg != "" {
+		ui.Text(c, msg).FontSize(12).TextColor(t.Danger).Role(ui.RoleAlert)
+	}
+}
+
+// eventReminderOptions are the reminder choices and their minutes.
+func (a *App) eventReminderOptions() ([]string, []int) {
+	return []string{
+			a.tr("Keine", "None"),
+			a.tr("5 Minuten vorher", "5 minutes before"),
+			a.tr("10 Minuten vorher", "10 minutes before"),
+			a.tr("15 Minuten vorher", "15 minutes before"),
+			a.tr("30 Minuten vorher", "30 minutes before"),
+			a.tr("1 Stunde vorher", "1 hour before"),
+			a.tr("1 Tag vorher", "1 day before"),
+		},
+		[]int{backend.ReminderNone, 5, 10, 15, 30, 60, 24 * 60}
+}
+
+// eventReminderSupported reports whether the form's calendar keeps a reminder per event: local
+// calendars and CalDAV (as VALARM). Google's sync would drop it, so its events and those of the
+// bridge use the default.
+func (a *App) eventReminderSupported() bool {
+	if !a.isDirectMode() {
+		return false
+	}
+	id := a.eventEditCalID
+	if id == "" {
+		id = a.eventCalByLabel[a.eventCalendar]
+	}
+	if id == "" {
+		return true // the engine's local calendar
+	}
+	for _, cal := range a.calendars {
+		if cal.ID == id {
+			return cal.Type == "local" || cal.Type == "caldav"
+		}
+	}
+	return false
 }

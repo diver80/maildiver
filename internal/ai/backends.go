@@ -134,12 +134,6 @@ func CanonicalBackend(name string) string {
 	return config.CanonicalBackend(name)
 }
 
-// KnownBackend reports whether name (or an alias) is a supported backend.
-func KnownBackend(name string) bool {
-	_, ok := backendByID[CanonicalBackend(name)]
-	return ok
-}
-
 // IsCLIBackend reports whether the backend runs a local CLI (claude-cli, gemini-cli, opencode-cli).
 func IsCLIBackend(name string) bool {
 	spec, ok := backendByID[CanonicalBackend(name)]

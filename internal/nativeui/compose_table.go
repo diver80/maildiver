@@ -14,7 +14,7 @@ import (
 
 const composeTableTemplate = "| Spalte 1 | Spalte 2 | Spalte 3 |\n|---|---|---|\n|  |  |  |\n|  |  |  |"
 
-// insertComposeTable adds a table at the end of the text, before the signature (UI thread).
+// insertComposeTable adds a table at the caret, else above signature and quote (UI thread).
 func (a *App) insertComposeTable() {
 	go func() {
 		md := ""
@@ -35,7 +35,7 @@ func (a *App) insertComposeTable() {
 			} else {
 				a.toast(a.tr("Tabelle aus der Zwischenablage eingefügt", "Table inserted from the clipboard"), "success")
 			}
-			a.composeBody = insertComposeSnippet(a.composeBody, "\n\n"+md+"\n")
+			a.insertComposeText("\n\n" + md + "\n")
 		})
 	}()
 }

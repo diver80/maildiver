@@ -101,11 +101,11 @@ func TestPrepareSnippetUTF8AndExactSignature(t *testing.T) {
 
 func TestStoreBarSummary(t *testing.T) {
 	s := NewStoreAt(t.TempDir())
-	if _, err := s.SaveClassifications([]Classification{
+	if _, err := s.SaveScanBatch([]Classification{
 		{MessageID: "1", ThreadID: "<1@x>", Subject: "Kickoff", Bucket: BucketEvent, KanbanColumn: "invoice", NeedsAttention: true, Date: "2026-11-10T10:00:00Z"},
 		{MessageID: "2", ThreadID: "<2@x>", Subject: "Vertrag A", Bucket: BucketAction, Urgency: "high", NeedsAttention: true, Date: "2026-11-11T10:00:00Z"},
 		{MessageID: "3", ThreadID: "<3@x>", Subject: "Vertrag B", Bucket: BucketAction, Urgency: "high", NeedsAttention: true, Date: "2026-11-11T10:00:00Z"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Verify BarSummary counts EventCount for BucketEvent even in invoice column, and is deterministic.
@@ -122,7 +122,7 @@ func TestStoreBarSummary(t *testing.T) {
 	}
 }
 
-func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
+func TestStoreSaveScanBatchDropsReadDone(t *testing.T) {
 	s := NewStoreAt(t.TempDir())
 	// Seed an unread newsletter in Done and a pinned read newsletter in Action.
 	_, err := s.SaveScanBatch([]Classification{
@@ -168,14 +168,6 @@ func TestStoreSaveScanBatchDropsReadDoneAndRemoveClassifications(t *testing.T) {
 	}
 	if _, exists := st.Classifications["act-read"]; !exists {
 		t.Fatalf("expected read card in action column to stay on board")
-	}
-
-	st2, err := s.RemoveClassifications([]string{"act-read", "non-existent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, exists := st2.Classifications["act-read"]; exists {
-		t.Fatalf("expected RemoveClassifications to delete act-read")
 	}
 }
 

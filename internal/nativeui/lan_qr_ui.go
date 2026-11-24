@@ -17,21 +17,6 @@ import (
 	"github.com/diver80/maildiver/internal/secretstore"
 )
 
-func insertComposeSnippet(body, snippet string) string {
-	// Insert before signature delimiter if present so formatting stays in the message body.
-	if idx := strings.Index(body, "\n\n-- \n"); idx >= 0 {
-		head := strings.TrimRight(body[:idx], " ")
-		if head != "" && !strings.HasSuffix(head, "\n") && !strings.HasPrefix(snippet, "\n") {
-			head += " "
-		}
-		return head + snippet + body[idx:]
-	}
-	if body != "" && !strings.HasSuffix(body, "\n") && !strings.HasPrefix(snippet, "\n") {
-		return body + " " + snippet
-	}
-	return body + snippet
-}
-
 func (a *App) stopLANQRSession() {
 	if a.settings.lanSession != nil {
 		a.settings.lanSession.Close()

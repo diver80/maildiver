@@ -40,13 +40,21 @@ type DirectAccount struct {
 	OAuthClientID string `json:"oauthClientId,omitempty"`
 	OAuthTenant   string `json:"oauthTenant,omitempty"` // Microsoft tenant (default "common")
 
-	SyncDays          int    `json:"syncDays,omitempty"`          // default 60
-	SyncLimit         int    `json:"syncLimit,omitempty"`         // newest INBOX mails compared on every sync (default 500); older ones are backfilled
+	// SyncLimit is how many of the newest mails each sync compares: INBOX uses it as-is
+	// (default 500, max 2000), other folders at most 200; older mails are backfilled.
+	SyncLimit         int    `json:"syncLimit,omitempty"`
 	Signature         string `json:"signature,omitempty"`         // optional plain-text signature appended when composing
 	SignatureHTML     string `json:"signatureHtml,omitempty"`     // optional HTML signature for desktop WYSIWYG compose
 	SignaturePosition string `json:"signaturePosition,omitempty"` // "" / "above" (above reply quote) or "below" (after quote)
 	Enabled           bool   `json:"enabled"`
 }
+
+// Bounds for DirectAccount.SyncLimit.
+const (
+	DefaultSyncLimit = 500
+	MinSyncLimit     = 50
+	MaxSyncLimit     = 2000
+)
 
 // EffectiveUsername returns Username if set, otherwise Email.
 func (a DirectAccount) EffectiveUsername() string {
@@ -59,10 +67,9 @@ func (a DirectAccount) EffectiveUsername() string {
 // GoogleCalendarConfig configures bidirectional Google Calendar API v3 sync.
 // ClientSecret and OAuth tokens are stored in secretstore ("gcal:client_secret", "gcal:token").
 type GoogleCalendarConfig struct {
-	Enabled      bool     `json:"enabled"`
-	ClientID     string   `json:"clientId,omitempty"`
-	AccountEmail string   `json:"accountEmail,omitempty"`
-	CalendarIDs  []string `json:"calendarIds,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	ClientID     string `json:"clientId,omitempty"`
+	AccountEmail string `json:"accountEmail,omitempty"`
 }
 
 // ICalFeedConfig configures an imported/subscribed .ics calendar (HTTP/webcal URL or local file).
@@ -193,11 +200,8 @@ func normalizeDirect(d DirectConfig) DirectConfig {
 		if a.SMTPTLS != "starttls" && !(a.SMTPTLS == "plain" && isLoopback(a.SMTPHost)) {
 			a.SMTPTLS = "tls"
 		}
-		if a.SyncDays <= 0 || a.SyncDays > 3650 {
-			a.SyncDays = 60
-		}
-		if a.SyncLimit <= 0 || a.SyncLimit > 2000 {
-			a.SyncLimit = 500
+		if a.SyncLimit <= 0 || a.SyncLimit > MaxSyncLimit {
+			a.SyncLimit = DefaultSyncLimit
 		}
 		if a.Name == "" {
 			a.Name = a.Email

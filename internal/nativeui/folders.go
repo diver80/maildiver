@@ -853,6 +853,7 @@ func (a *App) renderFolderRow(c *ui.Context, row folderRow) {
 	isActive := a.navID == "folder:"+f.ID
 	item := ui.SidebarItem(c, "folder:"+f.ID, folderIcon(f), label)
 	item.Padding(t.Space(1.5), t.Space(2), t.Space(1.5), t.Space(2)+float32(row.Depth)*14)
+	a.acceptMailDrop(c, item, f)
 	if !row.HasKids && f.UnreadCount <= 0 && !isCustom {
 		return
 	}

@@ -65,6 +65,9 @@ type AppConfig struct {
 	// account into a collapsible "More folders" block, keeping INBOX and active filter-rule target
 	// folders immediately visible (nil defaults to true).
 	CompactFolders *bool `json:"compactFolders,omitempty"`
+	// ListSnippets shows a preview line (the start of the text) under each mail in the list
+	// (nil defaults to true). Not the reading pane's link preview.
+	ListSnippets *bool `json:"listSnippets,omitempty"`
 	// PinnedFolders optionally maps accountID -> top-level folder paths that stay visible outside
 	// the collapsed "More folders" block when CompactFolders is enabled.
 	PinnedFolders map[string][]string `json:"pinnedFolders,omitempty"`
@@ -95,6 +98,11 @@ func (a AppConfig) EffectiveCompactFolders() bool {
 		return true
 	}
 	return *a.CompactFolders
+}
+
+// EffectiveListSnippets reports whether the mail list shows a preview line (default true).
+func (a AppConfig) EffectiveListSnippets() bool {
+	return a.ListSnippets == nil || *a.ListSnippets
 }
 
 // EffectiveUndoSendSeconds returns the configured undo-send grace period in seconds (default 5, 0..30).
@@ -186,6 +194,10 @@ type MailboxPolicy struct {
 	// TriageAccountIDs lists the accounts MailDiver may change (mail actions, filters)
 	// and whose inboxes it scans and archives. Empty = none.
 	TriageAccountIDs []string `json:"triageAccountIds"`
+	// TriageExcludedAccountIDs lists accounts the user took out of triage scans and archive jobs.
+	// Kept apart from TriageAccountIDs because that list also gates ordinary mail actions
+	// (mark read) and is re-filled automatically for every account.
+	TriageExcludedAccountIDs []string `json:"triageExcludedAccountIds,omitempty"`
 	// ScanOnNewMail runs a triage scan automatically when new mail arrives (same limits as a manual scan).
 	ScanOnNewMail bool `json:"scanOnNewMail"`
 	// ScanLimit is the number of newest mails scanned per folder.
@@ -212,6 +224,29 @@ func (p MailboxPolicy) AccountEnabled(accountID string) bool {
 	}
 	for _, id := range p.TriageAccountIDs {
 		if id == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+// TriageIncludes reports whether triage scans and archive jobs may touch the given account.
+func (p MailboxPolicy) TriageIncludes(accountID string) bool {
+	if !p.AccountEnabled(accountID) {
+		return false
+	}
+	for _, id := range p.TriageExcludedAccountIDs {
+		if id == accountID {
+			return false
+		}
+	}
+	return true
+}
+
+// HasTriageAccounts reports whether at least one account is included in triage.
+func (p MailboxPolicy) HasTriageAccounts() bool {
+	for _, id := range p.TriageAccountIDs {
+		if p.TriageIncludes(id) {
 			return true
 		}
 	}
@@ -545,6 +580,9 @@ func ApplyPatch(base Config, patch []byte) (Config, error) {
 		if err := json.Unmarshal(raw, &mb); err == nil {
 			if _, ok := mb["triageAccountIds"]; ok {
 				base.Mailbox.TriageAccountIDs = nil
+			}
+			if _, ok := mb["triageExcludedAccountIds"]; ok {
+				base.Mailbox.TriageExcludedAccountIDs = nil
 			}
 		}
 	}

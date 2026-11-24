@@ -66,8 +66,6 @@ func (s *stubBridgeRPC) Call(_ context.Context, method string, params any) (json
 		name, _ := req["name"].(string)
 		b, _ := json.Marshal(map[string]any{"supported": true, "ok": true, "action": "created", "accountId": "acc1", "name": name})
 		return json.RawMessage(b), nil
-	case "filters.openDialog":
-		return json.RawMessage(`{"supported":true,"ok":true}`), nil
 	case "calendar.list":
 		return json.RawMessage(`{"supported":true,"calendars":[{"id":"c1","name":"Arbeit","type":"local","readOnly":false}]}`), nil
 	case "calendar.events":
@@ -723,6 +721,8 @@ func TestRenderScreens(t *testing.T) {
 	app.phone.more = true
 	saveShot("maildiver-phone-mail-more.png", app.RenderMain, 390, 844)
 	app.phone.more = false
+	app.phone.router = ui.NewRouter(phoneRouteAssistant)
+	saveShot("maildiver-phone-assistant.png", app.RenderMain, 390, 844)
 	app.OpenComposeReply(app.selectedMsg, "")
 	saveShot("maildiver-phone-compose.png", app.RenderMain, 390, 844)
 	app.closeCompose()

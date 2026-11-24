@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -29,6 +29,8 @@ const (
 type Store struct {
 	db   *sql.DB
 	path string
+	// remindMu guards the read-modify-write of the reminded-events set (background.go).
+	remindMu sync.Mutex
 }
 
 // StoredFolder represents a cached IMAP folder.
@@ -65,7 +67,6 @@ type StoredMessage struct {
 	DateUnix    int64
 	Read        bool
 	Flagged     bool
-	Tags        []string
 	Size        int64
 	BodyText    string
 	BodyHTML    string
@@ -75,6 +76,9 @@ type StoredMessage struct {
 	RawEML      []byte
 	HasICS      bool
 	ICSBody     string
+	// Snippet is the list's preview line, made when the body is fetched; "" for encrypted mails
+	// (it is never made from decrypted content) and for mails whose body was not fetched.
+	Snippet string
 }
 
 // StoredCalendar represents a local, Google, or iCal calendar.
@@ -114,6 +118,9 @@ type StoredEvent struct {
 	RawICS       string
 	Status       string
 	SelfResponse string
+	// ReminderMin is the alarm before the start: 0 the app's default, ReminderNone none, else
+	// minutes (VALARM on CalDAV, the column alone for local calendars).
+	ReminderMin int
 }
 
 // StoredFilter represents a local OmaThunder rule executed directly on IMAP messages.
@@ -205,7 +212,7 @@ func (s *Store) migrate() error {
 			date_unix INTEGER NOT NULL DEFAULT 0,
 			read INTEGER NOT NULL DEFAULT 0,
 			flagged INTEGER NOT NULL DEFAULT 0,
-			tags_json TEXT NOT NULL DEFAULT '[]',
+			tags_json TEXT NOT NULL DEFAULT '[]', -- unused (local tags were never shown); kept to avoid a destructive migration
 			size INTEGER NOT NULL DEFAULT 0,
 			body_text TEXT NOT NULL DEFAULT '',
 			body_html TEXT NOT NULL DEFAULT '',
@@ -325,6 +332,20 @@ func (s *Store) migrate() error {
 	} else {
 		// Newly added column on an existing DB: trigger one full Google Calendar sync to backfill self_response.
 		_, _ = s.db.Exec(`UPDATE calendars SET sync_token = '' WHERE source = 'google'`)
+	}
+	// The mail list's preview line, added in 0.7.22; filled for already fetched bodies once.
+	if _, err := s.db.Exec(`ALTER TABLE messages ADD COLUMN snippet TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("migrate messages.snippet: %w", err)
+		}
+	} else if err := s.backfillSnippets(); err != nil {
+		return fmt.Errorf("backfill messages.snippet: %w", err)
+	}
+	// Per-event reminder (0 = the app's default), added in 0.7.22.
+	if _, err := s.db.Exec(`ALTER TABLE calendar_events ADD COLUMN reminder_min INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("migrate calendar_events.reminder_min: %w", err)
+		}
 	}
 	if err := s.rethreadOnce(); err != nil {
 		return fmt.Errorf("rethread messages: %w", err)
@@ -617,7 +638,6 @@ func (s *Store) UpsertMessage(ctx context.Context, m StoredMessage) error {
 	}
 	toJSON, _ := json.Marshal(nonNilStrings(m.To))
 	ccJSON, _ := json.Marshal(nonNilStrings(m.CC))
-	tagsJSON, _ := json.Marshal(nonNilStrings(m.Tags))
 	attJSON, _ := json.Marshal(m.Attachments)
 	if m.Attachments == nil {
 		attJSON = []byte("[]")
@@ -636,13 +656,12 @@ func (s *Store) UpsertMessage(ctx context.Context, m StoredMessage) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO messages(
 			id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
-			subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, tags_json, size,
-			body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body
+			subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
+			body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			read=excluded.read,
 			flagged=excluded.flagged,
-			tags_json=excluded.tags_json,
 			subject=CASE WHEN excluded.subject != '' THEN excluded.subject ELSE messages.subject END,
 			from_addr=CASE WHEN excluded.from_addr != '' THEN excluded.from_addr ELSE messages.from_addr END,
 			to_json=CASE WHEN excluded.to_json != '[]' THEN excluded.to_json ELSE messages.to_json END,
@@ -657,11 +676,12 @@ func (s *Store) UpsertMessage(ctx context.Context, m StoredMessage) error {
 			headers_json=CASE WHEN excluded.body_fetched=1 THEN excluded.headers_json ELSE messages.headers_json END,
 			raw_eml=CASE WHEN length(excluded.raw_eml) > 0 THEN excluded.raw_eml ELSE messages.raw_eml END,
 			has_ics=CASE WHEN excluded.body_fetched=1 THEN excluded.has_ics ELSE messages.has_ics END,
-			ics_body=CASE WHEN excluded.body_fetched=1 THEN excluded.ics_body ELSE messages.ics_body END`,
+			ics_body=CASE WHEN excluded.body_fetched=1 THEN excluded.ics_body ELSE messages.ics_body END,
+			snippet=CASE WHEN excluded.body_fetched=1 THEN excluded.snippet ELSE messages.snippet END`,
 		m.ID, m.AccountID, m.FolderID, m.FolderPath, m.UID, m.MessageID, m.ThreadID, m.InReplyTo, m.References,
 		m.Subject, m.From, string(toJSON), string(ccJSON), m.DateISO, m.DateUnix, boolInt(m.Read), boolInt(m.Flagged),
-		string(tagsJSON), m.Size, m.BodyText, m.BodyHTML, boolInt(m.BodyFetched), string(attJSON), string(hdrJSON),
-		m.RawEML, boolInt(m.HasICS), m.ICSBody,
+		m.Size, m.BodyText, m.BodyHTML, boolInt(m.BodyFetched), string(attJSON), string(hdrJSON),
+		m.RawEML, boolInt(m.HasICS), m.ICSBody, listSnippet(m),
 	)
 	if err != nil {
 		return err
@@ -817,20 +837,20 @@ func normalizeThreadSubject(subj string) string {
 func (s *Store) GetMessage(ctx context.Context, id string) (StoredMessage, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
-		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, tags_json, size,
-		       body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body
+		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
+		       body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet
 		FROM messages WHERE id=?`, id)
 	return scanStoredMessage(row)
 }
 
 func scanStoredMessage(row interface{ Scan(dest ...any) error }) (StoredMessage, error) {
 	var m StoredMessage
-	var toJSON, ccJSON, tagsJSON, attJSON, hdrJSON string
+	var toJSON, ccJSON, attJSON, hdrJSON string
 	var rd, fl, bf, hasICS int
 	err := row.Scan(
 		&m.ID, &m.AccountID, &m.FolderID, &m.FolderPath, &m.UID, &m.MessageID, &m.ThreadID, &m.InReplyTo, &m.References,
-		&m.Subject, &m.From, &toJSON, &ccJSON, &m.DateISO, &m.DateUnix, &rd, &fl, &tagsJSON, &m.Size,
-		&m.BodyText, &m.BodyHTML, &bf, &attJSON, &hdrJSON, &m.RawEML, &hasICS, &m.ICSBody,
+		&m.Subject, &m.From, &toJSON, &ccJSON, &m.DateISO, &m.DateUnix, &rd, &fl, &m.Size,
+		&m.BodyText, &m.BodyHTML, &bf, &attJSON, &hdrJSON, &m.RawEML, &hasICS, &m.ICSBody, &m.Snippet,
 	)
 	if err != nil {
 		return StoredMessage{}, err
@@ -841,7 +861,6 @@ func scanStoredMessage(row interface{ Scan(dest ...any) error }) (StoredMessage,
 	m.HasICS = hasICS != 0
 	_ = json.Unmarshal([]byte(toJSON), &m.To)
 	_ = json.Unmarshal([]byte(ccJSON), &m.CC)
-	_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 	_ = json.Unmarshal([]byte(attJSON), &m.Attachments)
 	_ = json.Unmarshal([]byte(hdrJSON), &m.Headers)
 	return m, nil
@@ -946,9 +965,9 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 		return nil, 0, err
 	}
 
-	bodyCols := `m.body_text, m.body_html, m.body_fetched, m.attachments_json, m.headers_json, NULL, m.has_ics, m.ics_body`
+	bodyCols := `m.body_text, m.body_html, m.body_fetched, m.attachments_json, m.headers_json, NULL, m.has_ics, m.ics_body, m.snippet`
 	if q.HeadersOnly {
-		bodyCols = `'', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, ''`
+		bodyCols = `'', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, '', m.snippet`
 	}
 	orderDir := "DESC"
 	if q.OldestFirst {
@@ -956,7 +975,7 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 	}
 	selectSQL := `
 		SELECT m.id, m.account_id, m.folder_id, m.folder_path, m.uid, m.message_id, m.thread_id, m.in_reply_to, m.references_hdr,
-		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.tags_json, m.size,
+		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.size,
 		       ` + bodyCols + `
 		` + fromClause + whereSQL + ` ORDER BY m.date_unix ` + orderDir + ` LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), limit, q.Offset)
@@ -1038,7 +1057,7 @@ func (s *Store) ConversationMessages(ctx context.Context, threadID string, limit
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.id, m.account_id, m.folder_id, m.folder_path, m.uid, m.message_id, m.thread_id, m.in_reply_to, m.references_hdr,
-		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.tags_json, m.size,
+		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.size,
 		       substr(m.body_text, 1, 400), '', m.body_fetched, '[]', '{}', NULL, m.has_ics, '',
 		       COALESCE(f.type, '')
 		FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
@@ -1055,17 +1074,16 @@ func (s *Store) ConversationMessages(ctx context.Context, threadID string, limit
 	best := map[string]entry{}
 	for rows.Next() {
 		var m StoredMessage
-		var toJSON, ccJSON, tagsJSON, attJSON, hdrJSON, ftype string
+		var toJSON, ccJSON, attJSON, hdrJSON, ftype string
 		var rd, fl, bf, hasICS int
 		var raw []byte
 		if err := rows.Scan(&m.ID, &m.AccountID, &m.FolderID, &m.FolderPath, &m.UID, &m.MessageID, &m.ThreadID, &m.InReplyTo, &m.References,
-			&m.Subject, &m.From, &toJSON, &ccJSON, &m.DateISO, &m.DateUnix, &rd, &fl, &tagsJSON, &m.Size,
+			&m.Subject, &m.From, &toJSON, &ccJSON, &m.DateISO, &m.DateUnix, &rd, &fl, &m.Size,
 			&m.BodyText, &m.BodyHTML, &bf, &attJSON, &hdrJSON, &raw, &hasICS, &m.ICSBody, &ftype); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(toJSON), &m.To)
 		_ = json.Unmarshal([]byte(ccJSON), &m.CC)
-		_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 		m.Read, m.Flagged, m.BodyFetched, m.HasICS = rd != 0, fl != 0, bf != 0, hasICS != 0
 		key := m.MessageID
 		if key == "" {
@@ -1100,8 +1118,8 @@ func (s *Store) ListThreadMessages(ctx context.Context, threadID string, limit i
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
-		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, tags_json, size,
-		       body_text, body_html, body_fetched, attachments_json, headers_json, NULL, has_ics, ics_body
+		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
+		       body_text, body_html, body_fetched, attachments_json, headers_json, NULL, has_ics, ics_body, snippet
 		FROM messages WHERE thread_id=? ORDER BY date_unix DESC LIMIT ?`, threadID, limit)
 	if err != nil {
 		return nil, err
@@ -1122,7 +1140,8 @@ func (s *Store) ListThreadMessages(ctx context.Context, threadID string, limit i
 	return out, rows.Err()
 }
 
-func (s *Store) UpdateMessageLocal(ctx context.Context, id string, read, flagged *bool, addTags, removeTags []string) error {
+// UpdateMessageLocal stores the read/flagged state of a cached mail (nil keeps the value).
+func (s *Store) UpdateMessageLocal(ctx context.Context, id string, read, flagged *bool) error {
 	m, err := s.GetMessage(ctx, id)
 	if err != nil {
 		return err
@@ -1133,28 +1152,8 @@ func (s *Store) UpdateMessageLocal(ctx context.Context, id string, read, flagged
 	if flagged != nil {
 		m.Flagged = *flagged
 	}
-	if len(addTags) > 0 || len(removeTags) > 0 {
-		tagSet := map[string]bool{}
-		for _, t := range m.Tags {
-			tagSet[t] = true
-		}
-		for _, t := range addTags {
-			if strings.TrimSpace(t) != "" {
-				tagSet[strings.TrimSpace(t)] = true
-			}
-		}
-		for _, t := range removeTags {
-			delete(tagSet, strings.TrimSpace(t))
-		}
-		m.Tags = m.Tags[:0]
-		for t := range tagSet {
-			m.Tags = append(m.Tags, t)
-		}
-		sort.Strings(m.Tags)
-	}
-	tagsJSON, _ := json.Marshal(nonNilStrings(m.Tags))
-	_, err = s.db.ExecContext(ctx, `UPDATE messages SET read=?, flagged=?, tags_json=? WHERE id=?`,
-		boolInt(m.Read), boolInt(m.Flagged), string(tagsJSON), id)
+	_, err = s.db.ExecContext(ctx, `UPDATE messages SET read=?, flagged=? WHERE id=?`,
+		boolInt(m.Read), boolInt(m.Flagged), id)
 	return err
 }
 
@@ -1252,6 +1251,12 @@ func (s *Store) SetCalendarSyncToken(ctx context.Context, calID, token string) e
 	return err
 }
 
+// SetCalendarColor recolors a cached calendar (no-op if it does not exist yet).
+func (s *Store) SetCalendarColor(ctx context.Context, calID, color string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE calendars SET color=? WHERE id=?`, color, calID)
+	return err
+}
+
 func (s *Store) ListCalendars(ctx context.Context) ([]StoredCalendar, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, source, read_only, color, sync_token, etag, external_id, last_sync FROM calendars ORDER BY CASE WHEN source='local' THEN 0 WHEN source='google' THEN 1 ELSE 2 END, lower(name)`)
 	if err != nil {
@@ -1317,8 +1322,8 @@ func (s *Store) UpsertEvent(ctx context.Context, e StoredEvent) error {
 		INSERT INTO calendar_events(
 			id, calendar_id, external_id, uid, title, start_iso, end_iso, start_unix, end_unix,
 			all_day, location, description, rrule, exdates_json, recurrence_id, is_recurring,
-			read_only, etag, raw_ics, status, self_response
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			read_only, etag, raw_ics, status, self_response, reminder_min
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title,
 			start_iso=excluded.start_iso,
@@ -1336,10 +1341,11 @@ func (s *Store) UpsertEvent(ctx context.Context, e StoredEvent) error {
 			etag=excluded.etag,
 			raw_ics=excluded.raw_ics,
 			status=excluded.status,
-			self_response=excluded.self_response`,
+			self_response=excluded.self_response,
+			reminder_min=excluded.reminder_min`,
 		e.ID, e.CalendarID, e.ExternalID, e.UID, e.Title, e.StartISO, e.EndISO, e.StartUnix, e.EndUnix,
 		boolInt(e.AllDay), e.Location, e.Description, e.RRule, string(exJSON), e.RecurrenceID,
-		boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse,
+		boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse, e.ReminderMin,
 	)
 	return err
 }
@@ -1363,11 +1369,11 @@ func (s *Store) ReplaceCalendarEvents(ctx context.Context, calendarID string, ev
 			INSERT OR REPLACE INTO calendar_events(
 				id, calendar_id, external_id, uid, title, start_iso, end_iso, start_unix, end_unix,
 				all_day, location, description, rrule, exdates_json, recurrence_id, is_recurring,
-				read_only, etag, raw_ics, status, self_response
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				read_only, etag, raw_ics, status, self_response, reminder_min
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			e.ID, e.CalendarID, e.ExternalID, e.UID, e.Title, e.StartISO, e.EndISO, e.StartUnix, e.EndUnix,
 			boolInt(e.AllDay), e.Location, e.Description, e.RRule, string(exJSON), e.RecurrenceID,
-			boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse,
+			boolInt(e.IsRecurring), boolInt(e.ReadOnly), e.ETag, e.RawICS, e.Status, e.SelfResponse, e.ReminderMin,
 		)
 		if err != nil {
 			return err
@@ -1380,7 +1386,7 @@ func (s *Store) GetEvent(ctx context.Context, calendarID, eventID string) (Store
 	row := s.db.QueryRowContext(ctx, `
 		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response, e.reminder_min
 		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 		WHERE e.calendar_id=? AND (e.id=? OR e.external_id=?)`, calendarID, eventID, eventID)
 	return scanStoredEvent(row)
@@ -1395,7 +1401,7 @@ func (s *Store) ListRawEvents(ctx context.Context, calendarIDs []string) ([]Stor
 	q := `
 		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response, e.reminder_min
 		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 		WHERE e.status != 'cancelled'`
 	var args []any
@@ -1432,7 +1438,7 @@ func (s *Store) FindEventsByUIDOrMatch(ctx context.Context, uid, title string, s
 		rows, err := s.db.QueryContext(ctx, `
 			SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 			       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-			       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+			       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response, e.reminder_min
 			FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 			WHERE e.status != 'cancelled' AND e.uid != '' AND lower(e.uid) = lower(?)`, uid)
 		if err != nil {
@@ -1456,7 +1462,7 @@ func (s *Store) FindEventsByUIDOrMatch(ctx context.Context, uid, title string, s
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT e.id, e.calendar_id, COALESCE(c.name,''), e.external_id, e.uid, e.title,
 		       e.start_iso, e.end_iso, e.start_unix, e.end_unix, e.all_day, e.location, e.description,
-		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response
+		       e.rrule, e.exdates_json, e.recurrence_id, e.is_recurring, e.read_only, e.etag, e.raw_ics, e.status, e.self_response, e.reminder_min
 		FROM calendar_events e LEFT JOIN calendars c ON c.id = e.calendar_id
 		WHERE e.status != 'cancelled' AND lower(trim(e.title)) = lower(trim(?)) AND abs(e.start_unix - ?) <= 120`, title, startUnix)
 	if err != nil {
@@ -1519,7 +1525,7 @@ func scanStoredEvent(row interface{ Scan(dest ...any) error }) (StoredEvent, err
 	err := row.Scan(
 		&e.ID, &e.CalendarID, &e.CalendarName, &e.ExternalID, &e.UID, &e.Title,
 		&e.StartISO, &e.EndISO, &e.StartUnix, &e.EndUnix, &allDay, &e.Location, &e.Description,
-		&e.RRule, &exJSON, &e.RecurrenceID, &isRec, &ro, &e.ETag, &e.RawICS, &e.Status, &e.SelfResponse,
+		&e.RRule, &exJSON, &e.RecurrenceID, &isRec, &ro, &e.ETag, &e.RawICS, &e.Status, &e.SelfResponse, &e.ReminderMin,
 	)
 	if err != nil {
 		return StoredEvent{}, err

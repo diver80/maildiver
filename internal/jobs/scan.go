@@ -8,6 +8,7 @@ import (
 
 	"github.com/diver80/maildiver/internal/ai"
 	"github.com/diver80/maildiver/internal/config"
+	evhub "github.com/diver80/maildiver/internal/events"
 	"github.com/diver80/maildiver/internal/triage"
 )
 
@@ -56,10 +57,10 @@ func checkScan(cfg config.Config, accountID string) error {
 	if !cfg.Features.Triage {
 		return ErrTriageDisabled
 	}
-	if len(cfg.Mailbox.TriageAccountIDs) == 0 {
+	if !cfg.Mailbox.HasTriageAccounts() {
 		return ErrNoTriageAccounts
 	}
-	if accountID != "" && !cfg.Mailbox.AccountEnabled(accountID) {
+	if accountID != "" && !cfg.Mailbox.TriageIncludes(accountID) {
 		return ErrAccountNotEnabled
 	}
 	return nil
@@ -109,6 +110,38 @@ func (r *Runner) NewMail() {
 		return
 	}
 	r.scheduleNewMailScan(newMailDelay)
+}
+
+// EventSource is the engine's event hub.
+type EventSource interface {
+	Subscribe() (uint64, <-chan evhub.Event)
+	Unsubscribe(id uint64)
+}
+
+// FollowNewMail calls NewMail for every "mail.new" event until the runner's context ends. The
+// engine publishes it only for inbox mails above the last known UIDNEXT, so backfilled old mails
+// never start a scan; the scan itself reads encrypted mails by their headers only.
+func (r *Runner) FollowNewMail(src EventSource) {
+	if src == nil {
+		return
+	}
+	id, ch := src.Subscribe()
+	go func() {
+		defer src.Unsubscribe(id)
+		for {
+			select {
+			case <-r.ctx.Done():
+				return
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				if ev.Event == "mail.new" {
+					r.NewMail()
+				}
+			}
+		}
+	}()
 }
 
 func (r *Runner) scheduleNewMailScan(delay time.Duration) {
@@ -187,7 +220,7 @@ func (r *Runner) classifyMessages(ctx context.Context, cfg config.Config, msgs [
 	allowed := make([]triage.MessageInput, 0, len(msgs))
 	for _, m := range msgs {
 		// Defense in depth: never classify (or send to a model) mails of accounts not enabled.
-		if cfg.Mailbox.AccountEnabled(m.AccountID) {
+		if cfg.Mailbox.TriageIncludes(m.AccountID) {
 			allowed = append(allowed, m)
 		}
 	}

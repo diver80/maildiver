@@ -97,7 +97,7 @@ func withDefaultDeadline(ctx context.Context, d time.Duration) (context.Context,
 // mutatingMethods may already have changed the mailbox when they time out.
 var mutatingMethods = map[string]bool{
 	"messages.actions": true, "messages.batchActions": true, "messages.markAllRead": true, "messages.undoMove": true,
-	"compose.draft": true, "compose.send": true,
+	"compose.draft": true, "compose.send": true, "compose.discardDraft": true,
 	"calendar.create": true, "calendar.update": true, "calendar.delete": true,
 	"contacts.upsert": true, "filters.upsert": true, "filters.run": true,
 }
@@ -330,6 +330,15 @@ func (c *Client) ComposeDraft(ctx context.Context, req ComposeRequest) (json.Raw
 	return res, err
 }
 
+// DiscardDraft deletes a draft that a discarded compose window auto-saved. The engine only
+// deletes mails in a Drafts folder.
+func (c *Client) DiscardDraft(ctx context.Context, accountID, draftID string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, DefaultRequestTimeout, "compose.discardDraft", map[string]any{"accountId": accountID, "draftId": draftID}, nil)
+}
+
 // ComposeSendTimeout bounds sending, including slow SMTP servers.
 const ComposeSendTimeout = 185 * time.Second
 
@@ -384,6 +393,22 @@ func (c *Client) OutboxFlush(ctx context.Context) (int, int, error) {
 	}
 	err := c.call(ctx, ComposeSendTimeout, "outbox.flush", nil, &res)
 	return res.Sent, res.Remaining, err
+}
+
+// OutboxSendNow sends one outbox entry at once (a "send later" mail before its time, too).
+func (c *Client) OutboxSendNow(ctx context.Context, id string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, ComposeSendTimeout, "outbox.sendNow", map[string]any{"id": id}, nil)
+}
+
+// OutboxToDrafts takes an entry out of the outbox and saves it as a draft again.
+func (c *Client) OutboxToDrafts(ctx context.Context, id string) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	return c.call(ctx, ComposeSendTimeout, "outbox.toDrafts", map[string]any{"id": id}, nil)
 }
 
 func (c *Client) OutboxDelete(ctx context.Context, id string) error {
@@ -505,17 +530,6 @@ func (c *Client) FilterRun(ctx context.Context, accountID string, filterNames []
 	return res, err
 }
 
-func (c *Client) TriageState(ctx context.Context) (TriageStateResponse, error) {
-	if c == nil || c.opts.Store == nil {
-		return TriageStateResponse{}, errors.New("triage store unavailable")
-	}
-	st, err := c.opts.Store.Load()
-	if err != nil {
-		return TriageStateResponse{}, err
-	}
-	return TriageStateResponse{State: st, BarSummary: triage.ComputeBarSummary(st)}, nil
-}
-
 func (c *Client) jobs() (*jobs.Runner, error) {
 	if c == nil || c.opts.Jobs == nil {
 		return nil, errors.New("jobs unavailable")
@@ -530,14 +544,6 @@ func (c *Client) StartScan(ctx context.Context, accountID string) (string, error
 		return "", err
 	}
 	return r.StartScan(strings.TrimSpace(accountID), "manual")
-}
-
-func (c *Client) ScanStatus(ctx context.Context) (jobs.ScanStatus, error) {
-	r, err := c.jobs()
-	if err != nil {
-		return jobs.ScanStatus{}, err
-	}
-	return r.ScanStatus(), nil
 }
 
 func (c *Client) ArchiveStats(ctx context.Context) (archive.ArchiveStats, error) {
@@ -576,14 +582,6 @@ func (c *Client) StartArchive(ctx context.Context, req jobs.ArchiveRequest) (str
 	return r.StartArchive(req)
 }
 
-func (c *Client) ArchiveStatus(ctx context.Context) (jobs.ArchiveStatus, error) {
-	r, err := c.jobs()
-	if err != nil {
-		return jobs.ArchiveStatus{}, err
-	}
-	return r.ArchiveStatus(), nil
-}
-
 func (c *Client) AIProviders(ctx context.Context, includeModels bool, backend string) (AIProvidersResponse, error) {
 	cfg := c.config()
 	out := AIProvidersResponse{Providers: ai.SupportedProviders(), Agent: cfg.AI.Agent, Classifier: cfg.AI.Classifier}
@@ -611,21 +609,6 @@ func (c *Client) assistantAllowed() (config.Config, error) {
 		return cfg, &APIError{Code: "feature_disabled", Detail: "assistant", Message: ErrAssistantDisabled}
 	}
 	return cfg, nil
-}
-
-func (c *Client) AIChat(ctx context.Context, req ai.ChatRequest) (*anyllm.ChatCompletion, error) {
-	if len(req.Messages) == 0 {
-		return nil, &APIError{Code: "invalid_argument", Message: "invalid_argument: messages are required"}
-	}
-	cfg, err := c.assistantAllowed()
-	if err != nil {
-		return nil, err
-	}
-	req.Stream = false
-	req.Endpoint = "" // endpoints come only from config.json
-	ctx, cancel := withDefaultDeadline(ctx, AIRequestTimeout)
-	defer cancel()
-	return ai.Chat(ctx, cfg.AI, req, c.opts.AnyLLMOpts...)
 }
 
 func (c *Client) AIAnalyze(ctx context.Context, req ai.AnalyzeRequest) (ai.AnalyzeResponse, error) {

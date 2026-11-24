@@ -624,7 +624,6 @@ func extractTBAccounts(profileDir string, prefs map[string]string) ([]config.Dir
 			SMTPHost:    smtpHost,
 			SMTPPort:    smtpPort,
 			SMTPTLS:     smtpTLS,
-			SyncDays:    60,
 			SyncLimit:   250,
 			Signature:   signature,
 			Enabled:     false,

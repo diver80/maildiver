@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,9 +54,6 @@ type DirectController interface {
 	DeleteFolder(ctx context.Context, accountID, folderID string) error
 	EmptyTrash(ctx context.Context, accountID string) (int, error)
 	EmptySpam(ctx context.Context, accountID string) (int, error)
-	ListOutbox(ctx context.Context) ([]mailengine.OutboxItem, error)
-	FlushOutboxNow(ctx context.Context) (int, int)
-	DeleteOutbox(ctx context.Context, id string) error
 	MarkSpam(ctx context.Context, msgID string) error
 	ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error)
 	SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error)
@@ -84,6 +82,7 @@ type DirectController interface {
 	AddCardDAVAccount(ctx context.Context, name, rawURL, username, password string) (int, error)
 	DeleteCalDAVAccount(ctx context.Context, id string) error
 	DeleteCardDAVAccount(ctx context.Context, id string) error
+	UpdateCalendarSource(ctx context.Context, kind, id string, enabled bool, color string) error
 	StartMailOAuth2(ctx context.Context, acc config.DirectAccount, clientSecret string) (string, error)
 }
 
@@ -100,7 +99,9 @@ type directUI struct {
 	accName           string
 	accSender         string // the name in From:
 	accEmail          string
-	accAliases        string // comma/newline-separated sender aliases
+	accAliasRows      []aliasRow
+	accSyncLimit      string // empty = config.DefaultSyncLimit
+	accEnabled        bool   // "Dieses Konto synchronisieren"
 	accUser           string
 	accPassword       string
 	accSignature      string
@@ -306,7 +307,9 @@ func (a *App) resetDirectAccountForm() {
 	d.accName = ""
 	d.accSender = ""
 	d.accEmail = ""
-	d.accAliases = ""
+	d.accAliasRows = nil
+	d.accSyncLimit = ""
+	d.accEnabled = true
 	d.accUser = ""
 	d.accPassword = ""
 	d.accSignature = ""
@@ -334,7 +337,12 @@ func (a *App) editDirectAccount(accountID string) {
 			d.accName = acc.Name
 			d.accSender = acc.DisplayName
 			d.accEmail = acc.Email
-			d.accAliases = formatAliasesInput(acc.Aliases)
+			d.accAliasRows = aliasRowsFromConfig(acc.Aliases)
+			d.accSyncLimit = ""
+			if acc.SyncLimit > 0 && acc.SyncLimit != config.DefaultSyncLimit {
+				d.accSyncLimit = strconv.Itoa(acc.SyncLimit)
+			}
+			d.accEnabled = acc.Enabled
 			d.accUser = acc.Username
 			d.accPassword = ""
 			d.accSignature = acc.Signature
@@ -437,12 +445,23 @@ func (a *App) buildDirectAccountFromForm() (config.DirectAccount, string, error)
 	if d.accSigPos == 1 {
 		sigPos = "below"
 	}
+	syncLimit := config.DefaultSyncLimit
+	if raw := strings.TrimSpace(d.accSyncLimit); raw != "" {
+		n, ok := parseBounded(raw, config.MinSyncLimit, config.MaxSyncLimit)
+		if !ok {
+			return config.DirectAccount{}, "", fmt.Errorf("%s", a.tr(
+				fmt.Sprintf("Mails pro Ordner: bitte eine Zahl von %d bis %d (oder leer).", config.MinSyncLimit, config.MaxSyncLimit),
+				fmt.Sprintf("Emails per folder: please enter a number from %d to %d (or leave empty).", config.MinSyncLimit, config.MaxSyncLimit)))
+		}
+		syncLimit = n
+	}
 	acc := config.DirectAccount{
 		ID:                d.editingID,
 		Name:              name,
 		DisplayName:       strings.TrimSpace(d.accSender),
 		Email:             email,
-		Aliases:           parseAliasesInput(d.accAliases),
+		Aliases:           aliasesFromRows(d.accAliasRows),
+		SyncLimit:         syncLimit,
 		Username:          strings.TrimSpace(d.accUser),
 		Signature:         strings.TrimRight(d.accSignature, " \t\r\n"),
 		SignatureHTML:     strings.TrimSpace(d.accSignatureHTML),
@@ -457,7 +476,7 @@ func (a *App) buildDirectAccountFromForm() (config.DirectAccount, string, error)
 		OAuthProvider:     strings.TrimSpace(d.oauthProvider),
 		OAuthClientID:     strings.TrimSpace(d.oauthClientID),
 		OAuthTenant:       strings.TrimSpace(d.oauthTenant),
-		Enabled:           true,
+		Enabled:           d.accEnabled || d.editingID == "",
 	}
 	return acc, d.accPassword, nil
 }
@@ -1117,8 +1136,8 @@ func (a *App) renderDirectModal(c *ui.Context) {
 	}
 	t := c.Theme()
 	d := &a.direct
-	ui.Modal(c, &d.open, func() {
-		ui.Column(c).Width(a.modalW(760)).MaxHeight(780).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
+	a.modal(c, &d.open, func() {
+		ui.Column(c).Width(a.modalW(760)).MaxHeight(a.modalH(c, 780)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(12).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconMail).Size(18, 18).TextColor(t.Accent)
 				ui.Text(c, a.tr("Konten, Kalender, Regeln & Import", "Accounts, Calendars, Rules & Import")).FontSize(16).Bold().Grow(1)
@@ -1141,7 +1160,22 @@ func (a *App) renderDirectModal(c *ui.Context) {
 					sel = i
 				}
 			}
-			if ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed() {
+			var tabsChanged bool
+			if a.isPhone() {
+				// Four segments do not fit a phone's width: a drop-down.
+				lbl := labels[sel]
+				if ui.Select(c.Key("dir-tabs-sel"), &lbl, labels).FillWidth().Changed() {
+					for i, l := range labels {
+						if l == lbl {
+							sel = i
+						}
+					}
+					tabsChanged = true
+				}
+			} else {
+				tabsChanged = ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed()
+			}
+			if tabsChanged {
 				d.tab = views[sel]
 				if d.tab == 3 && len(d.tbProfiles) == 0 && d.tbProfilePath == "" {
 					a.discoverThunderbirdProfiles()
@@ -1217,15 +1251,17 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 				a.ReorderAccounts(string(src), accCopy.AccountID)
 			}
 			card.Children(func() {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-					if len(d.accounts) > 1 {
-						ui.Text(c, "⋮⋮").FontSize(12).TextColor(withAlpha(t.TextMuted, 0.7)).Shrink(0)
-					}
+				nameLines := func() {
 					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 						ui.Text(c, accCopy.Name).FontSize(13).Bold().SingleLine()
 						ui.Text(c, fmt.Sprintf("%s · %d %s", accCopy.Email, accCopy.MessageCount, a.tr("Mails lokal", "emails cached"))).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
 					})
+				}
+				controls := func() {
 					pillBadge(c, stateLbl, withAlpha(stateClr, 0.18), stateClr)
+					if a.isPhone() {
+						ui.Spacer(c)
+					}
 					if iconBtn(c.Key("dir-sync-"+accCopy.AccountID), iconRefresh, a.tr("Jetzt synchronisieren", "Sync now"), ui.Color{}, false).Clicked() {
 						a.syncDirectAccountNow(context.Background(), accCopy.AccountID)
 					}
@@ -1244,7 +1280,21 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 						d.delAccArmID = accCopy.AccountID
 						d.delAccArmAt = time.Now()
 					}
-				})
+				}
+				if a.isPhone() {
+					// Two lines on a phone: name and address get the full width, the state and the
+					// buttons the line below.
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(nameLines)
+					ui.Row(c.Key("dir-acc-ctl-" + accCopy.AccountID)).FillWidth().AlignItems(ui.Center).Gap(6).Children(controls)
+				} else {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+						if len(d.accounts) > 1 {
+							ui.Text(c, "⋮⋮").FontSize(12).TextColor(withAlpha(t.TextMuted, 0.7)).Shrink(0)
+						}
+						nameLines()
+						controls()
+					})
+				}
 				if accCopy.LastError != "" {
 					ui.Text(c, accCopy.LastError).FontSize(11).TextColor(t.Danger)
 				}
@@ -1315,9 +1365,7 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 	formFieldRow(a.tr("Dein Name", "Your Name"), func() {
 		fieldGrow(ui.TextInput(c.Key("dir-sender"), &d.accSender).Placeholder(a.tr("steht als Absender in deinen Mails", "shown as the sender of your emails")))
 	})
-	formFieldRow(a.tr("Aliase", "Aliases"), func() {
-		fieldGrow(ui.TextInput(c.Key("dir-aliases"), &d.accAliases).Placeholder(a.tr("optional, z. B. info@firma.de, Max <max@firma.de>", "optional, e.g. info@example.com, Max <max@example.com>")))
-	})
+	a.renderDirectAliasRows(c, formFieldRow)
 	formFieldRow(a.tr("Kontoname", "Account Name"), func() {
 		fieldGrow(ui.TextInput(c.Key("dir-name"), &d.accName).Placeholder(a.tr("optional, z. B. IONOS Privat", "optional, e.g. Work")))
 	})
@@ -1450,6 +1498,26 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		formFieldRow(a.tr("Signatur-Position", "Signature position"), func() {
 			ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat (Standard)", "Above quote (default)"), a.tr("Unter Zitat (ganz unten)", "Below quote (bottom)"))
 		})
+	}
+
+	formFieldRow(a.tr("Mails pro Ordner synchronisieren", "Emails synced per folder"), func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+			ui.TextInput(c.Key("dir-sync-limit"), &d.accSyncLimit).Placeholder(strconv.Itoa(config.DefaultSyncLimit)).Width(90)
+			ui.Text(c, a.tr(
+				fmt.Sprintf("Neueste Mails, die jeder Abgleich prüft (%d–%d, leer = %d). Gilt für den Posteingang; andere Ordner höchstens 200. Ältere Mails werden nach und nach nachgeladen.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit),
+				fmt.Sprintf("Newest emails every sync checks (%d–%d, empty = %d). Applies to the inbox; other folders at most 200. Older emails are loaded gradually.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit))).
+				FontSize(11).TextColor(t.TextMuted)
+		})
+	})
+	if d.editingID != "" {
+		formFieldRow("", func() {
+			ui.Checkbox(c.Key("dir-acc-enabled"), &d.accEnabled, a.tr("Dieses Konto synchronisieren", "Sync this account"))
+		})
+		if !d.accEnabled {
+			formFieldRow("", func() {
+				ui.Text(c, a.tr("Pausiert: keine Abrufe mehr, bereits geladene Mails bleiben sichtbar.", "Paused: no more fetching, emails already loaded stay visible.")).FontSize(11).TextColor(t.TextMuted)
+			})
+		}
 	}
 
 	if d.accStatusMsg != "" {
@@ -1645,14 +1713,17 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 		if len(d.icsFeeds) > 0 {
 			for _, f := range d.icsFeeds {
 				fCopy := f
-				ui.Row(c.Key("dir-feed-"+fCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-						ui.Text(c, fCopy.Name).FontSize(12.5).Bold().SingleLine()
-						ui.Text(c, fCopy.URL).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				ui.Column(c.Key("dir-feed-"+fCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+							ui.Text(c, fCopy.Name).FontSize(12.5).Bold().SingleLine()
+							ui.Text(c, fCopy.URL).FontSize(11).TextColor(t.TextMuted).SingleLine()
+						})
+						if iconBtn(c.Key("dir-feed-rm-"+fCopy.ID), iconTrash, a.tr("Abo entfernen", "Remove feed"), t.Danger, false).Clicked() {
+							a.deleteICSFeed(context.Background(), fCopy.ID)
+						}
 					})
-					if iconBtn(c.Key("dir-feed-rm-"+fCopy.ID), iconTrash, a.tr("Abo entfernen", "Remove feed"), t.Danger, false).Clicked() {
-						a.deleteICSFeed(context.Background(), fCopy.ID)
-					}
+					a.renderCalendarSourceControls(c, "ical", fCopy.ID, fCopy.Enabled, fCopy.Color, true)
 				})
 			}
 		}
@@ -1717,39 +1788,45 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 		}
 		for _, dv := range d.caldavList {
 			dvCopy := dv
-			ui.Row(c.Key("dir-caldav-"+dvCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(8).AlignItems(ui.Center).Children(func() {
-				pillBadge(c, "CalDAV", withAlpha(t.Accent, 0.16), t.Accent)
-				ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-					ui.Text(c, dvCopy.Name).FontSize(12).Bold().SingleLine()
-					ui.Text(c, dvCopy.URL).FontSize(10.5).TextColor(t.TextMuted).SingleLine()
+			ui.Column(c.Key("dir-caldav-"+dvCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					pillBadge(c, "CalDAV", withAlpha(t.Accent, 0.16), t.Accent)
+					ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+						ui.Text(c, dvCopy.Name).FontSize(12).Bold().SingleLine()
+						ui.Text(c, dvCopy.URL).FontSize(10.5).TextColor(t.TextMuted).SingleLine()
+					})
+					if iconBtn(c.Key("dir-caldav-rm-"+dvCopy.ID), iconTrash, a.tr("CalDAV entfernen", "Remove CalDAV"), t.Danger, false).Clicked() {
+						go func(id string) {
+							_ = a.opts.Direct.DeleteCalDAVAccount(context.Background(), id)
+							a.emitUpdate(func() {
+								a.reloadDirectState(context.Background())
+								a.RefreshAll(context.Background())
+							})
+						}(dvCopy.ID)
+					}
 				})
-				if iconBtn(c.Key("dir-caldav-rm-"+dvCopy.ID), iconTrash, a.tr("CalDAV entfernen", "Remove CalDAV"), t.Danger, false).Clicked() {
-					go func(id string) {
-						_ = a.opts.Direct.DeleteCalDAVAccount(context.Background(), id)
-						a.emitUpdate(func() {
-							a.reloadDirectState(context.Background())
-							a.RefreshAll(context.Background())
-						})
-					}(dvCopy.ID)
-				}
+				a.renderCalendarSourceControls(c, "caldav", dvCopy.ID, dvCopy.Enabled, dvCopy.Color, true)
 			})
 		}
 		for _, dv := range d.carddavList {
 			dvCopy := dv
-			ui.Row(c.Key("dir-carddav-"+dvCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(8).AlignItems(ui.Center).Children(func() {
-				pillBadge(c, "CardDAV", withAlpha(t.Success, 0.16), t.Success)
-				ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-					ui.Text(c, dvCopy.Name).FontSize(12).Bold().SingleLine()
-					ui.Text(c, dvCopy.URL).FontSize(10.5).TextColor(t.TextMuted).SingleLine()
+			ui.Column(c.Key("dir-carddav-"+dvCopy.ID)).FillWidth().Padding(6, 8).Radius(6).Background(t.Surface).Border(1, t.Border).Gap(6).Children(func() {
+				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+					pillBadge(c, "CardDAV", withAlpha(t.Success, 0.16), t.Success)
+					ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+						ui.Text(c, dvCopy.Name).FontSize(12).Bold().SingleLine()
+						ui.Text(c, dvCopy.URL).FontSize(10.5).TextColor(t.TextMuted).SingleLine()
+					})
+					if iconBtn(c.Key("dir-carddav-rm-"+dvCopy.ID), iconTrash, a.tr("CardDAV entfernen", "Remove CardDAV"), t.Danger, false).Clicked() {
+						go func(id string) {
+							_ = a.opts.Direct.DeleteCardDAVAccount(context.Background(), id)
+							a.emitUpdate(func() {
+								a.reloadDirectState(context.Background())
+							})
+						}(dvCopy.ID)
+					}
 				})
-				if iconBtn(c.Key("dir-carddav-rm-"+dvCopy.ID), iconTrash, a.tr("CardDAV entfernen", "Remove CardDAV"), t.Danger, false).Clicked() {
-					go func(id string) {
-						_ = a.opts.Direct.DeleteCardDAVAccount(context.Background(), id)
-						a.emitUpdate(func() {
-							a.reloadDirectState(context.Background())
-						})
-					}(dvCopy.ID)
-				}
+				a.renderCalendarSourceControls(c, "carddav", dvCopy.ID, dvCopy.Enabled, dvCopy.Color, false)
 			})
 		}
 	})
@@ -1925,12 +2002,15 @@ func (a *App) renderDirectRulesTab(c *ui.Context) {
 
 // DownloadAndOpenAttachment extracts an attachment into ~/Downloads and opens safe file types with the OS default handler.
 // Executable/script/active web attachments are saved to ~/Downloads only without auto-launching them.
+// On phones the engine's copy lies in the app's private cache: safe types open from there, risky
+// ones (and those no app opens) go where the user picks in the system's save dialog.
 func (a *App) DownloadAndOpenAttachment(ctx context.Context, msgID, partName, filename string) {
 	dc := a.opts.Direct
 	if dc == nil || msgID == "" {
 		return
 	}
 	a.toast(a.trf("Lade Anhang „%s“…", "Downloading attachment “%s”…", filename), "info")
+	saveCopy := a.onSaveCopy
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -1942,6 +2022,11 @@ func (a *App) DownloadAndOpenAttachment(ctx context.Context, msgID, partName, fi
 			if !risky {
 				openErr = openLocalFile(savedPath)
 			}
+		}
+		if err == nil && saveCopy != nil && (risky || openErr != nil) {
+			dest, serr := saveCopy(savedPath, savedName(filename, savedPath))
+			a.emitUpdate(func() { a.toastSavedCopy(filepath.Base(savedPath), dest, serr, risky) })
+			return
 		}
 		a.emitUpdate(func() {
 			if err != nil {
@@ -1956,12 +2041,64 @@ func (a *App) DownloadAndOpenAttachment(ctx context.Context, msgID, partName, fi
 				a.toast(a.trf("In Downloads gespeichert (Öffnen fehlgeschlagen): %s", "Saved to Downloads (could not open): %s", filepath.Base(savedPath)), "warning")
 				return
 			}
+			if saveCopy != nil {
+				a.toast(a.trf("Geöffnet: %s", "Opened: %s", filepath.Base(savedPath)), "success")
+				return
+			}
 			a.toast(a.trf("Gespeichert & geöffnet: %s", "Saved & opened: %s", filepath.Base(savedPath)), "success")
 		})
 	}()
 }
 
-// SaveSelectedMessageEML exports the currently selected message as an .eml file to ~/Downloads.
+// SaveAttachmentCopy lets the user pick where an attachment goes (phones; UI thread). Desktops
+// save into ~/Downloads and open it, as DownloadAndOpenAttachment does.
+func (a *App) SaveAttachmentCopy(ctx context.Context, msgID, partName, filename string) {
+	dc := a.opts.Direct
+	saveCopy := a.onSaveCopy
+	if saveCopy == nil {
+		a.DownloadAndOpenAttachment(ctx, msgID, partName, filename)
+		return
+	}
+	if dc == nil || msgID == "" {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		savedPath, err := dc.SaveAttachmentToDownloads(c, msgID, partName, filename)
+		if err != nil {
+			a.emitUpdate(func() { a.toast(a.tr("Anhang-Fehler: ", "Attachment error: ")+err.Error(), "error") })
+			return
+		}
+		dest, serr := saveCopy(savedPath, savedName(filename, savedPath))
+		a.emitUpdate(func() { a.toastSavedCopy(filepath.Base(savedPath), dest, serr, isRiskyAttachmentExt(savedPath)) })
+	}()
+}
+
+// savedName is the file name the save dialog suggests.
+func savedName(filename, savedPath string) string {
+	if n := filepath.Base(strings.TrimSpace(filename)); n != "" && n != "." && n != string(filepath.Separator) {
+		return n
+	}
+	return filepath.Base(savedPath)
+}
+
+// toastSavedCopy reports the result of the system's save dialog (UI thread).
+func (a *App) toastSavedCopy(name, dest string, err error, risky bool) {
+	switch {
+	case err != nil:
+		a.toast(a.tr("Speichern fehlgeschlagen: ", "Saving failed: ")+err.Error(), "error")
+	case dest == "":
+		a.toast(a.trf("Nicht gespeichert: %s", "Not saved: %s", name), "info")
+	case risky:
+		a.toast(a.trf("Gespeichert (aus Sicherheitsgründen nicht geöffnet): %s", "Saved (not opened for safety): %s", name), "warning")
+	default:
+		a.toast(a.trf("Gespeichert: %s", "Saved: %s", name), "success")
+	}
+}
+
+// SaveSelectedMessageEML exports the currently selected message as an .eml file to ~/Downloads
+// (phones: where the user picks in the system's save dialog).
 func (a *App) SaveSelectedMessageEML(ctx context.Context) {
 	dc := a.opts.Direct
 	msg := a.selectedMsg
@@ -1969,10 +2106,16 @@ func (a *App) SaveSelectedMessageEML(ctx context.Context) {
 		return
 	}
 	msgID := msg.ID
+	saveCopy := a.onSaveCopy
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 25*time.Second)
 		defer cancel()
 		savedPath, err := dc.SaveMessageEMLToDownloads(c, msgID)
+		if err == nil && saveCopy != nil {
+			dest, serr := saveCopy(savedPath, filepath.Base(savedPath))
+			a.emitUpdate(func() { a.toastSavedCopy(filepath.Base(savedPath), dest, serr, false) })
+			return
+		}
 		a.emitUpdate(func() {
 			if err != nil {
 				a.toast(a.tr("EML-Export fehlgeschlagen: ", "EML export failed: ")+err.Error(), "error")
@@ -2037,76 +2180,108 @@ func (a *App) ImportMailICS(ctx context.Context, msgID, calendarID string) {
 
 // MarkMailSpam moves a message to the account's Spam/Junk folder and selects the next message.
 func (a *App) MarkMailSpam(ctx context.Context, msgID string) {
-	dc := a.opts.Direct
-	if dc == nil || msgID == "" {
+	if msgID == "" {
 		return
 	}
-	if a.readOnly {
-		a.toast(a.tr("Read-Only-Modus aktiv — Änderung blockiert", "Read-only mode active — change blocked"), "error")
-		return
-	}
-	// Snapshot message info for Undo before moving to Spam.
-	var undoMeta backend.UndoMoveItem
+	a.MarkMailsSpam(ctx, []string{msgID})
+}
+
+// spamUndoItem snapshots where a mail is before it goes to its account's junk folder, for Undo
+// (AccountID "" when the mail is unknown).
+func (a *App) spamUndoItem(msgID string) backend.UndoMoveItem {
+	var it backend.UndoMoveItem
 	for _, m := range a.messages {
 		if m.ID == msgID {
-			undoMeta = backend.UndoMoveItem{
-				AccountID:      m.AccountID,
-				MessageID:      m.MessageID,
-				FromFolderPath: m.Folder,
-				RestoreUnread:  m.Unread,
-			}
+			it = backend.UndoMoveItem{AccountID: m.AccountID, MessageID: m.MessageID, FromFolderPath: m.Folder, RestoreUnread: m.Unread}
 			break
 		}
 	}
-	if undoMeta.AccountID == "" && a.selectedMsg != nil && a.selectedMsg.ID == msgID {
-		undoMeta = backend.UndoMoveItem{
+	if it.AccountID == "" && a.selectedMsg != nil && a.selectedMsg.ID == msgID {
+		it = backend.UndoMoveItem{
 			AccountID:      a.selectedMsg.AccountID,
 			MessageID:      a.selectedMsg.MessageID,
 			FromFolderPath: a.selectedMsg.Folder,
 			RestoreUnread:  a.selectedMsg.Unread,
 		}
 	}
-	if undoMeta.AccountID != "" {
+	if it.AccountID != "" {
 		for _, f := range a.folders {
-			if f.AccountID == undoMeta.AccountID && strings.EqualFold(f.Type, "junk") {
-				undoMeta.ToFolderPath = f.Path
+			if f.AccountID == it.AccountID && strings.EqualFold(f.Type, "junk") {
+				it.ToFolderPath = f.Path
 				break
 			}
 		}
-		if undoMeta.ToFolderPath == "" {
-			undoMeta.ToFolderPath = "Junk"
+		if it.ToFolderPath == "" {
+			it.ToFolderPath = "Junk"
 		}
 	}
+	return it
+}
 
-	nextID := a.neighborAfterRemoval(msgID)
+// MarkMailsSpam moves mails to their accounts' Spam/Junk folders – one mail per engine call, as
+// the single "Spam" does – with one Undo for all of them. An open mail among them makes way for
+// its neighbour.
+func (a *App) MarkMailsSpam(ctx context.Context, ids []string) {
+	dc := a.opts.Direct
+	if dc == nil || len(ids) == 0 {
+		return
+	}
+	if a.readOnly {
+		a.toast(a.tr("Read-Only-Modus aktiv — Änderung blockiert", "Read-only mode active — change blocked"), "error")
+		return
+	}
+	undoMeta := make(map[string]backend.UndoMoveItem, len(ids))
+	for _, id := range ids {
+		undoMeta[id] = a.spamUndoItem(id)
+	}
+	nextID := ""
+	if slices.Contains(ids, a.selectedID) {
+		nextID = a.neighborOutside(a.selectedID, ids)
+	}
 	go func() {
-		c, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		err := dc.MarkSpam(c, msgID)
-		a.emitUpdate(func() {
+		var okIDs []string
+		var firstErr error
+		for _, id := range ids {
+			c, cancel := context.WithTimeout(ctx, 20*time.Second)
+			err := dc.MarkSpam(c, id)
+			cancel()
 			if err != nil {
-				a.toast(a.tr("Spam-Fehler: ", "Spam error: ")+err.Error(), "error")
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			okIDs = append(okIDs, id)
+		}
+		a.emitUpdate(func() {
+			if len(okIDs) == 0 {
+				a.toast(a.tr("Spam-Fehler: ", "Spam error: ")+a.errText(firstErr), "error")
 				return
 			}
-			if a.selectedID == msgID {
+			var undoItems []backend.UndoMoveItem
+			for _, id := range okIDs {
+				delete(a.checkedIDs, id)
+				if u := undoMeta[id]; u.AccountID != "" && u.MessageID != "" && u.FromFolderPath != "" && u.ToFolderPath != "" {
+					undoItems = append(undoItems, u)
+				}
+			}
+			if slices.Contains(okIDs, a.selectedID) {
 				a.selectedID = ""
 				a.selectedMsg = nil
-				if nextID != "" && !a.isPhone() {
-					a.SelectMessage(context.Background(), nextID)
-				} else {
-					a.syncPreviewForMessage(nil)
-					a.phonePopMailIfOpen()
-				}
+				a.afterOpenMailRemoved(context.Background(), nextID)
 			}
-			if undoMeta.AccountID != "" && undoMeta.MessageID != "" && undoMeta.FromFolderPath != "" && undoMeta.ToFolderPath != "" {
-				a.undo = &undoAction{
-					Kind:      "move",
-					Label:     a.tr("Als Spam markiert", "Marked as Spam"),
-					CreatedAt: time.Now(),
-					MoveItems: []backend.UndoMoveItem{undoMeta},
-				}
+			label := a.tr("Als Spam markiert", "Marked as Spam")
+			if len(ids) > 1 {
+				label = fmt.Sprintf("%s (%d)", label, len(okIDs))
 			}
-			a.toast(a.tr("Als Spam markiert", "Marked as Spam"), "success")
+			if len(undoItems) > 0 {
+				a.undo = &undoAction{Kind: "move", Label: label, CreatedAt: time.Now(), MoveItems: undoItems}
+			}
+			if firstErr != nil {
+				a.toast(a.trf("%d von %d als Spam markiert, Fehler: %s", "%d of %d marked as spam, error: %s", len(okIDs), len(ids), a.errText(firstErr)), "warning")
+			} else {
+				a.toast(label, "success")
+			}
 			a.startMessageLoad(context.Background())
 			a.refreshFoldersBackground(context.Background())
 		})
@@ -2119,9 +2294,6 @@ func (a *App) MarkMailNotSpam(ctx context.Context, msgID string) {
 		return
 	}
 	nextID := a.neighborAfterRemoval(msgID)
-	if a.isPhone() {
-		nextID = ""
-	}
 	a.performMessageAction(ctx, msgID, backend.MessageActionsRequest{MoveToPath: "INBOX"}, a.tr("Kein Spam — in Posteingang verschoben", "Not Spam — moved to Inbox"), nextID)
 }
 
@@ -2588,4 +2760,95 @@ func (a *App) renderDirectTBImportTab(c *ui.Context) {
 			}
 		})
 	}
+}
+
+// renderDirectAliasRows edits the sender aliases of the account form: name, address and an
+// optional per-alias signature (compose uses it instead of the account signature).
+func (a *App) renderDirectAliasRows(c *ui.Context, formFieldRow func(string, func())) {
+	t := c.Theme()
+	d := &a.direct
+	formFieldRow(a.tr("Aliase", "Aliases"), func() {
+		ui.Column(c).Grow(1).FillWidth().MinWidth(0).Gap(6).Children(func() {
+			remove := -1
+			for i := range d.accAliasRows {
+				row := &d.accAliasRows[i]
+				key := fmt.Sprintf("dir-alias-%d", i)
+				ui.Column(c.Key(key)).FillWidth().Padding(8, 8).Radius(6).Border(1, t.Border).Gap(6).Children(func() {
+					ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+						name := ui.TextInput(c.Key(key+"-name"), &row.name).Placeholder(a.tr("Name (optional)", "Name (optional)"))
+						email := ui.TextInput(c.Key(key+"-email"), &row.email).Placeholder("alias@domain.de")
+						if a.isPhone() {
+							name.FillWidth()
+							email.Grow(1).MinWidth(0)
+						} else {
+							name.Width(150)
+							email.Grow(1).MinWidth(140)
+						}
+						if iconBtn(c.Key(key+"-del"), iconTrash, a.tr("Alias entfernen", "Remove alias"), t.Danger, false).Clicked() {
+							remove = i
+						}
+					})
+					ui.TextArea(c.Key(key+"-sig"), &row.signature).
+						Placeholder(a.tr("Signatur für diesen Alias (leer = Konto-Signatur)", "Signature for this alias (empty = account signature)")).
+						FillWidth().Height(48)
+				})
+			}
+			if remove >= 0 {
+				d.accAliasRows = append(d.accAliasRows[:remove], d.accAliasRows[remove+1:]...)
+			}
+			if ui.Button(c.Key("dir-alias-add"), a.tr("+ Alias hinzufügen", "+ Add alias")).Padding(3, 8).Clicked() {
+				d.accAliasRows = append(d.accAliasRows, aliasRow{})
+			}
+		})
+	})
+}
+
+// calendarPalette is the small color choice for iCal feeds and CalDAV calendars.
+var calendarPalette = []string{"#7aa2f7", "#73daca", "#9ece6a", "#e0af68", "#ff9e64", "#f7768e", "#bb9af7", "#9d1140"}
+
+// renderCalendarSourceControls shows the sync switch and (for calendars) the color palette of an
+// iCal feed or CalDAV/CardDAV source. Address books have no color, so withColor is false there.
+func (a *App) renderCalendarSourceControls(c *ui.Context, kind, id string, enabled bool, color string, withColor bool) {
+	t := c.Theme()
+	key := "dir-src-" + kind + "-" + id
+	ui.Row(c.Key(key)).FillWidth().Gap(10).Wrap().AlignItems(ui.Center).Children(func() {
+		on := enabled
+		if ui.Checkbox(c.Key(key+"-en"), &on, a.tr("Synchronisieren", "Sync")).Changed() {
+			a.updateCalendarSource(kind, id, on, "")
+		}
+		if !withColor {
+			return
+		}
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+			for _, hex := range calendarPalette {
+				clr, _ := parseHexColorUI(hex)
+				sw := ui.Box(c.Key(key+"-c-"+hex)).Size(18, 18).Radius(9).Background(clr).Shrink(0).Tooltip(hex)
+				if strings.EqualFold(hex, color) {
+					sw.Border(2, t.Text)
+				}
+				pick := hex
+				sw.OnClick(func() { a.updateCalendarSource(kind, id, enabled, pick) })
+			}
+		})
+	})
+}
+
+// updateCalendarSource saves a feed/DAV switch or color in the background and reloads the lists.
+func (a *App) updateCalendarSource(kind, id string, enabled bool, color string) {
+	dc := a.opts.Direct
+	if dc == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := dc.UpdateCalendarSource(ctx, kind, id, enabled, color)
+		a.emitUpdate(func() {
+			if err != nil {
+				a.direct.icsMsg, a.direct.icsErr = a.errText(err), true
+			}
+			a.reloadDirectState(context.Background())
+			a.RefreshAll(context.Background())
+		})
+	}()
 }

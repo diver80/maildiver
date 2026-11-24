@@ -87,12 +87,27 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 			return nil, err
 		}
 		return marshalJSON(map[string]any{"ok": true})
+	case "outbox.sendNow", "outbox.toDrafts":
+		var p struct {
+			ID string `json:"id"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		var err error
+		if method == "outbox.sendNow" {
+			err = e.SendOutboxNow(ctx, p.ID)
+		} else {
+			err = e.UnscheduleOutbox(ctx, p.ID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return marshalJSON(map[string]any{"ok": true})
 	case "messages.list":
 		return e.rpcMessagesList(ctx, params)
 	case "messages.get":
 		return e.rpcMessagesGet(ctx, params)
-	case "messages.open":
-		return marshalJSON(map[string]any{"ok": true})
 	case "messages.thread":
 		return e.rpcMessagesThread(ctx, params)
 	case "messages.conversation":
@@ -111,6 +126,8 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		return e.rpcComposeDraft(ctx, params)
 	case "compose.send":
 		return e.rpcComposeSend(ctx, params)
+	case "compose.discardDraft":
+		return e.rpcComposeDiscardDraft(ctx, params)
 	case "calendar.list":
 		return e.rpcCalendarList(ctx)
 	case "calendar.events":
@@ -131,8 +148,6 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		return e.rpcFiltersUpsert(ctx, params)
 	case "filters.run":
 		return e.rpcFiltersRun(ctx, params)
-	case "filters.openDialog":
-		return marshalJSON(map[string]any{"supported": true, "opened": false, "directMode": true})
 	default:
 		return nil, fmt.Errorf("unknown rpc method: %s", method)
 	}
@@ -157,10 +172,8 @@ func marshalJSON(v any) (json.RawMessage, error) {
 func (e *Engine) rpcAccountsList(_ context.Context) (json.RawMessage, error) {
 	cfg := e.loadConfig()
 	accounts := make([]backend.Account, 0, len(cfg.Direct.Accounts))
+	// Paused accounts (Enabled=false) stay listed: syncing stops, their cached mails stay visible.
 	for _, a := range cfg.Direct.Accounts {
-		if !a.Enabled {
-			continue
-		}
 		ids := []backend.AccountIdentity{{
 			ID:    a.ID + "-id",
 			Email: a.Email,
@@ -290,24 +303,24 @@ func storedToHeader(m StoredMessage, inInbox bool) backend.MessageHeader {
 		inInbox = true
 	}
 	return backend.MessageHeader{
-		ID:        m.ID,
-		MessageID: m.MessageID,
-		ThreadID:  m.ThreadID,
-		AccountID: m.AccountID,
-		FolderID:  m.FolderID,
-		Folder:    m.FolderPath,
-		InInbox:   inInbox,
-		Subject:   m.Subject,
-		From:      m.From,
-		To:        nonNilStrings(m.To),
-		CC:        nonNilStrings(m.CC),
-		Date:      m.DateISO,
-		Read:      m.Read,
-		Unread:    !m.Read,
-		Flagged:   m.Flagged,
-		Tags:           nonNilStrings(m.Tags),
+		ID:             m.ID,
+		MessageID:      m.MessageID,
+		ThreadID:       m.ThreadID,
+		AccountID:      m.AccountID,
+		FolderID:       m.FolderID,
+		Folder:         m.FolderPath,
+		InInbox:        inInbox,
+		Subject:        m.Subject,
+		From:           m.From,
+		To:             nonNilStrings(m.To),
+		CC:             nonNilStrings(m.CC),
+		Date:           m.DateISO,
+		Read:           m.Read,
+		Unread:         !m.Read,
+		Flagged:        m.Flagged,
 		Size:           m.Size,
 		HasAttachments: len(m.Attachments) > 0,
+		Snippet:        m.Snippet,
 	}
 }
 
@@ -647,16 +660,14 @@ func conversationSnippet(body string) string {
 
 func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMessage, error) {
 	var p struct {
-		ID                string   `json:"id"`
-		ExpectedMessageID string   `json:"expectedMessageId"`
-		Read              *bool    `json:"read"`
-		Flagged           *bool    `json:"flagged"`
-		AddTags           []string `json:"addTags"`
-		RemoveTags        []string `json:"removeTags"`
-		MoveToFolderID    string   `json:"moveToFolderId"`
-		MoveToPath        string   `json:"moveToPath"`
-		Trash             bool     `json:"trash"`
-		Archive           bool     `json:"archive"`
+		ID                string `json:"id"`
+		ExpectedMessageID string `json:"expectedMessageId"`
+		Read              *bool  `json:"read"`
+		Flagged           *bool  `json:"flagged"`
+		MoveToFolderID    string `json:"moveToFolderId"`
+		MoveToPath        string `json:"moveToPath"`
+		Trash             bool   `json:"trash"`
+		Archive           bool   `json:"archive"`
 	}
 	_ = decodeParams(params, &p)
 	m, err := e.store.GetMessage(ctx, p.ID)
@@ -733,7 +744,7 @@ func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMe
 	if moved || permanentDelete {
 		_ = e.store.DeleteMessage(ctx, m.ID)
 	} else {
-		_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged, p.AddTags, p.RemoveTags)
+		_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 	}
 	e.emitMailSync(m.AccountID)
 	resp := map[string]any{"ok": true}
@@ -904,7 +915,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 						resp.MovedTargetPath[m.ID] = op.MoveTargetPath
 					}
 				} else {
-					_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged, p.AddTags, p.RemoveTags)
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 				}
 				resp.OKIDs = append(resp.OKIDs, m.ID)
 				anyOK = true
@@ -1141,7 +1152,8 @@ func (e *Engine) pickOutgoingAccount(accountID string) (config.DirectAccount, er
 	cfg := e.loadConfig()
 	if accountID != "" {
 		for _, a := range cfg.Direct.Accounts {
-			if a.ID == accountID && a.Enabled {
+			// Pausing only stops syncing; replying from a paused account still works.
+			if a.ID == accountID {
 				return a, nil
 			}
 		}
@@ -1590,6 +1602,66 @@ func (e *Engine) rpcComposeDraft(ctx context.Context, params any) (json.RawMessa
 	return res, nil
 }
 
+// rpcComposeDiscardDraft deletes the draft a discarded compose window auto-saved. Like every
+// draft cleanup it only ever deletes mails in a Drafts folder.
+func (e *Engine) rpcComposeDiscardDraft(ctx context.Context, params any) (json.RawMessage, error) {
+	var req struct {
+		AccountID string `json:"accountId"`
+		DraftID   string `json:"draftId"`
+	}
+	if err := decodeParams(params, &req); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.DraftID) == "" {
+		return nil, fmt.Errorf("invalid_argument: draftId fehlt")
+	}
+	e.deleteDraftIfExists(ctx, req.AccountID, req.DraftID)
+	if m, err := e.store.GetMessage(ctx, req.DraftID); err == nil {
+		e.emitMailSync(m.AccountID)
+		return marshalJSON(map[string]any{"ok": true, "deleted": false})
+	}
+	if req.AccountID != "" {
+		e.emitMailSync(req.AccountID)
+	}
+	return marshalJSON(map[string]any{"ok": true, "deleted": true})
+}
+
+// scheduleComposeSend queues a "send later" mail in the outbox, where the outbox flush sends it
+// once req.SendAt has come (it survives restarts there). The draft it was written in goes, as
+// on sending; taking it back out of the outbox makes a draft again.
+func (e *Engine) scheduleComposeSend(ctx context.Context, accountID, fromEmail, msgID string, recipients []string, raw []byte, req backend.ComposeRequest, compSec *backend.ComposeSecurity, idemKey string) (json.RawMessage, error) {
+	obID := "ob-" + randomHex(8)
+	if err := e.store.EnqueueOutbox(ctx, OutboxItem{
+		ID:          obID,
+		AccountID:   accountID,
+		FromEmail:   fromEmail,
+		Recipients:  recipients,
+		Subject:     req.Subject,
+		Status:      "queued",
+		RawEML:      raw,
+		NextRetryAt: req.SendAt,
+		ScheduledAt: req.SendAt,
+	}); err != nil {
+		return nil, err
+	}
+	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer postCancel()
+	if req.DraftMessageID != "" {
+		e.deleteDraftIfExists(postCtx, accountID, req.DraftMessageID)
+	}
+	e.emitOutboxChanged()
+	e.emitMailSync(accountID)
+	payload := map[string]any{"ok": true, "scheduled": true, "scheduledAt": req.SendAt, "outboxId": obID, "messageId": msgID}
+	if compSec != nil {
+		payload["security"] = compSec
+	}
+	res, _ := marshalJSON(payload)
+	if idemKey != "" {
+		e.store.PutIdempotency(postCtx, idemKey, res)
+	}
+	return res, nil
+}
+
 func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessage, error) {
 	var req backend.ComposeRequest
 	if err := decodeParams(params, &req); err != nil {
@@ -1620,6 +1692,9 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	fromEmail, msgID, raw, compSec, err := e.buildComposeRaw(ctx, acc, req, false)
 	if err != nil {
 		return nil, err
+	}
+	if req.SendAt > time.Now().Unix() {
+		return e.scheduleComposeSend(ctx, acc.ID, fromEmail, msgID, recipients, raw, req, compSec, idemKey)
 	}
 	if err := SendSMTP(ctx, acc, pass, fromEmail, recipients, raw); err != nil {
 		if isTransientNetworkError(err) {
@@ -1819,6 +1894,7 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 			RRule:        rruleStr,
 			IsRecurring:  rruleStr != "",
 			Status:       "confirmed",
+			ReminderMin:  cleanReminderMinutes(req.ReminderMinutes),
 		}
 		if cal.Source == "caldav" {
 			se, err = e.pushCalDAVEvent(ctx, cal, se)
@@ -1831,6 +1907,17 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 	}
 	e.emitCalendarChanged()
 	return marshalJSON(map[string]any{"event": storedEventToBridge(se)})
+}
+
+// cleanReminderMinutes keeps a reminder to none, the default or up to a week before the start.
+func cleanReminderMinutes(m int) int {
+	switch {
+	case m < 0:
+		return ReminderNone
+	case m > 7*24*60:
+		return 7 * 24 * 60
+	}
+	return m
 }
 
 func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMessage, error) {
@@ -1874,6 +1961,9 @@ func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMes
 		rr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "RRULE:"))
 		ev.RRule = rr
 		ev.IsRecurring = rr != ""
+	}
+	if v, ok := p["reminderMinutes"].(float64); ok {
+		ev.ReminderMin = cleanReminderMinutes(int(v))
 	}
 	if v, ok := p["start"].(string); ok && v != "" {
 		st := parseFlexibleEventTime(v, ev.StartUnix)
@@ -2264,7 +2354,7 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 				if moved || op.PermanentDelete {
 					_ = e.store.DeleteMessage(ctx, m.ID)
 				} else {
-					_ = e.store.UpdateMessageLocal(ctx, m.ID, op.Read, op.Flagged, nil, nil)
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, op.Read, op.Flagged)
 				}
 				executed++
 			}
@@ -2469,13 +2559,11 @@ func (e *Engine) rpcHostArchiveCandidates(ctx context.Context, params any) (json
 		cands = []cand{}
 	}
 	return marshalJSON(map[string]any{
-		"candidates":       cands,
-		"totalMatched":     totalMatched,
-		"totalBytesAll":    totalBytes,
-		"scannedFolders":   len(selected),
-		"truncated":        totalMatched > len(cands),
-		"hasLocalAccount":  false,
-		"localAccountName": "",
+		"candidates":     cands,
+		"totalMatched":   totalMatched,
+		"totalBytesAll":  totalBytes,
+		"scannedFolders": len(selected),
+		"truncated":      totalMatched > len(cands),
 	})
 }
 
@@ -2624,7 +2712,7 @@ func (e *Engine) rpcHostTriageCollect(ctx context.Context, params any) (json.Raw
 		if p.AccountID != "" && acc.ID != p.AccountID {
 			continue
 		}
-		if !cfg.Mailbox.AccountEnabled(acc.ID) {
+		if !cfg.Mailbox.TriageIncludes(acc.ID) {
 			continue
 		}
 		inbox, ok := e.store.FindFolderByType(ctx, acc.ID, "inbox")

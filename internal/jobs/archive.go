@@ -17,12 +17,11 @@ const (
 	maxReportItems    = 100
 )
 
-// Archive modes. Everything except "simulate" writes verified .eml files first; the two last
-// ones then change the mailbox, but only for mails whose backup was verified.
+// Archive modes. Everything except "simulate" writes verified .eml files first; the last one
+// then changes the mailbox, but only for mails whose backup was verified.
 const (
 	ModeSimulate        = "simulate"
 	ModeExportOnly      = "export_only"
-	ModeExportAndLocal  = "export_and_local"  // then move into the local archive folder
 	ModeExportAndDelete = "export_and_delete" // then delete at the provider
 )
 
@@ -58,28 +57,24 @@ type ArchiveCandidate struct {
 }
 
 type candidateList struct {
-	Candidates       []ArchiveCandidate `json:"candidates"`
-	TotalMatched     int                `json:"totalMatched"`
-	TotalBytesAll    int64              `json:"totalBytesAll"`
-	ScannedFolders   int                `json:"scannedFolders"`
-	Truncated        bool               `json:"truncated"`
-	HasLocalAccount  bool               `json:"hasLocalAccount"`
-	LocalAccountName string             `json:"localAccountName"`
+	Candidates     []ArchiveCandidate `json:"candidates"`
+	TotalMatched   int                `json:"totalMatched"`
+	TotalBytesAll  int64              `json:"totalBytesAll"`
+	ScannedFolders int                `json:"scannedFolders"`
+	Truncated      bool               `json:"truncated"`
 }
 
 // ArchivePreview is what a run with the same request would cover.
 type ArchivePreview struct {
-	Candidates       []ArchiveCandidate `json:"candidates"` // at most 100
-	TotalCount       int                `json:"totalCount"`
-	TotalMatched     int                `json:"totalMatched"`
-	TotalBytes       int64              `json:"totalBytes"`
-	TotalBytesAll    int64              `json:"totalBytesAll"`
-	Truncated        bool               `json:"truncated"`
-	ScannedFolders   int                `json:"scannedFolders"`
-	HasLocalAccount  bool               `json:"hasLocalAccount"`
-	LocalAccountName string             `json:"localAccountName"`
-	ReadOnly         bool               `json:"readOnly"`
-	ArchiveDir       string             `json:"archiveDir"`
+	Candidates     []ArchiveCandidate `json:"candidates"` // at most 100
+	TotalCount     int                `json:"totalCount"`
+	TotalMatched   int                `json:"totalMatched"`
+	TotalBytes     int64              `json:"totalBytes"`
+	TotalBytesAll  int64              `json:"totalBytesAll"`
+	Truncated      bool               `json:"truncated"`
+	ScannedFolders int                `json:"scannedFolders"`
+	ReadOnly       bool               `json:"readOnly"`
+	ArchiveDir     string             `json:"archiveDir"`
 }
 
 type ArchiveItem struct {
@@ -108,7 +103,6 @@ type ArchiveReport struct {
 	TotalCandidates   int              `json:"totalCandidates"`
 	Exported          int              `json:"exported"`
 	SkippedDuplicates int              `json:"skippedDuplicates"`
-	Moved             int              `json:"moved"`
 	Deleted           int              `json:"deleted"`
 	BytesExported     int64            `json:"bytesExported"`
 	BytesEstimated    int64            `json:"bytesEstimated"`
@@ -134,7 +128,7 @@ func (r *Runner) ArchiveStats() (archive.ArchiveStats, error) {
 
 func validMode(mode string) bool {
 	switch mode {
-	case ModeSimulate, ModeExportOnly, ModeExportAndLocal, ModeExportAndDelete:
+	case ModeSimulate, ModeExportOnly, ModeExportAndDelete:
 		return true
 	}
 	return false
@@ -142,8 +136,8 @@ func validMode(mode string) bool {
 
 // checkArchive returns why the request cannot run (nil: it can).
 func checkArchive(cfg config.Config, req ArchiveRequest) error {
-	if !cfg.Mailbox.AccountEnabled(req.AccountID) {
-		if len(cfg.Mailbox.TriageAccountIDs) == 0 {
+	if !cfg.Mailbox.TriageIncludes(req.AccountID) {
+		if !cfg.Mailbox.HasTriageAccounts() {
 			return ErrNoTriageAccounts
 		}
 		return ErrAccountNotEnabled
@@ -151,7 +145,7 @@ func checkArchive(cfg config.Config, req ArchiveRequest) error {
 	if !validMode(req.Mode) {
 		return fmt.Errorf("invalid_argument: unknown archive mode %q", req.Mode)
 	}
-	if (req.Mode == ModeExportAndLocal || req.Mode == ModeExportAndDelete) && cfg.Mailbox.ReadOnly {
+	if req.Mode == ModeExportAndDelete && cfg.Mailbox.ReadOnly {
 		return ErrReadOnly
 	}
 	return nil
@@ -175,15 +169,13 @@ func (r *Runner) PreviewArchive(ctx context.Context, req ArchiveRequest) (Archiv
 		return ArchivePreview{}, err
 	}
 	p := ArchivePreview{
-		TotalCount:       len(list.Candidates),
-		TotalMatched:     list.TotalMatched,
-		TotalBytesAll:    list.TotalBytesAll,
-		Truncated:        list.Truncated,
-		ScannedFolders:   list.ScannedFolders,
-		HasLocalAccount:  list.HasLocalAccount,
-		LocalAccountName: list.LocalAccountName,
-		ReadOnly:         cfg.Mailbox.ReadOnly,
-		ArchiveDir:       cfg.Mailbox.ArchiveDir,
+		TotalCount:     len(list.Candidates),
+		TotalMatched:   list.TotalMatched,
+		TotalBytesAll:  list.TotalBytesAll,
+		Truncated:      list.Truncated,
+		ScannedFolders: list.ScannedFolders,
+		ReadOnly:       cfg.Mailbox.ReadOnly,
+		ArchiveDir:     cfg.Mailbox.ArchiveDir,
 	}
 	for _, c := range list.Candidates {
 		p.TotalBytes += c.Size
@@ -249,9 +241,6 @@ func (r *Runner) RunArchive(ctx context.Context, runID string, req ArchiveReques
 	list, err := r.candidates(ctx, req)
 	if err != nil {
 		return ArchiveReport{}, err
-	}
-	if req.Mode == ModeExportAndLocal && !list.HasLocalAccount {
-		return ArchiveReport{}, errors.New("local_folder_required")
 	}
 	rep := ArchiveReport{
 		RunID:           runID,
@@ -322,21 +311,12 @@ func (r *Runner) archiveOne(ctx context.Context, cfg config.Config, req ArchiveR
 	}
 	rep.BytesExported += res.BytesWritten
 
-	switch req.Mode {
-	case ModeExportAndLocal, ModeExportAndDelete:
-		action := "local"
-		if req.Mode == ModeExportAndDelete {
-			action = "delete"
-		}
-		finish := map[string]any{"candidate": c, "messageId": exp.MessageID, "action": action, "skipTrash": req.SkipTrash}
+	if req.Mode == ModeExportAndDelete {
+		finish := map[string]any{"candidate": c, "messageId": exp.MessageID, "action": "delete", "skipTrash": req.SkipTrash}
 		if err := r.call(ctx, finishTimeout, "host.archive.finish", finish, nil); err != nil {
 			return item, fmt.Errorf("backup verified, mailbox unchanged: %w", err)
 		}
-		if action == "local" {
-			rep.Moved++
-		} else {
-			rep.Deleted++
-		}
+		rep.Deleted++
 	}
 	return item, nil
 }

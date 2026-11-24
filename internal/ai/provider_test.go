@@ -22,13 +22,15 @@ func TestGeminiClassifyStructuredOutput(t *testing.T) {
 		Endpoint: srv.URL,
 	}
 
-	c, err := Classify(context.Background(), cfg, triage.MessageInput{
+	msg := triage.MessageInput{
 		ID:       "msg-42",
 		Subject:  "NDA zur Unterschrift",
 		From:     "legal@partner.de",
 		BodyText: "Bitte bis Freitag unterschrieben zurückschicken.",
 		Unread:   true,
-	})
+	}
+	base, _ := triage.EvaluateStage0(msg, cfg.SkipNewsletters)
+	c, err := ClassifyWithBase(context.Background(), cfg, msg, base)
 	rec.check(t)
 	if err != nil {
 		t.Fatalf("Classify failed: %v", err)

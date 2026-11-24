@@ -50,6 +50,36 @@ func (a *App) OpenMovePicker() {
 		return
 	}
 	ids, batch, account, ok := a.moveTargets()
+	a.openMovePickerFor(ids, batch, account, ok)
+}
+
+// accountOfMails returns the one account the listed mails ids belong to (ok=false when they
+// span several accounts or none is listed).
+func (a *App) accountOfMails(ids []string) (account string, ok bool) {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	for _, m := range a.messages {
+		if !want[m.ID] {
+			continue
+		}
+		if account != "" && m.AccountID != account {
+			return "", false
+		}
+		account = m.AccountID
+	}
+	if account == "" && a.selectedMsg != nil && len(ids) == 1 && a.selectedMsg.ID == ids[0] {
+		account = a.selectedMsg.AccountID
+	}
+	return account, account != ""
+}
+
+// openMovePickerFor opens the folder picker for ids (batch: they are the checked selection).
+func (a *App) openMovePickerFor(ids []string, batch bool, account string, ok bool) {
+	if a.blockedReadOnly() {
+		return
+	}
 	if !ok {
 		if batch {
 			a.toast(a.tr("Verschieben geht nur innerhalb eines Kontos — markiere Mails aus einem Konto.", "Moving only works within one account — select emails from a single account."), "warning")
@@ -122,6 +152,12 @@ func (a *App) moveSourceFolderID() string {
 func (a *App) MoveTo(ctx context.Context, f backend.Folder) {
 	ids, batch := a.moveIDs, a.moveBatch
 	a.moveOpen = false
+	a.moveMailsTo(ctx, ids, batch, f)
+}
+
+// moveMailsTo moves ids into folder f, with Undo: the picker's and drag and drop's path. A
+// single open mail makes way for its neighbour.
+func (a *App) moveMailsTo(ctx context.Context, ids []string, batch bool, f backend.Folder) {
 	if len(ids) == 0 {
 		return
 	}
@@ -156,13 +192,13 @@ func (a *App) archiveKey(ctx context.Context) {
 
 func (a *App) renderMovePicker(c *ui.Context) {
 	t := c.Theme()
-	ui.Modal(c, &a.moveOpen, func() {
+	a.modal(c, &a.moveOpen, func() {
 		rows := a.moveFolderRows()
 		if a.moveCursor >= len(rows) {
 			a.moveCursor = max(len(rows)-1, 0)
 		}
 		src := a.moveSourceFolderID()
-		ui.Column(c).Width(a.modalW(440)).MaxHeight(560).Padding(16).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+		ui.Column(c).Width(a.modalW(440)).MaxHeight(a.modalH(c, 560)).Padding(16).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, iconFolderInput).Size(16, 16).TextColor(t.Accent)
 				title := a.tr("Verschieben nach…", "Move to…")

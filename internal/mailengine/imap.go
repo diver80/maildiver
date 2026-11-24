@@ -1626,12 +1626,12 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 				case "markRead":
 					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
 					t := true
-					_ = e.store.UpdateMessageLocal(ctx, m.ID, &t, nil, nil, nil)
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, &t, nil)
 					m.Read = true
 				case "addStar":
 					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close()
 					t := true
-					_ = e.store.UpdateMessageLocal(ctx, m.ID, nil, &t, nil, nil)
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, nil, &t)
 					m.Flagged = true
 				case "copyToFolder":
 					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)

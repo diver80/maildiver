@@ -93,6 +93,7 @@ type settingsUI struct {
 
 	scanOnNewMail       bool
 	scanLimit, scanDays string
+	triageAccounts      []triageAccountRow
 	archiveDir          string
 
 	keys []keyRow
@@ -108,6 +109,12 @@ type settingsUI struct {
 }
 
 // OpenSettings fills the dialog from config.json and the key store (UI thread).
+// triageAccountRow is one "In KI-Sortierung einbeziehen" checkbox in the triage section.
+type triageAccountRow struct {
+	id, label string
+	include   bool
+}
+
 func (a *App) OpenSettings() {
 	cfg, err := a.opts.ConfigLoader()
 	if err != nil {
@@ -154,6 +161,13 @@ func (a *App) OpenSettings() {
 		scanLimit:           strconv.Itoa(cfg.Mailbox.ScanLimit),
 		scanDays:            strconv.Itoa(cfg.Mailbox.ScanDays),
 		archiveDir:          cfg.Mailbox.ArchiveDir,
+	}
+	for _, acc := range cfg.Direct.Accounts {
+		label := acc.Name
+		if label == "" {
+			label = acc.Email
+		}
+		s.triageAccounts = append(s.triageAccounts, triageAccountRow{id: acc.ID, label: label, include: cfg.Mailbox.TriageIncludes(acc.ID)})
 	}
 	switch cfg.App.EffectiveUndoSendSeconds() {
 	case 0:
@@ -330,6 +344,16 @@ func (a *App) SaveSettings() bool {
 	cfg.AI.MaxAICallsPerScan = maxCalls
 	cfg.AI.AllowUnrestrictedCLI = s.allowCLI
 	cfg.Mailbox.ScanOnNewMail = s.scanOnNewMail
+	cfg.Mailbox.TriageExcludedAccountIDs = nil
+	for _, row := range s.triageAccounts {
+		if row.include {
+			if !cfg.Mailbox.AccountEnabled(row.id) {
+				cfg.Mailbox.TriageAccountIDs = append(cfg.Mailbox.TriageAccountIDs, row.id)
+			}
+		} else {
+			cfg.Mailbox.TriageExcludedAccountIDs = append(cfg.Mailbox.TriageExcludedAccountIDs, row.id)
+		}
+	}
 	cfg.Mailbox.ScanLimit = limit
 	cfg.Mailbox.ScanDays = days
 	cfg.Mailbox.ArchiveDir = strings.TrimSpace(s.archiveDir)
@@ -440,6 +464,9 @@ func (a *App) SaveSettings() bool {
 		}
 	}
 	cfg.App.AllowedImageSenders = append([]string(nil), s.allowedImageSenders...)
+	// The switch saves itself in the background; this save must not bring back the old value.
+	notify := a.notifyEnabled
+	cfg.App.NotifyEnabled = &notify
 	cfg = config.Normalize(cfg)
 	if err := a.opts.ConfigSaver(cfg); err != nil {
 		s.err = a.tr("Nicht gespeichert: ", "Not saved: ") + err.Error()
@@ -475,7 +502,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 	if a.winH > 0 {
 		maxScrollH = min(560, max(220, a.winH-220))
 	}
-	ui.Modal(c, &s.open, func() {
+	a.modal(c, &s.open, func() {
 		ui.Column(c).Width(a.modalW(700)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Einstellungen", "Settings")).FontSize(15).Bold().Grow(1)
@@ -587,6 +614,30 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 				}
 				a.applyConfig(cfg)
 				a.readerBody = readerBody{}
+			}
+		})
+
+		field("set-list-snippet", a.tr("Mail-Liste", "Mail list"), func() {
+			// Saved at once, like "Recolor mail bodies".
+			on := a.cfg.App.EffectiveListSnippets()
+			if ui.Checkbox(c.Key("set-list-snippet-c"), &on, a.tr("Vorschauzeile in der Liste", "Preview line in the list")).Changed() {
+				cfg, err := a.opts.ConfigLoader()
+				if err != nil {
+					cfg = a.cfg
+				}
+				cfg.App.ListSnippets = &on
+				if a.opts.ConfigSaver != nil {
+					_ = a.opts.ConfigSaver(cfg)
+				}
+				a.applyConfig(cfg)
+			}
+		})
+
+		a.settingsSection(c, a.tr("Benachrichtigungen", "Notifications"))
+		field("set-notify", a.tr("Neue Mails & Termine", "New mail & events"), func() {
+			// Applies at once and is saved like the toolbar/tray toggle (also on phones).
+			if ui.Checkbox(c.Key("set-notify-c"), &a.notifyEnabled, a.tr("Systembenachrichtigungen anzeigen", "Show system notifications")).Changed() {
+				a.persistLayoutPrefs()
 			}
 		})
 
@@ -915,6 +966,14 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 			note(a.tr("Triage-Scans sind in config.json ausgeschaltet.", "Triage scans are switched off in config.json."), t.Warning)
 		}
 		ui.Checkbox(c.Key("set-new"), &s.scanOnNewMail, a.tr("Bei neuer Mail automatisch scannen", "Scan automatically when new mail arrives"))
+		if len(s.triageAccounts) > 0 {
+			a.settingsLabel(c, a.tr("In KI-Sortierung einbeziehen", "Include in AI sorting"))
+			for i := range s.triageAccounts {
+				row := &s.triageAccounts[i]
+				ui.Checkbox(c.Key("set-tri-acc-"+row.id), &row.include, row.label)
+			}
+			note(a.tr("Scans und Archiv-Aufträge lassen nicht einbezogene Konten aus.", "Scans and archive jobs skip accounts that are not included."), t.TextMuted)
+		}
 		ui.Checkbox(c.Key("set-clf"), &s.classifyAI, a.tr("Mails per KI einordnen (sonst lokale Schätzung, 0 Tokens)", "Sort mails with AI (else a local estimate, 0 tokens)"))
 		if s.classifyAI {
 			prevClfBackend := s.clfBackend

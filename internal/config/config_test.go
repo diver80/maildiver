@@ -187,3 +187,28 @@ func TestDirectDBPathUsesDataDirAndNormalizesAliases(t *testing.T) {
 		t.Fatalf("unexpected normalized aliases: %+v", aliases)
 	}
 }
+
+// Configs written by older versions keep loading after removed fields (syncDays, calendarIds);
+// the triage exclusion list is replaced, not merged, by a patch.
+func TestOldConfigFieldsAndTriageExclusion(t *testing.T) {
+	next, err := ApplyPatch(Default(), []byte(`{"direct":{"accounts":[{"id":"a1","email":"me@example.org","syncDays":90,"syncLimit":5000,"enabled":true}],
+		"googleCalendar":{"enabled":true,"calendarIds":["primary"]}},
+		"mailbox":{"triageAccountIds":["a1","a2"],"triageExcludedAccountIds":["a2"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next = Normalize(next)
+	if len(next.Direct.Accounts) != 1 || next.Direct.Accounts[0].SyncLimit != DefaultSyncLimit || !next.Direct.GoogleCalendar.Enabled {
+		t.Fatalf("old config not loaded: %+v", next.Direct)
+	}
+	if !next.Mailbox.TriageIncludes("a1") || next.Mailbox.TriageIncludes("a2") || !next.Mailbox.AccountEnabled("a2") || !next.Mailbox.HasTriageAccounts() {
+		t.Fatalf("triage policy: %+v", next.Mailbox)
+	}
+	next, err = ApplyPatch(next, []byte(`{"mailbox":{"triageExcludedAccountIds":["a1"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Mailbox.TriageExcludedAccountIDs) != 1 || !next.Mailbox.HasTriageAccounts() {
+		t.Fatalf("exclusions not replaced: %v", next.Mailbox.TriageExcludedAccountIDs)
+	}
+}

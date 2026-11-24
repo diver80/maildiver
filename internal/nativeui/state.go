@@ -114,10 +114,13 @@ type toastItem struct {
 
 // inspectorState is the message inspector (AI results, contact discovery).
 type inspectorState struct {
-	inspectorMode       string
-	inspectorLoading    bool
-	inspectorResult     string
-	inspectorDraft      string
+	inspectorMode    string
+	inspectorLoading bool
+	inspectorResult  string
+	inspectorDraft   string
+	// inspectorMove is a folder the AI proposed to move the inspected mail to (nil: none).
+	inspectorMove       *backend.Folder
+	inspectorMoveMsgID  string
 	inspectorEvent      *ExtractedEvent
 	inspectorContacts   []ContactProposal
 	inspectorError      string
@@ -145,14 +148,23 @@ type composeState struct {
 	composeOpen bool
 	// composeBaseline is the compose content as opened; closing with other content asks first
 	// (composeCloseAsk) instead of losing it.
-	composeBaseline          string
-	composeCloseAsk          bool
-	composeAccountID         string
-	composeAccountLabel      string
-	composeIdentityID        string
-	composeFromEmail         string
-	composeFromName          string
-	composeDraftID           string
+	composeBaseline     string
+	composeCloseAsk     bool
+	composeAccountID    string
+	composeAccountLabel string
+	composeIdentityID   string
+	composeFromEmail    string
+	composeFromName     string
+	composeDraftID      string
+	// composeDiscardedSeq is the compose session closed by "Verwerfen": an auto-save of it that
+	// lands later is deleted again.
+	composeDiscardedSeq uint64
+	// composeCaret is the caret (runes) the user left in the plain-text body while it read
+	// composeCaretBody; composeCaretApply moves the field's caret there in the next frame.
+	composeCaret             int
+	composeCaretBody         string
+	composeCaretOK           bool
+	composeCaretApply        bool
 	composeReplyTo           string
 	composeReplyType         string
 	composeInReplyTo         string
@@ -199,6 +211,8 @@ type composeState struct {
 	composeAutoSaveSnap      string
 	composeMissingAttWarn    string
 	composeMissingAttAck     bool
+	composeWarnSendAt        int64 // "send later" time of the send the attachment warning holds
+	sendLater                sendLaterUI
 	composeTplOpen           bool
 	composeTplName           string
 	composeSourceMsg         *backend.MessageDetail
@@ -256,6 +270,7 @@ type eventState struct {
 	eventRecurrence int    // 0: none, 1: daily, 2: weekly, 3: monthly, 4: yearly
 	eventRecCount   string // optional COUNT (e.g. "10")
 	eventRecUntil   string // optional UNTIL (YYYY-MM-DD)
+	eventReminder   int    // minutes before the start, backend.ReminderNone for none
 	eventBusy       bool
 }
 
@@ -281,6 +296,7 @@ type App struct {
 	onNotify           func(item AlertItem)
 	onLangChanged      func()
 	onPickFile         func(req FilePickRequest, onDone func(paths []string))
+	onSaveCopy         func(path, name string) (string, error)
 	onPrint            func(title, htmlDoc string)
 	detachedAuxWindows bool
 	onSyncAuxWindows   func()
@@ -413,6 +429,10 @@ type App struct {
 	// Keyboard: "press again to confirm" for key actions on several mails (keymap.go).
 	keyArmSig string
 	keyArmAt  time.Time
+	// rowCompose: a reply/forward from a list row's menu waiting for its mail to load.
+	rowCompose rowComposeReq
+	// selSum: the AI summary of the checked mails (ai_selection.go).
+	selSum selectionSummary
 
 	// Help Modal
 	helpOpen  bool
@@ -528,6 +548,10 @@ func (a *App) SetLanguageHook(fn func()) { a.onLangChanged = fn }
 func (a *App) SetFilePickerHook(fn func(req FilePickRequest, onDone func(paths []string))) {
 	a.onPickFile = fn
 }
+
+// SetSaveCopyHook registers the system's "save a copy" picker (phones: the storage access
+// framework), which takes a file the engine wrote into the app's private cache. It blocks.
+func (a *App) SetSaveCopyHook(fn func(path, name string) (string, error)) { a.onSaveCopy = fn }
 
 // SetPrintHook registers the native print callback supplied by desktopShell.
 func (a *App) SetPrintHook(fn func(title, htmlDoc string)) {
@@ -1481,6 +1505,7 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 		a.inspectorSeq++
 		a.inspectorResult = ""
 		a.inspectorDraft = ""
+		a.inspectorMove, a.inspectorMoveMsgID = nil, ""
 		a.inspectorEvent = nil
 		a.inspectorContacts = nil
 		a.inspectorError = ""
@@ -1524,6 +1549,7 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 			if userOpened {
 				a.scheduleMarkRead(ctx, id)
 			}
+			a.takeRowCompose(a.selectedMsg)
 		})
 	}()
 }
@@ -1542,15 +1568,15 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	a.inspectorLoading = true
 	a.inspectorResult = ""
 	a.inspectorDraft = ""
+	a.inspectorMove, a.inspectorMoveMsgID = nil, ""
 	a.inspectorEvent = nil
 	a.inspectorContacts = nil
 	a.inspectorError = ""
 	req := ai.AnalyzeRequest{
-		Backend:   aiBackend,
-		Model:     model,
-		Mode:      mode,
-		Ephemeral: true,
-		Language:  lang,
+		Backend:  aiBackend,
+		Model:    model,
+		Mode:     mode,
+		Language: lang,
 		PrimaryMessage: triage.MessageInput{
 			ID:       msg.ID,
 			Subject:  msg.Subject,
@@ -1566,8 +1592,15 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	if mode == "summarize" || mode == "draft_reply" {
 		convSize = a.conversationSize(msg.ID)
 	}
+	var hiddenCals map[string]bool
+	if mode == "draft_reply" {
+		hiddenCals = a.hiddenCalendarsCopy()
+	}
 	go func() {
 		req.ThreadMessages = threadForAI(ctx, bc, msg.ID, convSize)
+		if mode == "draft_reply" {
+			req.CalendarHint = calendarHintForAI(ctx, bc, hiddenCals, time.Now())
+		}
 		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
 		defer cancel()
 		var res ai.AnalyzeResponse
@@ -1635,10 +1668,16 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 			a.inspectorLoading = false
 			a.inspectorResult = res.Answer
 			if mode == "draft_reply" {
-				if len(res.Proposals) > 0 && strings.TrimSpace(res.Proposals[0].Body) != "" {
-					a.inspectorDraft = res.Proposals[0].Body
+				if p, ok := res.DraftProposal(); ok {
+					a.inspectorDraft = p.Body
 				} else {
 					a.inspectorDraft = res.Answer
+				}
+			}
+			// A proposed move becomes a chip; it moves only on the user's click.
+			if p, ok := res.MoveProposal(); ok {
+				if f, found := a.findAccountFolder(msg.AccountID, p.FolderPath); found && f.ID != msg.FolderID {
+					a.inspectorMove, a.inspectorMoveMsgID = &f, msg.ID
 				}
 			}
 			if mode == "extract_events" {
@@ -2024,7 +2063,7 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 			req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
 			strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
 			req.Subject, req.Body, req.BodyHTML, req.ReplyToMessageID, req.ReplyType, req.Sign,
-			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
+			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","), strconv.FormatInt(req.SendAt, 10))
 		raw, err := bc.ComposeSend(c, req)
 		a.emitUpdate(func() {
 			if fromSessionSeq != 0 {
@@ -2073,6 +2112,11 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 			if res.Queued {
 				a.LoadOutbox(ctx)
 				a.toast(a.tr("Offline – in Postausgang eingereiht", "Offline – queued in Outbox")+a.composeSecuritySuffix(res.Security), "warning")
+				return
+			}
+			if res.Scheduled {
+				a.LoadOutbox(ctx)
+				a.toast(a.tr("Geplant für ", "Scheduled for ")+a.formatSendAt(time.Unix(res.ScheduledAt, 0))+a.tr(" – im Postausgang", " – in the Outbox")+a.composeSecuritySuffix(res.Security), "success")
 				return
 			}
 			if res.SentCopyFailed {
@@ -2250,12 +2294,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			if (removed || leftFocus) && a.selectedID == id {
 				a.selectedID = ""
 				a.selectedMsg = nil
-				if openNext != "" && !a.isPhone() {
-					a.SelectMessage(ctx, openNext)
-				} else {
-					a.syncPreviewForMessage(nil)
-					a.phonePopMailIfOpen()
-				}
+				a.afterOpenMailRemoved(ctx, openNext)
 			}
 			// Record reversible Undo action (never for permanent deletes).
 			switch {
@@ -2730,15 +2769,6 @@ func (a *App) composeSignatureFor(accountID, email string) string {
 	return a.composeAccountSignature(accountID)
 }
 
-func (a *App) composeAccountEmail(accountID string) string {
-	for _, acc := range a.cfg.Direct.Accounts {
-		if acc.ID == accountID {
-			return strings.ToLower(strings.TrimSpace(acc.Email))
-		}
-	}
-	return ""
-}
-
 // stripSignatureDelim removes any leading RFC 3676 "--" separator line from a stored
 // signature so appending "-- \n" never produces a doubled "-- / --" block.
 func stripSignatureDelim(sig string) string {
@@ -2958,8 +2988,10 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeAutoSaveSnap = ""
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
+	a.composeWarnSendAt = 0
 	a.composeTplOpen = false
 	a.composeTplName = ""
+	a.composeCaret, a.composeCaretBody, a.composeCaretOK, a.composeCaretApply = 0, "", false, false
 	a.composeEditorGen++
 	a.composeSessionSeq++
 	a.composeOpen = true
@@ -3002,6 +3034,7 @@ func (a *App) closeCompose() {
 	a.composeAutoSaveSnap = ""
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
+	a.composeWarnSendAt = 0
 	a.composeTplOpen = false
 	a.composeTplName = ""
 	a.composeSourceMsg = nil
@@ -3009,6 +3042,39 @@ func (a *App) closeCompose() {
 	a.composeContactPickerOpen = false
 	a.composeContactFilter = ""
 	a.syncAuxWindows()
+}
+
+// discardCompose closes compose on "Verwerfen": a draft this compose session auto-saved goes
+// too. A draft the user reopened from Drafts stays, since the discard drops only the edits.
+func (a *App) discardCompose() {
+	if a.composeOwnsDraft() {
+		a.deleteDiscardedDraft(a.composeAccountID, a.composeDraftID)
+	}
+	a.composeDiscardedSeq = a.composeSessionSeq
+	a.closeCompose()
+}
+
+// composeOwnsDraft reports whether composeDraftID was auto-saved by this compose session (not
+// a draft the user opened from Drafts).
+func (a *App) composeOwnsDraft() bool {
+	return a.composeDraftID != "" && a.composeReplyType != "draft"
+}
+
+// deleteDiscardedDraft removes an auto-saved draft in the background (UI thread).
+func (a *App) deleteDiscardedDraft(accountID, draftID string) {
+	bc, err := a.client()
+	if err != nil || draftID == "" || a.readOnly {
+		return
+	}
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := bc.DiscardDraft(c, accountID, draftID); err != nil {
+			a.emitUpdate(func() {
+				a.toast(a.tr("Automatisch gespeicherter Entwurf nicht gelöscht: ", "Auto-saved draft not deleted: ")+a.errText(err), "warning")
+			})
+		}
+	}()
 }
 
 // guardComposeClose runs every frame (UI thread): the window was closed by Escape, a click beside
@@ -3139,12 +3205,16 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 	srcCopy := *msg
 	a.composeSourceMsg = &srcCopy
 	a.resetComposeAIState()
-	if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
+	own := a.accountAllEmails(msg.AccountID)
+	if from := emailAddrKey(msg.From); own[from] {
+		// Own sent mail: answer from the identity it was sent with.
+		a.selectComposeIdentity(msg.AccountID, from)
+	} else if alias := a.matchedRecipientAlias(msg.AccountID, msg.To, msg.CC); alias != "" {
 		a.selectComposeIdentity(msg.AccountID, alias)
 	}
 	a.composeReplyTo = msg.ID
 	a.composeReplyType = "reply"
-	a.composeTo = replyRecipient(msg)
+	a.composeTo = replyRecipient(msg, own)
 	a.composeCC = ""
 	a.composeBCC = ""
 	subj := msg.Subject
@@ -3252,14 +3322,39 @@ func (a *App) replyQuote(msg *backend.MessageDetail) string {
 }
 
 // replyRecipient is where a reply goes: the Reply-To address when the mail names one (mailing
-// lists, shops, helpdesks), else its sender.
-func replyRecipient(msg *backend.MessageDetail) string {
+// lists, shops, helpdesks), else its sender. A mail the user sent himself (From is one of own,
+// e.g. in Sent) is answered to its recipients, as other mail clients do, not to the user.
+func replyRecipient(msg *backend.MessageDetail, own map[string]bool) string {
 	if rt := strings.TrimSpace(msg.Headers["reply-to"]); rt != "" {
-		if list := splitEmailList(rt); len(list) > 0 {
+		if list := splitEmailList(rt); len(list) > 0 && len(withoutOwnAddresses(list, own)) > 0 {
 			return strings.Join(list, ", ")
 		}
 	}
+	if own[emailAddrKey(msg.From)] {
+		if to := withoutOwnAddresses(msg.To, own); len(to) > 0 {
+			return strings.Join(to, ", ")
+		}
+	}
 	return msg.From
+}
+
+// emailAddrKey is the lower-case address of "Name <addr>" or a bare address.
+func emailAddrKey(raw string) string {
+	if addr, err := mail.ParseAddress(raw); err == nil {
+		return strings.ToLower(strings.TrimSpace(addr.Address))
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// withoutOwnAddresses drops the user's own addresses (and empty entries) from list.
+func withoutOwnAddresses(list []string, own map[string]bool) []string {
+	var out []string
+	for _, raw := range list {
+		if raw = strings.TrimSpace(raw); raw != "" && !own[emailAddrKey(raw)] {
+			out = append(out, raw)
+		}
+	}
+	return out
 }
 
 func (a *App) OpenComposeReplyAll(msg *backend.MessageDetail, body string) {
@@ -3269,15 +3364,19 @@ func (a *App) OpenComposeReplyAll(msg *backend.MessageDetail, body string) {
 	a.OpenComposeReply(msg, body)
 	a.composeReplyType = "replyAll"
 
-	seen := a.accountAllEmails(a.composeAccountID)
-	extractAddr := func(raw string) string {
-		if addr, err := mail.ParseAddress(raw); err == nil {
-			return strings.ToLower(strings.TrimSpace(addr.Address))
-		}
-		return strings.ToLower(strings.TrimSpace(raw))
+	seen := a.accountAllEmails(msg.AccountID)
+	for em := range a.accountAllEmails(a.composeAccountID) {
+		seen[em] = true
 	}
+	extractAddr := emailAddrKey
 	if fromAddr := extractAddr(msg.From); fromAddr != "" {
 		seen[fromAddr] = true
+	}
+	// Who the reply already goes to (sender, Reply-To or – for own mail – the original To).
+	for _, raw := range splitEmailList(a.composeTo) {
+		if k := extractAddr(raw); k != "" {
+			seen[k] = true
+		}
 	}
 	var cc []string
 	addCC := func(list []string) {
@@ -3572,6 +3671,7 @@ func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 	a.eventRecurrence = 0
 	a.eventRecCount = ""
 	a.eventRecUntil = ""
+	a.eventReminder = backend.DefaultReminderMinutes
 	if prefill != nil {
 		a.eventTitle = prefill.Title
 		if prefill.Start != "" {
@@ -3633,6 +3733,10 @@ func (a *App) OpenEditEventModal(ev backend.CalendarEvent) {
 	a.eventLocation = ev.Location
 	a.eventDesc = ev.Description
 	a.eventRecurrence, a.eventRecCount, a.eventRecUntil = parseEventRRule(ev.RecurrenceRule)
+	a.eventReminder = ev.ReminderMinutes
+	if a.eventReminder == 0 {
+		a.eventReminder = backend.DefaultReminderMinutes
+	}
 	// Match calendar label
 	for lbl, id := range a.eventCalByLabel {
 		if id == ev.CalendarID {
@@ -3729,9 +3833,17 @@ func (a *App) SaveCalendarEvent(ctx context.Context) {
 		a.toast(a.tr("Bitte einen Titel eingeben.", "Please enter a title."), "error")
 		return
 	}
+	if msg := a.eventTimeError(); msg != "" {
+		a.toast(msg, "error")
+		return
+	}
 	start := normalizeDateTimeInput(a.eventStart)
 	end := normalizeDateTimeInput(a.eventEnd)
 	rrule := buildEventRRule(a.eventRecurrence, a.eventRecCount, a.eventRecUntil)
+	reminder := 0 // the default: calendars that cannot keep a reminder of their own
+	if a.eventReminderSupported() {
+		reminder = a.eventReminder
+	}
 
 	if a.eventEditingID != "" {
 		calID := a.eventEditCalID
@@ -3748,19 +3860,23 @@ func (a *App) SaveCalendarEvent(ctx context.Context) {
 			"rrule":          rrule,
 			"recurrenceRule": rrule,
 		}
+		if reminder != 0 {
+			patch["reminderMinutes"] = reminder
+		}
 		a.UpdateCalendarEvent(ctx, calID, a.eventEditingID, patch)
 		return
 	}
 
 	a.CreateCalendarEvent(ctx, backend.CreateCalendarEventRequest{
-		CalendarID:     a.eventCalByLabel[a.eventCalendar],
-		Title:          title,
-		Start:          start,
-		End:            end,
-		AllDay:         a.eventAllDay,
-		Location:       strings.TrimSpace(a.eventLocation),
-		Description:    strings.TrimSpace(a.eventDesc),
-		RecurrenceRule: rrule,
+		CalendarID:      a.eventCalByLabel[a.eventCalendar],
+		Title:           title,
+		Start:           start,
+		End:             end,
+		AllDay:          a.eventAllDay,
+		Location:        strings.TrimSpace(a.eventLocation),
+		Description:     strings.TrimSpace(a.eventDesc),
+		RecurrenceRule:  rrule,
+		ReminderMinutes: reminder,
 	})
 }
 
@@ -3778,21 +3894,56 @@ func (a *App) StartEventLoop(ctx context.Context) {
 				a.calReload.stop()
 				return
 			case <-reminderTicker.C:
-				a.emitUpdate(a.checkUpcomingMeetingReminders)
+				a.tickMeetingReminders(ctx)
 			}
 		}
 	}()
 	go a.runEventStream(ctx)
 }
 
-// checkUpcomingMeetingReminders raises alerts for meetings starting within ~10 minutes (UI thread).
+// eventReminders is the engine's record of the events reminded of, shared with the phone's
+// background task (mailengine/background.go), so an event never reminds twice.
+type eventReminders interface {
+	RemindedEvents(ctx context.Context) (map[string]bool, error)
+	MarkEventsReminded(ctx context.Context, evs []backend.CalendarEvent) error
+}
+
+// tickMeetingReminders reads what the engine reminded of already (off the UI thread), then
+// checks the loaded events on the UI thread.
+func (a *App) tickMeetingReminders(ctx context.Context) {
+	var done map[string]bool
+	if er, ok := a.opts.Direct.(eventReminders); ok {
+		c, cancel := context.WithTimeout(ctx, 5*time.Second)
+		done, _ = er.RemindedEvents(c)
+		cancel()
+	}
+	a.emitUpdate(func() {
+		for k := range done {
+			a.notifiedEvents[k] = true
+		}
+		a.checkUpcomingMeetingReminders()
+	})
+}
+
+// eventReminderKey names one occurrence (as mailengine.EventReminderKey).
+func eventReminderKey(ev backend.CalendarEvent) string {
+	return ev.ID + "|" + ev.RecurrenceID + "|" + ev.Start
+}
+
+// checkUpcomingMeetingReminders raises alerts for meetings whose reminder (per event, default
+// 10 minutes before) is due (UI thread).
 func (a *App) checkUpcomingMeetingReminders() {
 	if !a.notifyEnabled || len(a.events) == 0 {
 		return
 	}
 	now := time.Now()
+	var reminded []backend.CalendarEvent
 	for _, ev := range a.events {
 		if ev.AllDay || ev.ID == "" || a.isCalendarHidden(ev.CalendarID) {
+			continue
+		}
+		lead, on := ev.ReminderLead()
+		if !on {
 			continue
 		}
 		start, err := parseEventTime(ev.Start)
@@ -3800,24 +3951,47 @@ func (a *App) checkUpcomingMeetingReminders() {
 			continue
 		}
 		diff := start.Sub(now)
-		key := ev.ID + "|" + ev.RecurrenceID + "|" + ev.Start
-		if diff > 0 && diff <= 11*time.Minute && !a.notifiedEvents[key] {
+		key := eventReminderKey(ev)
+		// A minute of slack: the ticker runs once a minute.
+		if diff > 0 && diff <= lead+time.Minute && !a.notifiedEvents[key] {
 			a.notifiedEvents[key] = true
-			mins := int(diff.Minutes()) + 1
-			sub := a.trf("In %d Min (%s)", "In %d min (%s)", mins, start.Local().Format("15:04"))
-			if ev.Location != "" {
-				sub += " · " + ev.Location
-			}
+			reminded = append(reminded, ev)
 			a.pushAlert(AlertItem{
 				ID:        alertCalPrefix + ev.ID,
 				Kind:      "calendar",
 				Title:     ev.Title,
-				Subtitle:  sub,
+				Subtitle:  a.eventReminderSubtitle(ev, start, now),
 				Body:      ev.Calendar,
 				CreatedAt: now,
 			})
 		}
 	}
+	if er, ok := a.opts.Direct.(eventReminders); ok && len(reminded) > 0 {
+		go func() {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = er.MarkEventsReminded(c, reminded)
+		}()
+	}
+}
+
+// eventReminderSubtitle says when (and where) a reminded event starts: "In 10 Min (14:00) · Ort",
+// "In 2 Std (…)" or the day for reminders a day ahead.
+func (a *App) eventReminderSubtitle(ev backend.CalendarEvent, start, now time.Time) string {
+	diff := start.Sub(now)
+	var sub string
+	switch {
+	case diff >= 24*time.Hour:
+		sub = a.trf("Am %s um %s", "On %s at %s", start.Local().Format("02.01."), start.Local().Format("15:04"))
+	case diff >= 90*time.Minute:
+		sub = a.trf("In %d Std (%s)", "In %d h (%s)", int(diff.Round(time.Hour).Hours()), start.Local().Format("15:04"))
+	default:
+		sub = a.trf("In %d Min (%s)", "In %d min (%s)", int(diff.Minutes())+1, start.Local().Format("15:04"))
+	}
+	if ev.Location != "" {
+		sub += " · " + ev.Location
+	}
+	return sub
 }
 
 // pushAlert records an alert and forwards it to the native notification hook (UI thread).
@@ -3917,16 +4091,53 @@ func (a *App) HandleNotificationClick(id string) {
 	switch {
 	case strings.HasPrefix(id, alertMailBatchPrefix):
 		// A batch alert stands for several mails: show the focus list, select nothing.
+		a.selectedID, a.selectedMsg = "", nil
 		a.setNav("focus")
 		a.startMessageLoad(ctx)
+		a.phoneShowRoutes(phoneRouteList)
 	case strings.HasPrefix(id, alertMailPrefix):
 		msgID := strings.TrimPrefix(id, alertMailPrefix)
 		a.setNav("recent")
 		a.startMessageLoad(ctx)
 		a.SelectMessage(ctx, msgID)
+		a.phoneShowRoutes(phoneRouteList, phoneRouteMail)
 	case strings.HasPrefix(id, alertCalPrefix):
 		a.setNav("calendar")
+		a.phoneShowRoutes(phoneRouteList)
 	}
+}
+
+// findAccountFolder finds a folder of accountID by its path or name (case-insensitive).
+func (a *App) findAccountFolder(accountID, path string) (backend.Folder, bool) {
+	want := strings.ToLower(cleanFolderPath(path))
+	if want == "" {
+		return backend.Folder{}, false
+	}
+	for _, f := range a.folders {
+		if f.AccountID == accountID && strings.ToLower(cleanFolderPath(f.Path)) == want {
+			return f, true
+		}
+	}
+	for _, f := range a.folders {
+		if f.AccountID == accountID && strings.EqualFold(strings.TrimSpace(f.Name), want) {
+			return f, true
+		}
+	}
+	return backend.Folder{}, false
+}
+
+// ApplyInspectorMove moves the inspected mail to the folder the AI proposed (UI thread).
+func (a *App) ApplyInspectorMove(ctx context.Context) {
+	f, id := a.inspectorMove, a.inspectorMoveMsgID
+	if f == nil || id == "" || a.blockedReadOnly() {
+		return
+	}
+	a.inspectorMove, a.inspectorMoveMsgID = nil, ""
+	name := f.Name
+	if name == "" {
+		name = cleanFolderPath(f.Path)
+	}
+	a.performMessageAction(ctx, id, backend.MessageActionsRequest{MoveToFolderID: f.ID}, a.tr("Verschoben nach ", "Moved to ")+name, a.neighborAfterRemoval(id))
 }
 
 func (a *App) triageColumnFor(id string) string {

@@ -16,9 +16,8 @@ import (
 type AnalyzeRequest struct {
 	Backend          string                         `json:"backend,omitempty"`
 	Model            string                         `json:"model,omitempty"`
-	Mode             string                         `json:"mode,omitempty"`      // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
-	Ephemeral        bool                           `json:"ephemeral,omitempty"` // result goes straight into an open draft; do not store proposals
-	Language         string                         `json:"language,omitempty"`  // "de" or "en"
+	Mode             string                         `json:"mode,omitempty"`     // "summarize", "summarize_selection", "extract_events", "suggest_filter", "draft_reply", "review_draft", "improve_draft", "compose_new", "translate_draft"
+	Language         string                         `json:"language,omitempty"` // "de" or "en"
 	TargetLanguage   string                         `json:"targetLanguage,omitempty"`
 	Question         string                         `json:"question"`
 	UserDraft        string                         `json:"userDraft,omitempty"`
@@ -55,7 +54,7 @@ type ExtractedContact struct {
 }
 
 type FilterRuleSuggestion struct {
-	Action           string   `json:"action,omitempty"` // "create", "append_or", "fix_and_to_or", "replace"
+	Action           string   `json:"action,omitempty"` // "create", "append_or", "replace"
 	TargetFilterName string   `json:"targetFilterName,omitempty"`
 	Name             string   `json:"name"`
 	Reason           string   `json:"reason"`
@@ -79,6 +78,27 @@ type AnalyzeResponse struct {
 	FilterSuggestions []FilterRuleSuggestion `json:"filterSuggestions,omitempty"`
 	Provider          string                 `json:"provider"`
 	Model             string                 `json:"model"`
+}
+
+// DraftProposal returns the first "draft_reply" proposal with text. Models may list other kinds
+// (move_folder, add_tags) first, so proposals[0] is not necessarily the mail text.
+func (r AnalyzeResponse) DraftProposal() (triage.Proposal, bool) {
+	for _, p := range r.Proposals {
+		if p.Kind == "draft_reply" && strings.TrimSpace(p.Body) != "" {
+			return p, true
+		}
+	}
+	return triage.Proposal{}, false
+}
+
+// MoveProposal returns the first "move_folder" proposal that names a folder.
+func (r AnalyzeResponse) MoveProposal() (triage.Proposal, bool) {
+	for _, p := range r.Proposals {
+		if p.Kind == "move_folder" && strings.TrimSpace(p.FolderPath) != "" {
+			return p, true
+		}
+	}
+	return triage.Proposal{}, false
 }
 
 // TextCompleter executes a prompt and returns raw text/JSON from a backend.
@@ -178,8 +198,8 @@ When mode is "summarize": summarize the thread concisely (key facts, open questi
 When mode is "summarize_selection": summarize all selected emails in "thread" cleanly as a structured briefing (group by topic/sender; list key points, decisions, action items, deadlines/amounts, and open questions); if Owner request asks a specific question, answer it directly across the selected emails.
 When mode is "extract_events": extract concrete calendar events, appointments, meetings, or hard deadlines from the emails in "thread" into "events" (each with title, start in ISO-8601 "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" if allDay=true, optional end, allDay, location, description), and summarize them concisely in "answer".
 When mode is "extract_contacts": inspect the email signature / footer (and sender headers) in "thread" to extract contact details for people or sender organizations into "contacts" (displayName, firstName, lastName, email, phone, mobile, company, jobTitle, website, address, notes). Skip automated noreply senders unless meaningful contact/company metadata exists. Summarize the detected contacts concisely in "answer".
-When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing filter rule covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, AND instead of OR bug, wrong field), prefer proposing action="append_or" or "fix_and_to_or" or "replace" with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
-When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal.
+When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing filter rule covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, wrong field), prefer proposing action="append_or" (adds this suggestion's conditions as OR terms to an OR rule) or "replace" (the suggestion becomes the whole rule) with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
+When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal If the context has a "calendarHint" (the owner's busy times) and the reply proposes or accepts a date, pick a time that does not clash with it; never quote the busy entries themselves.
 When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so it is clearer and fits the requested tone; keep every fact, commitment and the draft's language unless a target language was requested; emit the rewritten text (and an improved/matching "subject" if the existing subject is empty or in the wrong language) as a "draft_reply" proposal.
 When mode is "translate_draft": translate the owner's draft inside <owner_draft> (and translate/adapt the "subject" if present) into the requested target language (or flip German <-> English when auto) in the requested tone, keeping every fact, name, date, and number; emit the translated email as a "draft_reply" proposal with both "subject" and "body".
 When mode is "compose_new": write a new email from the owner's notes (there may be no thread); emit it as a "draft_reply" proposal including a concise, fitting "subject" and full "body".
@@ -221,7 +241,7 @@ Return ONLY valid JSON matching this schema:
   ],
   "filterSuggestions": [
     {
-      "action": "create|append_or|fix_and_to_or|replace",
+      "action": "create|append_or|replace",
       "targetFilterName": "Exact existing filter name when updating an existing filter, else empty",
       "name": "Short descriptive rule name",
       "reason": "Why this pattern matches or fixes the existing filter without catching important mails",
@@ -246,15 +266,6 @@ Return ONLY valid JSON matching this schema:
     }
   ]
 }`
-
-// Classify runs Stage 0 rules first, then falls back to Stage 1 LLM classification.
-func Classify(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput) (triage.Classification, error) {
-	base, matched := triage.EvaluateStage0(msg, cfg.SkipNewsletters)
-	if matched {
-		return base, nil
-	}
-	return ClassifyWithBase(ctx, cfg, msg, base)
-}
 
 // ClassifyWithBase runs Stage 1 LLM classification using a precomputed Stage 0 base result.
 func ClassifyWithBase(ctx context.Context, cfg config.AIConfig, msg triage.MessageInput, base triage.Classification) (triage.Classification, error) {

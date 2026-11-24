@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/diver80/maildiver/internal/config"
+	evhub "github.com/diver80/maildiver/internal/events"
 	"github.com/diver80/maildiver/internal/triage"
 )
 
@@ -41,7 +42,7 @@ func (f *fakeTB) CallHost(_ context.Context, method string, params any) (json.Ra
 	case "host.triage.collect":
 		return json.Marshal(collected{Messages: f.messages, ScannedFolders: 1})
 	case "host.archive.candidates":
-		return json.Marshal(candidateList{Candidates: f.cands, TotalMatched: len(f.cands), ScannedFolders: 1, HasLocalAccount: true, LocalAccountName: "Lokal"})
+		return json.Marshal(candidateList{Candidates: f.cands, TotalMatched: len(f.cands), ScannedFolders: 1})
 	case "host.archive.raw":
 		if f.rawErr != nil {
 			return nil, f.rawErr
@@ -217,6 +218,38 @@ func TestNewMailScansOnlyWhenAsked(t *testing.T) {
 	}
 }
 
+func TestFollowNewMailSchedulesScanOnlyWhenEnabled(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		cfg := triageConfig()
+		cfg.Mailbox.ScanOnNewMail = enabled
+		ctx, cancel := context.WithCancel(context.Background())
+		hub := evhub.NewHub()
+		r := New(ctx, &fakeTB{}, &events{}, triage.NewStoreAt(t.TempDir()), func() (config.Config, error) { return cfg, nil })
+		r.FollowNewMail(hub)
+		hub.Publish("mail.sync", map[string]any{"accountId": "acc1"}) // not new mail
+		hub.Publish("mail.new", map[string]any{"accountId": "acc1", "count": 1})
+		scheduled := func() bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.newMailTimer != nil
+		}
+		if enabled {
+			waitFor(t, scheduled)
+		} else {
+			time.Sleep(100 * time.Millisecond)
+			if scheduled() {
+				t.Fatal("scanOnNewMail is off: mail.new must not schedule a scan")
+			}
+		}
+		cancel()
+		r.mu.Lock()
+		if r.newMailTimer != nil {
+			r.newMailTimer.Stop()
+		}
+		r.mu.Unlock()
+	}
+}
+
 func archiveSetup(t *testing.T, readOnly bool) (*Runner, *fakeTB, *events, string) {
 	t.Helper()
 	cfg := triageConfig()
@@ -233,7 +266,7 @@ func archiveSetup(t *testing.T, readOnly bool) (*Runner, *fakeTB, *events, strin
 func TestArchiveSimulateTouchesNothing(t *testing.T) {
 	r, tb, _, dir := archiveSetup(t, true)
 	p, err := r.PreviewArchive(context.Background(), ArchiveRequest{AccountID: "acc1"})
-	if err != nil || p.TotalCount != 2 || p.TotalBytes != 200 || !p.HasLocalAccount || !p.ReadOnly || p.ArchiveDir != dir {
+	if err != nil || p.TotalCount != 2 || p.TotalBytes != 200 || !p.ReadOnly || p.ArchiveDir != dir {
 		t.Fatalf("preview = %+v err=%v", p, err)
 	}
 	rep, err := r.RunArchive(context.Background(), "run-1", ArchiveRequest{AccountID: "acc1", Mode: ModeSimulate})
@@ -251,10 +284,8 @@ func TestArchiveSimulateTouchesNothing(t *testing.T) {
 func TestArchiveDeletesOnlyAfterVerifiedBackup(t *testing.T) {
 	// Read-only refuses every mode that changes the mailbox.
 	r, _, _, _ := archiveSetup(t, true)
-	for _, mode := range []string{ModeExportAndLocal, ModeExportAndDelete} {
-		if _, err := r.StartArchive(ArchiveRequest{AccountID: "acc1", Mode: mode}); !errors.Is(err, ErrReadOnly) {
-			t.Errorf("%s in read-only: %v", mode, err)
-		}
+	if _, err := r.StartArchive(ArchiveRequest{AccountID: "acc1", Mode: ModeExportAndDelete}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("delete in read-only: %v", err)
 	}
 	if _, err := r.StartArchive(ArchiveRequest{AccountID: "acc1", Mode: "wipe"}); err == nil || !strings.HasPrefix(err.Error(), "invalid_argument") {
 		t.Errorf("unknown mode: %v", err)

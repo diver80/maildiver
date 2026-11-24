@@ -206,6 +206,10 @@ func (s *desktopShell) ready(opts Options) {
 	s.app.SetFilePickerHook(func(req FilePickRequest, onDone func(paths []string)) {
 		go s.runFileDialog(req, onDone)
 	})
+	if isMobile {
+		// Phones: the app's own folders are private, so saved files go where the user picks.
+		s.app.SetSaveCopyHook(mygo.Dialog.SaveCopy)
+	}
 	s.app.SetPrintHook(func(title, htmlDoc string) {
 		s.printHTMLDocument(title, htmlDoc)
 	})

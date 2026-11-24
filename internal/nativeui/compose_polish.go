@@ -239,6 +239,8 @@ func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.composeEditorGen++
 }
 
+// checkComposeMissingAttachment arms the "attachment missing?" warning when the text mentions
+// an attachment but none is attached (and the user has not confirmed sending anyway).
 func (a *App) checkComposeMissingAttachment(req backend.ComposeRequest) bool {
 	if a.composeMissingAttAck || len(req.Attachments) > 0 || len(req.SourceAttachments) > 0 {
 		return false
@@ -308,11 +310,15 @@ func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest
 }
 
 func (a *App) finalizeComposeSend(ctx context.Context, sessSeq uint64, req backend.ComposeRequest) {
-	if !a.composeMissingAttAck && len(req.Attachments) == 0 && len(req.SourceAttachments) == 0 {
-		if kw := detectMissingAttachmentKeyword(extractComposeUserTextOnly(req.Body)); kw != "" {
-			a.composeMissingAttWarn = kw
-			return
-		}
+	if a.checkComposeMissingAttachment(req) {
+		a.composeWarnSendAt = req.SendAt // "Send anyway" keeps a chosen later time
+		return
+	}
+	if req.SendAt > 0 {
+		// Scheduled: the outbox is the undo (cancel or back to drafts there), no countdown.
+		a.composeConfirm = false
+		a.SendCompose(ctx, req)
+		return
 	}
 
 	delaySec := a.cfg.App.EffectiveUndoSendSeconds()
@@ -424,37 +430,80 @@ func (a *App) commitPendingSend(ctx context.Context, nonces ...string) {
 // FlushPendingSendsOnQuit synchronously dispatches any queued Undo-Send emails (or saves them as
 // drafts on failure) before the app exits so no email is silently dropped during shutdown.
 func (a *App) FlushPendingSendsOnQuit() {
-	if len(a.pendingSends) == 0 {
+	bc, queue := a.takePendingSends()
+	for _, ps := range queue {
+		flushPendingSend(bc, ps)
+	}
+}
+
+// FlushPendingSendsOnSuspend sends the Undo-Send queue at once when a phone app goes to the
+// background (UI thread): the queue lives in memory only, and Android may kill a background
+// app without a quit. The sends run off the UI thread so the app's pause is not held up.
+func (a *App) FlushPendingSendsOnSuspend() {
+	bc, queue := a.takePendingSends()
+	if len(queue) == 0 {
 		return
+	}
+	go func() {
+		failed := 0
+		for _, ps := range queue {
+			if !flushPendingSend(bc, ps) {
+				failed++
+			}
+		}
+		if failed > 0 {
+			a.emitUpdate(func() {
+				a.toast(a.trf("%d E-Mail(s) im Hintergrund nicht gesendet — als Entwurf gesichert", "%d email(s) not sent in the background — saved as draft", failed), "warning")
+			})
+		}
+	}()
+}
+
+// takePendingSends empties the Undo-Send queue for a flush (UI thread).
+func (a *App) takePendingSends() (*backend.Client, []*pendingComposeSend) {
+	if len(a.pendingSends) == 0 {
+		return nil, nil
 	}
 	bc, err := a.client()
 	if err != nil || a.readOnly {
-		return
+		return nil, nil
 	}
-	queue := a.pendingSends
+	var queue []*pendingComposeSend
+	for _, ps := range a.pendingSends {
+		if ps != nil && !ps.Busy {
+			ps.Busy = true
+			queue = append(queue, ps)
+		}
+	}
 	a.pendingSends = nil
-	for _, ps := range queue {
-		if ps == nil || ps.Busy {
-			continue
-		}
-		ps.Busy = true
-		c, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		req := ps.Req
-		var srcAttKeys []string
-		for _, sa := range req.SourceAttachments {
-			srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
-		}
-		req.IdempotencyKey = backend.ContentIdempotencyKey(ps.Nonce, "send",
-			req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
-			strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
-			req.Subject, req.Body, req.BodyHTML, req.ReplyToMessageID, req.ReplyType, req.Sign,
-			strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
-		if _, serr := bc.ComposeSend(c, req); serr != nil {
-			req.IdempotencyKey = backend.NewIdempotencyKey()
-			_, _ = bc.ComposeDraft(c, req)
-		}
-		cancel()
+	return bc, queue
+}
+
+// flushPendingSend sends one queued mail, or saves it as a draft when sending fails (the engine
+// itself queues it in the outbox on network errors). It reports whether the mail went out.
+func flushPendingSend(bc *backend.Client, ps *pendingComposeSend) bool {
+	req := ps.Req
+	var srcAttKeys []string
+	for _, sa := range req.SourceAttachments {
+		srcAttKeys = append(srcAttKeys, sa.MessageID+":"+sa.PartName+":"+sa.Name)
 	}
+	req.IdempotencyKey = backend.ContentIdempotencyKey(ps.Nonce, "send",
+		req.AccountID, req.IdentityID, req.FromEmail, req.DraftMessageID,
+		strings.Join(req.To, ","), strings.Join(req.CC, ","), strings.Join(req.BCC, ","),
+		req.Subject, req.Body, req.BodyHTML, req.ReplyToMessageID, req.ReplyType, req.Sign,
+		strings.Join(req.Attachments, ","), strings.Join(srcAttKeys, ","))
+	c, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	_, err := bc.ComposeSend(c, req)
+	cancel()
+	if err != nil {
+		// A fresh deadline: a send that timed out must not leave the draft no time.
+		dc, dcancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer dcancel()
+		req.IdempotencyKey = backend.NewIdempotencyKey()
+		_, _ = bc.ComposeDraft(dc, req)
+		return false
+	}
+	return true
 }
 
 func (a *App) startComposeAutoSaveTicker(sessSeq uint64) {
@@ -516,6 +565,7 @@ func (a *App) autoSaveDraft(ctx context.Context, snapAtStart string) {
 		return
 	}
 	sessSeq := a.composeSessionSeq
+	resumedDraft := a.composeReplyType == "draft"
 	req := a.buildComposeReq(false)
 	req.IdempotencyKey = backend.NewIdempotencyKey()
 	a.composeAutoSaveBusy = true
@@ -552,11 +602,15 @@ func (a *App) autoSaveDraft(ctx context.Context, snapAtStart string) {
 			if err != nil {
 				return
 			}
+			res := backend.ParseComposeResult(raw)
 			// Guard against stale in-flight auto-saves from a previous/closed compose session.
 			if !a.composeOpen || a.composeSessionSeq != sessSeq {
+				// Discarded while this save ran: its draft must not stay behind.
+				if sessSeq == a.composeDiscardedSeq && !resumedDraft && res.DraftID != "" {
+					a.deleteDiscardedDraft(req.AccountID, res.DraftID)
+				}
 				return
 			}
-			res := backend.ParseComposeResult(raw)
 			if res.DraftID != "" {
 				a.composeDraftID = res.DraftID
 			}
@@ -590,7 +644,7 @@ func (a *App) renderUndoSendBar(c *ui.Context) {
 		}
 		msg := a.trf("Sende „%s“ in %d s…", "Sending “%s” in %d s…", subj, rem)
 		ui.Row(c.Key(fmt.Sprintf("undo-send-bar-%d-%s", i, psCopy.Nonce))).FillWidth().Padding(7, 12).Gap(8).AlignItems(ui.Center).
-			Background(withAlpha(t.Accent, 0.14)).BorderWidth(0, 0, 1, 0).BorderColor(withAlpha(t.Accent, 0.55)).Children(func() {
+			Background(withAlpha(t.Accent, 0.14)).BorderWidth(0, 0, 1, 0).BorderColor(withAlpha(t.Accent, 0.55)).Shrink(0).Children(func() {
 			ui.Icon(c, iconSend).Size(14, 14).TextColor(t.Accent).Shrink(0)
 			ui.Text(c, msg).FontSize(12).Bold().Grow(1).MinWidth(0).SingleLine()
 			if ui.Button(c.Key("undo-send-now-"+psCopy.Nonce), a.tr("Jetzt senden", "Send now")).Padding(3, 9).Clicked() && !psCopy.Busy {
@@ -611,8 +665,7 @@ func (a *App) insertComposeTemplate(tpl config.ComposeTemplate) {
 		a.composeEditor.InsertHTML(plainBlockToEditableHTML(tpl.Body))
 		a.NotifyComposeDirty()
 	} else {
-		a.composeBody = insertComposeSnippet(a.composeBody, tpl.Body)
-		a.composeDirtyAt = time.Now()
+		a.insertComposeText(tpl.Body)
 	}
 	a.composeTplOpen = false
 }

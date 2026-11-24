@@ -72,7 +72,7 @@ func (a *App) handleEngineEvent(ctx context.Context, name string, payload json.R
 		if json.Unmarshal(payload, &p) == nil && p.AccountID != "" {
 			a.emitUpdate(func() { a.syncErrors[p.AccountID] = p.Error })
 		}
-	case "mail.updated", "mail.moved", "mail.deleted":
+	case "mail.updated":
 		a.msgReload.trigger(func() { a.LoadMessages(ctx) })
 	case "calendar.changed":
 		a.calReload.trigger(func() { a.RefreshAll(ctx) })

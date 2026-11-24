@@ -175,16 +175,7 @@ func TestReplyAllMatchesAndExcludesAliases(t *testing.T) {
 	}
 }
 
-func TestAliasesParseAndFolderUnreadBadgeRender(t *testing.T) {
-	parsed := parseAliasesInput("info@example.de, Max Team <team@example.de>")
-	if len(parsed) != 2 || parsed[0].Email != "info@example.de" || parsed[1].DisplayName != "Max Team" {
-		t.Fatalf("unexpected parsed aliases: %+v", parsed)
-	}
-	formatted := formatAliasesInput(parsed)
-	if !strings.Contains(formatted, "info@example.de") || !strings.Contains(formatted, "team@example.de") {
-		t.Fatalf("unexpected formatted aliases: %q", formatted)
-	}
-
+func TestFolderUnreadBadgeRender(t *testing.T) {
 	app := NewApp(Options{})
 	app.folders = []backend.Folder{
 		{ID: "f1", AccountID: "acc1", Name: "INBOX", Path: "/INBOX", Type: "inbox", UnreadCount: 7},
@@ -276,12 +267,6 @@ func TestReviewSecuritySanitizerSSRFAndDailyUXFixes(t *testing.T) {
 	}
 	if strings.ContainsAny(mf.Subject, "\r\n") {
 		t.Fatalf("subject must not contain CR/LF: %q", mf.Subject)
-	}
-
-	// 6. Alias parser handles unquoted dotted display names ("Dr. Max <max@firma.de>").
-	als := parseAliasesInput("Dr. Max Mustermann <max@firma.de>, sales@firma.de")
-	if len(als) != 2 || als[0].Email != "max@firma.de" || als[0].DisplayName != "Dr. Max Mustermann" || als[1].Email != "sales@firma.de" {
-		t.Fatalf("parseAliasesInput failed on dotted name: %+v", als)
 	}
 
 	// 7. isDraftsMessage does not misclassify "Vertragsentwürfe"; isCurrentViewOutbound matches Sent/Drafts.

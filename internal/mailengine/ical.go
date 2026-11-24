@@ -149,7 +149,63 @@ func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.E
 		IsRecurring:  rruleVal != "" || recID != "",
 		ReadOnly:     readOnly,
 		Status:       st,
+		ReminderMin:  icalReminder(ev.Component),
 	}, true
+}
+
+// ReminderNone in StoredEvent.ReminderMin / CalendarEvent.ReminderMinutes: no reminder at all
+// (0 is the app's default).
+const ReminderNone = backend.ReminderNone
+
+// propNoAlarm marks an event whose reminder the user turned off, so that a CalDAV round trip
+// (no VALARM) does not bring the default back.
+const propNoAlarm = "X-MAILDIVER-NO-ALARM"
+
+// icalReminder reads the first VALARM triggered before the start (TRIGGER:-PT15M) as minutes,
+// ReminderNone for an event marked without one, and 0 (the default) otherwise.
+func icalReminder(comp *ical.Component) int {
+	if comp == nil {
+		return 0
+	}
+	if p := comp.Props.Get(propNoAlarm); p != nil && strings.EqualFold(strings.TrimSpace(p.Value), "TRUE") {
+		return ReminderNone
+	}
+	for _, child := range comp.Children {
+		if child.Name != ical.CompAlarm {
+			continue
+		}
+		trig := child.Props.Get(ical.PropTrigger)
+		if trig == nil {
+			continue
+		}
+		if rel := trig.Params.Get("RELATED"); rel != "" && !strings.EqualFold(rel, "START") {
+			continue // relative to the end: not a "before the start" reminder
+		}
+		v := strings.TrimSpace(trig.Value)
+		if !strings.HasPrefix(v, "-") {
+			continue // absolute times and alarms at or after the start
+		}
+		d, err := parseICalDuration(strings.TrimPrefix(v, "-"))
+		if err != nil || d <= 0 {
+			continue
+		}
+		return max(1, int(d/time.Minute))
+	}
+	return 0
+}
+
+// addICalReminder writes ReminderMin as a display VALARM (or the no-alarm marker).
+func addICalReminder(ev *ical.Event, title string, minutes int) {
+	switch {
+	case minutes == ReminderNone:
+		ev.Props.Set(&ical.Prop{Name: propNoAlarm, Params: ical.Params{}, Value: "TRUE"})
+	case minutes > 0:
+		alarm := ical.NewComponent(ical.CompAlarm)
+		alarm.Props.SetText(ical.PropAction, "DISPLAY")
+		alarm.Props.SetText(ical.PropDescription, title)
+		alarm.Props.Set(&ical.Prop{Name: ical.PropTrigger, Params: ical.Params{}, Value: fmt.Sprintf("-PT%dM", minutes)})
+		ev.Children = append(ev.Children, alarm)
+	}
 }
 
 func parseICalPropTime(p *ical.Prop) (time.Time, bool, error) {
@@ -416,20 +472,21 @@ func ExpandEventsInWindow(events []StoredEvent, start, end time.Time, limit int)
 
 func storedEventToBridge(ev StoredEvent) backend.CalendarEvent {
 	return backend.CalendarEvent{
-		ID:             ev.ID,
-		CalendarID:     ev.CalendarID,
-		Calendar:       ev.CalendarName,
-		Title:          ev.Title,
-		Start:          ev.StartISO,
-		End:            ev.EndISO,
-		AllDay:         ev.AllDay,
-		Location:       ev.Location,
-		Description:    ev.Description,
-		ReadOnly:       ev.ReadOnly,
-		RecurrenceID:   ev.RecurrenceID,
-		RecurrenceRule: ev.RRule,
-		IsRecurring:    ev.IsRecurring || ev.RRule != "",
-		ResponseStatus: ev.SelfResponse,
+		ID:              ev.ID,
+		CalendarID:      ev.CalendarID,
+		Calendar:        ev.CalendarName,
+		Title:           ev.Title,
+		Start:           ev.StartISO,
+		End:             ev.EndISO,
+		AllDay:          ev.AllDay,
+		Location:        ev.Location,
+		Description:     ev.Description,
+		ReadOnly:        ev.ReadOnly,
+		RecurrenceID:    ev.RecurrenceID,
+		RecurrenceRule:  ev.RRule,
+		IsRecurring:     ev.IsRecurring || ev.RRule != "",
+		ResponseStatus:  ev.SelfResponse,
+		ReminderMinutes: ev.ReminderMin,
 	}
 }
 
@@ -663,6 +720,7 @@ func ExportEventsICS(calName string, events []StoredEvent) string {
 		if e.RRule != "" {
 			ev.Props.Set(&ical.Prop{Name: ical.PropRecurrenceRule, Value: e.RRule})
 		}
+		addICalReminder(ev, e.Title, e.ReminderMin)
 		cal.Children = append(cal.Children, ev.Component)
 	}
 	var buf bytes.Buffer

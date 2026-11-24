@@ -127,26 +127,28 @@ type Folder struct {
 type MessageHeader struct {
 	ID string `json:"id"`
 	// MessageID is the RFC Message-ID without <> (contract §4); used as expectedMessageId.
-	MessageID string   `json:"messageId,omitempty"`
-	ThreadID  string   `json:"threadId"`
-	AccountID string   `json:"accountId"`
-	FolderID  string   `json:"folderId"`
-	Folder    string   `json:"folder"`
-	InInbox   bool     `json:"inInbox"`
-	Subject   string   `json:"subject"`
-	From      string   `json:"from"`
-	To        []string `json:"to"`
-	CC        []string `json:"cc,omitempty"`
-	Date      string   `json:"date"`
-	Read      bool     `json:"read"`
-	Unread    bool     `json:"unread"`
-	Flagged   bool     `json:"flagged"`
-	Tags      []string `json:"tags"`
+	MessageID      string   `json:"messageId,omitempty"`
+	ThreadID       string   `json:"threadId"`
+	AccountID      string   `json:"accountId"`
+	FolderID       string   `json:"folderId"`
+	Folder         string   `json:"folder"`
+	InInbox        bool     `json:"inInbox"`
+	Subject        string   `json:"subject"`
+	From           string   `json:"from"`
+	To             []string `json:"to"`
+	CC             []string `json:"cc,omitempty"`
+	Date           string   `json:"date"`
+	Read           bool     `json:"read"`
+	Unread         bool     `json:"unread"`
+	Flagged        bool     `json:"flagged"`
 	Size           int64    `json:"size"`
 	HasAttachments bool     `json:"hasAttachments,omitempty"`
 	External       bool     `json:"external,omitempty"`
 	// ThreadCount is the number of mails in this mail's conversation (lists only; 0 = unknown).
 	ThreadCount int `json:"threadCount,omitempty"`
+	// Snippet is the start of the mail's own text for the list's preview line ("" when the body
+	// was not fetched yet or the mail is encrypted).
+	Snippet string `json:"snippet,omitempty"`
 }
 
 // ConversationMessage is one mail of a conversation: its header and the start of its text.
@@ -230,14 +232,12 @@ type MessageOptions struct {
 type MessageActionsRequest struct {
 	// ExpectedMessageID makes the extension reject the action with "message_changed" when the
 	// mail found under the ID has a different Message-ID (contract §4).
-	ExpectedMessageID string   `json:"expectedMessageId,omitempty"`
-	Read              *bool    `json:"read,omitempty"`
-	Flagged           *bool    `json:"flagged,omitempty"`
-	AddTags           []string `json:"addTags,omitempty"`
-	RemoveTags        []string `json:"removeTags,omitempty"`
-	MoveToFolderID    string   `json:"moveToFolderId,omitempty"`
-	MoveToPath        string   `json:"moveToPath,omitempty"`
-	Trash             bool     `json:"trash,omitempty"`
+	ExpectedMessageID string `json:"expectedMessageId,omitempty"`
+	Read              *bool  `json:"read,omitempty"`
+	Flagged           *bool  `json:"flagged,omitempty"`
+	MoveToFolderID    string `json:"moveToFolderId,omitempty"`
+	MoveToPath        string `json:"moveToPath,omitempty"`
+	Trash             bool   `json:"trash,omitempty"`
 	// Archive files the mail in the account's archive folder (the identity's archive folder and
 	// yearly/monthly layout). Use at most one of Trash, Archive and MoveTo*.
 	Archive bool `json:"archive,omitempty"`
@@ -326,6 +326,9 @@ type ComposeRequest struct {
 	// IdempotencyKey deduplicates retries (contract §5). ComposeDraft/ComposeSend fill in a
 	// random key when empty; callers that may retry should set a stable one.
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// SendAt (unix seconds) sends the mail later: the engine keeps it in its outbox until then.
+	// 0 or a past time sends at once.
+	SendAt int64 `json:"sendAt,omitempty"`
 }
 
 // ComposeResult is the part of a compose.draft / compose.send result the app shows.
@@ -341,6 +344,9 @@ type ComposeResult struct {
 	Security *ComposeSecurity `json:"security,omitempty"`
 	// SentCopyFailed: the mail went out, but its copy could not be stored in the Sent folder.
 	SentCopyFailed bool `json:"sentCopyFailed,omitempty"`
+	// Scheduled: the mail waits in the outbox until ScheduledAt (unix seconds).
+	Scheduled   bool  `json:"scheduled,omitempty"`
+	ScheduledAt int64 `json:"scheduledAt,omitempty"`
 }
 
 // OutboxEntry describes a queued or failed outgoing email in the local offline outbox.
@@ -356,6 +362,8 @@ type OutboxEntry struct {
 	LastError      string   `json:"lastError,omitempty"`
 	CreatedAt      int64    `json:"createdAt"`
 	NextRetryAt    int64    `json:"nextRetryAt"`
+	// ScheduledAt (unix seconds) is when a "send later" mail goes out (0: at once).
+	ScheduledAt int64 `json:"scheduledAt,omitempty"`
 }
 
 // ComposeSecurity is what was applied: Technology "OpenPGP" or "S/MIME", "" without a key.
@@ -400,6 +408,27 @@ type CalendarEvent struct {
 	Attendees      []string `json:"attendees,omitempty"`
 	ResponseStatus string   `json:"responseStatus,omitempty"` // "", "accepted", "tentative", "declined", "needsAction", "imported"
 	InCalendarName string   `json:"inCalendarName,omitempty"`
+	// ReminderMinutes is the reminder before the start: 0 the app's default
+	// (DefaultReminderMinutes), ReminderNone none, else minutes.
+	ReminderMinutes int `json:"reminderMinutes,omitempty"`
+}
+
+// ReminderNone (CalendarEvent.ReminderMinutes) turns an event's reminder off;
+// DefaultReminderMinutes is the reminder of events that set none.
+const (
+	ReminderNone           = -1
+	DefaultReminderMinutes = 10
+)
+
+// ReminderLead is how long before its start an event reminds, false for none.
+func (ev CalendarEvent) ReminderLead() (time.Duration, bool) {
+	switch {
+	case ev.ReminderMinutes == ReminderNone:
+		return 0, false
+	case ev.ReminderMinutes > 0:
+		return time.Duration(ev.ReminderMinutes) * time.Minute, true
+	}
+	return DefaultReminderMinutes * time.Minute, true
 }
 
 type CalendarEventsResponse struct {
@@ -416,6 +445,8 @@ type CreateCalendarEventRequest struct {
 	Location       string `json:"location,omitempty"`
 	Description    string `json:"description,omitempty"`
 	RecurrenceRule string `json:"rrule,omitempty"`
+	// ReminderMinutes as in CalendarEvent (kept for local and CalDAV calendars).
+	ReminderMinutes int `json:"reminderMinutes,omitempty"`
 }
 
 // Calendar delete/update scopes (contract §7).
@@ -465,11 +496,6 @@ type ContactUpsertResponse struct {
 	OK      bool          `json:"ok"`
 	Action  string        `json:"action,omitempty"` // "imported" | "enriched"
 	Contact ContactRecord `json:"contact"`
-}
-
-type TriageStateResponse struct {
-	State      triage.State      `json:"state"`
-	BarSummary triage.BarSummary `json:"barSummary"`
 }
 
 type AIProvidersResponse struct {

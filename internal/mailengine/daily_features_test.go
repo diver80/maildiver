@@ -545,25 +545,31 @@ func TestReviewSecurityAndSaveAccountPreservation(t *testing.T) {
 	eng, acc, _, _, _, cleanup := setupTestEngineWithIMAPAndSMTP(t, aliases)
 	defer cleanup()
 
-	// 1. SaveAccount must preserve SyncDays, SyncLimit, and per-alias Signature when form omits them.
-	acc.SyncDays = 180
-	acc.SyncLimit = 500
+	// 1. SaveAccount keeps SyncLimit when the caller omits it; the alias list from the form
+	// (with its per-alias signatures) replaces the old one, so a cleared signature stays cleared.
+	acc.SyncLimit = 800
 	if _, err := eng.SaveAccount(ctx, acc, ""); err != nil {
 		t.Fatal(err)
 	}
 	edited := acc
-	edited.SyncDays = 0
 	edited.SyncLimit = 0
-	edited.Aliases = []config.AccountAlias{{Email: "sales@example.org", DisplayName: "Sales Team", Signature: ""}}
+	edited.Aliases = []config.AccountAlias{{Email: "sales@example.org", DisplayName: "Sales Team", Signature: "Gruß\nTeam"}}
 	saved, err := eng.SaveAccount(ctx, edited, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.SyncDays != 180 || saved.SyncLimit != 500 {
-		t.Fatalf("SaveAccount wiped SyncDays/SyncLimit: got %d/%d", saved.SyncDays, saved.SyncLimit)
+	if saved.SyncLimit != 800 {
+		t.Fatalf("SaveAccount wiped SyncLimit: got %d", saved.SyncLimit)
 	}
-	if len(saved.Aliases) != 1 || saved.Aliases[0].Signature != "Beste Grüße,\nSales" {
-		t.Fatalf("SaveAccount wiped alias signature: got %+v", saved.Aliases)
+	if len(saved.Aliases) != 1 || saved.Aliases[0].Signature != "Gruß\nTeam" || saved.Aliases[0].DisplayName != "Sales Team" {
+		t.Fatalf("SaveAccount did not update alias signature: got %+v", saved.Aliases)
+	}
+	edited.Aliases[0].Signature = ""
+	if saved, err = eng.SaveAccount(ctx, edited, ""); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Aliases[0].Signature != "" {
+		t.Fatalf("cleared alias signature came back: %+v", saved.Aliases)
 	}
 
 	// 2. deleteDraftIfExists must refuse to delete a message in INBOX (non-draft folder).

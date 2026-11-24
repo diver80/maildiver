@@ -52,7 +52,7 @@ func TestFooterHintsFollowContext(t *testing.T) {
 	// Read-only hides every write key.
 	app.readOnly = true
 	for _, h := range app.footerHints() {
-		if h.Keys == "d" || h.Keys == "s" || h.Keys == "u" {
+		if h.Keys == "d/⌫" || h.Keys == "s" || h.Keys == "u" {
 			t.Fatalf("read-only must not advertise %q", h.Keys)
 		}
 	}

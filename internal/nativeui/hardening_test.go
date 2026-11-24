@@ -134,7 +134,7 @@ func (r *countingRPC) CallHost(_ context.Context, method string, params any) (js
 	case "host.triage.collect":
 		return json.RawMessage(`{"messages":[{"id":"m1","threadId":"m1@acme.de","accountId":"acc1","subject":"Angebot Q4","from":"Alice <alice@acme.de>","unread":true},{"id":"m9","threadId":"m9@acme.de","accountId":"acc1","subject":"Vertrag","from":"Bob <bob@acme.de>","encrypted":true,"unread":true}],"scannedFolders":1}`), nil
 	case "host.archive.candidates":
-		return json.RawMessage(`{"candidates":[{"messageId":"old1","headerMessageId":"old1@x","accountId":"acc1","accountName":"Work","folderId":"f1","folderPath":"INBOX","subject":"Alte Rechnung","from":"a@b.de","date":"2024-02-03T10:00:00Z","size":2048}],"totalMatched":1,"scannedFolders":1,"hasLocalAccount":true}`), nil
+		return json.RawMessage(`{"candidates":[{"messageId":"old1","headerMessageId":"old1@x","accountId":"acc1","accountName":"Work","folderId":"f1","folderPath":"INBOX","subject":"Alte Rechnung","from":"a@b.de","date":"2024-02-03T10:00:00Z","size":2048}],"totalMatched":1,"scannedFolders":1}`), nil
 	}
 	return json.RawMessage(`{}`), nil
 }
@@ -716,11 +716,11 @@ func TestComposeCloseAsksWhenChanged(t *testing.T) {
 
 func TestReplyGoesToReplyTo(t *testing.T) {
 	msg := &backend.MessageDetail{MessageHeader: backend.MessageHeader{From: "Shop <noreply@shop.de>"}, Headers: map[string]string{"reply-to": "Support <help@shop.de>"}}
-	if got := replyRecipient(msg); got != `"Support" <help@shop.de>` && got != "Support <help@shop.de>" {
+	if got := replyRecipient(msg, nil); got != `"Support" <help@shop.de>` && got != "Support <help@shop.de>" {
 		t.Fatalf("reply to %q", got)
 	}
 	msg.Headers = nil
-	if got := replyRecipient(msg); got != msg.From {
+	if got := replyRecipient(msg, nil); got != msg.From {
 		t.Fatalf("without Reply-To: %q", got)
 	}
 }

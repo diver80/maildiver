@@ -20,14 +20,6 @@ const (
 	listModelsTimeout = 30 * time.Second
 )
 
-// NewAnyLLMProvider creates the any-llm-go provider for a ProviderConfig taken from config.json
-// (use ProviderForBackend). Base URL, API key and HTTP client are pinned by the backend registry;
-// extraOpts cannot override them. The returned model falls back to the backend default.
-func NewAnyLLMProvider(cfg config.ProviderConfig, extraOpts ...anyllm.Option) (anyllm.Provider, string, error) {
-	p, _, model, err := buildProvider(cfg, true, extraOpts)
-	return p, model, err
-}
-
 // AnyLLMCompleter adapts any-llm-go's Provider to OmaThunder's TextCompleter interface.
 type AnyLLMCompleter struct {
 	cfg config.ProviderConfig

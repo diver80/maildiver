@@ -880,104 +880,40 @@ type undoAction struct {
 	PrevValue   bool
 }
 
-// --- Alias parsing & formatting for DirectAccount form ---
+// --- Sender aliases in the DirectAccount form ---
 
-func formatAliasesInput(aliases []config.AccountAlias) string {
-	if len(aliases) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(aliases))
+// aliasRow is one editable alias in the account form. origSignature remembers the loaded text so
+// an edited signature drops the old HTML signature (compose would prefer the stale HTML).
+type aliasRow struct {
+	name, email, signature string
+	signatureHTML          string
+	origSignature          string
+}
+
+func aliasRowsFromConfig(aliases []config.AccountAlias) []aliasRow {
+	rows := make([]aliasRow, 0, len(aliases))
 	for _, al := range aliases {
-		if al.Email == "" {
+		rows = append(rows, aliasRow{name: al.DisplayName, email: al.Email, signature: al.Signature,
+			signatureHTML: al.SignatureHTML, origSignature: al.Signature})
+	}
+	return rows
+}
+
+// aliasesFromRows turns the form rows into config aliases; rows without an address are dropped.
+func aliasesFromRows(rows []aliasRow) []config.AccountAlias {
+	var out []config.AccountAlias
+	for _, r := range rows {
+		email := strings.TrimSpace(r.email)
+		if email == "" {
 			continue
 		}
-		lines = append(lines, formatEmailAddress(al.DisplayName, al.Email))
-	}
-	return strings.Join(lines, ", ")
-}
-
-func parseSingleAliasToken(part string) (config.AccountAlias, bool) {
-	part = strings.TrimSpace(part)
-	if part == "" {
-		return config.AccountAlias{}, false
-	}
-	if a, err := mail.ParseAddress(part); err == nil && strings.TrimSpace(a.Address) != "" {
-		return config.AccountAlias{Email: strings.TrimSpace(a.Address), DisplayName: strings.TrimSpace(a.Name)}, true
-	}
-	// Handle unquoted display names containing dots (e.g. "Dr. Max Mustermann <max@firma.de>").
-	if lt := strings.LastIndexByte(part, '<'); lt >= 0 {
-		if gt := strings.LastIndexByte(part, '>'); gt > lt {
-			addrRaw := strings.TrimSpace(part[lt+1 : gt])
-			nameRaw := strings.Trim(strings.TrimSpace(part[:lt]), `"`)
-			if a, err := mail.ParseAddress(addrRaw); err == nil && strings.TrimSpace(a.Address) != "" {
-				return config.AccountAlias{Email: strings.TrimSpace(a.Address), DisplayName: nameRaw}, true
-			}
+		sig := strings.TrimRight(r.signature, " \t\r\n")
+		html := r.signatureHTML
+		if sig != strings.TrimRight(r.origSignature, " \t\r\n") {
+			html = ""
 		}
+		out = append(out, config.AccountAlias{Email: email, DisplayName: strings.TrimSpace(r.name), Signature: sig, SignatureHTML: html})
 	}
-	if strings.Contains(part, "@") && !strings.ContainsAny(part, " \t<>") {
-		return config.AccountAlias{Email: part}, true
-	}
-	return config.AccountAlias{}, false
-}
-
-func parseAliasesInput(raw string) []config.AccountAlias {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	// Accept newline- or comma-separated entries (including "Dr. Max <alias@domain.de>").
-	normalized := strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\n", ", ")
-	if addrs, err := mail.ParseAddressList(normalized); err == nil && len(addrs) > 0 {
-		out := make([]config.AccountAlias, 0, len(addrs))
-		for _, a := range addrs {
-			if strings.TrimSpace(a.Address) == "" {
-				continue
-			}
-			out = append(out, config.AccountAlias{
-				Email:       strings.TrimSpace(a.Address),
-				DisplayName: strings.TrimSpace(a.Name),
-			})
-		}
-		return out
-	}
-	// Fallback split by comma outside quotes/angle brackets so "Dr. Max <a@b.de>, sales@b.de" parses cleanly.
-	var out []config.AccountAlias
-	var cur strings.Builder
-	inQuote := false
-	inAngle := false
-	flush := func() {
-		if al, ok := parseSingleAliasToken(cur.String()); ok {
-			out = append(out, al)
-		}
-		cur.Reset()
-	}
-	for i := 0; i < len(normalized); i++ {
-		ch := normalized[i]
-		switch ch {
-		case '"':
-			inQuote = !inQuote
-			cur.WriteByte(ch)
-		case '<':
-			if !inQuote {
-				inAngle = true
-			}
-			cur.WriteByte(ch)
-		case '>':
-			if !inQuote {
-				inAngle = false
-			}
-			cur.WriteByte(ch)
-		case ',':
-			if !inQuote && !inAngle {
-				flush()
-				continue
-			}
-			cur.WriteByte(ch)
-		default:
-			cur.WriteByte(ch)
-		}
-	}
-	flush()
 	return out
 }
 

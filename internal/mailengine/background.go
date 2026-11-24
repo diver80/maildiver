@@ -3,9 +3,13 @@ package mailengine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"sync"
+	"time"
+
+	"github.com/diver80/maildiver/internal/backend"
 )
 
 // Mail while the app is not open (phones): the system wakes the app now and then, it syncs the
@@ -98,8 +102,8 @@ func (s *Store) takeNewInboxMail(ctx context.Context, collect bool) ([]StoredMes
 		if collect && raw != "" && in.maxUID > mark && len(out) < maxNewInboxMail {
 			msgRows, err := s.db.QueryContext(ctx, `
 				SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
-				       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, tags_json, size,
-				       '', '', body_fetched, '[]', '{}', NULL, has_ics, ''
+				       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
+				       '', '', body_fetched, '[]', '{}', NULL, has_ics, '', snippet
 				FROM messages WHERE folder_id=? AND uid>? AND read=0 ORDER BY uid DESC LIMIT ?`,
 				in.id, mark, maxNewInboxMail-len(out))
 			if err != nil {
@@ -123,4 +127,127 @@ func (s *Store) takeNewInboxMail(ctx context.Context, collect bool) ([]StoredMes
 		}
 	}
 	return out, nil
+}
+
+// Calendar reminders while the app is not open: the same wake-up reports the events about to
+// start. Which occurrences were reminded of – by the wake-up or by the open app – is kept in
+// kv_meta, so neither reminds of one twice.
+
+const remindedEventsKey = "reminded_events"
+
+// reminderHorizon is how far ahead events are expanded for reminders: the longest reminder
+// (cleanReminderMinutes) and a day.
+const reminderHorizon = 8 * 24 * time.Hour
+
+// EventReminderKey names one occurrence of an event in the reminded set.
+func EventReminderKey(ev backend.CalendarEvent) string {
+	return ev.ID + "|" + ev.RecurrenceID + "|" + ev.Start
+}
+
+// RemindedEvents returns the keys (EventReminderKey) of the occurrences reminded of already.
+func (e *Engine) RemindedEvents(ctx context.Context) (map[string]bool, error) {
+	e.store.remindMu.Lock()
+	defer e.store.remindMu.Unlock()
+	set, err := e.store.remindedEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(set))
+	for k := range set {
+		out[k] = true
+	}
+	return out, nil
+}
+
+// MarkEventsReminded records occurrences the open app reminded of.
+func (e *Engine) MarkEventsReminded(ctx context.Context, evs []backend.CalendarEvent) error {
+	if len(evs) == 0 {
+		return nil
+	}
+	e.store.remindMu.Lock()
+	defer e.store.remindMu.Unlock()
+	set, err := e.store.remindedEvents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ev := range evs {
+		set[EventReminderKey(ev)] = parseFlexibleEventTime(ev.Start, 0).Unix()
+	}
+	return e.store.saveRemindedEvents(ctx, set, time.Now())
+}
+
+// TakeDueEventReminders returns the timed events starting after now whose reminder is due by
+// now+within – within being the time to the next wake-up, so a reminder never falls between two
+// – that were not reminded of yet, and records them. Events with the reminder off, all-day
+// events and those of skipCalendars are left out.
+func (e *Engine) TakeDueEventReminders(ctx context.Context, now time.Time, within time.Duration, skipCalendars []string) ([]backend.CalendarEvent, error) {
+	raw, err := e.store.ListRawEvents(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	skip := make(map[string]bool, len(skipCalendars))
+	for _, id := range skipCalendars {
+		skip[id] = true
+	}
+	e.store.remindMu.Lock()
+	defer e.store.remindMu.Unlock()
+	set, err := e.store.remindedEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var due []backend.CalendarEvent
+	for _, ev := range ExpandEventsInWindow(raw, now, now.Add(reminderHorizon), 0) {
+		if ev.AllDay || ev.ID == "" || skip[ev.CalendarID] {
+			continue
+		}
+		lead, ok := ev.ReminderLead()
+		if !ok {
+			continue
+		}
+		start := parseFlexibleEventTime(ev.Start, 0)
+		until := start.Sub(now)
+		key := EventReminderKey(ev)
+		if until <= 0 || until > max(lead, within) || set[key] != 0 {
+			continue
+		}
+		set[key] = start.Unix()
+		due = append(due, ev)
+	}
+	if len(due) == 0 {
+		return nil, nil
+	}
+	if err := e.store.saveRemindedEvents(ctx, set, now); err != nil {
+		return nil, err
+	}
+	return due, nil
+}
+
+// remindedEvents reads the reminded set: key → start (unix), for dropping past ones.
+func (s *Store) remindedEvents(ctx context.Context) (map[string]int64, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT v FROM kv_meta WHERE k=?`, remindedEventsKey).Scan(&raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	set := map[string]int64{}
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &set)
+	}
+	return set, nil
+}
+
+// saveRemindedEvents stores the set without occurrences that started over two days ago.
+func (s *Store) saveRemindedEvents(ctx context.Context, set map[string]int64, now time.Time) error {
+	cutoff := now.Add(-48 * time.Hour).Unix()
+	for k, start := range set {
+		if start < cutoff {
+			delete(set, k)
+		}
+	}
+	b, err := json.Marshal(set)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO kv_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, remindedEventsKey, string(b))
+	return err
 }

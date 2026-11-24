@@ -254,8 +254,8 @@ func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 		return
 	}
 	t := c.Theme()
-	ui.Modal(c, &p.open, func() {
-		ui.Column(c).Width(a.modalW(720)).MaxHeight(720).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
+	a.modal(c, &p.open, func() {
+		ui.Column(c).Width(a.modalW(720)).MaxHeight(a.modalH(c, 720)).Padding(18).Radius(12).Background(t.Surface).Border(1, t.Border).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Wrap().Children(func() {
 				ui.Icon(c, iconPaperclip).Size(17, 17).TextColor(t.Accent).Shrink(0)
 				title := p.filename
@@ -273,6 +273,9 @@ func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 					}
 					if iconLabelBtn(c.Key("attpv-dl"), iconDownload, dlLabel, true, "").Clicked() {
 						a.DownloadAndOpenAttachment(context.Background(), p.msgID, p.partName, p.filename)
+					}
+					if a.onSaveCopy != nil && iconLabelBtn(c.Key("attpv-save"), iconDownload, a.tr("Speichern…", "Save…"), false, "").Clicked() {
+						a.SaveAttachmentCopy(context.Background(), p.msgID, p.partName, p.filename)
 					}
 				}
 				if ui.Button(c.Key("attpv-x"), "✕").Clicked() {
@@ -297,7 +300,7 @@ func (a *App) renderAttachmentPreviewModal(c *ui.Context) {
 				}
 				ui.Scroll(c.Key("attpv-img-sc")).FillWidth().MaxHeight(520).Children(func() {
 					ui.Column(c).FillWidth().Center().Padding(8).Radius(8).Background(t.Background).Children(func() {
-						ui.Image(c, p.imgSrc).MaxWidth(a.modalW(660)).MaxHeight(480).Radius(6)
+						ui.Image(c, p.imgSrc).MaxWidth(min(660, a.modalW(720)-52)).MaxHeight(480).Radius(6)
 					})
 				})
 			case p.parsedEML != nil:

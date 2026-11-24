@@ -97,13 +97,13 @@ func (a *App) footerHints() []keyHint {
 	case keyCtxSelection:
 		out = append(out, h("x", "Markieren", "check"), h("shift+x", "Bereich", "range"), h("⌘A", "Alle", "all"))
 		if !ro {
-			out = append(out, h("e", "Archivieren", "archive"), h("d", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("u", "Gelesen", "mark read"), h("s", "Stern", "star"))
+			out = append(out, h("e", "Archivieren", "archive"), h("d/⌫", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("u", "Gelesen", "mark read"), h("s", "Stern", "star"))
 		}
 		out = append(out, h("q", "Quick-Regel", "quick rule"), h("esc", "Auswahl aufheben", "clear"))
 	case keyCtxMessage:
 		out = append(out, h("j/k", "Nächste/Vorige", "next/prev"), h("r/a/f", "Antw./Alle/Weiterl.", "reply/all/fwd"))
 		if !ro {
-			out = append(out, h("e", "Archivieren", "archive"), h("d", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("s", "Stern", "star"), h("u", "Gelesen/Ungelesen", "read/unread"))
+			out = append(out, h("e", "Archivieren", "archive"), h("d/⌫", "Papierkorb", "trash"), h("v", "Verschieben", "move"), h("s", "Stern", "star"), h("u", "Gelesen/Ungelesen", "read/unread"))
 		}
 		out = append(out, h("shift+j/k", "Scrollen", "scroll"), h("x", "Markieren", "check"), h("esc", "Zurück", "back"))
 	default:
@@ -219,7 +219,15 @@ func (a *App) handleShortcuts(c *ui.Context) {
 	if c.Shortcut(0, ui.KeyU) {
 		a.readKey(ctx)
 	}
-	if c.Shortcut(0, ui.KeyD) {
+	// Delete and Backspace (the Mac's "delete" key) trash like "d"; window shortcuts never see
+	// them while a text field has the focus, and all three are registered every frame. A held
+	// key's auto-repeat counts for nothing: it would confirm "press again" by itself and go on
+	// trashing (in Trash: deleting for good) each mail that opens next.
+	fresh := func(pressed bool) bool { return pressed && !c.ShortcutRepeated() }
+	trashD := fresh(c.Shortcut(0, ui.KeyD))
+	trashDel := fresh(c.Shortcut(0, ui.KeyDelete))
+	trashBack := fresh(c.Shortcut(0, ui.KeyBackspace))
+	if (trashD || trashDel || trashBack) && !c.FocusTakesText() {
 		a.trashKey(ctx)
 	}
 	if c.Shortcut(0, ui.KeyE) {
@@ -487,6 +495,36 @@ func (a *App) neighborAfterRemoval(id string) string {
 	return ""
 }
 
+// neighborOutside is neighborAfterRemoval for several mails leaving at once: the first mail
+// after id that stays, else the last one before it.
+func (a *App) neighborOutside(id string, leaving []string) string {
+	gone := make(map[string]bool, len(leaving))
+	for _, l := range leaving {
+		gone[l] = true
+	}
+	at := -1
+	for i, m := range a.messages {
+		if m.ID == id {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	for i := at + 1; i < len(a.messages); i++ {
+		if !gone[a.messages[i].ID] {
+			return a.messages[i].ID
+		}
+	}
+	for i := at - 1; i >= 0; i-- {
+		if !gone[a.messages[i].ID] {
+			return a.messages[i].ID
+		}
+	}
+	return ""
+}
+
 // escapeKey clears the checked mails, else closes the open mail (the list cursor stays).
 func (a *App) escapeKey() {
 	if len(a.checkedIDs) > 0 {
@@ -513,7 +551,7 @@ func (a *App) shortcutHelpRows() []keyHint {
 		h("⌘A", "Alle sichtbaren Mails auswählen / abwählen", "Select / deselect all visible emails"),
 		h("s", "Stern setzen/entfernen (markierte: Stern setzen)", "Toggle star (checked: add star)"),
 		h("u", "Gelesen/ungelesen (markierte: gelesen)", "Read/unread (checked: mark read)"),
-		h("d", "In den Papierkorb, öffnet die nächste Mail · mehrere markierte: d zweimal", "Move to Trash and open the next email · several checked: press d twice"),
+		h("d  ·  ⌫  ·  entf", "In den Papierkorb, öffnet die nächste Mail · mehrere markierte: zweimal drücken", "Move to Trash and open the next email · several checked: press twice"),
 		h("e", "Archivieren, öffnet die nächste Mail", "Archive and open the next email"),
 		h("v", "Verschieben nach… (Ordner desselben Kontos)", "Move to… (folders of the same account)"),
 		h("r", "Antworten", "Reply"),

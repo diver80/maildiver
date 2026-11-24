@@ -31,152 +31,173 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 					}
 				}
 			})
-			cliHint, hasCLIHint := ai.CLIModelHints(a.agentBackend)
-			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-				if len(a.providerLabels) > 0 {
-					label := a.providerLabel
-					if ui.Select(c.Key("cp-prov"), &label, a.providerLabels).Grow(1).MinWidth(0).Changed() {
-						a.selectProvider(context.Background(), label)
-					}
-				}
-				if len(a.modelChoices) > 0 {
-					ui.Select(c.Key("cp-model"), &a.agentModel, a.modelChoices).Grow(1).MinWidth(0)
-				} else {
-					ph := a.tr("Modell…", "Model…")
-					if hasCLIHint {
-						ph = a.tr(cliHint.PlaceholderDE, cliHint.PlaceholderEN)
-					}
-					ui.TextInput(c.Key("cp-model-in"), &a.agentModel).Placeholder(ph).Grow(1).MinWidth(0)
-				}
-				if !hasCLIHint {
-					ref := iconBtn(c.Key("cp-model-refresh"), iconRefresh, a.tr("Modelle neu laden", "Reload models"), ui.Color{}, false)
-					if a.modelsLoading {
-						ref.Disabled(true)
-					}
-					if ref.Clicked() && !a.modelsLoading {
-						a.LoadModelsAsync(context.Background())
-					}
-				}
-			})
-			if hasCLIHint {
-				a.renderCLIModelHintChips(c, "cp-cli-m", &a.agentModel, cliHint)
-			}
-			if a.modelsError != "" {
-				ui.Text(c, a.tr("Modelle nicht ladbar: ", "Could not load models: ")+a.modelsError).FontSize(11).TextColor(t.Warning)
-			}
-			// Quick prompt chips
-			ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
-				if ui.Button(c.Key("qp-action"), a.tr("Action-Mails", "Action Mail")).Clicked() {
-					a.SendCopilotPrompt(context.Background(), a.tr(
-						"Welche ungelesenen Mails erfordern heute eine Antwort oder Entscheidung von mir?",
-						"Which unread emails require a reply or decision from me today?",
-					))
-				}
-				if ui.Button(c.Key("qp-free"), a.tr("Freie Slots", "Free Slots")).Clicked() {
-					a.SendCopilotPrompt(context.Background(), a.tr(
-						"Prüfe meinen Kalender für heute und morgen und nenne freie Zeitfenster.",
-						"Check my calendar for today and tomorrow and list free time slots.",
-					))
-				}
-				if a.selectedMsg != nil {
-					if ui.Button(c.Key("qp-sel"), a.tr("Diese Mail", "This Email")).Clicked() {
-						a.SendCopilotPrompt(context.Background(), a.tr(
-							"Fasse die aktuell ausgewählte Mail zusammen und schlage die nächste sinnvolle Aktion oder einen Antwort-Entwurf vor.",
-							"Summarize the currently selected email and suggest the next best action or reply draft.",
-						))
-					}
-				}
-			})
+			a.renderCopilotControls(c, false)
 		})
+		a.renderCopilotChat(c, false)
+	})
+}
 
-		// Streaming chat log
-		if a.chatStreaming && a.widgets.chatScroll.Y >= a.widgets.chatScroll.MaxY-2 {
-			a.widgets.chatScroll.Y = math.MaxFloat32
+// renderCopilotControls shows the provider and model choice and the quick prompts (the phone's
+// with the daily briefing, which the desktop has in its toolbar).
+func (a *App) renderCopilotControls(c *ui.Context, phone bool) {
+	t := c.Theme()
+	cliHint, hasCLIHint := ai.CLIModelHints(a.agentBackend)
+	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		if len(a.providerLabels) > 0 {
+			label := a.providerLabel
+			if ui.Select(c.Key("cp-prov"), &label, a.providerLabels).Grow(1).MinWidth(0).Changed() {
+				a.selectProvider(context.Background(), label)
+			}
 		}
-		ui.Scroll(c.Key("cp-scroll")).TrackScroll(&a.widgets.chatScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(12).Gap(10).Children(func() {
-				if len(a.chatEntries) == 0 {
-					ui.Column(c).FillWidth().Padding(14).Radius(10).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
-						ui.Text(c, a.tr("Direkter Live-Zugriff auf Mail & Kalender", "Direct Live Access to Mail & Calendar")).FontSize(12.5).Bold()
-						ui.Text(c, a.tr(
-							"Frage nach Postfach-Prioritäten, offenen Terminen, Antwort-Entwürfen oder starte ein Tages-Briefing. Schreibende Aktionen (Entwurf, Termin, Gelesen-Status) schlägt der Assistent nur vor — ausgeführt wird erst nach deinem Klick.",
-							"Ask about inbox priorities, upcoming events, reply drafts, or start a daily briefing. Write actions (draft, event, read status) are only proposed — nothing runs until you click.",
-						)).FontSize(12).TextColor(t.TextMuted)
-					})
-				}
-				for _, entry := range a.chatEntries {
-					e := entry
-					if e.Role == "user" {
-						ui.Row(c.Key(e.ID)).FillWidth().Children(func() {
-							ui.Spacer(c)
-							ui.Column(c).Padding(9, 12).Radius(10).Background(withAlpha(t.Accent, 0.22)).Border(1, withAlpha(t.Accent, 0.45)).Children(func() {
-								ui.Text(c, e.Content).FontSize(12.5).Selectable()
-							})
-						})
-						continue
-					}
-					ui.Column(c.Key(e.ID)).FillWidth().Padding(10, 12).Radius(10).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
-						if len(e.Tools) > 0 {
-							ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
-								for _, tr := range e.Tools {
-									lbl := "⚙ " + tr.Name
-									bg, fg := withAlpha(t.Warning, 0.16), t.Warning
-									if tr.Done {
-										lbl = "✓ " + tr.Name
-										if tr.Summary != "" {
-											lbl += ": " + tr.Summary
-										}
-										bg, fg = withAlpha(t.Success, 0.16), t.Success
-									}
-									pillBadge(c, lbl, bg, fg)
-								}
-							})
-						}
-						if e.Status != "" {
-							ui.Text(c, e.Status).FontSize(11.5).TextColor(t.TextMuted)
-						}
-						if e.Error != "" {
-							ui.Text(c, a.tr("Fehler: ", "Error: ")+e.Error).FontSize(12).TextColor(t.Danger)
-						}
-						if e.Content != "" {
-							opts := a.chatMarkdownOpts(e.ID, e.Streaming)
-							if e.Streaming {
-								markdown.Stream(c, e.Content, opts)
-							} else {
-								markdown.View(c, e.Content, opts)
-							}
-						}
-						for _, id := range e.ActionIDs {
-							if pa := a.pendingActions[id]; pa != nil {
-								a.renderActionCard(c, id, pa)
-							}
-						}
-					})
-				}
-			})
-		})
-
-		// Composer input at bottom
-		ui.Divider(c)
-		ui.Column(c).FillWidth().Padding(10, 12).Gap(8).Children(func() {
-			ta := ui.TextArea(c.Key("cp-input"), &a.chatInput).Placeholder(a.tr("Frage deinen KI-Assistenten (⌘Enter zum Senden)…", "Ask your AI Assistant (⌘Enter to send)…")).FillWidth().Height(68)
-			if a.focusChat {
-				ta.Focus()
-				a.focusChat = false
+		if len(a.modelChoices) > 0 {
+			ui.Select(c.Key("cp-model"), &a.agentModel, a.modelChoices).Grow(1).MinWidth(0)
+		} else {
+			ph := a.tr("Modell…", "Model…")
+			if hasCLIHint {
+				ph = a.tr(cliHint.PlaceholderDE, cliHint.PlaceholderEN)
 			}
-			if ta.Shortcut(ui.Cmd, ui.KeyEnter) {
+			ui.TextInput(c.Key("cp-model-in"), &a.agentModel).Placeholder(ph).Grow(1).MinWidth(0)
+		}
+		if !hasCLIHint {
+			ref := iconBtn(c.Key("cp-model-refresh"), iconRefresh, a.tr("Modelle neu laden", "Reload models"), ui.Color{}, false)
+			if a.modelsLoading {
+				ref.Disabled(true)
+			}
+			if ref.Clicked() && !a.modelsLoading {
+				a.LoadModelsAsync(context.Background())
+			}
+		}
+	})
+	if hasCLIHint {
+		a.renderCLIModelHintChips(c, "cp-cli-m", &a.agentModel, cliHint)
+	}
+	if a.modelsError != "" {
+		ui.Text(c, a.tr("Modelle nicht ladbar: ", "Could not load models: ")+a.modelsError).FontSize(11).TextColor(t.Warning)
+	}
+	// Quick prompt chips
+	ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
+		if ui.Button(c.Key("qp-action"), a.tr("Action-Mails", "Action Mail")).Clicked() {
+			a.SendCopilotPrompt(context.Background(), a.tr(
+				"Welche ungelesenen Mails erfordern heute eine Antwort oder Entscheidung von mir?",
+				"Which unread emails require a reply or decision from me today?",
+			))
+		}
+		if ui.Button(c.Key("qp-free"), a.tr("Freie Slots", "Free Slots")).Clicked() {
+			a.SendCopilotPrompt(context.Background(), a.tr(
+				"Prüfe meinen Kalender für heute und morgen und nenne freie Zeitfenster.",
+				"Check my calendar for today and tomorrow and list free time slots.",
+			))
+		}
+		if phone {
+			if ui.Button(c.Key("qp-brief"), a.tr("Tagesbriefing", "Daily briefing")).Clicked() {
+				a.OpenDayBriefing(context.Background())
+			}
+		}
+		if a.selectedMsg != nil {
+			if ui.Button(c.Key("qp-sel"), a.tr("Diese Mail", "This Email")).Clicked() {
+				a.SendCopilotPrompt(context.Background(), a.tr(
+					"Fasse die aktuell ausgewählte Mail zusammen und schlage die nächste sinnvolle Aktion oder einen Antwort-Entwurf vor.",
+					"Summarize the currently selected email and suggest the next best action or reply draft.",
+				))
+			}
+		}
+	})
+}
+
+// renderCopilotChat shows the conversation and the composer below it.
+func (a *App) renderCopilotChat(c *ui.Context, phone bool) {
+	t := c.Theme()
+	// Streaming chat log
+	if a.chatStreaming && a.widgets.chatScroll.Y >= a.widgets.chatScroll.MaxY-2 {
+		a.widgets.chatScroll.Y = math.MaxFloat32
+	}
+	ui.Scroll(c.Key("cp-scroll")).TrackScroll(&a.widgets.chatScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+		ui.Column(c).FillWidth().Padding(12).Gap(10).Children(func() {
+			if len(a.chatEntries) == 0 {
+				ui.Column(c).FillWidth().Padding(14).Radius(10).Background(t.Background).Border(1, t.Border).Gap(6).Children(func() {
+					ui.Text(c, a.tr("Direkter Live-Zugriff auf Mail & Kalender", "Direct Live Access to Mail & Calendar")).FontSize(12.5).Bold()
+					ui.Text(c, a.tr(
+						"Frage nach Postfach-Prioritäten, offenen Terminen, Antwort-Entwürfen oder starte ein Tages-Briefing. Schreibende Aktionen (Entwurf, Termin, Gelesen-Status) schlägt der Assistent nur vor — ausgeführt wird erst nach deinem Klick.",
+						"Ask about inbox priorities, upcoming events, reply drafts, or start a daily briefing. Write actions (draft, event, read status) are only proposed — nothing runs until you click.",
+					)).FontSize(12).TextColor(t.TextMuted)
+				})
+			}
+			for _, entry := range a.chatEntries {
+				e := entry
+				if e.Role == "user" {
+					ui.Row(c.Key(e.ID)).FillWidth().Children(func() {
+						ui.Spacer(c)
+						ui.Column(c).Padding(9, 12).Radius(10).Background(withAlpha(t.Accent, 0.22)).Border(1, withAlpha(t.Accent, 0.45)).Children(func() {
+							ui.Text(c, e.Content).FontSize(12.5).Selectable()
+						})
+					})
+					continue
+				}
+				ui.Column(c.Key(e.ID)).FillWidth().Padding(10, 12).Radius(10).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
+					if len(e.Tools) > 0 {
+						ui.Row(c).FillWidth().Gap(6).Wrap().Children(func() {
+							for _, tr := range e.Tools {
+								lbl := "⚙ " + tr.Name
+								bg, fg := withAlpha(t.Warning, 0.16), t.Warning
+								if tr.Done {
+									lbl = "✓ " + tr.Name
+									if tr.Summary != "" {
+										lbl += ": " + tr.Summary
+									}
+									bg, fg = withAlpha(t.Success, 0.16), t.Success
+								}
+								pillBadge(c, lbl, bg, fg)
+							}
+						})
+					}
+					if e.Status != "" {
+						ui.Text(c, e.Status).FontSize(11.5).TextColor(t.TextMuted)
+					}
+					if e.Error != "" {
+						ui.Text(c, a.tr("Fehler: ", "Error: ")+e.Error).FontSize(12).TextColor(t.Danger)
+					}
+					if e.Content != "" {
+						opts := a.chatMarkdownOpts(e.ID, e.Streaming)
+						if e.Streaming {
+							markdown.Stream(c, e.Content, opts)
+						} else {
+							markdown.View(c, e.Content, opts)
+						}
+					}
+					for _, id := range e.ActionIDs {
+						if pa := a.pendingActions[id]; pa != nil {
+							a.renderActionCard(c, id, pa)
+						}
+					}
+				})
+			}
+		})
+	})
+
+	// Composer input at bottom
+	ui.Divider(c)
+	ui.Column(c).FillWidth().Padding(10, 12).Gap(8).Children(func() {
+		ph := a.tr("Frage deinen KI-Assistenten (⌘Enter zum Senden)…", "Ask your AI Assistant (⌘Enter to send)…")
+		if phone {
+			ph = a.tr("Frage deinen KI-Assistenten…", "Ask your AI Assistant…")
+		}
+		ta := ui.TextArea(c.Key("cp-input"), &a.chatInput).Placeholder(ph).FillWidth().Height(68)
+		if a.focusChat {
+			ta.Focus()
+			a.focusChat = false
+		}
+		if ta.Shortcut(ui.Cmd, ui.KeyEnter) {
+			a.SendCopilotPrompt(context.Background(), a.chatInput)
+		}
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.agentBackend).FontSize(11).TextColor(t.TextMuted).Grow(1).SingleLine()
+			btn := iconLabelBtn(c.Key("cp-send"), iconSend, a.tr("Senden", "Send"), true, a.tr("Nachricht senden (⌘Enter)", "Send message (⌘Enter)"))
+			if a.chatStreaming {
+				btn.Disabled(true)
+			}
+			if btn.Clicked() {
 				a.SendCopilotPrompt(context.Background(), a.chatInput)
 			}
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				ui.Text(c, a.agentBackend).FontSize(11).TextColor(t.TextMuted).Grow(1).SingleLine()
-				btn := iconLabelBtn(c.Key("cp-send"), iconSend, a.tr("Senden", "Send"), true, a.tr("Nachricht senden (⌘Enter)", "Send message (⌘Enter)"))
-				if a.chatStreaming {
-					btn.Disabled(true)
-				}
-				if btn.Clicked() {
-					a.SendCopilotPrompt(context.Background(), a.chatInput)
-				}
-			})
 		})
 	})
 }

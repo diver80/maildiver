@@ -73,6 +73,7 @@ type Engine struct {
 	allowLoopbackICal  bool
 
 	cfgMu           sync.Mutex
+	outboxMu        sync.Mutex // one outbox flush at a time
 	mu              sync.RWMutex
 	wg              sync.WaitGroup
 	rootCtx         context.Context
@@ -149,9 +150,6 @@ func (e *Engine) Store() *Store { return e.store }
 // Events returns the hub publishing live engine events to the app.
 func (e *Engine) Events() *events.Hub { return e.events }
 
-// SMIME returns the engine's S/MIME certificate & key manager.
-func (e *Engine) SMIME() *smime.Manager { return e.smime }
-
 // ImportSMIMEP12File imports a personal .p12/.pfx certificate bundle from disk into the OS Keychain.
 func (e *Engine) ImportSMIMEP12File(path, password string) (smime.CertInfo, error) {
 	if e.smime == nil {
@@ -203,9 +201,6 @@ func (e *Engine) DeleteSMIMEContact(email string) error {
 	}
 	return e.smime.DeleteContactCert(email)
 }
-
-// PGP returns the engine's OpenPGP keyring & key manager.
-func (e *Engine) PGP() *pgp.Manager { return e.pgp }
 
 func (e *Engine) ImportPGPKeyFile(path, passphrase string) ([]pgp.KeyInfo, error) {
 	if e.pgp == nil {
@@ -335,7 +330,8 @@ func (e *Engine) Start(ctx context.Context) {
 }
 
 func (e *Engine) runOutboxLoop(ctx context.Context) {
-	ticker := time.NewTicker(45 * time.Second)
+	// Also what sends "send later" mails while the app is open, so they go out within this tick.
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -391,6 +387,29 @@ func (e *Engine) accountPassword(accountID string) (string, error) {
 		return e.resolveAccountSecret(ctx, acc)
 	}
 	return e.secrets.Get(e.accountSecretKey(accountID))
+}
+
+// resumeAccount switches a paused account on, as when an account imported from Thunderbird gets
+// its first credentials through an OAuth sign-in.
+func (e *Engine) resumeAccount(accountID string) {
+	e.cfgMu.Lock()
+	cfg := e.loadConfig()
+	changed := false
+	for i := range cfg.Direct.Accounts {
+		if cfg.Direct.Accounts[i].ID == accountID && !cfg.Direct.Accounts[i].Enabled {
+			cfg.Direct.Accounts[i].Enabled = true
+			changed = true
+		}
+	}
+	err := error(nil)
+	if changed {
+		err = e.saveConfig(cfg)
+	}
+	e.cfgMu.Unlock()
+	if changed && err == nil {
+		e.reconcileAccountWorkers()
+		e.emitMailSync(accountID)
+	}
 }
 
 func (e *Engine) findAccount(accountID string) (config.DirectAccount, bool) {
@@ -528,12 +547,10 @@ func (e *Engine) AccountsStatus(ctx context.Context) []AccountSyncStatus {
 	e.mu.RLock()
 	for _, a := range cfg.Direct.Accounts {
 		st := e.accState[a.ID]
-		if st == "" {
-			if a.Enabled {
-				st = "idle"
-			} else {
-				st = "stopped"
-			}
+		if !a.Enabled {
+			st = "stopped" // paused by the user; a stale state from the last run must not show
+		} else if st == "" {
+			st = "idle"
 		}
 		out = append(out, AccountSyncStatus{
 			AccountID: a.ID,
@@ -577,8 +594,9 @@ func (e *Engine) TestAccount(ctx context.Context, acc config.DirectAccount, pass
 	return res
 }
 
-// SaveAccount creates or updates a DirectAccount, stores its password in secretstore,
-// enables write/send access for the user-owned direct account, and starts syncing immediately.
+// SaveAccount creates or updates a DirectAccount, stores its password in secretstore and
+// enables write/send access for the user-owned direct account. New accounts start syncing at
+// once; an existing account keeps the sync switch (Enabled) the form sends.
 func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, password string) (config.DirectAccount, error) {
 	acc.Email = strings.TrimSpace(acc.Email)
 	acc.IMAPHost = strings.TrimSpace(acc.IMAPHost)
@@ -613,8 +631,16 @@ func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, pass
 	if acc.SMTPTLS == "" {
 		acc.SMTPTLS = "tls"
 	}
-	acc.Enabled = true
-
+	// Remember whether a password existed before this save: accounts imported from Thunderbird
+	// start paused without one and switch on once the user supplies it.
+	// Only asked when a password comes along (for an OAuth account accountPassword would
+	// refresh its token over the network).
+	hadPassword := false
+	if password != "" {
+		if pw, err := e.secrets.Get(e.accountSecretKey(acc.ID)); err == nil && pw != "" {
+			hadPassword = true
+		}
+	}
 	if password != "" {
 		if err := e.secrets.Set(e.accountSecretKey(acc.ID), password); err != nil {
 			return acc, fmt.Errorf("Passwort speichern fehlgeschlagen: %w", err)
@@ -631,37 +657,14 @@ func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, pass
 	for i := range cfg.Direct.Accounts {
 		if cfg.Direct.Accounts[i].ID == acc.ID {
 			prev := cfg.Direct.Accounts[i]
-			if acc.SyncDays <= 0 {
-				acc.SyncDays = prev.SyncDays
-			}
 			if acc.SyncLimit <= 0 {
 				acc.SyncLimit = prev.SyncLimit
 			}
-			if len(prev.Aliases) > 0 && len(acc.Aliases) > 0 {
-				prevSig := map[string]string{}
-				prevSigHTML := map[string]string{}
-				for _, pa := range prev.Aliases {
-					em := strings.ToLower(strings.TrimSpace(pa.Email))
-					if strings.TrimSpace(pa.Signature) != "" {
-						prevSig[em] = pa.Signature
-					}
-					if strings.TrimSpace(pa.SignatureHTML) != "" {
-						prevSigHTML[em] = pa.SignatureHTML
-					}
-				}
-				for j := range acc.Aliases {
-					em := strings.ToLower(strings.TrimSpace(acc.Aliases[j].Email))
-					if strings.TrimSpace(acc.Aliases[j].Signature) == "" {
-						if sig, ok := prevSig[em]; ok {
-							acc.Aliases[j].Signature = sig
-						}
-					}
-					if strings.TrimSpace(acc.Aliases[j].SignatureHTML) == "" {
-						if sh, ok := prevSigHTML[em]; ok {
-							acc.Aliases[j].SignatureHTML = sh
-						}
-					}
-				}
+			// The form carries the sync switch; only a first password for a paused imported
+			// account turns syncing on by itself. Aliases (incl. their signatures) come complete
+			// from the form, so they replace the old list as-is.
+			if !acc.Enabled && !prev.Enabled && !hadPassword && password != "" {
+				acc.Enabled = true
 			}
 			cfg.Direct.Accounts[i] = acc
 			updated = true
@@ -669,6 +672,8 @@ func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, pass
 		}
 	}
 	if !updated {
+		// New accounts always start syncing.
+		acc.Enabled = true
 		cfg.Direct.Accounts = append(cfg.Direct.Accounts, acc)
 	}
 	if !cfg.Mailbox.AccountEnabled(acc.ID) {
@@ -741,6 +746,13 @@ func (e *Engine) DeleteAccount(ctx context.Context, accountID string) error {
 		}
 	}
 	cfg.Mailbox.TriageAccountIDs = triageIDs
+	excluded := cfg.Mailbox.TriageExcludedAccountIDs[:0]
+	for _, id := range cfg.Mailbox.TriageExcludedAccountIDs {
+		if id != accountID {
+			excluded = append(excluded, id)
+		}
+	}
+	cfg.Mailbox.TriageExcludedAccountIDs = excluded
 	saveErr := e.saveConfig(cfg)
 	e.cfgMu.Unlock()
 	if saveErr != nil {
@@ -1017,6 +1029,74 @@ func (e *Engine) DeleteICSFeed(ctx context.Context, feedID string) error {
 	}
 	e.emitCalendarChanged()
 	return nil
+}
+
+// UpdateCalendarSource switches syncing of an iCal feed ("ical"), CalDAV calendar ("caldav") or
+// CardDAV address book ("carddav") on or off and sets its color (empty keeps the old one).
+// A paused source keeps its cached events/contacts; it is just no longer refreshed.
+func (e *Engine) UpdateCalendarSource(ctx context.Context, kind, id string, enabled bool, color string) error {
+	color = strings.TrimSpace(color)
+	if color != "" && !validHexColor(color) {
+		return fmt.Errorf("invalid_argument: color %q", color)
+	}
+	e.cfgMu.Lock()
+	cfg := e.loadConfig()
+	calID, found := "", false
+	switch kind {
+	case "ical":
+		for i := range cfg.Direct.ICalFeeds {
+			if f := &cfg.Direct.ICalFeeds[i]; f.ID == id {
+				f.Enabled, found, calID = enabled, true, "ical-"+id
+				if color != "" {
+					f.Color = color
+				}
+			}
+		}
+	case "caldav", "carddav":
+		list := cfg.Direct.CalDAVAccounts
+		if kind == "carddav" {
+			list = cfg.Direct.CardDAVAccounts
+		}
+		for i := range list {
+			if list[i].ID == id {
+				list[i].Enabled, found = enabled, true
+				if color != "" {
+					list[i].Color = color
+				}
+				if kind == "caldav" {
+					calID = id
+				}
+			}
+		}
+	}
+	if !found {
+		e.cfgMu.Unlock()
+		return fmt.Errorf("not_found: %s %q", kind, id)
+	}
+	err := e.saveConfig(cfg)
+	e.cfgMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if calID != "" && color != "" {
+		if err := e.store.SetCalendarColor(ctx, calID, color); err != nil {
+			return err
+		}
+		e.emitCalendarChanged()
+	}
+	return nil
+}
+
+func validHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 // SyncCalendarsNow refreshes Google Calendar (if connected) and all enabled iCal feeds.

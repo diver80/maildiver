@@ -163,9 +163,6 @@ func TestReadOnlyAndAssistantGates(t *testing.T) {
 	if _, err := c.AIAnalyze(ctx, ai.AnalyzeRequest{Mode: "summarize"}); ErrorCode(err) != "feature_disabled" {
 		t.Fatalf("analyze with the assistant off: %v", err)
 	}
-	if _, err := c.AIChat(ctx, ai.ChatRequest{}); ErrorCode(err) != "invalid_argument" {
-		t.Fatalf("empty chat: %v", err)
-	}
 	h, err := c.Health(ctx)
 	if err != nil || !h.Connected || !h.ReadOnly || h.Version != "test" {
 		t.Fatalf("health: %+v err=%v", h, err)
@@ -197,7 +194,7 @@ func TestJobsAndEvents(t *testing.T) {
 			t.Fatal("no scan event")
 		}
 	}
-	if st, err := c.TriageState(context.Background()); err != nil || len(st.State.Classifications) != 1 {
+	if st, err := c.opts.Store.Load(); err != nil || len(st.Classifications) != 1 {
 		t.Fatalf("state after scan: %+v err=%v", st, err)
 	}
 	if _, err := c.ArchivePreview(context.Background(), jobs.ArchiveRequest{}); ErrorCode(err) != "invalid_argument" {

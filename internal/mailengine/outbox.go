@@ -8,6 +8,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/emersion/go-imap/v2"
 )
 
 // OutboxItem represents an email queued locally while offline or during transient SMTP outages.
@@ -24,6 +26,9 @@ type OutboxItem struct {
 	LastError      string   `json:"lastError,omitempty"`
 	CreatedAt      int64    `json:"createdAt"`
 	NextRetryAt    int64    `json:"nextRetryAt"`
+	// ScheduledAt (unix seconds, 0 = at once) is when a "send later" mail goes out: never before,
+	// not even with "send all now".
+	ScheduledAt int64 `json:"scheduledAt,omitempty"`
 }
 
 func (s *Store) ensureOutboxTable() error {
@@ -48,6 +53,7 @@ func (s *Store) ensureOutboxTable() error {
 	for _, ddl := range []string{
 		`ALTER TABLE outbox ADD COLUMN draft_message_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'`,
+		`ALTER TABLE outbox ADD COLUMN scheduled_at INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = s.db.Exec(ddl)
 	}
@@ -70,10 +76,10 @@ func (s *Store) EnqueueOutbox(ctx context.Context, item OutboxItem) error {
 		item.Status = "queued"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO outbox (id, account_id, from_email, recipients_json, subject, draft_message_id, status, raw_eml, attempts, last_error, created_at, next_retry_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR REPLACE INTO outbox (id, account_id, from_email, recipients_json, subject, draft_message_id, status, raw_eml, attempts, last_error, created_at, next_retry_at, scheduled_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.AccountID, item.FromEmail, string(rcptJSON), item.Subject, item.DraftMessageID, item.Status, item.RawEML,
-		item.Attempts, item.LastError, item.CreatedAt, item.NextRetryAt,
+		item.Attempts, item.LastError, item.CreatedAt, item.NextRetryAt, item.ScheduledAt,
 	)
 	return err
 }
@@ -82,7 +88,7 @@ func (s *Store) ListOutbox(ctx context.Context) ([]OutboxItem, error) {
 	if err := s.ensureOutboxTable(); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, account_id, from_email, recipients_json, subject, draft_message_id, status, raw_eml, attempts, last_error, created_at, next_retry_at FROM outbox ORDER BY created_at ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, account_id, from_email, recipients_json, subject, draft_message_id, status, raw_eml, attempts, last_error, created_at, next_retry_at, scheduled_at FROM outbox ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +97,7 @@ func (s *Store) ListOutbox(ctx context.Context) ([]OutboxItem, error) {
 	for rows.Next() {
 		var it OutboxItem
 		var rcptJSON string
-		if err := rows.Scan(&it.ID, &it.AccountID, &it.FromEmail, &rcptJSON, &it.Subject, &it.DraftMessageID, &it.Status, &it.RawEML, &it.Attempts, &it.LastError, &it.CreatedAt, &it.NextRetryAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.AccountID, &it.FromEmail, &rcptJSON, &it.Subject, &it.DraftMessageID, &it.Status, &it.RawEML, &it.Attempts, &it.LastError, &it.CreatedAt, &it.NextRetryAt, &it.ScheduledAt); err != nil {
 			continue
 		}
 		if it.Status == "" {
@@ -101,6 +107,30 @@ func (s *Store) ListOutbox(ctx context.Context) ([]OutboxItem, error) {
 		out = append(out, it)
 	}
 	return out, nil
+}
+
+// GetOutbox returns one outbox entry.
+func (s *Store) GetOutbox(ctx context.Context, id string) (OutboxItem, error) {
+	items, err := s.ListOutbox(ctx)
+	if err != nil {
+		return OutboxItem{}, err
+	}
+	for _, it := range items {
+		if it.ID == id {
+			return it, nil
+		}
+	}
+	return OutboxItem{}, fmt.Errorf("not_found: Postausgang-Eintrag %q", id)
+}
+
+// RescheduleOutbox moves a scheduled entry's time to at (send now: at = now) and lets it be
+// tried at once.
+func (s *Store) RescheduleOutbox(ctx context.Context, id string, at int64) error {
+	if err := s.ensureOutboxTable(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE outbox SET scheduled_at = ?, next_retry_at = ?, status = 'queued' WHERE id = ? AND scheduled_at > 0`, at, at, id)
+	return err
 }
 
 func (s *Store) DeleteOutbox(ctx context.Context, id string) error {
@@ -164,12 +194,155 @@ func isPermanentSMTPError(err error) bool {
 
 // FlushOutbox attempts to transmit all due queued emails in the local Offline Outbox.
 func (e *Engine) FlushOutbox(ctx context.Context) (sent int, remaining int) {
-	return e.flushOutbox(ctx, false)
+	return e.flushOutbox(ctx, false, "")
 }
 
-// FlushOutboxNow immediately attempts transmission of all queued/failed items in the Offline Outbox.
+// FlushOutboxNow immediately attempts transmission of all queued/failed items in the Offline
+// Outbox. Mails scheduled for later keep waiting for their time.
 func (e *Engine) FlushOutboxNow(ctx context.Context) (sent int, remaining int) {
-	return e.flushOutbox(ctx, true)
+	return e.flushOutbox(ctx, true, "")
+}
+
+// SendOutboxNow sends one outbox entry at once – a scheduled one before its time, too.
+func (e *Engine) SendOutboxNow(ctx context.Context, id string) error {
+	it, err := e.store.GetOutbox(ctx, id)
+	if err != nil {
+		return err
+	}
+	if it.ScheduledAt > 0 {
+		if err := e.store.RescheduleOutbox(ctx, id, time.Now().Unix()); err != nil {
+			return err
+		}
+	}
+	e.flushOutbox(ctx, true, id)
+	if after, gerr := e.store.GetOutbox(ctx, id); gerr == nil {
+		if after.LastError != "" {
+			return errors.New(after.LastError)
+		}
+		return fmt.Errorf("nicht gesendet")
+	}
+	return nil
+}
+
+// UnscheduleOutbox takes a mail out of the outbox and puts it back into the account's Drafts
+// folder (with its Bcc recipients, which the mail as sent leaves out).
+func (e *Engine) UnscheduleOutbox(ctx context.Context, id string) error {
+	// Under the flush lock: a flush sending this very mail finishes first and removes it (the
+	// lookup below then fails), and no flush can send it while it moves to Drafts.
+	e.outboxMu.Lock()
+	defer e.outboxMu.Unlock()
+	it, err := e.store.GetOutbox(ctx, id)
+	if err != nil {
+		return err
+	}
+	acc, ok := e.findAccount(it.AccountID)
+	if !ok {
+		return fmt.Errorf("not_found: Konto %q", it.AccountID)
+	}
+	draftsPath := "Drafts"
+	draftsFolderID := FolderID(acc.ID, draftsPath)
+	if f, ok := e.store.FindFolderByType(ctx, acc.ID, "drafts"); ok {
+		draftsPath, draftsFolderID = f.Path, f.ID
+	}
+	raw := withBccHeader(it.RawEML, it.Recipients)
+	parsed, _ := ParseRawMessage(raw)
+	uid, err := e.appendMessageIMAP(ctx, acc, draftsPath, raw, []imap.Flag{imap.FlagDraft, imap.FlagSeen}, parsed.MessageID)
+	if err != nil {
+		return err
+	}
+	if uid > 0 {
+		now := time.Now().UTC()
+		sm := StoredMessage{
+			ID: MessageStoreID(acc.ID, draftsPath, uid), AccountID: acc.ID, FolderID: draftsFolderID, FolderPath: draftsPath,
+			UID: uid, MessageID: parsed.MessageID, DateISO: now.Format(time.RFC3339), DateUnix: now.Unix(), Read: true, Size: int64(len(raw)),
+		}
+		mergeParsedIntoStored(&sm, raw)
+		_ = e.store.UpsertMessage(ctx, sm)
+	}
+	if err := e.store.DeleteOutbox(ctx, id); err != nil {
+		return err
+	}
+	e.emitOutboxChanged()
+	e.emitMailSync(acc.ID)
+	return nil
+}
+
+// outboxDue reports whether flushing (force: "send all now") tries item now.
+func outboxDue(it OutboxItem, now int64, force bool) bool {
+	if it.ScheduledAt > now {
+		return false // "send later" waits for its time
+	}
+	if force {
+		return true
+	}
+	return it.Status != "failed" && (it.NextRetryAt <= now || it.Attempts == 0)
+}
+
+// withDateHeader sets the Date header of raw to t: a mail sent later carries the time it went
+// out, not the time it was written. The header is outside any signed or encrypted part.
+func withDateHeader(raw []byte, t time.Time) []byte {
+	return replaceHeader(raw, "Date", t.Format(time.RFC1123Z))
+}
+
+// withBccHeader adds a Bcc header naming the recipients that are neither in To nor Cc (raw as
+// sent has none), so a draft made from it keeps them.
+func withBccHeader(raw []byte, recipients []string) []byte {
+	parsed, err := ParseRawMessage(raw)
+	if err != nil {
+		return raw
+	}
+	shown := map[string]bool{}
+	for _, a := range ExtractAddresses(parsed.To, parsed.CC) {
+		shown[strings.ToLower(a)] = true
+	}
+	var bcc []string
+	for _, r := range recipients {
+		if !shown[strings.ToLower(strings.TrimSpace(r))] {
+			bcc = append(bcc, strings.TrimSpace(r))
+		}
+	}
+	if len(bcc) == 0 {
+		return raw
+	}
+	return replaceHeader(raw, "Bcc", strings.Join(bcc, ", "))
+}
+
+// replaceHeader sets header name in raw's header block to value (added in front when absent);
+// folded continuation lines of the old value go with it.
+func replaceHeader(raw []byte, name, value string) []byte {
+	s := string(raw)
+	end := strings.Index(s, "\r\n\r\n")
+	nl := "\r\n"
+	if end < 0 {
+		end = strings.Index(s, "\n\n")
+		nl = "\n"
+	}
+	if end < 0 {
+		return raw
+	}
+	lines := strings.Split(s[:end], nl)
+	out := make([]string, 0, len(lines)+1)
+	prefix := strings.ToLower(name) + ":"
+	replaced, skipping := false, false
+	for _, ln := range lines {
+		if skipping && (strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\t")) {
+			continue
+		}
+		skipping = false
+		if strings.HasPrefix(strings.ToLower(ln), prefix) {
+			skipping = true
+			if !replaced {
+				out = append(out, name+": "+value)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, ln)
+	}
+	if !replaced {
+		out = append([]string{name + ": " + value}, out...)
+	}
+	return []byte(strings.Join(out, nl) + s[end:])
 }
 
 // ListOutbox returns all queued and failed outgoing messages in the local Outbox.
@@ -179,6 +352,8 @@ func (e *Engine) ListOutbox(ctx context.Context) ([]OutboxItem, error) {
 
 // DeleteOutbox deletes a pending or failed entry from the local Outbox.
 func (e *Engine) DeleteOutbox(ctx context.Context, id string) error {
+	e.outboxMu.Lock() // not while a flush is sending it
+	defer e.outboxMu.Unlock()
 	err := e.store.DeleteOutbox(ctx, id)
 	if err == nil {
 		e.emitOutboxChanged()
@@ -186,7 +361,11 @@ func (e *Engine) DeleteOutbox(ctx context.Context, id string) error {
 	return err
 }
 
-func (e *Engine) flushOutbox(ctx context.Context, force bool) (sent int, remaining int) {
+// flushOutbox sends the due entries (only: just that one). One flush at a time, so the
+// periodic loop and "send now" never send the same mail twice.
+func (e *Engine) flushOutbox(ctx context.Context, force bool, only string) (sent int, remaining int) {
+	e.outboxMu.Lock()
+	defer e.outboxMu.Unlock()
 	items, err := e.store.ListOutbox(ctx)
 	if err != nil || len(items) == 0 {
 		return 0, 0
@@ -194,9 +373,15 @@ func (e *Engine) flushOutbox(ctx context.Context, force bool) (sent int, remaini
 	now := time.Now().Unix()
 	changed := false
 	for _, it := range items {
-		if !force && (it.Status == "failed" || (it.NextRetryAt > now && it.Attempts > 0)) {
+		if only != "" && it.ID != only {
+			continue
+		}
+		if !outboxDue(it, now, force) {
 			remaining++
 			continue
+		}
+		if it.ScheduledAt > 0 {
+			it.RawEML = withDateHeader(it.RawEML, time.Now())
 		}
 		acc, ok := e.findAccount(it.AccountID)
 		if !ok {

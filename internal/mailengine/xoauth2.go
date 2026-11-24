@@ -157,6 +157,9 @@ func (e *Engine) StartMailOAuth2(ctx context.Context, acc config.DirectAccount, 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte("<!doctype html><html><body style='font-family:system-ui;padding:32px;background:#121212;color:#eee'><h2>MailDiver OAuth2 verbunden ✓</h2><p>Du kannst dieses Browserfenster jetzt schließen.</p></body></html>"))
 		go func() {
+			// Signing in is the user connecting the account: a paused one (imported from
+			// Thunderbird without credentials) starts syncing, as with a first password.
+			e.resumeAccount(acc.ID)
 			_ = e.SyncNow(e.rootCtx, acc.ID)
 		}()
 	})

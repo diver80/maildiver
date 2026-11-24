@@ -14,12 +14,9 @@ import (
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-// replaceComposeUserText replaces only the user-authored top portion of a plain-text compose
-// body while preserving trailing signatures ("-- "), quoted replies, and forwarded blocks.
-func replaceComposeUserText(body, nextUserText string) string {
-	norm := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
-	lines := strings.Split(norm, "\n")
-	splitIdx := len(lines)
+// composeTailStart returns the index of the first line of what follows the user's own text in a
+// plain-text compose body: the signature ("-- "), a quoted reply or a forwarded block.
+func composeTailStart(lines []string) int {
 	for i, ln := range lines {
 		tr := strings.TrimSpace(ln)
 		if tr == "--" ||
@@ -27,10 +24,71 @@ func replaceComposeUserText(body, nextUserText string) string {
 			strings.HasPrefix(tr, "---------- ") ||
 			(strings.HasPrefix(tr, "Am ") && strings.Contains(tr, " schrieb ")) ||
 			(strings.HasPrefix(tr, "On ") && strings.Contains(tr, " wrote:")) {
-			splitIdx = i
-			break
+			return i
 		}
 	}
+	return len(lines)
+}
+
+// insertComposeSnippet adds snippet at the end of the user's own text: above the signature, the
+// quoted original or a forwarded mail, not below them.
+func insertComposeSnippet(body, snippet string) string {
+	lines := strings.Split(body, "\n")
+	splitIdx := composeTailStart(lines)
+	if splitIdx == len(lines) {
+		if body != "" && !strings.HasSuffix(body, "\n") && !strings.HasPrefix(snippet, "\n") {
+			return body + " " + snippet
+		}
+		return body + snippet
+	}
+	cut := len(strings.Join(lines[:splitIdx], "\n"))
+	if splitIdx > 0 {
+		cut++ // the line break before the tail
+	}
+	head, tail := body[:cut], body[cut:]
+	user := strings.TrimRight(head, " \t\r\n")
+	gap := head[len(user):]
+	if !strings.Contains(gap, "\n") {
+		gap = "\n\n" + strings.TrimLeft(gap, " \t")
+	}
+	if user != "" && !strings.HasPrefix(snippet, "\n") {
+		if strings.Contains(snippet, "\n") {
+			user += "\n\n" // a paragraph of its own
+		} else {
+			user += " "
+		}
+	}
+	return user + strings.TrimRight(snippet, "\n") + gap + tail
+}
+
+// insertComposeSnippetAt inserts snippet at rune offset caret of body and returns the new body
+// and the caret after the snippet.
+func insertComposeSnippetAt(body, snippet string, caret int) (string, int) {
+	r := []rune(body)
+	caret = min(max(caret, 0), len(r))
+	return string(r[:caret]) + snippet + string(r[caret:]), caret + len([]rune(snippet))
+}
+
+// insertComposeText inserts text into the plain-text compose body (UI thread): at the caret the
+// user left in the text field, else at the end of the own text above signature and quote.
+func (a *App) insertComposeText(text string) {
+	if a.composeCaretOK && a.composeCaretBody == a.composeBody {
+		body, caret := insertComposeSnippetAt(a.composeBody, text, a.composeCaret)
+		a.composeBody = body
+		a.composeCaret, a.composeCaretBody = caret, body
+		a.composeCaretApply = true
+	} else {
+		a.composeBody = insertComposeSnippet(a.composeBody, text)
+	}
+	a.composeDirtyAt = time.Now()
+}
+
+// replaceComposeUserText replaces only the user-authored top portion of a plain-text compose
+// body while preserving trailing signatures ("-- "), quoted replies, and forwarded blocks.
+func replaceComposeUserText(body, nextUserText string) string {
+	norm := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(norm, "\n")
+	splitIdx := composeTailStart(lines)
 	next := strings.TrimSpace(strings.ReplaceAll(nextUserText, "\r\n", "\n"))
 	tail := ""
 	if splitIdx < len(lines) {
@@ -102,6 +160,7 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 		}
 	}
 	bc, _ := a.client()
+	hiddenCals := a.hiddenCalendarsCopy()
 
 	go func() {
 		rawDraft := plainFallback
@@ -162,7 +221,6 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 			Backend:          aiBackend,
 			Model:            model,
 			Mode:             effMode,
-			Ephemeral:        true,
 			Language:         lang,
 			Question:         prompt,
 			UserDraft:        userDraft,
@@ -186,6 +244,9 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 			}
 			if effMode == "draft_reply" || effMode == "review_draft" {
 				req.ThreadMessages = threadForAI(ctx, bc, srcCopy.ID, convSize)
+			}
+			if effMode == "draft_reply" {
+				req.CalendarHint = calendarHintForAI(ctx, bc, hiddenCals, time.Now())
 			}
 		} else if subject != "" {
 			req.PrimaryMessage = triage.MessageInput{Subject: subject}
@@ -220,13 +281,13 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 			return
 		}
 
+		// Only a draft_reply proposal is mail text; other kinds (move_folder, …) have no place
+		// in the compose window and are left out.
 		draftBody := strings.TrimSpace(res.Answer)
 		draftSubj := ""
-		if len(res.Proposals) > 0 {
-			if b := strings.TrimSpace(res.Proposals[0].Body); b != "" {
-				draftBody = b
-			}
-			draftSubj = strings.TrimSpace(res.Proposals[0].Subject)
+		if p, ok := res.DraftProposal(); ok {
+			draftBody = strings.TrimSpace(p.Body)
+			draftSubj = strings.TrimSpace(p.Subject)
 		}
 		a.emitUpdate(func() {
 			if seq != a.composeAISeq || !a.composeOpen {
@@ -270,7 +331,7 @@ func (a *App) applyComposeAIResult(replace bool) {
 			a.composeEditor.InsertHTML(plainBlockToEditableHTML(text))
 			a.NotifyComposeDirty()
 		} else {
-			a.composeBody = insertComposeSnippet(a.composeBody, text)
+			a.insertComposeText(text)
 		}
 	}
 	if a.composeAISubject != "" && (strings.TrimSpace(a.composeSubject) == "" || a.composeAIMode == "translate_draft") {
