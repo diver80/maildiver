@@ -288,12 +288,65 @@ func TestCopilotToolCallLimitsAndValidFinalRequest(t *testing.T) {
 func TestCopilotReadOnlyOffersNoWriteTools(t *testing.T) {
 	for _, tl := range AgentTools(true, false) {
 		switch tl.Function.Name {
-		case "create_draft", "create_calendar_event", "mark_message_read":
+		case "create_draft", "create_calendar_event", "mark_message_read", "move_message", "flag_message":
 			t.Fatalf("write tool %s offered in read-only mode", tl.Function.Name)
 		}
 	}
-	if len(AgentTools(true, true)) != 7 {
-		t.Fatalf("expected 7 tools with writes allowed")
+	if got := len(AgentTools(true, true)); got != 12 {
+		t.Fatalf("expected 12 tools with writes allowed (7 read + 5 write), got %d", got)
+	}
+}
+
+func TestCopilotMoveFlagProposalsAndCustomInstructions(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.CustomInstructions = "Ich heiße Frank (Avono AG), Kollegen duzen, Kunden siezen."
+	prompt := BuildSystemPrompt("de", cfg, true, "acc1", "m1")
+	if !strings.Contains(prompt, "<user_instructions>") || !strings.Contains(prompt, "Avono AG") {
+		t.Fatalf("expected custom instructions in system prompt, got: %q", prompt)
+	}
+
+	runner, rpc, _ := startStack(t, []chatRound{
+		{toolCalls: []map[string]any{
+			toolCall("t1", "move_message", map[string]any{"ids": []string{"m1"}, "folderPath": "INBOX/atlassian"}),
+			toolCall("t2", "flag_message", map[string]any{"id": "m1", "flagged": true}),
+		}},
+		{content: "Ich habe Verschieben und Stern vorgeschlagen."},
+	})
+
+	var proposals []*PendingAction
+	err := runner.Run(context.Background(), RunRequest{Messages: []Message{{Role: "user", Content: "Verschiebe und markiere m1"}}}, func(ev Event) {
+		if ev.Kind == EventProposal {
+			proposals = append(proposals, ev.Proposal)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if writes, _ := rpc.snapshot(); len(writes) != 0 {
+		t.Fatalf("write RPCs executed without confirmation: %v", writes)
+	}
+	if len(proposals) != 2 || proposals[0].Kind != ActionMove || proposals[1].Kind != ActionFlag {
+		t.Fatalf("expected move + flag proposals, got %+v", proposals)
+	}
+	if proposals[0].Move == nil || proposals[0].Move.FolderPath != "INBOX/atlassian" || len(proposals[0].Move.Targets) != 1 {
+		t.Fatalf("unexpected move proposal: %+v", proposals[0].Move)
+	}
+	if proposals[1].Flag == nil || !proposals[1].Flag.Flagged || len(proposals[1].Flag.Targets) != 1 {
+		t.Fatalf("unexpected flag proposal: %+v", proposals[1].Flag)
+	}
+
+	if res, err := ExecuteAction(context.Background(), runner.Backend, *proposals[0], ExecuteOptions{}); err != nil || res.Applied != 1 {
+		t.Fatalf("ExecuteAction move: %+v %v", res, err)
+	}
+	if res, err := ExecuteAction(context.Background(), runner.Backend, *proposals[1], ExecuteOptions{}); err != nil || res.Applied != 1 {
+		t.Fatalf("ExecuteAction flag: %+v %v", res, err)
+	}
+	writes, params := rpc.snapshot()
+	if len(writes) != 2 || writes[0] != "messages.actions" || writes[1] != "messages.actions" {
+		t.Fatalf("expected 2 messages.actions writes, got %v", writes)
+	}
+	if params[0]["moveToPath"] != "INBOX/atlassian" || params[1]["flagged"] != true {
+		t.Fatalf("unexpected write params: %+v", params)
 	}
 }
 

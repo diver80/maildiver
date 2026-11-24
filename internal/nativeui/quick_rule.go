@@ -32,10 +32,12 @@ type quickRuleState struct {
 	quickRuleAllMarked    []backend.MessageHeader
 	quickRuleMarked       []backend.MessageHeader // marked mails of quickRuleAccount
 	quickRuleMarkedIDs    map[string]bool
-	quickRuleMatchAll     bool
-	quickRuleFromText     string
-	quickRuleSubjectText  string
-	quickRuleAction       string // "trash", "mark_read_trash", "mark_read", "move"
+	quickRuleMatchAll      bool
+	quickRuleFromText      string
+	quickRuleSubjectText   string
+	quickRuleHeaderText    string                       // optional comma-separated "Header-Name: value" conditions
+	quickRuleMarkedHeaders map[string]map[string]string // msgID -> lowercase header name -> value (for AI + live preview)
+	quickRuleAction        string                       // "trash", "mark_read_trash", "mark_read", "move"
 	quickRuleActionLabel  string
 	quickRuleFolderPath   string
 	quickRuleApplyPreview bool
@@ -495,6 +497,11 @@ func (a *App) selectQuickRuleAccount(accID string) {
 	a.quickRuleMatchAll = draft.MatchAll
 	a.quickRuleFromText = strings.Join(draft.FromValues, ", ")
 	a.quickRuleSubjectText = strings.Join(draft.SubjectValues, ", ")
+	a.quickRuleHeaderText = ""
+	a.quickRuleMarkedHeaders = nil
+	if a.selectedMsg != nil && len(a.selectedMsg.Headers) > 0 {
+		a.quickRuleMarkedHeaders = map[string]map[string]string{a.selectedMsg.ID: a.selectedMsg.Headers}
+	}
 	a.quickRuleConfirmSig = ""
 	a.quickRuleError = ""
 	a.quickRuleTarget, a.quickRuleTargetMode = nil, ""
@@ -604,9 +611,21 @@ func (a *App) isInboxHeader(m backend.MessageHeader) bool {
 func (a *App) quickRuleCandidates() []triage.MessageInput {
 	out := make([]triage.MessageInput, 0, len(a.quickRuleMarked)+len(a.messages))
 	seen := make(map[string]bool, len(a.quickRuleMarked)+len(a.messages))
+	attachHeaders := func(in triage.MessageInput) triage.MessageInput {
+		if len(a.quickRuleMarkedHeaders) > 0 {
+			if hdrs, ok := a.quickRuleMarkedHeaders[in.ID]; ok && len(hdrs) > 0 {
+				in.Headers = hdrs
+				return in
+			}
+		}
+		if a.selectedMsg != nil && a.selectedMsg.ID == in.ID && len(a.selectedMsg.Headers) > 0 {
+			in.Headers = a.selectedMsg.Headers
+		}
+		return in
+	}
 	for _, m := range a.quickRuleMarked {
 		seen[m.ID] = true
-		out = append(out, messageHeaderToInput(m))
+		out = append(out, attachHeaders(messageHeaderToInput(m)))
 	}
 	for _, m := range a.messages {
 		if seen[m.ID] {
@@ -619,7 +638,43 @@ func (a *App) quickRuleCandidates() []triage.MessageInput {
 			continue
 		}
 		seen[m.ID] = true
-		out = append(out, messageHeaderToInput(m))
+		out = append(out, attachHeaders(messageHeaderToInput(m)))
+	}
+	return out
+}
+
+// parseQuickRuleHeaderTerms parses comma/newline-separated "Header-Name: value" pairs into NativeConditions.
+func parseQuickRuleHeaderTerms(raw string, matchAll bool) []triage.NativeCondition {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == ';' })
+	var out []triage.NativeCondition
+	seen := map[string]bool{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		name, val, ok := strings.Cut(p, ":")
+		name = strings.TrimSpace(name)
+		val = strings.TrimSpace(val)
+		if !ok || name == "" || val == "" {
+			continue
+		}
+		key := strings.ToLower(name) + "\x00" + strings.ToLower(val)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, triage.NativeCondition{
+			Field:      "header",
+			HeaderName: name,
+			Op:         "contains",
+			Value:      val,
+			BooleanAnd: matchAll,
+			MatchAll:   matchAll,
+		})
 	}
 	return out
 }
@@ -627,7 +682,9 @@ func (a *App) quickRuleCandidates() []triage.MessageInput {
 func (a *App) quickRuleConditions() []triage.NativeCondition {
 	fromVals := triage.SplitCSVTerms(a.quickRuleFromText)
 	subjVals := triage.SplitCSVTerms(a.quickRuleSubjectText)
-	return triage.BuildQuickRuleConditions(fromVals, subjVals, a.quickRuleMatchAll)
+	conds := triage.BuildQuickRuleConditions(fromVals, subjVals, a.quickRuleMatchAll)
+	hdrConds := parseQuickRuleHeaderTerms(a.quickRuleHeaderText, a.quickRuleMatchAll)
+	return append(conds, hdrConds...)
 }
 
 func (a *App) normalizedQuickRuleAction() string {
@@ -645,7 +702,7 @@ func (a *App) QuickRulePreview() triage.QuickRulePreviewReport {
 // quickRuleSignature identifies the rule as configured; any edit disarms a pending confirmation.
 func (a *App) quickRuleSignature() string {
 	return strings.Join([]string{
-		a.quickRuleAccount, a.quickRuleFromText, a.quickRuleSubjectText, fmt.Sprint(a.quickRuleMatchAll),
+		a.quickRuleAccount, a.quickRuleFromText, a.quickRuleSubjectText, a.quickRuleHeaderText, fmt.Sprint(a.quickRuleMatchAll),
 		a.normalizedQuickRuleAction(), a.quickRuleFolderPath, fmt.Sprint(a.quickRuleApplyPreview),
 		a.quickRuleTargetMode + ":" + a.quickRuleTargetName(),
 	}, "\x00")
@@ -689,7 +746,44 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 	a.quickRuleError = ""
 	a.quickRuleInfo = ""
 
+	dc := a.opts.Direct
 	go func() {
+		// Enrich marked emails with their real RFC 5322 headers so the AI can propose precise header-based rules.
+		loadedHeaders := make(map[string]map[string]string, len(marked))
+		for i := range marked {
+			if i >= 5 {
+				break
+			}
+			hdrs := map[string]string{}
+			if dc != nil {
+				hc, hcancel := context.WithTimeout(ctx, 5*time.Second)
+				if src, serr := dc.ReadMessageSource(hc, marked[i].ID); serr == nil {
+					for _, ln := range src.Headers {
+						lk := strings.ToLower(strings.TrimSpace(ln.Name))
+						if lk != "" && strings.TrimSpace(ln.Value) != "" && hdrs[lk] == "" {
+							hdrs[lk] = strings.TrimSpace(ln.Value)
+						}
+					}
+				}
+				hcancel()
+			}
+			if len(hdrs) == 0 {
+				hc, hcancel := context.WithTimeout(ctx, 5*time.Second)
+				if d, derr := bc.Message(hc, marked[i].ID, ""); derr == nil && len(d.Headers) > 0 {
+					for k, v := range d.Headers {
+						if strings.TrimSpace(v) != "" {
+							hdrs[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+						}
+					}
+				}
+				hcancel()
+			}
+			if len(hdrs) > 0 {
+				marked[i].Headers = hdrs
+				loadedHeaders[marked[i].ID] = hdrs
+			}
+		}
+
 		var nativeFilters []triage.NativeFilter
 		if account != "" {
 			c, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -718,6 +812,14 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 				return
 			}
 			a.quickRuleAILoading = false
+			if len(loadedHeaders) > 0 {
+				if a.quickRuleMarkedHeaders == nil {
+					a.quickRuleMarkedHeaders = make(map[string]map[string]string, len(loadedHeaders))
+				}
+				for id, h := range loadedHeaders {
+					a.quickRuleMarkedHeaders[id] = h
+				}
+			}
 			if err != nil {
 				a.quickRuleError = a.errText(err)
 				return
@@ -743,10 +845,23 @@ func (a *App) RefineQuickRuleWithAI(ctx context.Context) {
 			}
 			if len(fromTerms) > 0 {
 				a.quickRuleFromText = strings.Join(fromTerms, ", ")
+			} else if len(sug.Headers) > 0 {
+				a.quickRuleFromText = ""
 			}
 			if len(sug.SubjectContains) > 0 {
 				a.quickRuleSubjectText = strings.Join(sug.SubjectContains, ", ")
+			} else if len(sug.Headers) > 0 {
+				a.quickRuleSubjectText = ""
 			}
+			var hdrTerms []string
+			for _, hs := range sug.Headers {
+				hn := strings.TrimSpace(hs.Name)
+				hv := strings.TrimSpace(hs.Contains)
+				if hn != "" && hv != "" {
+					hdrTerms = append(hdrTerms, hn+": "+hv)
+				}
+			}
+			a.quickRuleHeaderText = strings.Join(hdrTerms, ", ")
 			a.quickRuleMatchAll = sug.MatchAll
 			switch {
 			case sug.Delete && sug.MarkRead:

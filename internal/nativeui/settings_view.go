@@ -89,8 +89,9 @@ type settingsUI struct {
 	clfModelsLoading                  bool
 	clfModelsErr                      string
 	clfModelCustom                    bool
-	maxCalls                          string
-	allowCLI                          bool
+	maxCalls           string
+	allowCLI           bool
+	customInstructions string
 
 	scanOnNewMail       bool
 	scanLimit, scanDays string
@@ -160,6 +161,7 @@ func (a *App) OpenSettings() {
 		clfEndpoint:         cfg.AI.Classifier.Endpoint,
 		maxCalls:            strconv.Itoa(cfg.AI.MaxAICallsPerScan),
 		allowCLI:            cfg.AI.AllowUnrestrictedCLI,
+		customInstructions:  cfg.AI.CustomInstructions,
 		scanOnNewMail:       cfg.Mailbox.ScanOnNewMail,
 		scanLimit:           strconv.Itoa(cfg.Mailbox.ScanLimit),
 		scanDays:            strconv.Itoa(cfg.Mailbox.ScanDays),
@@ -346,6 +348,7 @@ func (a *App) SaveSettings() bool {
 	cfg.AI.ClassifyWithAI = s.classifyAI
 	cfg.AI.MaxAICallsPerScan = maxCalls
 	cfg.AI.AllowUnrestrictedCLI = s.allowCLI
+	cfg.AI.CustomInstructions = strings.TrimSpace(s.customInstructions)
 	cfg.Mailbox.ScanOnNewMail = s.scanOnNewMail
 	cfg.Mailbox.TriageExcludedAccountIDs = nil
 	for _, row := range s.triageAccounts {
@@ -1003,6 +1006,14 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 				a.loadSettingsModels(s.agentBackend, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsErr, wantKey)
 			}
 		})
+		field("set-ai-inst", a.tr("Persönliche KI-Hinweise", "Custom AI instructions"), func() {
+			ui.TextArea(c.Key("set-ai-inst-ta"), &s.customInstructions).
+				Placeholder(a.tr("z. B. Ich heiße Frank (Avono AG). Kollegen (@avono.de) duzen, Kunden siezen, kurz & direkt ohne Floskeln…",
+					"e.g. My name is Frank (Acme Corp). Informal tone for teammates, formal for customers, concise without fluff…")).
+				Grow(1).Height(68)
+		})
+		note(a.tr("Wird bei Entwürfen, Zusammenfassungen, Compose-KI-Hilfe und im KI-Assistenten automatisch berücksichtigt.",
+			"Automatically applied to reply drafts, summaries, Compose AI Assist, and the AI Assistant chat."), t.TextMuted)
 
 		a.settingsSection(c, a.tr("Triage-Scan", "Triage scan"))
 		if !a.cfg.Features.Triage {

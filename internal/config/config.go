@@ -180,6 +180,9 @@ type AIConfig struct {
 	// Endpoints optionally sets a base URL per backend (canonical name -> URL) for backends picked
 	// ad hoc (e.g. in the native app) that are neither the agent nor the classifier. Empty = official URL.
 	Endpoints map[string]string `json:"endpoints,omitempty"`
+	// CustomInstructions stores optional personal style/context instructions (e.g. name, company,
+	// tone, informal vs. formal addressing rules) injected into AI drafts, summaries, and Copilot chat.
+	CustomInstructions string `json:"customInstructions,omitempty"`
 }
 
 // FeatureFlags switches the three independent MailDiver building blocks on or off.

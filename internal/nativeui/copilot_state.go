@@ -340,7 +340,7 @@ func (a *App) ExecuteCopilotAction(ctx context.Context, id string) {
 			case copilot.ActionCalendarEvent:
 				p.Result = a.trf("Termin „%s“ angelegt.", "Created event \"%s\".", res.Title)
 				a.startRefresh(ctx)
-			case copilot.ActionMarkRead:
+			case copilot.ActionMarkRead, copilot.ActionFlag:
 				if err != nil {
 					p.Result = a.trf("%d von %d angewendet, %d Fehler: %s", "%d of %d applied, %d failed: %s",
 						res.Applied, res.Total, res.Total-res.Applied, a.errText(err))
@@ -348,6 +348,17 @@ func (a *App) ExecuteCopilotAction(ctx context.Context, id string) {
 					p.Result = a.trf("%d Mail(s) aktualisiert.", "%d email(s) updated.", res.Applied)
 				}
 				a.startMessageLoad(ctx)
+			case copilot.ActionMove:
+				if err != nil {
+					p.Result = a.trf("%d von %d verschoben, %d Fehler: %s", "%d of %d moved, %d failed: %s",
+						res.Applied, res.Total, res.Total-res.Applied, a.errText(err))
+				} else if action.Move != nil && action.Move.Archive {
+					p.Result = a.trf("%d Mail(s) archiviert.", "%d email(s) archived.", res.Applied)
+				} else {
+					p.Result = a.trf("%d Mail(s) nach „%s“ verschoben.", "%d email(s) moved to “%s”.", res.Applied, res.Title)
+				}
+				a.startMessageLoad(ctx)
+				a.refreshFoldersBackground(ctx)
 			}
 			kind := "success"
 			if err != nil {

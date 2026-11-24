@@ -2163,6 +2163,10 @@ func (a *App) renderQuickRuleModal(c *ui.Context) {
 						ui.Text(c, a.tr("Betreff enthält", "Subject contains")).Width(130).FontSize(12).TextColor(t.TextMuted)
 						ui.TextInput(c.Key("qr-subj"), &a.quickRuleSubjectText).Placeholder(a.tr("optional, z. B. [Alert], Wochenangebot (kommagetrennt)", "optional, e.g. [Alert], Weekly Deals (comma-separated)")).Grow(1)
 					})
+					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, a.tr("Header enthält", "Header contains")).Width(130).FontSize(12).TextColor(t.TextMuted)
+						ui.TextInput(c.Key("qr-hdr"), &a.quickRuleHeaderText).Placeholder(a.tr("optional, z. B. List-Id: jira, X-Mailer: Atlassian", "optional, e.g. List-Id: jira, X-Mailer: Atlassian")).Grow(1)
+					})
 
 					// Action & optional folder
 					ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Wrap().Children(func() {

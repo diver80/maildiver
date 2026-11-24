@@ -53,18 +53,24 @@ type ExtractedContact struct {
 	Notes       string `json:"notes,omitempty"`
 }
 
+type HeaderRuleSuggestion struct {
+	Name     string `json:"name"`
+	Contains string `json:"contains"`
+}
+
 type FilterRuleSuggestion struct {
-	Action           string   `json:"action,omitempty"` // "create", "append_or", "replace"
-	TargetFilterName string   `json:"targetFilterName,omitempty"`
-	Name             string   `json:"name"`
-	Reason           string   `json:"reason"`
-	FromContains     []string `json:"fromContains,omitempty"`
-	Domains          []string `json:"domains,omitempty"`
-	SubjectContains  []string `json:"subjectContains,omitempty"`
-	MatchAll         bool     `json:"matchAll"`
-	SuggestedFolder  string   `json:"suggestedFolder,omitempty"`
-	MarkRead         bool     `json:"markRead,omitempty"`
-	Delete           bool     `json:"delete,omitempty"`
+	Action           string                 `json:"action,omitempty"` // "create", "append_or", "replace"
+	TargetFilterName string                 `json:"targetFilterName,omitempty"`
+	Name             string                 `json:"name"`
+	Reason           string                 `json:"reason"`
+	FromContains     []string               `json:"fromContains,omitempty"`
+	Domains          []string               `json:"domains,omitempty"`
+	SubjectContains  []string               `json:"subjectContains,omitempty"`
+	Headers          []HeaderRuleSuggestion `json:"headers,omitempty"`
+	MatchAll         bool                   `json:"matchAll"`
+	SuggestedFolder  string                 `json:"suggestedFolder,omitempty"`
+	MarkRead         bool                   `json:"markRead,omitempty"`
+	Delete           bool                   `json:"delete,omitempty"`
 }
 
 type AnalyzeResponse struct {
@@ -198,7 +204,7 @@ When mode is "summarize": summarize the thread concisely (key facts, open questi
 When mode is "summarize_selection": summarize all selected emails in "thread" cleanly as a structured briefing (group by topic/sender; list key points, decisions, action items, deadlines/amounts, and open questions); if Owner request asks a specific question, answer it directly across the selected emails.
 When mode is "extract_events": extract concrete calendar events, appointments, meetings, or hard deadlines from the emails in "thread" into "events" (each with title, start in ISO-8601 "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" if allDay=true, optional end, allDay, location, description), and summarize them concisely in "answer".
 When mode is "extract_contacts": inspect the email signature / footer (and sender headers) in "thread" to extract contact details for people or sender organizations into "contacts" (displayName, firstName, lastName, email, phone, mobile, company, jobTitle, website, address, notes). Skip automated noreply senders unless meaningful contact/company metadata exists. Summarize the detected contacts concisely in "answer".
-When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, headers) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing filter rule covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, wrong field), prefer proposing action="append_or" (adds this suggestion's conditions as OR terms to an OR rule) or "replace" (the suggestion becomes the whole rule) with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, matchAll=true when sender AND subject must both match to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
+When mode is "suggest_filter": analyze common patterns across the emails in "thread" (sender addresses/domains, recurring subject phrases, RFC 5322 headers such as List-Id, Auto-Submitted, Precedence, X-Mailer, X-Jira-*, X-GitHub-*, Return-Path) PLUS any "nativeFilters" and "filterDiagnostic" in the context. If an existing filter rule covers the same topic/sender/folder but missed this email (e.g. missing OR phrase, wrong field), prefer proposing action="append_or" (adds this suggestion's conditions as OR terms to an OR rule) or "replace" (the suggestion becomes the whole rule) with "targetFilterName" set to that exact existing filter name. Otherwise propose action="create" with safe filter rules in "filterSuggestions" (each with action, optional targetFilterName, name, reason, fromContains, domains, subjectContains, optional headers [{name, contains}] when stable email headers uniquely identify the notification/list, matchAll=true when multiple conditions must match together to avoid catching important mails from the same domain, suggestedFolder, markRead, delete). Explain concisely in "answer" why existing filters missed (if any) and what the suggested rule does.
 When mode is "draft_reply": formulate a ready-to-send reply draft matching the requested tone and hints, emitted as a "draft_reply" proposal If the context has a "calendarHint" (the owner's busy times) and the reply proposes or accepts a date, pick a time that does not clash with it; never quote the busy entries themselves.
 When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so it is clearer and fits the requested tone; keep every fact, commitment and the draft's language unless a target language was requested; emit the rewritten text (and an improved/matching "subject" if the existing subject is empty or in the wrong language) as a "draft_reply" proposal.
 When mode is "translate_draft": translate the owner's draft inside <owner_draft> (and translate/adapt the "subject" if present) into the requested target language (or flip German <-> English when auto) in the requested tone, keeping every fact, name, date, and number; emit the translated email as a "draft_reply" proposal with both "subject" and "body".
@@ -248,6 +254,7 @@ Return ONLY valid JSON matching this schema:
       "domains": ["example.com"],
       "fromContains": ["noreply@example.com"],
       "subjectContains": ["would like to try"],
+      "headers": [{"name": "List-Id", "contains": "notifications.example.com"}],
       "matchAll": true,
       "suggestedFolder": "Notifications/Atlassian",
       "markRead": false,
@@ -364,10 +371,11 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	}
 
 	type threadMsg struct {
-		From    string `json:"from"`
-		Date    string `json:"date"`
-		Subject string `json:"subject"`
-		Body    string `json:"body"`
+		From    string            `json:"from"`
+		Date    string            `json:"date"`
+		Subject string            `json:"subject"`
+		Headers map[string]string `json:"headers,omitempty"`
+		Body    string            `json:"body"`
 	}
 	snippetLimit := 3000
 	if len(req.ThreadMessages) > 10 {
@@ -379,17 +387,44 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		}
 		return triage.PrepareSnippet(raw, limit)
 	}
+	filterHeadersForAI := func(in map[string]string) map[string]string {
+		if mode != "suggest_filter" || len(in) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(in))
+		for k, v := range in {
+			lk := strings.ToLower(strings.TrimSpace(k))
+			val := strings.TrimSpace(v)
+			if lk == "" || val == "" {
+				continue
+			}
+			// Skip huge cryptographic/transport headers that are noisy for filter rules.
+			if lk == "dkim-signature" || lk == "arc-seal" || lk == "arc-message-signature" || lk == "received" {
+				continue
+			}
+			if len(val) > 200 {
+				val = val[:200]
+			}
+			out[k] = val
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
 	msgs := make([]threadMsg, 0, 1+len(req.ThreadMessages))
 	for _, m := range req.ThreadMessages {
 		msgs = append(msgs, threadMsg{
 			From: m.From, Date: m.Date, Subject: m.Subject,
-			Body: prepareBody(m.BodyForAI(), snippetLimit),
+			Headers: filterHeadersForAI(m.Headers),
+			Body:    prepareBody(m.BodyForAI(), snippetLimit),
 		})
 	}
 	if len(msgs) == 0 && req.PrimaryMessage.ID != "" {
 		msgs = append(msgs, threadMsg{
 			From: req.PrimaryMessage.From, Date: req.PrimaryMessage.Date,
 			Subject: req.PrimaryMessage.Subject,
+			Headers: filterHeadersForAI(req.PrimaryMessage.Headers),
 			Body:    prepareBody(req.PrimaryMessage.BodyForAI(), 4500),
 		})
 	}
@@ -506,8 +541,12 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	if m := strings.TrimSpace(req.Model); m != "" {
 		prov.Model = m
 	}
+	sysPrompt := agentSystemPrompt
+	if custom := FormatCustomInstructions(cfg.CustomInstructions); custom != "" {
+		sysPrompt = agentSystemPrompt + "\n\n" + custom
+	}
 	completer := CompleterFor(cfg, prov)
-	out, err := completer.Complete(ctx, agentSystemPrompt, promptBuilder.String(), true)
+	out, err := completer.Complete(ctx, sysPrompt, promptBuilder.String(), true)
 	if err != nil {
 		return AnalyzeResponse{}, err
 	}
@@ -796,6 +835,21 @@ func escapeICSText(s string) string {
 func escapeDraftTag(s string) string {
 	// Prevent quoted text pasted into a draft from prematurely closing the <owner_draft> delimiter.
 	return strings.NewReplacer("</owner_draft>", "<\\/owner_draft>", "</OWNER_DRAFT>", "<\\/OWNER_DRAFT>").Replace(s)
+}
+
+// FormatCustomInstructions safely wraps user-configured personal AI instructions (capped to 2000 runes)
+// for injection into system prompts without risking tag injection.
+func FormatCustomInstructions(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) > 2000 {
+		trimmed = string(runes[:2000])
+	}
+	trimmed = strings.NewReplacer("</user_instructions>", "<\\/user_instructions>", "</USER_INSTRUCTIONS>", "<\\/USER_INSTRUCTIONS>").Replace(trimmed)
+	return "Owner's personal style & context preferences (follow these unless overridden by safety rules or the current explicit request):\n<user_instructions>\n" + trimmed + "\n</user_instructions>"
 }
 
 // ensureDraftProposal makes every writing result insertable: when the model put the mail text into

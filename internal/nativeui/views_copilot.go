@@ -88,6 +88,12 @@ func (a *App) renderCopilotControls(c *ui.Context, phone bool) {
 				"Check my calendar for today and tomorrow and list free time slots.",
 			))
 		}
+		if ui.Button(c.Key("qp-followup"), a.tr("Follow-ups", "Follow-ups")).Clicked() {
+			a.SendCopilotPrompt(context.Background(), a.tr(
+				"Prüfe meine letzten Mails der vergangenen 7 Tage: Wo warte ich noch auf eine Rückmeldung oder sollte nachfassen? Liste konkrete offene Threads mit Empfänger und schlage bei Bedarf Nachfass-Entwürfe vor.",
+				"Check my recent emails from the last 7 days: where am I still waiting for a reply or need to follow up? List open threads with recipients and offer follow-up drafts if helpful.",
+			))
+		}
 		if phone {
 			if ui.Button(c.Key("qp-brief"), a.tr("Tagesbriefing", "Daily briefing")).Clicked() {
 				a.OpenDayBriefing(context.Background())
@@ -237,6 +243,20 @@ func (a *App) renderActionCard(c *ui.Context, id string, pa *pendingAction) {
 			} else {
 				title = a.tr("Vorschlag: Als gelesen markieren", "Proposal: mark as read")
 			}
+		case copilot.ActionMove:
+			if act.Move != nil && act.Move.Archive {
+				title = a.tr("Vorschlag: Archivieren", "Proposal: archive emails")
+			} else if act.Move != nil && act.Move.FolderPath != "" {
+				title = a.trf("Vorschlag: Verschieben nach „%s“", "Proposal: move to “%s”", act.Move.FolderPath)
+			} else {
+				title = a.tr("Vorschlag: Verschieben", "Proposal: move emails")
+			}
+		case copilot.ActionFlag:
+			if act.Flag != nil && !act.Flag.Flagged {
+				title = a.tr("Vorschlag: Stern entfernen", "Proposal: remove star")
+			} else {
+				title = a.tr("Vorschlag: Mit Stern markieren", "Proposal: star emails")
+			}
 		}
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, iconShieldChk).Size(13, 13).TextColor(border)
@@ -301,19 +321,27 @@ func (a *App) renderActionCard(c *ui.Context, id string, pa *pendingAction) {
 					row(a.tr("Kalender:", "Calendar:"), pa.CalendarLabel)
 				}
 			}
-		case copilot.ActionMarkRead:
-			if mr := act.MarkRead; mr != nil {
-				maxShow := min(len(mr.Targets), 5)
+		case copilot.ActionMarkRead, copilot.ActionMove, copilot.ActionFlag:
+			var targets []copilot.MarkReadTarget
+			if act.Kind == copilot.ActionMarkRead && act.MarkRead != nil {
+				targets = act.MarkRead.Targets
+			} else if act.Kind == copilot.ActionMove && act.Move != nil {
+				targets = act.Move.Targets
+			} else if act.Kind == copilot.ActionFlag && act.Flag != nil {
+				targets = act.Flag.Targets
+			}
+			if len(targets) > 0 {
+				maxShow := min(len(targets), 5)
 				for i := 0; i < maxShow; i++ {
-					tg := mr.Targets[i]
+					tg := targets[i]
 					ui.Row(c).FillWidth().Gap(6).Children(func() {
 						ui.Text(c, "•").FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
 						ui.Text(c, truncateText(shortSender(tg.From), 24)).FontSize(11.5).Bold().Shrink(0)
 						ui.Text(c, truncateText(tg.Subject, 60)).FontSize(11.5).TextColor(t.TextMuted).SingleLine().Grow(1)
 					})
 				}
-				if len(mr.Targets) > maxShow {
-					ui.Text(c, a.trf("… und %d weitere", "… and %d more", len(mr.Targets)-maxShow)).FontSize(11).TextColor(t.TextMuted)
+				if len(targets) > maxShow {
+					ui.Text(c, a.trf("… und %d weitere", "… and %d more", len(targets)-maxShow)).FontSize(11).TextColor(t.TextMuted)
 				}
 			}
 		}

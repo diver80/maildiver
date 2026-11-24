@@ -50,6 +50,7 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 
 	app.settings.agentBackend = "claude-api"
 	app.settings.agentModel = "  claude-sonnet  "
+	app.settings.customInstructions = "  Immer kurz und direkt antworten.  "
 	app.settings.classifyAI = true
 	app.settings.maxCalls = "12"
 	app.settings.scanOnNewMail = false
@@ -72,6 +73,7 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 	}
 	cfg, _ := st.box.load()
 	if cfg.AI.Agent.Backend != "claude-api" || cfg.AI.Agent.Model != "claude-sonnet" || !cfg.AI.ClassifyWithAI ||
+		cfg.AI.CustomInstructions != "Immer kurz und direkt antworten." ||
 		cfg.AI.MaxAICallsPerScan != 12 || cfg.Mailbox.ScanOnNewMail || cfg.Mailbox.ScanDays != 14 {
 		t.Fatalf("saved config = %+v / %+v", cfg.AI, cfg.Mailbox)
 	}

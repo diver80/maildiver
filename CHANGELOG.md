@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.28 (2026-11-24)
+
+### KI-Upgrade: Erweiterte Copilot-Tools, Persönliche KI-Hinweise & Header-Regelvorschläge
+- **Neue KI-Assistent-Tools (mit Bestätigungskarten für jede Änderung):**
+  - Neue Lese-Tools: `search_contacts` (Adressbuch durchsuchen), `get_thread` (komplette Konversation laden) und `list_folders` (Ordnerstruktur & Ungelesen-Zähler).
+  - Neue sichere Schreib-Vorschläge: `move_message` (in Ordner verschieben / archivieren – niemals endgültig löschen) und `flag_message` (Stern setzen/entfernen), jeweils erst nach explizitem Klick auf **Ausführen** mit `ExpectedMessageID`-Schutz.
+  - Neuer Schnell-Prompt **Follow-ups** im KI-Assistenten (*„Wo fehlt mir noch eine Antwort der letzten 7 Tage?“*).
+- **Persönliche KI-Hinweise (`ai.customInstructions`):** Neues Textfeld unter *Einstellungen → KI & Sync* für eigenen Stil, Anrede-Regeln (Du/Sie) und Kontext – wird automatisch bei Entwürfen, Zusammenfassungen, Compose-KI-Hilfe und im KI-Assistenten berücksichtigt.
+- **Header-basierte KI-Filtervorschläge:** Der Quick-Regel-Assistent liest jetzt echte RFC-5322-Header (`List-Id`, `Auto-Submitted`, `X-Jira-*`, `X-Mailer`, …) für die KI-Regelanalyse ein, übernimmt vorgeschlagene Header-Bedingungen direkt in das neue Feld **Header enthält** und zeigt sie in der Live-Vorschau an.
+
 ## 0.7.27 (2026-11-24)
 
 ### Konten, Kalender, Regeln & S/MIME direkt in die Einstellungen integriert

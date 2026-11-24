@@ -396,3 +396,44 @@ func TestAnalyzeExtractContactsFromFooter(t *testing.T) {
 		t.Fatalf("unexpected extracted contacts: %+v", resp.Contacts)
 	}
 }
+
+func TestAnalyzeCustomInstructionsAndHeaderFilterSuggestions(t *testing.T) {
+	srv, rec := fakeAnthropic(t, "ant-test", `{"answer":"Jira-Header erkannt.","filterSuggestions":[{"action":"create","name":"Jira WORMS","reason":"Filtert anhand X-Jira-FingerPrint.","headers":[{"name":"X-Jira-FingerPrint","contains":"9f86d081"}],"matchAll":true,"suggestedFolder":"INBOX/atlassian"}]}`)
+	defer rec.check(t)
+
+	t.Setenv("ANTHROPIC_API_KEY", "ant-test")
+	cfg := config.Default().AI
+	cfg.Agent = config.ProviderConfig{Backend: "claude-api", Model: "claude-sonnet-4-5", Endpoint: srv.URL}
+	cfg.CustomInstructions = "Ich heiße Frank (Avono AG), immer kurz und direkt."
+
+	resp, err := Analyze(context.Background(), cfg, AnalyzeRequest{
+		Mode:     "suggest_filter",
+		Language: "de",
+		PrimaryMessage: triage.MessageInput{
+			ID:      "m-hdr",
+			From:    "Jira <jira@atlassian.rewe-group.com>",
+			Subject: "[JIRA] Updates for WORMS-4103",
+			Headers: map[string]string{
+				"x-jira-fingerprint": "9f86d081884c7d65",
+				"dkim-signature":     "v=1; a=rsa-sha256; very-long-noise",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	reqBody := rec.body(-1)
+	if !strings.Contains(reqBody, "user_instructions") || !strings.Contains(reqBody, "Avono AG") {
+		t.Fatalf("expected custom instructions injected into system prompt, got: %s", reqBody)
+	}
+	if !strings.Contains(reqBody, "9f86d081884c7d65") {
+		t.Fatalf("expected custom RFC 5322 header passed to suggest_filter, got: %s", reqBody)
+	}
+	if strings.Contains(reqBody, "very-long-noise") {
+		t.Fatalf("expected noisy DKIM-Signature header to be excluded from filter context")
+	}
+	if len(resp.FilterSuggestions) != 1 || len(resp.FilterSuggestions[0].Headers) != 1 ||
+		resp.FilterSuggestions[0].Headers[0].Name != "X-Jira-FingerPrint" || resp.FilterSuggestions[0].Headers[0].Contains != "9f86d081" {
+		t.Fatalf("unexpected header filter suggestion: %+v", resp.FilterSuggestions)
+	}
+}
