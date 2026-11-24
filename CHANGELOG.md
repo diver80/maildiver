@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.25 (2026-11-24)
+
+### Atlassian-/Jira-Web-Vorschau öffnet Work Items direkt per Key
+- **Direkt zum Work Item statt aufs Board:** Jira-Cloud-Benachrichtigungen führen zuerst den Projekt-Breadcrumb (`/browse/PROJ`, der aufs Kanban-Board umleitet) und erst danach den Work-Item-Link (`/browse/PROJ-123`) auf. `MatchPreviewLink` und `PickPrimaryLink` priorisieren jetzt direkte Work-Item-URLs (mit Key-Match zum Betreff, `/browse/KEY-123`, `/issues/KEY-123`, `selectedIssue=KEY-123`, JSM-Portal-/Request-Links sowie `?focusedCommentId=...`) vor generischen Projekt-/Board-/Startseiten-Links und promoten reine `/browse/PROJ`-Links bei passendem Betreff-Key.
+- **Weniger Noise in der Auto-Vorschau:** Jira-/Confluence-Einstellungs- und Profil-Links (`emailPreferences`, `viewmyemailsettings`, `ViewProfile.jspa`, `Manage Notifications`, `/banner/opt-out`) werden als Noise übersprungen.
+
 ## 0.7.24 (2026-11-24)
 
 ### `.ics`-Einladungen & Anhänge aus verschlüsselten S/MIME-/PGP-Mails + gespeicherte Kalenderansicht

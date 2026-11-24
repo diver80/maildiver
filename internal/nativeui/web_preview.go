@@ -58,8 +58,12 @@ const (
 )
 
 var (
-	plainURLRe  = regexp.MustCompile(`https?://[^\s<>()"'\[\]]+`)
-	urlSchemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
+	plainURLRe              = regexp.MustCompile(`https?://[^\s<>()"'\[\]]+`)
+	urlSchemeRe             = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
+	workItemKeyRe           = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{1,15}-[0-9]+)\b`)
+	jiraBrowseIssueRe       = regexp.MustCompile(`(?i)/(?:browse|issues)/([A-Z][A-Z0-9_]{1,15}-[0-9]+)(?:[/?#]|$)`)
+	jiraBrowseProjectOnlyRe = regexp.MustCompile(`(?i)/browse/([A-Z][A-Z0-9_]{1,15})(?:[/?#]|$)`)
+	jiraPortalIssueRe       = regexp.MustCompile(`(?i)(?:/servicedesk/customer/portal/\d+/|/requests/#!/|selectedIssue=)([A-Z][A-Z0-9_]{1,15}-[0-9]+)(?:[/?#&]|$)`)
 )
 
 func isSafeWebURL(raw string) bool {
@@ -79,7 +83,9 @@ func isNoisePreviewLink(rawURL, label string) bool {
 	low := strings.ToLower(rawURL + " " + label)
 	for _, kw := range []string{
 		"unsubscribe", "abmelden", "abbestellen", "optout", "opt-out",
-		"notification-preferences", "email-preferences", "manage-subscriptions",
+		"notification-preferences", "email-preferences", "emailpreferences",
+		"viewmyemailsettings", "manage-subscriptions", "manage notifications",
+		"viewprofile.jspa", "/banner/opt-out",
 		"/legal", "/privacy", "/terms", "datenschutz", "impressum",
 		"pixel", "/open?", "track/open",
 	} {
@@ -88,6 +94,136 @@ func isNoisePreviewLink(rawURL, label string) bool {
 		}
 	}
 	return false
+}
+
+// extractWorkItemKeys extracts unique uppercase Jira/Atlassian work item keys (e.g. WORMS-4103) from s.
+func extractWorkItemKeys(s string) []string {
+	matches := workItemKeyRe.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		k := m[1]
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// urlWorkItemInfo inspects rawURL for a direct Jira/Atlassian work item key or a bare project link (/browse/PROJ).
+func urlWorkItemInfo(rawURL string) (issueKey string, bareProjectKey string) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", ""
+	}
+	if m := jiraBrowseIssueRe.FindStringSubmatch(u.Path); len(m) == 2 {
+		return strings.ToUpper(m[1]), ""
+	}
+	if m := jiraPortalIssueRe.FindStringSubmatch(rawURL); len(m) == 2 {
+		return strings.ToUpper(m[1]), ""
+	}
+	if m := jiraBrowseProjectOnlyRe.FindStringSubmatch(u.Path); len(m) == 2 {
+		return "", strings.ToUpper(m[1])
+	}
+	return "", ""
+}
+
+func isGenericAtlassianContainerURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	lowPath := strings.ToLower(strings.TrimRight(u.Path, "/"))
+	lowRaw := strings.ToLower(rawURL)
+	if strings.Contains(lowPath, "/wiki/home") || strings.Contains(lowPath, "/wiki/people/") {
+		return true
+	}
+	if strings.Contains(lowPath, "/jira/") && strings.Contains(lowPath, "/projects/") && !strings.Contains(lowRaw, "selectedissue=") {
+		return true
+	}
+	if strings.HasSuffix(strings.ToLower(u.Hostname()), ".atlassian.net") && lowPath == "" {
+		return true
+	}
+	return false
+}
+
+func containsIssueKeyToken(lowURL, lowKey string) bool {
+	idx := 0
+	for {
+		pos := strings.Index(lowURL[idx:], lowKey)
+		if pos < 0 {
+			return false
+		}
+		start := idx + pos
+		end := start + len(lowKey)
+		leftOK := start == 0 || !isIssueKeyChar(lowURL[start-1])
+		rightOK := end == len(lowURL) || !isIssueKeyChar(lowURL[end])
+		if leftOK && rightOK {
+			return true
+		}
+		idx = start + 1
+	}
+}
+
+func isIssueKeyChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
+// previewLinkScore prioritizes direct work-item links (especially matching a key from the email subject)
+// over bare project/board/home links such as https://site.atlassian.net/browse/PROJ.
+func previewLinkScore(lk ExtractedLink, subjectKeys []string) int {
+	score := 0
+	issueKey, bareProject := urlWorkItemInfo(lk.URL)
+	if issueKey != "" {
+		score += 60
+		for _, sk := range subjectKeys {
+			if strings.EqualFold(issueKey, sk) {
+				score += 40
+				break
+			}
+		}
+		if strings.Contains(strings.ToLower(lk.URL), "focusedcommentid=") {
+			score += 10
+		}
+		return score
+	}
+	if bareProject != "" || isGenericAtlassianContainerURL(lk.URL) {
+		return -40
+	}
+	if len(subjectKeys) > 0 {
+		lowURL := strings.ToLower(lk.URL)
+		for _, sk := range subjectKeys {
+			if containsIssueKeyToken(lowURL, strings.ToLower(sk)) {
+				return 50
+			}
+		}
+	}
+	return score
+}
+
+// promoteBareProjectURL upgrades a bare /browse/PROJ link to /browse/PROJ-123 when no direct
+// work-item link was present and the email subject contains a key for that exact project.
+func promoteBareProjectURL(rawURL string, subjectKeys []string) string {
+	issueKey, bareProject := urlWorkItemInfo(rawURL)
+	if issueKey != "" || bareProject == "" || len(subjectKeys) == 0 {
+		return rawURL
+	}
+	prefix := bareProject + "-"
+	for _, sk := range subjectKeys {
+		if strings.HasPrefix(strings.ToUpper(sk), prefix) {
+			u, err := url.Parse(rawURL)
+			if err != nil {
+				return rawURL
+			}
+			u.Path = "/browse/" + strings.ToUpper(sk)
+			return u.String()
+		}
+	}
+	return rawURL
 }
 
 // ExtractMessageLinks collects unique, safe http(s) links from msg (HTML anchors first, then plain text).
@@ -152,12 +288,17 @@ func ExtractMessageLinks(msg *backend.MessageDetail) []ExtractedLink {
 }
 
 // MatchPreviewLink checks msg + links against configured auto-preview rules and returns the
-// first matching URL and rule name. Noise links (unsubscribe/legal/preferences) are skipped.
+// best matching URL and rule name. Noise links (unsubscribe/legal/preferences/profiles) are skipped,
+// and direct work-item links (e.g. /browse/WORMS-4103) are prioritized over bare project/board links (/browse/WORMS).
 func MatchPreviewLink(msg *backend.MessageDetail, links []ExtractedLink, cfg config.LinkPreviewConfig) (string, string, bool) {
 	if msg == nil || len(links) == 0 {
 		return "", "", false
 	}
 	fromLow := strings.ToLower(strings.TrimSpace(msg.From))
+	subjectKeys := extractWorkItemKeys(msg.Subject)
+	fallbackURL := ""
+	fallbackRule := ""
+	fallbackScore := -1 << 30
 	for _, rule := range cfg.Rules {
 		if !rule.Enabled {
 			continue
@@ -170,27 +311,61 @@ func MatchPreviewLink(msg *backend.MessageDetail, links []ExtractedLink, cfg con
 		if senderPat != "" && !strings.Contains(fromLow, senderPat) {
 			continue
 		}
-		for _, lk := range links {
+		bestIdx := -1
+		bestScore := -1 << 30
+		for i, lk := range links {
 			if isNoisePreviewLink(lk.URL, lk.Label) {
 				continue
 			}
-			if strings.Contains(strings.ToLower(lk.URL), urlPat) {
-				return lk.URL, rule.Name, true
+			if !strings.Contains(strings.ToLower(lk.URL), urlPat) {
+				continue
+			}
+			sc := previewLinkScore(lk, subjectKeys)
+			if bestIdx < 0 || sc > bestScore {
+				bestIdx = i
+				bestScore = sc
 			}
 		}
+		if bestIdx >= 0 {
+			if bestScore >= 0 {
+				return links[bestIdx].URL, rule.Name, true
+			}
+			if fallbackURL == "" || bestScore > fallbackScore {
+				fallbackURL = links[bestIdx].URL
+				fallbackRule = rule.Name
+				fallbackScore = bestScore
+			}
+		}
+	}
+	if fallbackURL != "" {
+		return promoteBareProjectURL(fallbackURL, subjectKeys), fallbackRule, true
 	}
 	return "", "", false
 }
 
-// PickPrimaryLink picks the best link for manual preview opening (matched rule first, else first non-noise link).
+// PickPrimaryLink picks the best link for manual preview opening (matched rule first, else highest-scoring non-noise link).
 func PickPrimaryLink(msg *backend.MessageDetail, links []ExtractedLink, cfg config.LinkPreviewConfig) (string, string) {
 	if u, ruleName, ok := MatchPreviewLink(msg, links, cfg); ok {
 		return u, ruleName
 	}
-	for _, lk := range links {
-		if !isNoisePreviewLink(lk.URL, lk.Label) {
-			return lk.URL, ""
+	var subjectKeys []string
+	if msg != nil {
+		subjectKeys = extractWorkItemKeys(msg.Subject)
+	}
+	bestIdx := -1
+	bestScore := -1 << 30
+	for i, lk := range links {
+		if isNoisePreviewLink(lk.URL, lk.Label) {
+			continue
 		}
+		sc := previewLinkScore(lk, subjectKeys)
+		if bestIdx < 0 || sc > bestScore {
+			bestIdx = i
+			bestScore = sc
+		}
+	}
+	if bestIdx >= 0 {
+		return promoteBareProjectURL(links[bestIdx].URL, subjectKeys), ""
 	}
 	if len(links) > 0 {
 		return links[0].URL, ""

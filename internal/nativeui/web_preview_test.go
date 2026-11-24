@@ -100,6 +100,74 @@ func TestMatchPreviewLinkRules(t *testing.T) {
 	if _, _, ok := MatchPreviewLink(newsMsg, ExtractMessageLinks(newsMsg), cfg); ok {
 		t.Fatal("normal newsletter must not match default auto-preview rules")
 	}
+
+	// 4. Real Jira Cloud mail: bare project breadcrumb (/browse/WORMS) precedes work item (/browse/WORMS-4103).
+	// Must open the work item directly instead of the project board.
+	jiraCloudMsg := &backend.MessageDetail{
+		ID:      "jira-cloud-1",
+		From:    "David Reif (Jira) <jira@atlassian.rewe-group.com>",
+		Subject: "[JIRA] Updates for WORMS-4103",
+		BodyHtml: `<a href="https://rewe.atlassian.net/browse/WORMS?atlOrigin=abc">Work Management Systems</a>
+		           <a href="https://rewe.atlassian.net/browse/WORMS-4103?atlOrigin=abc">WORMS-4103</a>
+		           <a href="https://rewe.atlassian.net/browse/WORMS-4103">View comment</a>
+		           <a href="https://rewe.atlassian.net/jira/settings/personal/notifications?emailPreferences=true#emailpreferences">Manage Notifications</a>`,
+	}
+	u, rule, ok = MatchPreviewLink(jiraCloudMsg, ExtractMessageLinks(jiraCloudMsg), cfg)
+	if !ok || u != "https://rewe.atlassian.net/browse/WORMS-4103?atlOrigin=abc" || rule != "Atlassian Jira" {
+		t.Fatalf("expected direct work item WORMS-4103 over project link, got ok=%v url=%q rule=%q", ok, u, rule)
+	}
+
+	// 5. Jira Cloud mention with focusedCommentId should prefer the direct work-item + comment link over bare project link.
+	jiraMentionMsg := &backend.MessageDetail{
+		ID:      "jira-mention-1",
+		From:    "Marlon Gerber (Jira) <jira@helvetia-baloise.atlassian.net>",
+		Subject: "[JIRA] Marlon Gerber mentioned you on UATHCM-326",
+		BodyHtml: `<a href="https://helvetia-baloise.atlassian.net/browse/UATHCM?atlOrigin=x">Support</a>
+		           <a href="https://helvetia-baloise.atlassian.net/browse/UATHCM-326">Plain</a>
+		           <a href="https://helvetia-baloise.atlassian.net/browse/UATHCM-326?focusedCommentId=847891&amp;sourceType=mention">UATHCM-326</a>`,
+	}
+	u, rule, ok = MatchPreviewLink(jiraMentionMsg, ExtractMessageLinks(jiraMentionMsg), cfg)
+	if !ok || !strings.Contains(u, "/browse/UATHCM-326?focusedCommentId=847891") || rule != "Atlassian Jira" {
+		t.Fatalf("expected focused comment work item URL, got ok=%v url=%q rule=%q", ok, u, rule)
+	}
+
+	// 6. Jira Cloud email with bare /browse/WORMS + /jira/software/c/projects/WORMS/issues/WORMS-4103 must pick the work item across rules.
+	jiraBoardAndIssue := &backend.MessageDetail{
+		ID:      "jira-cross-rule",
+		From:    "Jira <jira@rewe.atlassian.net>",
+		Subject: "[JIRA] Updates for WORMS-4103",
+		BodyHtml: `<a href="https://rewe.atlassian.net/browse/WORMS">Work Management Systems</a>
+		           <a href="https://rewe.atlassian.net/jira/software/c/projects/WORMS/issues/WORMS-4103">WORMS-4103</a>`,
+	}
+	u, _, ok = MatchPreviewLink(jiraBoardAndIssue, ExtractMessageLinks(jiraBoardAndIssue), cfg)
+	if !ok || u != "https://rewe.atlassian.net/jira/software/c/projects/WORMS/issues/WORMS-4103" {
+		t.Fatalf("expected work item issue URL across rules, got ok=%v url=%q", ok, u)
+	}
+
+	// 7. Bare /browse/WORMS only, while subject names WORMS-4103 -> promote to /browse/WORMS-4103.
+	jiraBareOnly := &backend.MessageDetail{
+		ID:       "jira-bare-only",
+		From:     "Jira <jira@rewe.atlassian.net>",
+		Subject:  "[JIRA] Updates for WORMS-4103",
+		BodyHtml: `<a href="https://rewe.atlassian.net/browse/WORMS?atlOrigin=abc">Work Management Systems</a>`,
+	}
+	u, rule, ok = MatchPreviewLink(jiraBareOnly, ExtractMessageLinks(jiraBareOnly), cfg)
+	if !ok || u != "https://rewe.atlassian.net/browse/WORMS-4103?atlOrigin=abc" || rule != "Atlassian Jira" {
+		t.Fatalf("expected promoted /browse/WORMS-4103, got ok=%v url=%q rule=%q", ok, u, rule)
+	}
+
+	// 8. Manual PickPrimaryLink on non-atlassian.net JSM email must skip root site link and open the portal ticket matching the subject key.
+	jsmMsg := &backend.MessageDetail{
+		ID:      "jsm-1",
+		From:    "Support (Jira) <support@getxray.app>",
+		Subject: "SUPPORT-124424 Xray MCP Server",
+		BodyHtml: `<a href="https://one-carrier.atlassian.net/">https://one-carrier.atlassian.net</a>
+		           <a href="https://jira.getxray.app/servicedesk/customer/portal/2/SUPPORT-124424?sda_source=notification-email">View request</a>`,
+	}
+	u, _ = PickPrimaryLink(jsmMsg, ExtractMessageLinks(jsmMsg), cfg)
+	if u != "https://jira.getxray.app/servicedesk/customer/portal/2/SUPPORT-124424?sda_source=notification-email" {
+		t.Fatalf("expected JSM portal ticket URL, got %q", u)
+	}
 }
 
 func TestWebPreviewSplitPanelLifecycleAndRender(t *testing.T) {
