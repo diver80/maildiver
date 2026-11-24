@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.29 (2026-11-24)
+
+### Eingebauter lokaler MCP-Server (`maildiver --mcp`) & aktualisierte Dokumentation
+- **Lokaler stdio-MCP-Server (`maildiver --mcp`):** Externe KI-Agenten (**Claude Code**, **Claude Desktop**, **Cursor**, **Antigravity**, **T3 Code**) können jetzt direkt über lokales stdio auf MailDivers Postfach, Kalender, Kontakte und Triage zugreifen – ohne zweites Binary, ohne offene Netzwerk-Ports und ohne Weitergabe von IMAP-Passwörtern oder OAuth-Tokens.
+  - **9 Read-Only-Tools standardmäßig:** `list_accounts`, `list_folders`, `search_messages`, `get_message`, `get_thread`, `list_calendars`, `list_calendar_events`, `search_contacts`, `triage_summary`.
+  - **Explizite Opt-in-Flags:** `--allow-drafts` (aktiviert `create_draft`, sendet niemals) und `--allow-writes` (zusätzlich `create_calendar_event`, `mark_message_read`, `move_message`, `flag_message` – niemals Senden oder endgültiges Löschen).
+  - **Sicherheit:** Verschlüsselte S/MIME- & OpenPGP-Mails werden über MCP niemals entschlüsselt; `mailbox.readOnly` aus `config.json` wird respektiert; alle Daten werden in `<untrusted_...>`-Blöcken gekapselt; sicherer Parallelbetrieb zur laufenden GUI-App über SQLite WAL.
+- **1-Klick-MCP-Setup in den Einstellungen:** Unter *Einstellungen → KI & Sync* gibt es jetzt den Abschnitt **Lokaler MCP-Server** mit Modus-Auswahl sowie 1-Klick-Buttons zum Kopieren der JSON-Config und des `claude mcp add`-Befehls.
+- **Dokumentation & Website aktualisiert:** Neuer zweisprachiger MCP-Guide ([docs/MCP.md](docs/MCP.md)) sowie aktualisierte [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) und GitHub-Pages-Website ([docs/index.html](docs/index.html)).
+
 ## 0.7.28 (2026-11-24)
 
 ### KI-Upgrade: Erweiterte Copilot-Tools, Persönliche KI-Hinweise & Header-Regelvorschläge

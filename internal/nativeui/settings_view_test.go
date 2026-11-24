@@ -44,7 +44,7 @@ func TestSettingsDialogSavesAIAndKeys(t *testing.T) {
 			t.Fatalf("tab %d missing %q: %v", tc.tab, tc.want, tt.Texts())
 		}
 	}
-	if !tt.HasText("KI-Assistent") {
+	if !tt.HasText("KI-Assistent") || !tt.HasText("MCP-Config kopieren") {
 		t.Fatalf("sections missing on AI tab: %v", tt.Texts())
 	}
 

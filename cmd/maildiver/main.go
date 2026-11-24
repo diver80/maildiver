@@ -16,11 +16,12 @@ import (
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/jobs"
 	"github.com/diver80/maildiver/internal/mailengine"
+	"github.com/diver80/maildiver/internal/mcp"
 	"github.com/diver80/maildiver/internal/nativeui"
 	"github.com/diver80/maildiver/internal/triage"
 )
 
-var version = "0.7.28-dev"
+var version = "0.7.29-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -36,11 +37,18 @@ func run() error {
 	minimized := fs.Bool("minimized", false, "Nur als Menüleisten-/Tray-Status-Widget starten")
 	noTray := fs.Bool("no-tray", false, "Menüleisten-/Tray-Status-Widget deaktivieren")
 	showVersion := fs.Bool("version", false, "Version ausgeben")
+	mcpMode := fs.Bool("mcp", false, "Als lokaler MCP-Server über stdio laufen (Standard: nur lesend)")
+	mcpAllowDrafts := fs.Bool("allow-drafts", false, "Im --mcp-Modus create_draft erlauben (speichert nur Entwürfe, sendet nie)")
+	mcpAllowWrites := fs.Bool("allow-writes", false, "Im --mcp-Modus Entwürfe, Termine und Gelesen/Verschieben/Stern erlauben (nie Senden/Löschen)")
 	_ = fs.Parse(filterLaunchArgs(os.Args[1:]))
 
 	if *showVersion {
 		fmt.Println("maildiver", version)
 		return nil
+	}
+
+	if *mcpMode {
+		return runMCP(context.Background(), *mcpAllowDrafts, *mcpAllowWrites)
 	}
 
 	initialMailto := ""
@@ -108,6 +116,44 @@ func run() error {
 		return fmt.Errorf("Fehler: %w", err)
 	}
 	return nil
+}
+
+// runMCP starts MailDiver as a local stdio Model Context Protocol (MCP) server without launching
+// the GUI or persistent IMAP IDLE loops (so it coexists cleanly with a running desktop app via SQLite WAL).
+func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	store, err := triage.OpenStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "maildiver --mcp: triage store warning: %v\n", err)
+	}
+
+	eng, err := mailengine.New(mailengine.Options{
+		ConfigLoader: config.Load,
+		ConfigSaver:  config.Save,
+	})
+	if err != nil {
+		return fmt.Errorf("maildiver --mcp: engine init failed: %w", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	bc := backend.New(backend.Options{
+		Engine:     eng,
+		Events:     eng.Events(),
+		Store:      store,
+		LoadConfig: config.Load,
+		Version:    version,
+	})
+	srv := mcp.New(mcp.Options{
+		Backend:     bc,
+		Store:       store,
+		LoadConfig:  config.Load,
+		Version:     version,
+		AllowDrafts: allowDrafts,
+		AllowWrites: allowWrites,
+	})
+	return srv.Serve(ctx, os.Stdin, os.Stdout)
 }
 
 // filterLaunchArgs drops the -psn_* process serial number older macOS versions pass to apps

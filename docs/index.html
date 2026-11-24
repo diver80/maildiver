@@ -368,12 +368,12 @@
         <div class="grid-3">
           <article class="card">
             <div class="icon">✦</div>
-            <h3 data-i18n="f1.title">Flexible AI — Local &amp; Cloud</h3>
-            <p data-i18n="f1.desc">Run completely offline with Ollama (e.g. Inkling 2 Mini via ollama run inkling-2-mini on 32GB+ Apple Silicon), llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.</p>
+            <h3 data-i18n="f1.title">Flexible AI &amp; Built-in MCP Server</h3>
+            <p data-i18n="f1.desc">Run completely locally via MTPLX (Inkling 2 Mini on Apple Silicon), Ollama, llama.cpp or llamafile — or connect Claude, Gemini, OpenAI, and CLI agents with Personal AI Instructions. Plus a built-in local stdio MCP server (maildiver --mcp) for Claude Code, Cursor, Antigravity &amp; Claude Desktop (read-only by default, never sends or deletes). Local filter rules run at 0 tokens.</p>
             <div class="tags">
-              <span class="tag">Ollama / Inkling 2</span>
+              <span class="tag">MCP Server</span>
+              <span class="tag">MTPLX / Ollama</span>
               <span class="tag">Claude / Gemini</span>
-              <span class="tag">CLI Agents</span>
               <span class="tag" data-i18n="f1.tag">0-Token Rules</span>
             </div>
           </article>
@@ -508,6 +508,9 @@ brew install --cask diver80/tap/maildiver
 # Linux / CLI
 brew install diver80/tap/maildiver
 
+# Connect Claude Code / Cursor / Antigravity via built-in MCP
+claude mcp add maildiver -- maildiver --mcp
+
 # Or build from source
 git clone https://github.com/diver80/maildiver.git
 cd maildiver && ./build.sh && ./install.sh</code></pre>
@@ -515,9 +518,9 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
           </div>
           <div class="card">
             <h3 data-i18n="plat.road">Release Highlights &amp; Roadmap</h3>
-            <p data-i18n="plat.road1">✓ <strong>S/MIME &amp; OpenPGP:</strong> .p12/.pfx &amp; PGP/MIME keys (OS Keychain/Keystore), verify, decrypt, sign &amp; encrypt</p>
-            <p data-i18n="plat.road2">✓ <strong>Compose &amp; Focus:</strong> Desktop HTML WYSIWYG editor, inline pasted images, editable tables, ★ Focus view</p>
-            <p data-i18n="plat.road3">✓ <strong>Mobile &amp; Local AI:</strong> Android multi-select &amp; swipe actions, LAN QR transfer, Ollama / MTPLX (Inkling 2 Mini)</p>
+            <p data-i18n="plat.road1">✓ <strong>Local MCP &amp; Copilot:</strong> Built-in <code>maildiver --mcp</code> stdio server, Personal AI Instructions, Follow-ups, contacts/thread/folder/move tools &amp; header-based AI rules</p>
+            <p data-i18n="plat.road2">✓ <strong>S/MIME &amp; OpenPGP:</strong> .p12/.pfx, team bulk cert import (.pem/.p7b/.zip), encrypted .ics &amp; attachments, native PGP/MIME &amp; Inline PGP (no gpg)</p>
+            <p data-i18n="plat.road3">✓ <strong>Daily Driver Polish:</strong> 24h Day Calendar view + Google/CalDAV writeback, Raw Source &amp; Full Headers view, direct Jira work-item preview &amp; unified Settings</p>
             <p data-i18n="plat.road4">→ <strong>Next:</strong> Google Play Store distribution, iOS TestFlight &amp; more local AI workflows</p>
           </div>
         </div>
@@ -546,6 +549,8 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
       <div style="display:flex;gap:18px;">
         <a href="https://github.com/diver80/maildiver" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/diver80/maildiver/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/diver80/maildiver/blob/main/docs/MCP.md" target="_blank" rel="noopener">MCP Server</a>
+        <a href="https://github.com/diver80/maildiver/blob/main/docs/LOCAL_AI.md" target="_blank" rel="noopener" data-i18n="foot.localai">Local AI</a>
         <a href="https://github.com/diver80/maildiver/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener" data-i18n="foot.arch">Architecture</a>
       </div>
     </div>
@@ -569,8 +574,8 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "hero.screens": "Explore Screenshots",
         "feat.title": "Built for speed, privacy, and real daily work",
         "feat.sub": "Everything lives in one native binary: direct IMAP/SMTP engine, local SQLite cache, calendar, contacts, and an opt-in AI copilot you stay in control of.",
-        "f1.title": "Flexible AI — Local & Cloud",
-        "f1.desc": "Run completely offline with Ollama (e.g. Inkling 2 Mini via ollama run inkling-2-mini on 32GB+ Apple Silicon), llama.cpp or llamafile, or connect Anthropic Claude, Google Gemini, OpenAI, or CLI agents (claude-cli, gemini-cli, opencode-cli). Local filter rules use zero tokens, and the AI copilot only proposes actions — nothing executes without your click.",
+        "f1.title": "Flexible AI & Built-in MCP Server",
+        "f1.desc": "Run completely locally via MTPLX (Inkling 2 Mini on Apple Silicon), Ollama, llama.cpp or llamafile — or connect Claude, Gemini, OpenAI, and CLI agents with Personal AI Instructions. Plus a built-in local stdio MCP server (maildiver --mcp) for Claude Code, Cursor, Antigravity & Claude Desktop (read-only by default, never sends or deletes). Local filter rules run at 0 tokens.",
         "f1.tag": "0-Token Rules",
         "f2.title": "Native Performance & Compact Sidebar",
         "f2.desc": "Compiled Go backend + GPU-accelerated mygo UI in a single process. Instant local SQLite FTS5 search, Focus (Unread & ★), smart compact folder sidebar (shows INBOX & active rule targets up front and collapses less-used folders into “More folders” on phone & desktop), real-time IMAP IDLE, keyboard shortcuts (j/k/r/e/v/c/s), and detached compose & event windows.",
@@ -609,15 +614,16 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "plat.quick": "Homebrew & Quick Build",
         "plat.android": "Android builds use ./build.sh --android (requires Android NDK). Prebuilt macOS Universal .dmg and desktop binaries are attached to every GitHub Release.",
         "plat.road": "Release Highlights & Roadmap",
-        "plat.road1": "✓ S/MIME & Native OpenPGP: .p12/.pfx & PGP/MIME + Inline PGP (no gpg), OS Keychain, WKD/VKS & fail-closed crypto",
-        "plat.road2": "✓ Compose & Sidebar: Desktop HTML WYSIWYG editor, Draft Auto-Save, Undo Send, Templates & Compact Folder View",
-        "plat.road3": "✓ Rules & Mobile: Full Rule Editor, Android multi-select/swipe, LAN QR transfer & Ollama/Cloud AI dropdowns",
-        "plat.road4": "→ Next: Google Play Store distribution, advanced OAuth2 polish & community feedback",
+        "plat.road1": "✓ Local MCP & Copilot: Built-in maildiver --mcp stdio server, Personal AI Instructions, Follow-ups, contacts/thread/folder/move tools & header-based AI rules",
+        "plat.road2": "✓ S/MIME & OpenPGP: .p12/.pfx, team bulk cert import (.pem/.p7b/.zip), encrypted .ics & attachments, native PGP/MIME & Inline PGP (no gpg)",
+        "plat.road3": "✓ Daily Driver Polish: 24h Day Calendar view + Google/CalDAV writeback, Raw Source & Full Headers view, direct Jira work-item preview & unified Settings",
+        "plat.road4": "→ Next: Google Play Store distribution, iOS TestFlight & more local AI workflows",
         "open.title": "Daily-driven on macOS · Testers & Pull Requests Welcome!",
         "open.desc": "MailDiver is actively developed and used every day on macOS. Feedback, bug reports, platform tests on Linux/Windows/Android, and Pull Requests are warmly welcome. Released under the MIT License.",
         "open.issues": "Report Issue / Feedback",
         "open.license": "MIT License",
         "foot.mit": "MIT Licensed Open Source",
+        "foot.localai": "Local AI",
         "foot.arch": "Architecture"
       },
       de: {
@@ -632,8 +638,8 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "hero.screens": "Screenshots ansehen",
         "feat.title": "Gebaut für Tempo, Sicherheit und den echten Arbeitsalltag",
         "feat.sub": "Alles in einem nativen Programm: direkte IMAP/SMTP-Engine, lokaler SQLite-Cache, Kalender, Kontakte und ein optionaler KI-Copilot, bei dem du die volle Kontrolle behältst.",
-        "f1.title": "KI flexibel — Lokal & Cloud",
-        "f1.desc": "Komplett lokal mit Ollama (z. B. Inkling 2 Mini über ollama run inkling-2-mini auf Macs ab 32 GB RAM), llama.cpp oder llamafile – oder flexibel mit Anthropic Claude, Google Gemini, OpenAI und CLI-Agenten (claude-cli, gemini-cli, opencode-cli). Lokale Filterregeln verbrauchen 0 Tokens, und der KI-Copilot schlägt Aktionen nur vor – nichts läuft ohne deinen Klick.",
+        "f1.title": "KI flexibel & Eingebauter MCP-Server",
+        "f1.desc": "Komplett lokal mit MTPLX (Inkling 2 Mini auf Apple Silicon), Ollama, llama.cpp oder llamafile – oder flexibel mit Claude, Gemini, OpenAI und CLI-Agenten inkl. Persönlicher KI-Hinweise. Dazu ein eingebauter lokaler stdio-MCP-Server (maildiver --mcp) für Claude Code, Cursor, Antigravity & Claude Desktop (standardmäßig Read-Only, sendet und löscht niemals). Lokale Filterregeln laufen mit 0 Tokens.",
         "f1.tag": "0-Token-Regeln",
         "f2.title": "Native Performance & Kompakte Ordner",
         "f2.desc": "Kompiliertes Go-Backend und GPU-beschleunigte mygo-Oberfläche in einem Prozess. Sofortige SQLite-FTS5-Suche, Fokus (Ungelesen & ★), kompakte Ordner-Seitenleiste (zeigt INBOX & aktive Regelziele direkt und klappt seltenere Ordner unter „Weitere Ordner“ ein – auf Handy & Desktop), IMAP IDLE, Shortcuts (j/k/r/e/v/c/s) und eigene Fenster für Verfassen & Termine.",
@@ -672,15 +678,16 @@ cd maildiver && ./build.sh && ./install.sh</code></pre>
         "plat.quick": "Homebrew & Schnell-Build",
         "plat.android": "Android-Builds laufen über ./build.sh --android (Android NDK benötigt). Ein fertiges macOS-Universal-.dmg und Desktop-Binaries hängen an jedem GitHub Release.",
         "plat.road": "Release-Highlights & Roadmap",
-        "plat.road1": "✓ S/MIME & Natives OpenPGP: .p12/.pfx & PGP/MIME + Inline-PGP (ohne gpg), Schlüsselbund, WKD/VKS & Fail-Closed",
-        "plat.road2": "✓ Verfassen & Seitenleiste: HTML-WYSIWYG-Editor, Draft Auto-Save, Undo Send, Vorlagen & kompakte Ordneransicht",
-        "plat.road3": "✓ Regeln & Mobil: Regel-Editor, Android-Mehrfachauswahl/Swipe, LAN-QR-Transfer & Ollama/Cloud-KI-Auswahl",
-        "plat.road4": "→ Als Nächstes: Google-Play-Store-Verteilung, OAuth2-Feinschliff & Community-Feedback",
+        "plat.road1": "✓ Lokaler MCP-Server & Copilot: Eingebauter maildiver --mcp stdio-Server, Persönliche KI-Hinweise, Follow-ups, Kontakt-/Thread-/Ordner-/Verschiebe-Tools & Header-KI-Regeln",
+        "plat.road2": "✓ S/MIME & OpenPGP: .p12/.pfx, Team-Bulk-Zertifikatsimport (.pem/.p7b/.zip), verschlüsselte .ics & Anhänge, natives PGP/MIME & Inline-PGP (ohne gpg)",
+        "plat.road3": "✓ Alltagstauglich: 24h-Tageskalender + Google-/CalDAV-Writeback, Quelltext- & Voll-Header-Ansicht, direkte Jira-Work-Item-Vorschau & zentrale Einstellungen",
+        "plat.road4": "→ Als Nächstes: Google-Play-Store-Verteilung, iOS TestFlight & weitere lokale KI-Workflows",
         "open.title": "Täglich auf macOS im Einsatz · Tester & Pull-Requests willkommen!",
         "open.desc": "MailDiver ist aktiv in Entwicklung und bereits jeden Tag auf macOS im produktiven Einsatz. Feedback, Fehlerberichte, Tests auf Linux/Windows/Android und Pull-Requests sind herzlich willkommen! Veröffentlicht unter der MIT-Lizenz.",
         "open.issues": "Issue / Feedback melden",
         "open.license": "MIT-Lizenz",
         "foot.mit": "Open Source unter MIT-Lizenz",
+        "foot.localai": "Lokale KI",
         "foot.arch": "Architektur"
       }
     };

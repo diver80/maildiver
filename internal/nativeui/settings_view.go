@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	anyllm "github.com/mozilla-ai/any-llm-go"
 
@@ -92,6 +93,7 @@ type settingsUI struct {
 	maxCalls           string
 	allowCLI           bool
 	customInstructions string
+	mcpMode            int // 0: read-only, 1: +drafts, 2: +writes
 
 	scanOnNewMail       bool
 	scanLimit, scanDays string
@@ -1099,8 +1101,59 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 			}
 		}
 
+		if !isMobileOS() {
+			a.renderSettingsMCPSection(c)
+		}
 		a.renderSettingsLANQRSection(c)
 	}
+}
+
+func mcpConfigSnippet(mode int) string {
+	args := `["--mcp"]`
+	switch mode {
+	case 1:
+		args = `["--mcp", "--allow-drafts"]`
+	case 2:
+		args = `["--mcp", "--allow-writes"]`
+	}
+	return "{\n  \"mcpServers\": {\n    \"maildiver\": {\n      \"command\": \"maildiver\",\n      \"args\": " + args + "\n    }\n  }\n}"
+}
+
+func (a *App) renderSettingsMCPSection(c *ui.Context) {
+	t := c.Theme()
+	s := &a.settings
+	a.settingsSection(c, a.tr("Lokaler MCP-Server (Claude Code, Cursor, Antigravity, Claude Desktop)", "Local MCP Server (Claude Code, Cursor, Antigravity, Claude Desktop)"))
+	ui.Column(c.Key("set-mcp-box")).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
+		ui.Text(c, a.tr(
+			"Externe KI-Agenten können lokal per stdio (maildiver --mcp) auf Postfach, Kalender & Kontakte zugreifen — ohne offene Ports, ohne direktes Senden/Löschen und ohne S/MIME-/PGP-Entschlüsselung.",
+			"External AI agents can query your local mailbox, calendar & contacts over stdio (maildiver --mcp) — zero open ports, never sends or permanently deletes, and never decrypts S/MIME/PGP.",
+		)).FontSize(11.5).TextColor(t.TextMuted)
+		ui.Segmented(c.Key("set-mcp-mode"), &s.mcpMode,
+			a.tr("Nur Lesen", "Read-only"),
+			a.tr("+ Entwürfe", "+ Drafts"),
+			a.tr("+ Kalender & Sortieren", "+ Calendar & Triage"),
+		)
+		snippet := mcpConfigSnippet(s.mcpMode)
+		ui.Column(c).FillWidth().Padding(8, 10).Radius(6).Background(t.Surface).Border(1, t.Border).Children(func() {
+			ui.Text(c, snippet).FontSize(11).Selectable()
+		})
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
+			if ui.Button(c.Key("set-mcp-copy"), a.tr("MCP-Config kopieren", "Copy MCP Config")).Padding(3, 10).Clicked() {
+				mygo.Clipboard.WriteText(snippet)
+				a.toast(a.tr("MCP-Konfiguration in Zwischenablage kopiert", "MCP config copied to clipboard"), "success")
+			}
+			cliCmd := "claude mcp add maildiver -- maildiver --mcp"
+			if s.mcpMode == 1 {
+				cliCmd += " --allow-drafts"
+			} else if s.mcpMode == 2 {
+				cliCmd += " --allow-writes"
+			}
+			if ui.Button(c.Key("set-mcp-copy-cli"), a.tr("Claude-CLI-Befehl kopieren", "Copy Claude CLI command")).Padding(3, 10).Clicked() {
+				mygo.Clipboard.WriteText(cliCmd)
+				a.toast(a.tr("Claude-CLI-Befehl kopiert", "Claude CLI command copied"), "success")
+			}
+		})
+	})
 }
 
 func (a *App) renderSettingsModelField(
