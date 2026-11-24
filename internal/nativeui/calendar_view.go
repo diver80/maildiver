@@ -73,6 +73,48 @@ func (a *App) setAllCalendarsVisible(visible bool) {
 	a.persistHiddenCalendars()
 }
 
+func calendarViewModeFromName(name string) int {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "month":
+		return 0
+	case "week":
+		return 1
+	case "day":
+		return 2
+	case "agenda":
+		return 3
+	default:
+		return 2 // Day view with live current-time line as default
+	}
+}
+
+func calendarViewNameFromMode(mode int) string {
+	switch mode {
+	case 0:
+		return "month"
+	case 1:
+		return "week"
+	case 3:
+		return "agenda"
+	default:
+		return "day"
+	}
+}
+
+func (a *App) persistCalendarView() {
+	if a.opts.ConfigSaver == nil {
+		return
+	}
+	cfg, err := a.opts.ConfigLoader()
+	if err != nil {
+		cfg = a.cfg
+	}
+	cfg.App.CalendarView = calendarViewNameFromMode(a.calViewMode)
+	cfg = config.Normalize(cfg)
+	_ = a.opts.ConfigSaver(cfg)
+	a.cfg = cfg
+}
+
 func (a *App) persistHiddenCalendars() {
 	if a.opts.ConfigSaver == nil {
 		return
@@ -372,6 +414,7 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 				if a.calViewMode == 2 {
 					a.calDayScrolledKey = ""
 				}
+				a.persistCalendarView()
 				a.RefreshAll(context.Background())
 			}
 

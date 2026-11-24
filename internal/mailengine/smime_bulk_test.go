@@ -3,6 +3,7 @@ package mailengine
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -11,11 +12,15 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	pkcs12 "software.sslmate.com/src/go-pkcs12"
+
 	"github.com/diver80/maildiver/internal/config"
 	"github.com/diver80/maildiver/internal/secretstore"
+	"github.com/diver80/maildiver/internal/smime"
 )
 
 func makeSelfSignedEmailCert(t *testing.T, cn, email string) (derBytes []byte, pemBytes []byte) {
@@ -104,5 +109,104 @@ func TestImportSMIMECertPathsBulkFolderAndZip(t *testing.T) {
 	}
 	if res2.Imported != 0 || res2.Updated != 4 {
 		t.Fatalf("expected 0 imported / 4 updated on repeat, got %+v", res2)
+	}
+}
+
+func TestEncryptedSMIMEInviteAndAttachmentExtract(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	eng, err := New(Options{
+		DBPath:       filepath.Join(dir, "maildiver.db"),
+		Secrets:      secretstore.NewMemoryStore(),
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(next config.Config) error { cfg = next; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	// Create Frank's S/MIME identity and import .p12
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:   big.NewInt(12345),
+		Subject:        pkix.Name{CommonName: "Frank Hess"},
+		EmailAddresses: []string{"frank.hess@avono.de"},
+		NotBefore:      time.Now().Add(-time.Hour),
+		NotAfter:       time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:       x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p12, err := pkcs12.Modern.Encode(key, cert, nil, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.smime.ImportPKCS12(p12, "pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build an inner multipart email containing an .ics invitation, then S/MIME-encrypt it.
+	inner := "From: Axel <axel@avono.de>\r\n" +
+		"To: Frank <frank.hess@avono.de>\r\n" +
+		"Subject: Fwd: Kickoff\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"bnd123\"\r\n\r\n" +
+		"--bnd123\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSiehe Einladung.\r\n" +
+		"--bnd123\r\nContent-Type: text/calendar; charset=utf-8; method=REQUEST; name=\"invite.ics\"\r\n" +
+		"Content-Disposition: attachment; filename=\"invite.ics\"\r\n\r\n" +
+		"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n" +
+		"UID:enc-kickoff-1@avono.de\r\nDTSTART:20261125T100000Z\r\nDTEND:20261125T110000Z\r\n" +
+		"SUMMARY:Kickoff Avono\r\nORGANIZER:mailto:oscar@example.ch\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n" +
+		"--bnd123--\r\n"
+
+	encEML, err := smime.EncryptMIME([]byte(inner), []*x509.Certificate{cert})
+	if err != nil {
+		t.Fatalf("EncryptMIME: %v", err)
+	}
+
+	ctx := context.Background()
+	// Store encrypted message in SQLite with empty ICSBody (plaintext is never stored in SQLite).
+	if err := eng.store.UpsertMessage(ctx, StoredMessage{
+		ID:          "m-enc-ics",
+		AccountID:   "acc-1",
+		FolderID:    "f-inbox",
+		FolderPath:  "INBOX",
+		UID:         10,
+		Subject:     "Fwd: Kickoff",
+		From:        "Axel <axel@avono.de>",
+		DateISO:     time.Now().UTC().Format(time.RFC3339),
+		DateUnix:    time.Now().Unix(),
+		BodyFetched: true,
+		RawEML:      encEML,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. RespondMessageICS must decrypt RawEML on the fly and import the invite.
+	res, err := eng.RespondMessageICS(ctx, "m-enc-ics", LocalCalendarID, "accepted")
+	if err != nil {
+		t.Fatalf("RespondMessageICS on encrypted S/MIME invite: %v", err)
+	}
+	if res.ImportedCount != 1 || res.Status != "accepted" {
+		t.Fatalf("unexpected encrypted RSVP result: %+v", res)
+	}
+
+	// 2. ReadAttachmentPreview must also extract invite.ics from the decrypted inner MIME.
+	att, err := eng.ReadAttachmentPreview(ctx, "m-enc-ics", "", "invite.ics")
+	if err != nil {
+		t.Fatalf("ReadAttachmentPreview on encrypted S/MIME mail: %v", err)
+	}
+	if !strings.Contains(string(att.Data), "SUMMARY:Kickoff Avono") {
+		t.Fatalf("unexpected decrypted attachment bytes: %q", string(att.Data))
 	}
 }

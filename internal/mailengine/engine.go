@@ -1281,14 +1281,79 @@ func writeBytesToDownloads(safeName string, data []byte) (string, error) {
 	return target, nil
 }
 
+// decryptedMessageRaw returns the in-memory decrypted (or opaque-signature-unwrapped) RFC 5322
+// MIME bytes for an S/MIME or OpenPGP message, without ever persisting plaintext to SQLite.
+func (e *Engine) decryptedMessageRaw(m StoredMessage) []byte {
+	if len(m.RawEML) == 0 {
+		return nil
+	}
+	parsed, _ := ParseRawMessage(m.RawEML)
+	fromAddr := ""
+	if addrs := ExtractAddresses([]string{m.From}); len(addrs) > 0 {
+		fromAddr = strings.ToLower(strings.TrimSpace(addrs[0]))
+	}
+	hasInlinePGPEnc, _ := pgp.HasInlinePGP(m.RawEML)
+	if (parsed.IsPGP || hasInlinePGPEnc) && (parsed.Encrypted || hasInlinePGPEnc) && e.pgp != nil {
+		if dec, _, _, isEnc, err := pgp.DecryptMIME(m.RawEML, e.pgp.AllEntities(), fromAddr); err == nil && isEnc && len(dec) > 0 {
+			return dec
+		}
+	}
+	if parsed.Encrypted && e.smime != nil {
+		if ids, err := e.smime.AllIdentitiesWithErr(); err == nil && len(ids) > 0 {
+			if dec, _, derr := smime.DecryptMIME(m.RawEML, ids, nil); derr == nil && len(dec) > 0 {
+				return dec
+			}
+		}
+	}
+	if parsed.Signed && e.smime != nil {
+		if _, inner, _ := smime.VerifyMIME(m.RawEML, nil); len(inner) > 0 {
+			return inner
+		}
+	}
+	return m.RawEML
+}
+
+func (e *Engine) extractMessageAttachment(m StoredMessage, partName, filename string) (string, string, []byte, error) {
+	decRaw := e.decryptedMessageRaw(m)
+	if len(decRaw) > 0 {
+		if name, ct, data, err := ExtractAttachment(decRaw, partName, filename); err == nil {
+			return name, ct, data, nil
+		}
+	}
+	return ExtractAttachment(m.RawEML, partName, filename)
+}
+
+func (e *Engine) resolveMessageICSBody(ctx context.Context, m StoredMessage) (StoredMessage, string) {
+	if strings.TrimSpace(m.ICSBody) != "" {
+		return m, m.ICSBody
+	}
+	if !m.BodyFetched || len(m.RawEML) == 0 {
+		if acc, ok := e.findAccount(m.AccountID); ok {
+			if fetched, ferr := e.fetchMessageBodyIMAP(ctx, acc, m); ferr == nil {
+				m = fetched
+			}
+		}
+	}
+	if strings.TrimSpace(m.ICSBody) != "" {
+		return m, m.ICSBody
+	}
+	if raw := e.decryptedMessageRaw(m); len(raw) > 0 {
+		if dp, err := ParseRawMessage(raw); err == nil && strings.TrimSpace(dp.ICSBody) != "" {
+			return m, dp.ICSBody
+		}
+	}
+	return m, ""
+}
+
 // SaveAttachmentToDownloads extracts an attachment from a message (fetching raw EML over IMAP
-// if not yet cached) and saves it to ~/Downloads without overwriting existing files.
+// if not yet cached, and decrypting S/MIME/PGP in memory when needed) and saves it to ~/Downloads
+// without overwriting existing files.
 func (e *Engine) SaveAttachmentToDownloads(ctx context.Context, msgID, partName, filename string) (string, error) {
 	m, err := e.getOrFetchStoredMessage(ctx, msgID)
 	if err != nil {
 		return "", err
 	}
-	name, _, data, err := ExtractAttachment(m.RawEML, partName, filename)
+	name, _, data, err := e.extractMessageAttachment(m, partName, filename)
 	if err != nil {
 		return "", err
 	}
@@ -1325,7 +1390,7 @@ func (e *Engine) ReadAttachmentPreview(ctx context.Context, msgID, partName, fil
 	if err != nil {
 		return AttachmentPreviewData{}, err
 	}
-	name, ct, data, err := ExtractAttachment(m.RawEML, partName, filename)
+	name, ct, data, err := e.extractMessageAttachment(m, partName, filename)
 	if err != nil {
 		return AttachmentPreviewData{}, err
 	}
@@ -1423,26 +1488,21 @@ func createUniqueFile(dir, name string) (string, *os.File, error) {
 }
 
 // ImportMessageICS imports the text/calendar (.ics) invite embedded in a message into calendarID
-// (defaults to LocalCalendarID).
+// (defaults to LocalCalendarID), decrypting S/MIME or OpenPGP envelopes in memory when needed.
 func (e *Engine) ImportMessageICS(ctx context.Context, msgID, calendarID string) (int, error) {
 	m, err := e.store.GetMessage(ctx, msgID)
 	if err != nil {
 		return 0, fmt.Errorf("not_found: Nachricht %q", msgID)
 	}
-	if strings.TrimSpace(m.ICSBody) == "" && !m.BodyFetched {
-		if acc, ok := e.findAccount(m.AccountID); ok {
-			if fetched, ferr := e.fetchMessageBodyIMAP(ctx, acc, m); ferr == nil {
-				m = fetched
-			}
-		}
-	}
-	if strings.TrimSpace(m.ICSBody) == "" {
+	var icsBody string
+	m, icsBody = e.resolveMessageICSBody(ctx, m)
+	if strings.TrimSpace(icsBody) == "" {
 		return 0, fmt.Errorf("Diese E-Mail enthält keine .ics-Termineinladung")
 	}
 	if calendarID == "" {
 		calendarID = LocalCalendarID
 	}
-	return e.ImportICSBytes(ctx, calendarID, []byte(m.ICSBody))
+	return e.ImportICSBytes(ctx, calendarID, []byte(icsBody))
 }
 
 // ICSRespondResult summarizes the outcome of an RSVP response to an .ics invitation.
@@ -1576,21 +1636,16 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 	if err != nil {
 		return ICSRespondResult{}, fmt.Errorf("not_found: Nachricht %q", msgID)
 	}
-	if strings.TrimSpace(m.ICSBody) == "" && !m.BodyFetched {
-		if acc, ok := e.findAccount(m.AccountID); ok {
-			if fetched, ferr := e.fetchMessageBodyIMAP(ctx, acc, m); ferr == nil {
-				m = fetched
-			}
-		}
-	}
-	if strings.TrimSpace(m.ICSBody) == "" {
+	var icsBody string
+	m, icsBody = e.resolveMessageICSBody(ctx, m)
+	if strings.TrimSpace(icsBody) == "" {
 		return ICSRespondResult{}, fmt.Errorf("Diese E-Mail enthält keine .ics-Termineinladung")
 	}
 	if calendarID == "" {
 		calendarID = LocalCalendarID
 	}
 
-	parsedEvs, _ := ParseICS(calendarID, "Persönlich", false, strings.NewReader(m.ICSBody))
+	parsedEvs, _ := ParseICS(calendarID, "Persönlich", false, strings.NewReader(icsBody))
 	var inviteUID, inviteTitle string
 	var inviteStart int64
 	if len(parsedEvs) > 0 {
@@ -1636,7 +1691,7 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 				e.store.SetEventSelfResponse(ctx, me.ID, status)
 			}
 		} else {
-			n, err := e.ImportICSBytes(ctx, calendarID, []byte(m.ICSBody))
+			n, err := e.ImportICSBytes(ctx, calendarID, []byte(icsBody))
 			if err != nil {
 				return res, err
 			}
@@ -1679,7 +1734,7 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 		return res, nil
 	}
 
-	replyICS, orgEmail, summary, err := BuildICSRSVP(m.ICSBody, attendeeEmail, attendeeName, status)
+	replyICS, orgEmail, summary, err := BuildICSRSVP(icsBody, attendeeEmail, attendeeName, status)
 	if err != nil {
 		res.ReplyError = err.Error()
 		return res, nil
@@ -1959,7 +2014,7 @@ func (e *Engine) ReadInlineImage(ctx context.Context, msgID, cid string) (string
 		}
 		m = fetched
 	}
-	return ExtractInlineImage(m.RawEML, cid)
+	return ExtractInlineImage(e.decryptedMessageRaw(m), cid)
 }
 
 // ReadAllInlineImages returns all embedded Content-ID inline images of msgID.
@@ -1979,7 +2034,7 @@ func (e *Engine) ReadAllInlineImages(ctx context.Context, msgID string) (map[str
 		}
 		m = fetched
 	}
-	return ExtractAllInlineImages(m.RawEML), nil
+	return ExtractAllInlineImages(e.decryptedMessageRaw(m)), nil
 }
 
 // MarkSpam moves a message into the account's Junk/Spam folder on IMAP and removes it from the current folder.

@@ -1289,7 +1289,7 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 					}
 				}
 			}
-			srcRaw = m.RawEML
+			srcRaw = e.decryptedMessageRaw(m)
 			rawCache[sa.MessageID] = srcRaw
 		}
 		name, ct, data, eerr := ExtractAttachment(srcRaw, sa.PartName, sa.Name)

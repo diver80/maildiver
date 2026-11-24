@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.24 (2026-11-24)
+
+### `.ics`-Einladungen & Anhänge aus verschlüsselten S/MIME-/PGP-Mails + gespeicherte Kalenderansicht
+- **Fix: `.ics`-Einladungen in S/MIME- & OpenPGP-verschlüsselten Mails annehmen/importieren:** `ImportMessageICS` und `RespondMessageICS` entschlüsseln die Original-MIME-Nachricht (`RawEML`) jetzt on-the-fly im Speicher (ohne Klartext in SQLite zu speichern), sodass *Zusagen*, *Vielleicht*, *Absagen* und *Nur übernehmen* auch bei verschlüsselten Einladungen zuverlässig funktionieren.
+- **Anhänge & Inline-Bilder aus verschlüsselten Mails:** Download, Vorschau, Weiterleiten von Anhängen und Inline-Bilder (`cid:`) greifen jetzt ebenfalls auf den im Speicher entschlüsselten S/MIME-/PGP-Inhalt zu.
+- **Kalenderansicht gemerkt & Tagesansicht als Standard:** Die zuletzt gewählte Kalenderansicht (`Monat` / `Woche` / `Tag` / `Agenda`) wird jetzt in `config.json` (`calendarView`) gespeichert und beim Neustart wiederhergestellt; ohne gespeicherte Auswahl startet der Kalender standardmäßig in der **Tagesansicht**.
+
 ## 0.7.23 (2026-11-24)
 
 ### S/MIME-Entschlüsselung (macOS-Keychain-Chunking) & S/MIME-Bulk-Import für Teams

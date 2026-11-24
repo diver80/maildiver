@@ -75,6 +75,8 @@ type AppConfig struct {
 	CollapsedAccounts []string `json:"collapsedAccounts,omitempty"`
 	// HiddenCalendars stores calendar IDs unchecked in the multi-select calendar filter.
 	HiddenCalendars []string `json:"hiddenCalendars,omitempty"`
+	// CalendarView remembers the last selected calendar mode ("month", "week", "day", "agenda"); empty defaults to "day".
+	CalendarView string `json:"calendarView,omitempty"`
 	// AllowedImageSenders stores lowercase sender emails whose remote images load automatically.
 	AllowedImageSenders []string `json:"allowedImageSenders,omitempty"`
 	// UndoSendSeconds sets the cancellation grace window before SMTP send (nil defaults to 5s; 0 sends immediately).

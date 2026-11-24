@@ -121,8 +121,20 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 		t.Fatalf("expected Verbunden (IMAP) footer status")
 	}
 
-	// 2. Calendar workspace: Month Grid, Week Grid, Agenda + Event Edit/Recurrence modal
+	// 2. Calendar workspace: Day default + persistence + Month/Week/Day/Agenda + Event Edit/Recurrence modal
+	if app.calViewMode != 2 {
+		t.Fatalf("expected default calendar view to be Day (2), got %d", app.calViewMode)
+	}
+	app.calViewMode = 1 // Week
+	app.persistCalendarView()
+	if cfg.App.CalendarView != "week" {
+		t.Fatalf("expected persisted CalendarView='week', got %q", cfg.App.CalendarView)
+	}
+	if got := calendarViewModeFromName(cfg.App.CalendarView); got != 1 {
+		t.Fatalf("calendarViewModeFromName('week') = %d, want 1", got)
+	}
 	app.navID = "calendar"
+	app.calViewMode = 0 // Month Grid
 	tt.Frame()
 	if _, ok := tt.Find("Google / .ics"); !ok {
 		t.Fatalf("expected Google / .ics button in calendar workspace")

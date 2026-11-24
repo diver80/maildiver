@@ -345,6 +345,7 @@ type App struct {
 	accountIDByLabel   map[string]string
 	calDays            int             // 7, 14, 30 (Agenda mode)
 	calViewMode        int             // 0 = Month Grid, 1 = Week Grid, 2 = Day Timeline, 3 = Agenda
+	calViewLoaded      bool            // whether calViewMode was restored from config.json
 	calCursor          time.Time       // reference date for Month/Week/Day navigation
 	calDayScrolledKey  string          // last day key auto-scrolled in Day view
 	calSearchQuery     string          // top-bar search query when viewing Calendar
@@ -494,7 +495,7 @@ func NewApp(opts Options) *App {
 		accountLabels:    []string{allAcc},
 		accountIDByLabel: map[string]string{allAcc: ""},
 		calDays:          14,
-		calViewMode:      0,
+		calViewMode:      calendarViewModeFromName(cfg.App.CalendarView),
 		calCursor:        time.Now(),
 		showCopilot:      cfg.App.ShowCopilot == nil || *cfg.App.ShowCopilot,
 		hideSidebar:      cfg.App.HideSidebar != nil && *cfg.App.HideSidebar,
@@ -681,6 +682,10 @@ func (a *App) applyConfig(cfg config.Config) {
 				}
 			}
 		}
+	}
+	if !a.calViewLoaded {
+		a.calViewLoaded = true
+		a.calViewMode = calendarViewModeFromName(cfg.App.CalendarView)
 	}
 }
 
