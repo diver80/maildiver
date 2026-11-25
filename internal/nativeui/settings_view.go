@@ -571,6 +571,10 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
 					ui.Text(c, a.tr("Passwörter & OAuth-Tokens werden sicher im System-Schlüsselbund gespeichert.", "Passwords & OAuth tokens are stored securely in your system keychain.")).FontSize(11).TextColor(t.TextMuted).Grow(1)
+					if ui.Button(c.Key("set-diag-copy"), a.tr("Diagnose-Log kopieren", "Copy Diag Log")).
+						Tooltip(a.tr("Kopiert das Verbindungs- & Sync-Log (ohne Passwörter/Tokens) in die Zwischenablage", "Copy account connection & sync log (without passwords/tokens) to clipboard")).Clicked() {
+						a.copyAccountDiagLog()
+					}
 					if ui.Button(c.Key("set-close"), a.tr("Schließen", "Close")).Clicked() {
 						a.stopLANQRSession()
 						s.open = false

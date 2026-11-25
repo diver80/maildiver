@@ -2,7 +2,7 @@
   "name": "PostDive",
   "slug": "postdive",
   "identifier": "dev.postdive.app",
-  "version": "0.7.36",
+  "version": "0.7.37",
   "icon": "resources/icon.png",
   "main": "./cmd/postdive",
   "out": "dist",

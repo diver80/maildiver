@@ -86,6 +86,7 @@ type DirectController interface {
 	DeleteCardDAVAccount(ctx context.Context, id string) error
 	UpdateCalendarSource(ctx context.Context, kind, id string, enabled bool, color string) error
 	StartMailOAuth2(ctx context.Context, acc config.DirectAccount, clientSecret string) (string, error)
+	AccountDiagLog() (string, string)
 }
 
 var _ DirectController = (*mailengine.Engine)(nil)
@@ -1304,12 +1305,31 @@ func (a *App) renderDirectModal(c *ui.Context) {
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)
 				ui.Text(c, a.tr("Passwörter & OAuth-Tokens werden sicher im System-Schlüsselbund gespeichert.", "Passwords & OAuth tokens are stored securely in your system keychain.")).FontSize(11).TextColor(t.TextMuted).Grow(1)
+				if ui.Button(c.Key("dir-diag-copy"), a.tr("Diagnose-Log kopieren", "Copy Diag Log")).
+					Tooltip(a.tr("Kopiert das Verbindungs- & Sync-Log (ohne Passwörter/Tokens) in die Zwischenablage", "Copy account connection & sync log (without passwords/tokens) to clipboard")).Clicked() {
+					a.copyAccountDiagLog()
+				}
 				if ui.Button(c.Key("dir-close"), a.tr("Schließen", "Close")).Clicked() {
 					d.open = false
 				}
 			})
 		})
 	})
+}
+
+func (a *App) copyAccountDiagLog() {
+	var logPath, content string
+	if a.opts.Direct != nil {
+		logPath, content = a.opts.Direct.AccountDiagLog()
+	} else {
+		logPath, content = mailengine.ReadAccountDiagLog()
+	}
+	mygo.Clipboard.WriteText(content)
+	if logPath != "" {
+		a.toast(a.trf("Diagnose-Log (ohne Passwörter) kopiert · %s", "Diagnostic log (no passwords) copied · %s", logPath), "success")
+	} else {
+		a.toast(a.tr("Diagnose-Log (ohne Passwörter) in Zwischenablage kopiert", "Diagnostic log (no passwords) copied to clipboard"), "success")
+	}
 }
 
 func (a *App) renderDirectMailTab(c *ui.Context) {

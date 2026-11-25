@@ -105,7 +105,19 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	started := time.Now()
 	addr := net.JoinHostPort(strings.TrimSpace(acc.IMAPHost), fmt.Sprintf("%d", acc.IMAPPort))
+	user := acc.EffectiveUsername()
+	authMode := strings.TrimSpace(acc.AuthType)
+	if authMode == "" {
+		authMode = "password"
+	}
+	tlsMode := strings.ToLower(strings.TrimSpace(acc.IMAPTLS))
+	if tlsMode == "" {
+		tlsMode = "tls"
+	}
+	logAccountDiag("IMAP", "dial host=%s tls=%s user=%s auth=%s pw=(%s)", addr, tlsMode, user, authMode, PasswordMeta(password))
+
 	c, err := dialIMAPOnce(ctx, acc, addr, unilateral)
 	// On Android/iOS, DNS lookups immediately after Activity.onResume or a Wi-Fi↔5G handoff
 	// can fail once with "no such host" while netd unfreezes the UID's network route.
@@ -122,27 +134,51 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 		}
 	}
 	if err != nil {
+		logAccountDiag("IMAP", "dial_err host=%s dur=%s err=%s", addr, time.Since(started).Round(time.Millisecond), SanitizeDiagErr(err))
 		return nil, fmt.Errorf("IMAP Verbindung zu %s fehlgeschlagen: %w", addr, err)
 	}
 
 	// Authenticate: XOAUTH2 (Gmail/Microsoft 365) when configured, else SASL PLAIN with LOGIN fallback.
 	stopAuthWatch := watchIMAPCtx(ctx, c)
-	user := acc.EffectiveUsername()
 	caps := c.Caps()
+	hasPlain := caps != nil && caps.Has(imap.AuthCap(sasl.Plain))
+	hasLogin := caps != nil && caps.Has(imap.AuthCap(sasl.Login))
+	loginDisabled := caps != nil && caps.Has(imap.CapLoginDisabled)
+	logAccountDiag("IMAP", "connected host=%s dur=%s caps=(AUTH=PLAIN:%v AUTH=LOGIN:%v LOGINDISABLED:%v)",
+		addr, time.Since(started).Round(time.Millisecond), hasPlain, hasLogin, loginDisabled)
+
 	var authErr error
-	if strings.EqualFold(strings.TrimSpace(acc.AuthType), "xoauth2") {
+	if strings.EqualFold(authMode, "xoauth2") {
 		authErr = c.Authenticate(NewXOAUTH2Client(user, password))
+		if authErr != nil {
+			logAccountDiag("IMAP", "auth_err host=%s user=%s mech=XOAUTH2 err=%s", addr, user, SanitizeDiagErr(authErr))
+		} else {
+			logAccountDiag("IMAP", "auth_ok host=%s user=%s mech=XOAUTH2", addr, user)
+		}
 	} else {
-		if caps != nil && caps.Has(imap.AuthCap(sasl.Plain)) {
+		if hasPlain {
 			authErr = c.Authenticate(sasl.NewPlainClient("", user, password))
+			if authErr != nil {
+				logAccountDiag("IMAP", "auth_err host=%s user=%s mech=PLAIN err=%s", addr, user, SanitizeDiagErr(authErr))
+			} else {
+				logAccountDiag("IMAP", "auth_ok host=%s user=%s mech=PLAIN", addr, user)
+			}
 		} else {
 			authErr = c.Login(user, password).Wait()
+			if authErr != nil {
+				logAccountDiag("IMAP", "auth_err host=%s user=%s mech=LOGIN err=%s", addr, user, SanitizeDiagErr(authErr))
+			} else {
+				logAccountDiag("IMAP", "auth_ok host=%s user=%s mech=LOGIN", addr, user)
+			}
 		}
 		if authErr != nil {
 			// Retry with LOGIN if PLAIN failed on a quirky server (except if LOGIN was already tried).
-			if caps != nil && caps.Has(imap.AuthCap(sasl.Plain)) && !caps.Has(imap.CapLoginDisabled) {
+			if hasPlain && !loginDisabled {
 				if loginErr := c.Login(user, password).Wait(); loginErr == nil {
+					logAccountDiag("IMAP", "auth_ok host=%s user=%s mech=LOGIN_FALLBACK", addr, user)
 					authErr = nil
+				} else {
+					logAccountDiag("IMAP", "auth_err host=%s user=%s mech=LOGIN_FALLBACK err=%s", addr, user, SanitizeDiagErr(loginErr))
 				}
 			}
 		}
@@ -202,6 +238,7 @@ type SyncResult struct {
 func (e *Engine) syncAccountIMAP(ctx context.Context, acc config.DirectAccount, inboxOnly bool) (SyncResult, error) {
 	pass, err := e.accountPassword(acc.ID)
 	if err != nil {
+		logAccountDiag("SYNC", "secret_err account=%s email=%s err=%s", acc.ID, acc.Email, SanitizeDiagErr(err))
 		return SyncResult{AccountID: acc.ID}, fmt.Errorf("kein Passwort gespeichert für %s", acc.Email)
 	}
 	c, err := dialIMAP(ctx, acc, pass, nil)

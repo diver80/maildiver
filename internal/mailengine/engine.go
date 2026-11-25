@@ -575,9 +575,25 @@ func (e *Engine) AccountsStatus(ctx context.Context) []AccountSyncStatus {
 // TestAccount tests both IMAP and SMTP credentials/TLS before saving.
 func (e *Engine) TestAccount(ctx context.Context, acc config.DirectAccount, password string) AccountTestResult {
 	var res AccountTestResult
-	if password == "" && acc.ID != "" {
-		password, _ = e.accountPassword(acc.ID)
+	pwSource := "form"
+	if password == "" {
+		if acc.ID != "" {
+			var err error
+			password, err = e.accountPassword(acc.ID)
+			if err != nil {
+				pwSource = "keychain_err:" + SanitizeDiagErr(err)
+			} else if password != "" {
+				pwSource = "keychain"
+			} else {
+				pwSource = "empty"
+			}
+		} else {
+			pwSource = "empty"
+		}
 	}
+	logAccountDiag("TEST", "start email=%s user=%s imap=%s:%d/%s smtp=%s:%d/%s auth=%s pw_source=%s pw=(%s)",
+		acc.Email, acc.EffectiveUsername(), acc.IMAPHost, acc.IMAPPort, acc.IMAPTLS, acc.SMTPHost, acc.SMTPPort, acc.SMTPTLS, acc.AuthType, pwSource, PasswordMeta(password))
+
 	n, err := TestIMAPConnection(ctx, acc, password)
 	if err != nil {
 		res.IMAPError = err.Error()
@@ -594,6 +610,7 @@ func (e *Engine) TestAccount(ctx context.Context, acc config.DirectAccount, pass
 	} else {
 		res.SMTPOK = true
 	}
+	logAccountDiag("TEST", "done email=%s imap_ok=%v folders=%d smtp_ok=%v", acc.Email, res.IMAPOK, res.IMAPFolders, res.SMTPOK)
 	return res
 }
 
@@ -646,8 +663,13 @@ func (e *Engine) SaveAccount(ctx context.Context, acc config.DirectAccount, pass
 	}
 	if password != "" {
 		if err := e.secrets.Set(e.accountSecretKey(acc.ID), password); err != nil {
+			logAccountDiag("SAVE", "secret_err account=%s email=%s err=%s", acc.ID, acc.Email, SanitizeDiagErr(err))
 			return acc, fmt.Errorf("Passwort speichern fehlgeschlagen: %w", err)
 		}
+		logAccountDiag("SAVE", "secret_ok account=%s email=%s pw=(%s)", acc.ID, acc.Email, PasswordMeta(password))
+	} else {
+		logAccountDiag("SAVE", "account=%s email=%s user=%s imap=%s:%d/%s smtp=%s:%d/%s auth=%s secret=unchanged",
+			acc.ID, acc.Email, acc.EffectiveUsername(), acc.IMAPHost, acc.IMAPPort, acc.IMAPTLS, acc.SMTPHost, acc.SMTPPort, acc.SMTPTLS, acc.AuthType)
 	}
 
 	e.cfgMu.Lock()

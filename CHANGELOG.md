@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.37 (2026-11-25)
+
+### Passwortfreies Konto-Diagnose-Log
+- **Automatische Verbindungs- & Auth-Diagnose (`account-diag.log`):** IMAP/SMTP-Verbindungstests, Anmeldeversuche (`PLAIN`, `LOGIN`-Fallback, `XOAUTH2`), Server-Capabilities und Keychain-Zugriffe werden automatisch in `<DataDir>/account-diag.log` protokolliert – garantiert ohne Passwörter oder OAuth-Tokens (nur sichere Metadaten wie Länge, Non-ASCII, Rand-Leerzeichen und Steuerzeichen).
+- **1-Klick-Export:** Unter *Einstellungen → Konten* (und im *Konten & Kalender*-Dialog) kopiert der Button **„Diagnose-Log kopieren“** das bereinigte Log direkt in die Zwischenablage.
+
 ## 0.7.36 (2026-11-25)
 
 ### Kalenderwochen (ISO-KW) in allen Kalenderansichten
