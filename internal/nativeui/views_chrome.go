@@ -260,10 +260,28 @@ func (a *App) footerStatus(t *ui.Theme) (string, ui.Color) {
 	if a.networkOffline {
 		return a.tr("Offline (kein Netz)", "Offline (no network)"), t.Warning
 	}
-	if a.engineReady {
-		return a.tr("Verbunden (IMAP)", "Connected (IMAP)"), t.Success
+	if !a.engineReady {
+		return a.tr("Nicht verbunden", "Offline"), t.Danger
 	}
-	return a.tr("Nicht verbunden", "Offline"), t.Danger
+	// An account whose sync failed (a refused login, say) is not connected, whatever the engine.
+	failed, auth := 0, false
+	for _, msg := range a.syncErrors {
+		if a.networkOffline && mailengine.IsTransientNetworkErrorMsg(msg) {
+			continue
+		}
+		failed++
+		low := strings.ToLower(msg)
+		auth = auth || strings.Contains(low, "authentication") || strings.Contains(low, "anmeldung") || strings.Contains(low, "login")
+	}
+	switch {
+	case failed == 0:
+		return a.tr("Verbunden (IMAP)", "Connected (IMAP)"), t.Success
+	case failed >= len(a.accounts) && auth:
+		return a.tr("Anmeldung fehlgeschlagen", "Login failed"), t.Danger
+	case failed >= len(a.accounts):
+		return a.tr("Nicht verbunden", "Not connected"), t.Danger
+	}
+	return a.trf("Teilweise verbunden (%d/%d)", "Partly connected (%d/%d)", len(a.accounts)-failed, len(a.accounts)), t.Warning
 }
 
 // clearTransientSyncErrors drops stale DNS/network error banners (e.g. from Android Doze or

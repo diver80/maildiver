@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.44 (2026-11-25)
+
+### Statusleiste
+- **Kein grünes „Verbunden“ mehr bei Anmeldefehlern** ([#1](https://github.com/diver80/postdive/issues/1)): Die Statusanzeige unten berücksichtigt jetzt Sync-Fehler der Konten – rot „Anmeldung fehlgeschlagen“ bzw. „Nicht verbunden“, wenn kein Konto synchronisiert, gelb „Teilweise verbunden (1/2)“, wenn nur einige Konten scheitern.
+
 ## 0.7.43 (2026-11-25)
 
 ### Kontakte
