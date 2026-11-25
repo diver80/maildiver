@@ -2,6 +2,7 @@ package mailengine
 
 import (
 	"fmt"
+	"golang.org/x/text/unicode/norm"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,10 +24,10 @@ const (
 )
 
 var (
-	diagMu        sync.Mutex
-	diagRing      []string
-	diagPathOvr   string // optional override for tests
-	diagSecretRe  = regexp.MustCompile(`(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}|(password|passwd|secret|access_token|refresh_token)=[^\s&;]+`)
+	diagMu       sync.Mutex
+	diagRing     []string
+	diagPathOvr  string // optional override for tests
+	diagSecretRe = regexp.MustCompile(`(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}|(password|passwd|secret|access_token|refresh_token)=[^\s&;]+`)
 )
 
 // DiagLogPath returns the on-disk path of the password-free account diagnostic log.
@@ -67,8 +68,10 @@ func PasswordMeta(pw string) string {
 	last, _ := utf8.DecodeLastRuneInString(pw)
 	leadSpace := unicode.IsSpace(first)
 	trailSpace := unicode.IsSpace(last)
-	return fmt.Sprintf("len=%d bytes=%d non_ascii=%v lead_space=%v trail_space=%v ctrl=%v",
-		runes, bytesLen, nonASCII, leadSpace, trailSpace, hasCtrl)
+	// nfc=false: an umlaut is stored as base letter + combining mark ("u"+"¨"), which servers
+	// that saved the password as "ü" reject (see nfcPassword).
+	return fmt.Sprintf("len=%d bytes=%d non_ascii=%v nfc=%v lead_space=%v trail_space=%v ctrl=%v",
+		runes, bytesLen, nonASCII, norm.NFC.IsNormalString(pw), leadSpace, trailSpace, hasCtrl)
 }
 
 // SanitizeDiagErr formats an error onto a single line while scrubbing any accidental
@@ -183,4 +186,16 @@ func ClearAccountDiagLog() error {
 // AccountDiagLog exposes the password-free account connection & sync log for UI copy/export.
 func (e *Engine) AccountDiagLog() (string, string) {
 	return ReadAccountDiagLog()
+}
+
+// nfcPassword is the password with composed characters ("ü" as one character), or "" when it
+// already is. Keyboards, IMEs and password managers can hand over an umlaut as "u" plus a
+// combining diaeresis; mail servers compare bytes, and the password was usually set in a
+// browser as "ü". Mail clients like Apple Mail send the composed form (SASLprep), so a login
+// that fails with the decomposed form is retried with it.
+func nfcPassword(pw string) string {
+	if norm.NFC.IsNormalString(pw) {
+		return ""
+	}
+	return norm.NFC.String(pw)
 }

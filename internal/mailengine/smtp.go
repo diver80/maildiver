@@ -113,6 +113,19 @@ func dialSMTP(ctx context.Context, acc config.DirectAccount, password string) (*
 					logAccountDiag("SMTP", "auth_err host=%s user=%s mech=LOGIN_FALLBACK err=%s", addr, user, SanitizeDiagErr(lerr))
 				}
 			}
+			if composed := nfcPassword(password); composed != "" {
+				mech := firstMech + "_NFC"
+				var nauth sasl.Client = sasl.NewPlainClient("", user, composed)
+				if useLoginFirst {
+					nauth = sasl.NewLoginClient(user, composed)
+				}
+				if nerr := c.Auth(nauth); nerr == nil {
+					logAccountDiag("SMTP", "auth_ok host=%s user=%s mech=%s", addr, user, mech)
+					return c, nil
+				} else {
+					logAccountDiag("SMTP", "auth_err host=%s user=%s mech=%s err=%s", addr, user, mech, SanitizeDiagErr(nerr))
+				}
+			}
 			_ = c.Close()
 			return nil, fmt.Errorf("SMTP Anmeldung fehlgeschlagen (%s): %w", user, err)
 		}

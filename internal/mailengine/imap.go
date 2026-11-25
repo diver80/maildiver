@@ -182,6 +182,24 @@ func dialIMAP(ctx context.Context, acc config.DirectAccount, password string, un
 				}
 			}
 		}
+		if authErr != nil {
+			if composed := nfcPassword(password); composed != "" {
+				var nfcErr error
+				mech := "PLAIN_NFC"
+				if hasPlain {
+					nfcErr = c.Authenticate(sasl.NewPlainClient("", user, composed))
+				} else {
+					mech = "LOGIN_NFC"
+					nfcErr = c.Login(user, composed).Wait()
+				}
+				if nfcErr == nil {
+					logAccountDiag("IMAP", "auth_ok host=%s user=%s mech=%s", addr, user, mech)
+					authErr = nil
+				} else {
+					logAccountDiag("IMAP", "auth_err host=%s user=%s mech=%s err=%s", addr, user, mech, SanitizeDiagErr(nfcErr))
+				}
+			}
+		}
 	}
 	stopAuthWatch()
 	if authErr != nil {

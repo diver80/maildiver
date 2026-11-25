@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.39 (2026-11-25)
+
+### Anmeldung mit Umlauten im Passwort
+- **Umlaute in beiden Schreibweisen:** Ein „ü“ kann je nach Tastatur, Eingabemethode oder Passwortmanager als „u“ plus Pünktchen im Passwortfeld landen. Server vergleichen Byte für Byte und lehnten das mit „authentication failed“ ab. Schlägt die Anmeldung fehl, versucht PostDive es jetzt bei IMAP und SMTP einmal mit der zusammengesetzten Form – so wie Apple Mail.
+- **Diagnose-Log:** zeigt jetzt zusätzlich `nfc=true/false` (weiterhin ohne Passwort); `nfc=false` bedeutet zerlegte Umlaute.
+
 ## 0.7.38 (2026-11-25)
 
 ### Einladungen, Gelesen-Status & KI-Hilfe
