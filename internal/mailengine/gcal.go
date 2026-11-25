@@ -259,7 +259,7 @@ func (e *Engine) saveGCalToken(tok *oauth2.Token) error {
 func (e *Engine) loadGCalHTTPClient(ctx context.Context) (*http.Client, error) {
 	cfg := e.loadConfig()
 	if cfg.Direct.GoogleCalendar.ClientID == "" {
-		return nil, fmt.Errorf("Google Calendar nicht konfiguriert")
+		return nil, fmt.Errorf("Google Calendar nicht konfiguriert: Client-ID fehlt (Einstellungen → Konten → Kalender)")
 	}
 	rawTok, err := e.secrets.Get(secretGCalToken)
 	if err != nil {

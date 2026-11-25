@@ -8,6 +8,25 @@ import (
 )
 
 func TestDefaultsAreSafe(t *testing.T) {
+	// Default dirs under `go test` must stay inside a temp sandbox, never the real user home.
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	home, _ := os.UserHomeDir()
+	for name, fn := range map[string]func() (string, error){
+		"ConfigDir": ConfigDir,
+		"DataDir":   DataDir,
+		"StateDir":  StateDir,
+	} {
+		dir, err := fn()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if home != "" && (strings.HasPrefix(dir, filepath.Join(home, "Library")) || strings.HasPrefix(dir, filepath.Join(home, ".config")) || strings.HasPrefix(dir, filepath.Join(home, ".local"))) {
+			t.Fatalf("%s pointed into real user home during go test: %q", name, dir)
+		}
+	}
+
 	cfg := Default()
 	if !cfg.Features.Theme || !cfg.Features.Assistant {
 		t.Fatalf("theme and assistant should default on: %+v", cfg.Features)

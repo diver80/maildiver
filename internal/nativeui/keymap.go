@@ -532,8 +532,10 @@ func (a *App) escapeKey() {
 		return
 	}
 	if a.selectedID != "" {
+		prevID := a.selectedID
 		a.selectedID = ""
 		a.selectedMsg = nil
+		a.pruneFocusGhost(prevID)
 		a.inspectorSeq++
 		a.inspectorLoading = false
 		a.inspectorError = ""

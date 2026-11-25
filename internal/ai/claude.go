@@ -63,7 +63,7 @@ func (c *CLICompleter) Complete(ctx context.Context, systemPrompt, userPrompt st
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.binary, c.buildArg(cliArgPrompt, c.model)...)
-	cmd.Dir = os.TempDir()
+	cmd.Dir = cliWorkDir()
 	cmd.Stdin = strings.NewReader(cliInput(systemPrompt, userPrompt))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -123,7 +123,7 @@ func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt strin
 	defer cancel()
 	// Instructions and mail text go in via stdin so they never show up in the process list.
 	cmd := exec.CommandContext(ctx, bin, c.claudeArgs()...)
-	cmd.Dir = os.TempDir()
+	cmd.Dir = cliWorkDir()
 	cmd.Stdin = strings.NewReader(cliInput(systemPrompt, userPrompt))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -151,4 +151,19 @@ func truncateForError(s string) string {
 		return string(r[:500]) + "…"
 	}
 	return s
+}
+
+// cliWorkDir is where a CLI agent runs: the temp directory, unless it is gone. An app started
+// from another tool's session can inherit a TMPDIR that tool has since deleted, and starting a
+// process in a missing directory fails ("chdir …: no such file or directory").
+func cliWorkDir() string {
+	for _, dir := range []string{os.TempDir(), "/tmp"} {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
 }

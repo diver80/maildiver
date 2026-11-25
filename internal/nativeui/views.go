@@ -577,7 +577,11 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 					row := ui.Column(c.Key("mail-body-"+m.ID)).Grow(1).MinWidth(0).Padding(10, 14, 10, 6).Gap(4).Children(func() {
 						ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 							if m.Unread {
-								statusDot(c, t.Accent, 6)
+								dotClr := t.Accent
+								if selected {
+									dotClr = t.AccentText
+								}
+								statusDot(c, dotClr, 6)
 							}
 							// Muted only on plain rows: the highlighted row brings its own text color.
 							peerLabel := shortSender(m.From)

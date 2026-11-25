@@ -284,12 +284,26 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 		}
 	}
 	removes := patch.RemovesFromFolder()
+	var batchReadSeqs map[string]uint64
+	if !removes && patch.Read != nil {
+		batchReadSeqs = make(map[string]uint64, len(ids))
+		for _, id := range ids {
+			batchReadSeqs[id] = a.beginPendingRead(id, *patch.Read)
+			a.setLocalRead(id, *patch.Read)
+		}
+	}
 	go func() {
 		okIDs, movedTargets, failed, firstErr := applyActionTargetsWithMoves(ctx, bc, targets, patch)
 		a.emitUpdate(func() {
 			okSet := make(map[string]bool, len(okIDs))
 			for _, id := range okIDs {
 				okSet[id] = true
+			}
+			for id, seq := range batchReadSeqs {
+				stillCurrent := a.endPendingRead(id, seq)
+				if !okSet[id] && stillCurrent {
+					a.setLocalRead(id, !*patch.Read)
+				}
 			}
 			// Apply flag/read mutations immediately in memory so list rows, reading pane, and
 			// Focus view refresh cleanly without stale star/read icons.
@@ -301,8 +315,7 @@ func (a *App) PerformBatchAction(ctx context.Context, ids []string, patch backen
 						continue
 					}
 					if patch.Read != nil {
-						a.messages[i].Read = *patch.Read
-						a.messages[i].Unread = !*patch.Read
+						a.setLocalRead(a.messages[i].ID, *patch.Read)
 					}
 					if patch.Flagged != nil {
 						a.messages[i].Flagged = *patch.Flagged

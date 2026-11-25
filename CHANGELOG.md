@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.38 (2026-11-25)
+
+### Einladungen, Gelesen-Status & KI-Hilfe
+- **Zusagen gehen immer an den Organisator:** Ließ sich der gewählte Kalender nicht beschreiben (z. B. Google Calendar ohne Client-ID, CalDAV nicht erreichbar), brach *Zusagen* bisher ab – die Einladung stand trotzdem auf „Zugesagt“, aber der Organisator bekam keine Antwort. Jetzt wird die Antwort immer gesendet, der Termin landet ersatzweise in *Persönlich*, und eine Warnung nennt das Kalenderproblem.
+- **Klarere Meldung bei fehlender Google-Client-ID:** „Google Calendar nicht konfiguriert“ sagt jetzt, dass die Client-ID fehlt und wo sie eingetragen wird.
+- **KI-Hilfe mit `claude-cli` nach gelöschtem Temp-Ordner:** Wurde PostDive aus einer anderen Sitzung (IDE, Agent) gestartet, deren Temp-Ordner inzwischen gelöscht ist, schlug die KI-Hilfe mit „chdir … no such file or directory“ fehl. PostDive ignoriert einen nicht mehr vorhandenen `TMPDIR` jetzt, und KI-CLIs starten nur in existierenden Ordnern.
+- **Gelesen-Status springt nicht mehr zurück:** Eine Mail wird lokal sofort als gelesen gespeichert (mit Rücknahme, falls der Server ablehnt); ein gleichzeitiges Neuladen der Liste setzt sie nicht mehr auf ungelesen.
+- **Focus und Zähler sofort aktuell:** Gelesene Mails verschwinden beim Weiterblättern oder mit `Esc` aus *Focus (Ungelesen & ★)*; Ordner- und Focus-Zähler stimmen sofort.
+- **Ungelesen-Punkt auf markierter Zeile sichtbar:** Der blaue Punkt war auf der blauen Auswahl nicht zu sehen.
+- **Tests berühren keine echten Daten mehr:** Unter `go test` nutzt PostDive eigene Ordner für Konfiguration, Datenbank und Logs.
+
 ## 0.7.37 (2026-11-25)
 
 ### Passwortfreies Konto-Diagnose-Log

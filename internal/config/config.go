@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"testing"
 )
 
 const (
@@ -337,9 +339,33 @@ func Default() Config {
 	}
 }
 
+var (
+	testSandboxOnce sync.Once
+	testSandboxRoot string
+)
+
+// testSandboxDir isolates default ConfigDir/DataDir/StateDir during `go test` runs so unit
+// tests can never read or overwrite the developer's real PostDive config, DB, or diagnostic log.
+func testSandboxDir(sub, appID string) string {
+	testSandboxOnce.Do(func() {
+		if dir, err := os.MkdirTemp("", "postdive-test-*"); err == nil {
+			testSandboxRoot = dir
+		}
+	})
+	if testSandboxRoot == "" {
+		return ""
+	}
+	return filepath.Join(testSandboxRoot, sub, appID)
+}
+
 func configDirFor(appID string) (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, appID), nil
+	}
+	if testing.Testing() {
+		if dir := testSandboxDir("config", appID); dir != "" {
+			return dir, nil
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -360,6 +386,11 @@ func stateDirFor(appID string) (string, error) {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, appID), nil
 	}
+	if testing.Testing() {
+		if dir := testSandboxDir("state", appID); dir != "" {
+			return dir, nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -378,6 +409,11 @@ func stateDirFor(appID string) (string, error) {
 func dataDirFor(appID string) (string, error) {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		return filepath.Join(xdg, appID), nil
+	}
+	if testing.Testing() {
+		if dir := testSandboxDir("data", appID); dir != "" {
+			return dir, nil
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

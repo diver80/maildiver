@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -125,5 +127,17 @@ func TestNormalizeAndCompleterAgreeOnBackends(t *testing.T) {
 	}
 	if _, err := lookupBackend("claude"); !errors.Is(err, ErrUnknownBackend) {
 		t.Fatalf("ambiguous \"claude\" must be refused: %v", err)
+	}
+}
+
+func TestCLIWorkDirSurvivesADeletedTempDir(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "deleted-session-tmp")
+	t.Setenv("TMPDIR", gone)
+	dir := cliWorkDir()
+	if dir == "" || dir == gone {
+		t.Fatalf("cliWorkDir = %q, want an existing directory", dir)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf("cliWorkDir %q does not exist: %v", dir, err)
 	}
 }

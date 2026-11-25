@@ -2655,6 +2655,11 @@ func (a *App) RespondMailICS(ctx context.Context, msgID, calendarID, status stri
 			} else if res.AlreadyInCalendar != "" {
 				detail = a.trf(" · bereits in %s", " · already in %s", res.AlreadyInCalendar) + detail
 			}
+			kind := "success"
+			if res.CalendarError != "" {
+				kind = "warning"
+				detail += a.trf(" · Zielkalender nicht beschreibbar: %s", " · Target calendar not writable: %s", res.CalendarError)
+			}
 			if a.selectedMsg != nil && a.selectedMsg.ID == msgID {
 				if a.selectedMsg.ICSInvite != nil {
 					a.selectedMsg.ICSInvite.ResponseStatus = res.Status
@@ -2666,7 +2671,7 @@ func (a *App) RespondMailICS(ctx context.Context, msgID, calendarID, status stri
 				}
 				a.reloadMessage(context.Background(), msgID)
 			}
-			a.toast(verb+detail, "success")
+			a.toast(verb+detail, kind)
 			a.RefreshAll(context.Background())
 		})
 	}()

@@ -21,7 +21,7 @@ import (
 	"github.com/diver80/postdive/internal/triage"
 )
 
-var version = "0.7.37-dev"
+var version = "0.7.38-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -32,6 +32,7 @@ func main() {
 
 func run() error {
 	config.LoadEnvFile()
+	dropStaleTempDir()
 
 	fs := flag.NewFlagSet("postdive", flag.ExitOnError)
 	minimized := fs.Bool("minimized", false, "Nur als Menüleisten-/Tray-Status-Widget starten")
@@ -176,4 +177,19 @@ func filterLaunchArgs(args []string) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// dropStaleTempDir forgets a TMPDIR that no longer exists. Started from another tool's session
+// (an IDE, an agent), the app inherits that session's temp directory, which the tool may delete
+// while the app keeps running; the system default is used instead. Child processes (AI CLIs)
+// inherit the corrected environment.
+func dropStaleTempDir() {
+	dir := os.Getenv("TMPDIR")
+	if dir == "" {
+		return
+	}
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return
+	}
+	_ = os.Unsetenv("TMPDIR")
 }

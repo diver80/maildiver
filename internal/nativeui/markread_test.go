@@ -144,3 +144,113 @@ func TestKeepOpenMail(t *testing.T) {
 		t.Errorf("nothing open: got %s", got)
 	}
 }
+
+func TestFocusMarkReadUpdatesCountersAndPrunesOnSwitch(t *testing.T) {
+	app, loop, st := markReadApp(t, config.MarkReadOnOpen, false)
+	app.navID = "focus"
+	app.folders = []backend.Folder{
+		{ID: "acc1::INBOX", AccountID: "acc1", Name: "INBOX", Path: "INBOX", Type: "inbox", UnreadCount: 60},
+	}
+	app.messages = []backend.MessageHeader{
+		{ID: "m1", MessageID: "m1@x", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Subject: "Confluence", Unread: true, Read: false},
+		{ID: "m2", MessageID: "m2@x", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Subject: "Solman", Unread: false, Read: true, Flagged: true},
+		{ID: "m3", MessageID: "m3@x", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Subject: "Jira", Unread: false, Read: true, Flagged: true},
+	}
+	app.totalMessages = 3
+	app.focusTotal = 3
+	app.focusUnread = 1
+
+	app.SelectMessage(st.ctx, "m1")
+	if !loop.waitUntil(t, 3*time.Second, func() bool { return len(readWrites(st)) == 1 }) {
+		t.Fatal("m1 was not marked read")
+	}
+
+	// While m1 is still open in Focus, it remains visible so j/k works,
+	// but its unread flag, Focus badge, and INBOX badge are all updated immediately.
+	if len(app.messages) != 3 {
+		t.Fatalf("expected open read mail to stay in Focus while selected, got %d", len(app.messages))
+	}
+	if app.messages[0].Unread {
+		t.Fatal("m1 should be marked read in the list")
+	}
+	if got := app.focusCount(); got != 2 {
+		t.Fatalf("focusCount() while read mail open = %d, want 2", got)
+	}
+	if got := app.unreadCount(); got != 0 {
+		t.Fatalf("unreadCount() = %d, want 0", got)
+	}
+	if got := app.folders[0].UnreadCount; got != 59 {
+		t.Fatalf("INBOX UnreadCount = %d, want 59", got)
+	}
+
+	// Switching to the next mail immediately prunes the read unflagged mail from Focus.
+	st.rpc.mu.Lock()
+	st.rpc.getJSON = `{"id":"m2","messageId":"m2@x","accountId":"acc1","folder":"INBOX","subject":"Solman","from":"Martina <m@acme.de>","bodyText":"Hi","read":true,"unread":false,"flagged":true}`
+	st.rpc.mu.Unlock()
+	app.SelectMessage(st.ctx, "m2")
+	if len(app.messages) != 2 {
+		t.Fatalf("expected read unflagged m1 to be pruned from Focus on switch, got %d messages", len(app.messages))
+	}
+	if app.messages[0].ID != "m2" || app.messages[1].ID != "m3" {
+		t.Fatalf("unexpected Focus order after prune: %+v", app.messages)
+	}
+	if app.mailList.selected != 0 {
+		t.Fatalf("mailList.selected = %d, want 0", app.mailList.selected)
+	}
+	if got := app.focusCount(); got != 2 {
+		t.Fatalf("focusCount() after switch = %d, want 2", got)
+	}
+}
+
+func TestPendingReadSurvivesStaleMessageLoadAndEscapePrunes(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.navID = "focus"
+	app.messages = []backend.MessageHeader{
+		{ID: "m1", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Unread: true},
+		{ID: "m2", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Read: true, Flagged: true},
+	}
+	app.selectedID = "m1"
+	app.totalMessages = 2
+	app.focusTotal = 2
+	app.focusUnread = 1
+
+	seq := app.beginPendingRead("m1", true)
+	app.setLocalRead("m1", true)
+
+	// Simulate a stale list load arriving from SQLite before MessageActions committed.
+	req := app.newMessageLoad()
+	stale := []backend.MessageHeader{
+		{ID: "m1", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Unread: true},
+		{ID: "m2", AccountID: "acc1", FolderID: "acc1::INBOX", Folder: "INBOX", Read: true, Flagged: true},
+	}
+	if !app.applyMessageLoad(req, stale, 2) {
+		t.Fatal("applyMessageLoad unexpectedly rejected current seq")
+	}
+	if app.messages[0].Unread {
+		t.Fatal("stale message load must not flip in-flight pending read mail back to unread")
+	}
+	if got := app.focusCount(); got != 1 {
+		t.Fatalf("focusCount() after stale load = %d, want 1", got)
+	}
+	if got := app.unreadCount(); got != 0 {
+		t.Fatalf("unreadCount() after stale load = %d, want 0", got)
+	}
+
+	// Closing the open mail via Escape immediately prunes it from Focus.
+	app.escapeKey()
+	if len(app.messages) != 1 || app.messages[0].ID != "m2" {
+		t.Fatalf("Escape should prune read unflagged mail from Focus, got %+v", app.messages)
+	}
+
+	// A second stale load while m1 is no longer selected drops m1 as well.
+	req2 := app.newMessageLoad()
+	if !app.applyMessageLoad(req2, stale, 2) {
+		t.Fatal("applyMessageLoad 2 rejected")
+	}
+	if len(app.messages) != 1 || app.messages[0].ID != "m2" {
+		t.Fatalf("stale load while unselected must not resurrect pending-read mail in Focus, got %+v", app.messages)
+	}
+	if !app.endPendingRead("m1", seq) {
+		t.Fatal("endPendingRead should match seq")
+	}
+}

@@ -233,7 +233,10 @@ type composeState struct {
 	settings    settingsUI
 	// markReadSeq identifies the latest opening of a mail, so a delayed "mark read" from an
 	// earlier one is dropped.
-	markReadSeq int
+	markReadSeq  int
+	pendingRead  map[string]pendingReadOp
+	readOpSeq    uint64
+	focusReadIDs map[string]bool
 	// conversation is the open mail's conversation in the reading pane.
 	conversation conversationUI
 	// composeEncrypt: S/MIME or OpenPGP encrypt outgoing mail.
@@ -1375,20 +1378,26 @@ func (a *App) applyMessageLoad(req messageLoad, msgs []backend.MessageHeader, to
 			a.seenMails[m.ID] = true
 		}
 	}
+	var totalDelta int
+	msgs, totalDelta = a.applyPendingReads(req.navID, msgs)
 	if req.navID == "focus" {
+		total = max(total+totalDelta, 0)
 		msgs = a.keepOpenMail(msgs)
 	}
 	a.setMessages(msgs)
 	a.totalMessages = total
 	if req.navID == "focus" {
-		unread := 0
+		unread, active := 0, 0
 		for _, m := range msgs {
 			if m.Unread {
 				unread++
 			}
+			if m.Unread || m.Flagged {
+				active++
+			}
 		}
 		a.focusUnread = unread
-		a.focusTotal = max(total, len(msgs))
+		a.focusTotal = max(total, active)
 	}
 	a.notifyTray()
 	return true
@@ -1429,6 +1438,7 @@ func (a *App) setNav(nav string) {
 	}
 	if a.navID != nav {
 		a.navID = nav
+		a.focusReadIDs = nil
 		a.serverSearchDoneKey = ""
 		a.serverSearchDoneQuery = ""
 	}
@@ -1519,11 +1529,15 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 	if id == "" {
 		return
 	}
-	sameMsgReload := !userOpened && a.selectedID == id
+	prevID := a.selectedID
+	sameMsgReload := !userOpened && prevID == id
 	if a.selectedMsg != nil && a.selectedMsg.ID != id {
 		a.selectedMsg = nil
 	}
 	a.selectedID = id
+	if prevID != "" && prevID != id {
+		a.pruneFocusGhost(prevID)
+	}
 	if !sameMsgReload {
 		a.widgets.inspectorScroll.Y = 0
 		a.inspectorSeq++
@@ -2269,6 +2283,11 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 	if prevAccountID == "" && a.selectedMsg != nil && a.selectedMsg.ID == id {
 		prevAccountID, prevFolderPath, prevHeaderMsgID, prevUnread = a.selectedMsg.AccountID, a.selectedMsg.Folder, a.selectedMsg.MessageID, a.selectedMsg.Unread
 	}
+	var readOpSeq uint64
+	if !patch.RemovesFromFolder() && patch.Read != nil {
+		readOpSeq = a.beginPendingRead(id, *patch.Read)
+		a.setLocalRead(id, *patch.Read)
+	}
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 12*time.Second)
 		raw, err := bc.MessageActions(c, id, patch)
@@ -2282,7 +2301,14 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			movedTarget = res.MovedTargetPath
 		}
 		a.emitUpdate(func() {
+			stillCurrent := true
+			if readOpSeq != 0 {
+				stillCurrent = a.endPendingRead(id, readOpSeq)
+			}
 			if err != nil {
+				if readOpSeq != 0 && stillCurrent {
+					a.setLocalRead(id, !*patch.Read)
+				}
 				a.toast(a.tr("Aktion fehlgeschlagen: ", "Action failed: ")+a.errText(err), "error")
 				return
 			}
@@ -2292,9 +2318,8 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 			isUnread := false
 			for i := range a.messages {
 				if a.messages[i].ID == id {
-					if patch.Read != nil {
-						a.messages[i].Read = *patch.Read
-						a.messages[i].Unread = !*patch.Read
+					if patch.Read != nil && stillCurrent {
+						a.setLocalRead(id, *patch.Read)
 					}
 					if patch.Flagged != nil {
 						a.messages[i].Flagged = *patch.Flagged
@@ -2304,7 +2329,7 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 				}
 			}
 			if a.selectedMsg != nil && a.selectedMsg.ID == id {
-				if patch.Read != nil {
+				if patch.Read != nil && stillCurrent {
 					a.selectedMsg.Read = *patch.Read
 					a.selectedMsg.Unread = !*patch.Read
 				}
@@ -2312,6 +2337,10 @@ func (a *App) performMessageAction(ctx context.Context, id string, patch backend
 					a.selectedMsg.Flagged = *patch.Flagged
 				}
 				isUnread = a.selectedMsg.Unread
+			}
+			// If a non-open mail in Focus was explicitly marked read and has no star, prune it immediately.
+			if a.navID == "focus" && patch.Read != nil && *patch.Read && id != a.selectedID {
+				a.pruneFocusGhost(id)
 			}
 			// In Focus (Unread & ★), explicitly unstarring an already-read mail removes it from Focus.
 			leftFocus := a.navID == "focus" && patch.Flagged != nil && !*patch.Flagged && !isUnread
@@ -2441,7 +2470,7 @@ func (a *App) PerformUndo(ctx context.Context) {
 					if u.Kind == "flag" {
 						a.messages[i].Flagged = u.PrevValue
 					} else {
-						a.messages[i].Unread = !u.PrevValue
+						a.setLocalRead(a.messages[i].ID, u.PrevValue)
 					}
 				}
 				if a.selectedMsg != nil && affected[a.selectedMsg.ID] {
@@ -4194,13 +4223,19 @@ func (a *App) isTrashOrJunkPath(accountID, folderPath string) bool {
 }
 
 // focusCount returns the exact number of items in Focus (Unread & ★): unread mails from the
-// last 14 days plus starred mails, matching what appears when opening Focus.
+// last 14 days plus starred mails, excluding any read & unflagged mail temporarily kept open.
 func (a *App) focusCount() int {
 	if a.navID == "focus" {
-		if a.totalMessages > len(a.messages) {
+		active := 0
+		for _, m := range a.messages {
+			if m.Unread || m.Flagged {
+				active++
+			}
+		}
+		if a.totalMessages > active {
 			return a.totalMessages
 		}
-		return len(a.messages)
+		return active
 	}
 	return a.focusTotal
 }

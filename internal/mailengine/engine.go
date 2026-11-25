@@ -1632,6 +1632,9 @@ type ICSRespondResult struct {
 	ReplySent         bool
 	OrganizerEmail    string
 	ReplyError        string
+	// CalendarError: the chosen calendar could not take the event (it went to the local
+	// calendar instead when that worked). The answer to the organizer is sent regardless.
+	CalendarError string
 }
 
 func (e *Engine) ownEmails() []string {
@@ -1809,12 +1812,27 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 				e.store.SetEventSelfResponse(ctx, me.ID, status)
 			}
 		} else {
+			// A calendar that cannot be written (Google not set up, CalDAV unreachable) must not
+			// cost the answer: the organizer still gets it, and the event goes to the local
+			// calendar so it is not lost.
 			n, err := e.ImportICSBytes(ctx, calendarID, []byte(icsBody))
-			if err != nil {
-				return res, err
+			if err != nil && calendarID != LocalCalendarID {
+				res.CalendarError = err.Error()
+				calendarID = LocalCalendarID
+				targetCal, _ = e.store.GetCalendar(ctx, calendarID)
+				n, err = e.ImportICSBytes(ctx, calendarID, []byte(icsBody))
 			}
-			res.ImportedCount = n
-			res.CalendarName = strings.TrimSpace(targetCal.Name)
+			if err != nil {
+				if res.CalendarError == "" {
+					res.CalendarError = err.Error()
+				}
+			} else {
+				res.ImportedCount = n
+				res.CalendarName = strings.TrimSpace(targetCal.Name)
+				if res.CalendarName == "" && calendarID == LocalCalendarID {
+					res.CalendarName = "Persönlich"
+				}
+			}
 			// Mark self_response on the stored row(s) in calendarID (handles Google/CalDAV/local IDs alike).
 			afterMatches, _ := e.store.FindEventsByUIDOrMatch(ctx, inviteUID, inviteTitle, inviteStart)
 			for _, am := range afterMatches {

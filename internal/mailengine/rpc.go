@@ -739,18 +739,29 @@ func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMe
 		moveTarget = e.resolveTargetFolderPath(ctx, m.AccountID, p.MoveToPath)
 	}
 
+	moved := moveTarget != "" && !strings.EqualFold(moveTarget, m.FolderPath)
+	inPlaceFlags := !moved && !permanentDelete && (p.Read != nil || p.Flagged != nil)
+	prevRead, prevFlagged := m.Read, m.Flagged
+	if inPlaceFlags {
+		// Persist flag/read updates to SQLite before the IMAP round-trip so concurrent
+		// list/folder queries never overwrite the UI back to stale unread/unflagged state.
+		_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
+	}
+
 	if acc, ok := e.findAccount(m.AccountID); ok {
 		if p.Read != nil || p.Flagged != nil || moveTarget != "" || permanentDelete {
 			if err := e.applyMessageActionIMAP(ctx, acc, m, p.Read, p.Flagged, moveTarget, permanentDelete); err != nil {
+				if inPlaceFlags {
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, &prevRead, &prevFlagged)
+				}
 				return nil, err
 			}
 		}
 	}
 
-	moved := moveTarget != "" && !strings.EqualFold(moveTarget, m.FolderPath)
 	if moved || permanentDelete {
 		_ = e.store.DeleteMessage(ctx, m.ID)
-	} else {
+	} else if !inPlaceFlags {
 		_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 	}
 	e.emitMailSync(m.AccountID)
@@ -901,6 +912,16 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 
 	for _, accID := range accOrder {
 		g := groups[accID]
+		// For in-place read/flag batches, update SQLite up front so concurrent UI refreshes
+		// don't see stale flags during the IMAP round-trip, rolling back any failed items.
+		for _, op := range g.ops {
+			moved := op.MoveTargetPath != "" && !strings.EqualFold(op.MoveTargetPath, op.FolderPath)
+			if !moved && !op.PermanentDelete && (p.Read != nil || p.Flagged != nil) {
+				for _, m := range op.Messages {
+					_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
+				}
+			}
+		}
 		var results []batchOpResult
 		if g.hasAcc && (p.Read != nil || p.Flagged != nil || p.RemovesFromFolder()) {
 			results = e.applyBatchActionsIMAP(ctx, g.acc, g.ops)
@@ -911,8 +932,13 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 		for i, op := range g.ops {
 			res := results[i]
 			moved := op.MoveTargetPath != "" && !strings.EqualFold(op.MoveTargetPath, op.FolderPath)
+			inPlaceFlags := !moved && !op.PermanentDelete && (p.Read != nil || p.Flagged != nil)
 			for _, m := range op.Messages {
 				if res.Err != nil && (m.UID == 0 || !res.SucceededUIDs[m.UID]) {
+					if inPlaceFlags {
+						prevRead, prevFlagged := m.Read, m.Flagged
+						_ = e.store.UpdateMessageLocal(ctx, m.ID, &prevRead, &prevFlagged)
+					}
 					recordErr(res.Err)
 					continue
 				}
@@ -921,7 +947,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 					if moved {
 						resp.MovedTargetPath[m.ID] = op.MoveTargetPath
 					}
-				} else {
+				} else if !inPlaceFlags {
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 				}
 				resp.OKIDs = append(resp.OKIDs, m.ID)
