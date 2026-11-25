@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -226,10 +227,8 @@ func (m *Manager) ImportPKCS12(p12Data []byte, password string) (CertInfo, error
 		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})),
 		CertPEM: encodeCertPEM(cert),
 	}
-	for _, ca := range caCerts {
-		if ca != nil {
-			bundle.ChainPEM = append(bundle.ChainPEM, encodeCertPEM(ca))
-		}
+	for _, ca := range signingChain(cert, caCerts) {
+		bundle.ChainPEM = append(bundle.ChainPEM, encodeCertPEM(ca))
 	}
 	bundleRaw, err := json.Marshal(bundle)
 	if err != nil {
@@ -509,7 +508,7 @@ func (m *Manager) LoadIdentity(email string) (*Identity, error) {
 	}
 	return &Identity{
 		Cert:  leaf,
-		Chain: chain,
+		Chain: signingChain(leaf, chain),
 		Key:   privKey,
 		Info:  rec.Info,
 	}, nil
@@ -580,4 +579,48 @@ func (m *Manager) LookupRecipientCerts(emails []string) ([]*x509.Certificate, []
 		missing = append(missing, em)
 	}
 	return certs, missing
+}
+
+// signingChain puts the certificates of a .p12 in the order a signature needs them: the issuer of
+// leaf first, then its issuer, up to the root. Some exports (SwissSign, for one) also list the
+// leaf itself among the CA certificates; signing then fails with "parent certificate cannot sign
+// this kind of certificate", so the leaf and its duplicates are dropped. Certificates that are no
+// part of the path come last, in their original order.
+func signingChain(leaf *x509.Certificate, certs []*x509.Certificate) []*x509.Certificate {
+	var pool []*x509.Certificate
+	for _, c := range certs {
+		if c == nil || (leaf != nil && c.Equal(leaf)) || slices.ContainsFunc(pool, c.Equal) {
+			continue
+		}
+		pool = append(pool, c)
+	}
+	if leaf == nil {
+		return pool
+	}
+	out := make([]*x509.Certificate, 0, len(pool))
+	used := make([]bool, len(pool))
+	for cur := leaf; ; {
+		next := -1
+		for i, c := range pool {
+			if !used[i] && c.IsCA && cur.CheckSignatureFrom(c) == nil {
+				next = i
+				break
+			}
+		}
+		if next < 0 {
+			break
+		}
+		used[next] = true
+		out = append(out, pool[next])
+		cur = pool[next]
+		if cur.CheckSignatureFrom(cur) == nil {
+			break // self-signed root
+		}
+	}
+	for i, c := range pool {
+		if !used[i] {
+			out = append(out, c)
+		}
+	}
+	return out
 }

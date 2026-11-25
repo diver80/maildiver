@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.40 (2026-11-25)
+
+### S/MIME-Signatur
+- **Signieren mit SwissSign- und ähnlichen Zertifikaten:** Manche `.p12`-Exporte führen das eigene Zertifikat zusätzlich unter den CA-Zertifikaten. Jede signierte Mail scheiterte dann mit „parent certificate cannot sign this kind of certificate“ – auch mit *Sicherheit: Auto*, sobald für die Absenderadresse ein Zertifikat installiert war. PostDive entfernt das eigene Zertifikat jetzt aus der Kette und sortiert sie vom Aussteller bis zur Wurzel, beim Import und beim Laden – bereits importierte Zertifikate funktionieren ohne Neuimport.
+
 ## 0.7.39 (2026-11-25)
 
 ### Anmeldung mit Umlauten im Passwort
