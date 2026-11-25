@@ -83,12 +83,18 @@ func (a *App) modalH(c *ui.Context, h float32) float32 {
 	return max(min(h, a.winH-top-bottom), 200)
 }
 
-// modal shows a dialog as ui.Modal does. On phones it takes the screen's width (modalW) and at
-// most its height within the system bars, rather than ui.Modal's panel inset by 40 points, which
-// left 260 points for the content of a 380-point phone.
+// modal shows a dialog centered over a dimmed backdrop. Every caller renders its own styled
+// Surface card (Radius 12 + Border), so we use DialogBase directly instead of ui.Modal's outer
+// 20pt padded Background slab + heavy shadow, avoiding a clunky double frame around dialogs.
 func (a *App) modal(c *ui.Context, open *bool, fn func()) ui.Element {
 	if !a.isPhone() {
-		return ui.Modal(c, open, fn)
+		return ui.DialogBase(c, open, func(back, panel ui.Element) {
+			w, h := c.Size()
+			back.Background(ui.RGBA(0, 0, 0, 0.36))
+			panel.Radius(12).MaxWidth(max(w-48, 320)).MaxHeight(max(h-48, 240))
+			panel.Shadow(0, 8, 22, 0, ui.RGBA(0, 0, 0, 0.22))
+			fn()
+		})
 	}
 	return ui.DialogBase(c, open, func(back, panel ui.Element) {
 		top, _, bottom, _ := c.SafeArea()

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.34 (2026-11-25)
+
+### Saubere Dialoge ohne Doppelrahmen
+- **Alle Desktop-Dialoge entschlackt:** `a.modal()` nutzt auf dem Desktop jetzt direkt `ui.DialogBase` ohne die doppelte 20px-Außenkachel von `ui.Modal` und mit einem deutlich dezenteren Schatten – Einstellungen, Termin-Details, Verfassen, Quick-Regel, Archiv, Verschieben & Hilfe wirken dadurch klarer und leichter.
+
 ## 0.7.33 (2026-11-25)
 
 ### Ruhigere Oberfläche (Apple Mail / Canary-Stil), einfaches Konto-Setup & klar getrennte Bereiche
