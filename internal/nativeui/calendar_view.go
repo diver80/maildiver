@@ -332,18 +332,27 @@ func (a *App) calendarPeriodLabel() string {
 	}
 	if a.calViewMode == 2 {
 		wdIdx := (int(cur.Weekday()) + 6) % 7
+		kwLbl := a.calendarWeekLabel(cur)
 		if a.uiLang() == "en" {
 			if a.isPhone() {
-				return fmt.Sprintf("%s, %s %d", weekdayShortEN[wdIdx], monthNamesEN[cur.Month()][:3], cur.Day())
+				return fmt.Sprintf("%s, %s %d · %s", weekdayShortEN[wdIdx], monthNamesEN[cur.Month()][:3], cur.Day(), kwLbl)
 			}
-			return fmt.Sprintf("%s, %s %d, %d", weekdayLongEN[wdIdx], monthNamesEN[cur.Month()], cur.Day(), cur.Year())
+			return fmt.Sprintf("%s, %s %d, %d · %s", weekdayLongEN[wdIdx], monthNamesEN[cur.Month()], cur.Day(), cur.Year(), kwLbl)
 		}
 		if a.isPhone() {
-			return fmt.Sprintf("%s, %02d.%02d.%d", weekdayShortDE[wdIdx], cur.Day(), int(cur.Month()), cur.Year())
+			return fmt.Sprintf("%s, %02d.%02d.%d · %s", weekdayShortDE[wdIdx], cur.Day(), int(cur.Month()), cur.Year(), kwLbl)
 		}
-		return fmt.Sprintf("%s, %d. %s %d", weekdayLongDE[wdIdx], cur.Day(), monthNamesDE[cur.Month()], cur.Year())
+		return fmt.Sprintf("%s, %d. %s %d · %s", weekdayLongDE[wdIdx], cur.Day(), monthNamesDE[cur.Month()], cur.Year(), kwLbl)
 	}
 	return a.tr("Kalender & Termine", "Calendar & Events")
+}
+
+func (a *App) calendarWeekLabel(day time.Time) string {
+	_, kw := day.ISOWeek()
+	if a.uiLang() == "en" {
+		return fmt.Sprintf("W%d", kw)
+	}
+	return fmt.Sprintf("KW %d", kw)
 }
 
 func (a *App) recurrenceBadgeText(ev backend.CalendarEvent) string {
@@ -533,16 +542,21 @@ func (a *App) renderCalendarMonthGrid(c *ui.Context, byDay map[string][]backend.
 		weekdays = weekdayShortEN
 	}
 
+	nowISOYear, nowISOWK := time.Now().ISOWeek()
+
 	monthGrid := func() {
 		col := ui.Column(c).Gap(6)
 		if a.isPhone() {
-			col.MinWidth(700).Grow(1).MinHeight(0)
+			col.MinWidth(748).Grow(1).MinHeight(0)
 		} else {
 			col.Grow(1).MinHeight(0).FillWidth()
 		}
 		col.Children(func() {
-			// 7-column weekday header
+			// KW gutter + 7-column weekday header
 			ui.Row(c).FillWidth().Gap(6).Children(func() {
+				ui.Box(c.Key("cal-wd-kw")).Width(48).Shrink(0).Padding(2, 4).Center().Children(func() {
+					ui.Text(c, a.tr("KW", "Wk")).FontSize(11).Bold().TextColor(withAlpha(t.TextMuted, 0.75)).SingleLine()
+				})
 				for i, wd := range weekdays {
 					clr := t.TextMuted
 					if i >= 5 {
@@ -559,7 +573,35 @@ func (a *App) renderCalendarMonthGrid(c *ui.Context, byDay map[string][]backend.
 				ui.Column(c).FillWidth().Gap(6).Children(func() {
 					for w := 0; w < numWeeks; w++ {
 						weekIdx := w
+						weekStart := gridStart.AddDate(0, 0, weekIdx*7)
+						isoYear, kw := weekStart.ISOWeek()
+						isCurrentWeek := isoYear == nowISOYear && kw == nowISOWK
+						kwLbl := a.calendarWeekLabel(weekStart)
 						ui.Row(c.Key(fmt.Sprintf("cal-wk-%d", weekIdx))).FillWidth().Gap(6).Children(func() {
+							ui.Column(c.Key(fmt.Sprintf("cal-kw-col-%d", weekIdx))).Width(48).Shrink(0).Padding(4, 0, 0, 0).AlignItems(ui.Center).Children(func() {
+								kwBg := withAlpha(t.Surface, 0.65)
+								kwBorder := t.Border
+								kwFg := t.TextMuted
+								if isCurrentWeek {
+									kwBg = withAlpha(t.Accent, 0.18)
+									kwBorder = withAlpha(t.Accent, 0.5)
+									kwFg = t.Accent
+								}
+								kwBtn := ui.ButtonBase(c.Key(fmt.Sprintf("cal-kw-%d", weekIdx))).FillWidth().Padding(4, 3).Radius(6).Background(kwBg).Border(1, kwBorder).Center().
+									Label(kwLbl).Tooltip(a.trf("Woche %d öffnen", "Open week %d", kw))
+								kwBtn.Children(func() {
+									txt := ui.Text(c, kwLbl).FontSize(10.5).TextColor(kwFg).SingleLine()
+									if isCurrentWeek {
+										txt.Bold()
+									}
+								})
+								if kwBtn.Clicked() {
+									a.calCursor = weekStart
+									a.calViewMode = 1
+									a.persistCalendarView()
+									a.RefreshAll(context.Background())
+								}
+							})
 							for d := 0; d < 7; d++ {
 								day := gridStart.AddDate(0, 0, weekIdx*7+d)
 								dk := day.Format("2006-01-02")
@@ -700,9 +742,11 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 			col.Grow(1).MinHeight(0).FillWidth()
 		}
 		col.Children(func() {
-			// Day column headers
-			ui.Row(c).FillWidth().Gap(6).Children(func() {
-				ui.Box(c).Width(48).Shrink(0)
+			// Day column headers (with ISO calendar week badge in top-left gutter)
+			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Box(c.Key("cal-wk-kw")).Width(48).Shrink(0).Padding(4, 2).Radius(6).Background(withAlpha(t.Accent, 0.14)).Border(1, withAlpha(t.Accent, 0.4)).Center().Children(func() {
+					ui.Text(c, a.calendarWeekLabel(days[0])).FontSize(10.5).Bold().TextColor(t.Accent).SingleLine()
+				})
 				for d := 0; d < 7; d++ {
 					dayCopy := days[d]
 					isToday := dayKeys[d] == todayKey

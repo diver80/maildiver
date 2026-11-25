@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.36 (2026-11-25)
+
+### Kalenderwochen (ISO-KW) in allen Kalenderansichten
+- **Monatsansicht:** Neue `KW`-Spalte links (`KW 49`–`KW 53` bzw. `W49`–`W53` auf Englisch) mit Hervorhebung der aktuellen Woche; ein Klick auf eine KW springt direkt in die zugehörige Wochenansicht.
+- **Wochen- & Tagesansicht:** KW-Badge oben links in der Wochenansicht sowie `· KW …` / `· W…` im Titel der Tagesansicht.
+
 ## 0.7.35 (2026-11-25)
 
 ### Klarerer Theme-Kontrast & einheitliche Tab-Leisten

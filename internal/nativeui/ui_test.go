@@ -873,3 +873,37 @@ func TestWorkspaceModeSwitcherSeparatesMailAndCalendar(t *testing.T) {
 		t.Fatalf("expected Mail tab to restore lastMailNavID=recent, got %q", app.navID)
 	}
 }
+
+func TestCalendarMonthShowsISOWeeksAndJumpsToWeek(t *testing.T) {
+	box := newCfgBox(config.Default())
+	app := NewApp(Options{ConfigLoader: box.load, ConfigSaver: box.save})
+	app.storeLang("de")
+	app.engineReady = true
+	app.navID = "calendar"
+	app.calViewMode = 0
+	app.calCursor = time.Date(2026, 12, 15, 10, 0, 0, 0, time.Local)
+
+	tt := ui.NewTester(app.RenderMain, 1380, 860)
+	tt.Frame()
+	for _, want := range []string{"KW", "KW 49", "KW 50", "KW 51", "KW 52", "KW 53"} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected %q in December 2026 month view; texts=%v", want, tt.Texts())
+		}
+	}
+	if dir := os.Getenv("POSTDIVE_RENDER_CAL_MONTH"); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		if f, err := os.Create(filepath.Join(dir, "cal-month-kw.png")); err == nil {
+			_ = png.Encode(f, tt.Image())
+			_ = f.Close()
+		}
+	}
+
+	// Clicking KW 51 jumps straight into Week view for that week.
+	tt.Click("KW 51")
+	if app.calViewMode != 1 {
+		t.Fatalf("expected calViewMode=1 (Week) after clicking KW 51, got %d", app.calViewMode)
+	}
+	if _, kw := app.calCursor.ISOWeek(); kw != 51 {
+		t.Fatalf("expected calCursor in ISO week 51, got week %d (%s)", kw, app.calCursor.Format("2006-01-02"))
+	}
+}
