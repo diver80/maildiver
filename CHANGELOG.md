@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.43 (2026-11-25)
+
+### Kontakte
+- **Namen ohne Outlook-Anführungszeichen:** Kontakte, deren Name aus einem Outlook-Absender stammt, hießen z. B. `'Burkardt, Heidi'`. Die Anführungszeichen werden beim Start einmalig entfernt und bei neuen Kontakten gar nicht erst gespeichert.
+- **Duplikate mit „Nachname; Vorname“** werden wie „Nachname, Vorname“ erkannt.
+- **Google-Kontakte: Fehlermeldung nennt die Ursache:** Statt pauschal „Berechtigung fehlt“ sagt PostDive jetzt, ob die People API im Google-Cloud-Projekt nicht aktiviert ist (mit Link zum Aktivieren) oder ob bei der Google-Anmeldung der Kontakte-Zugriff nicht erlaubt wurde.
+
 ## 0.7.42 (2026-11-25)
 
 ### Kontakte: alle statt 500

@@ -3,6 +3,7 @@ package mailengine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"path/filepath"
 	"testing"
 	"time"
@@ -79,5 +80,54 @@ func TestListContactsHasNoLimit(t *testing.T) {
 	}
 	if got, _ := eng.ListContacts(ctx, "Person 6"); len(got) != 20 {
 		t.Fatalf("ListContacts(query) = %d, want 20", len(got))
+	}
+}
+
+func TestContactNamesLoseOutlookQuotes(t *testing.T) {
+	for in, want := range map[string]string{
+		"'Angermund; Sascha'": "Angermund; Sascha",
+		` "Thomas Becker" `:   "Thomas Becker",
+		"'x'":                 "x",
+		"O'Neil":              "O'Neil",
+		"'half":               "'half",
+	} {
+		if got := cleanContactName(in); got != want {
+			t.Errorf("cleanContactName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Names already stored with quotes are cleaned when the store opens.
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	st, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO contacts(id, display_name) VALUES('a', '''Burkardt, Heidi'''), ('b', 'O''Neil')`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	st, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	a, _ := st.GetContact(ctx, "a")
+	b, _ := st.GetContact(ctx, "b")
+	if a.DisplayName != "Burkardt, Heidi" || b.DisplayName != "O'Neil" {
+		t.Fatalf("after reopening: %q, %q", a.DisplayName, b.DisplayName)
+	}
+}
+
+func TestPeopleForbiddenErrorNamesTheCause(t *testing.T) {
+	disabled := `{"error":{"code":403,"message":"People API has not been used in project 123 before or it is disabled.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","metadata":{"activationUrl":"https://console.developers.google.com/apis/api/people.googleapis.com/overview?project=123"}}]}}`
+	if err := peopleForbiddenError([]byte(disabled)); !strings.Contains(err.Error(), "nicht aktiviert") || !strings.Contains(err.Error(), "project=123") {
+		t.Fatalf("disabled: %v", err)
+	}
+	scope := `{"error":{"code":403,"message":"Request had insufficient authentication scopes.","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}`
+	if err := peopleForbiddenError([]byte(scope)); !strings.Contains(err.Error(), "Kontakte ansehen") {
+		t.Fatalf("scope: %v", err)
+	}
+	if err := peopleForbiddenError([]byte(`{"error":{"message":"Quota exceeded"}}`)); !strings.Contains(err.Error(), "Quota exceeded") {
+		t.Fatalf("other: %v", err)
 	}
 }

@@ -38,6 +38,15 @@ func (s *Store) DeleteContact(ctx context.Context, id string) error {
 	return err
 }
 
+// cleanContactName drops the quotes Outlook puts around display names ('Becker, Thomas').
+func cleanContactName(name string) string {
+	name = strings.TrimSpace(name)
+	for len(name) >= 2 && (name[0] == '\'' || name[0] == '"') && name[len(name)-1] == name[0] {
+		name = strings.TrimSpace(name[1 : len(name)-1])
+	}
+	return name
+}
+
 // SaveContactFull inserts or replaces a contact record (used by the Contacts editor UI).
 func (s *Store) SaveContactFull(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error) {
 	if c.AddressBookID == "" {
@@ -45,7 +54,7 @@ func (s *Store) SaveContactFull(ctx context.Context, c backend.ContactRecord) (b
 	}
 	c.Email = strings.TrimSpace(c.Email)
 	c.SecondEmail = strings.TrimSpace(c.SecondEmail)
-	c.DisplayName = strings.TrimSpace(c.DisplayName)
+	c.DisplayName = cleanContactName(c.DisplayName)
 	c.FirstName = strings.TrimSpace(c.FirstName)
 	c.LastName = strings.TrimSpace(c.LastName)
 	if c.DisplayName == "" {
@@ -542,7 +551,7 @@ func (e *Engine) SyncGoogleContacts(ctx context.Context) (int, error) {
 			return synced, fmt.Errorf("Google Contacts Antwort lesen: %w", readErr)
 		}
 		if resp.StatusCode == http.StatusForbidden {
-			return synced, fmt.Errorf("Google Contacts Berechtigung fehlt — bitte Google-Konto im Kalender-Tab erneut verbinden (People API aktivieren)")
+			return synced, peopleForbiddenError(body)
 		}
 		if resp.StatusCode >= 400 {
 			return synced, fmt.Errorf("Google Contacts API (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -683,4 +692,42 @@ func (e *Engine) MailsFromSender(ctx context.Context, emails []string, limit int
 		})
 	}
 	return out, nil
+}
+
+// peopleForbiddenError says why Google refused the contacts: the People API is off in the
+// Google Cloud project of the client ID, or the sign-in did not grant access to contacts
+// (Google lets the user untick it). Google's own message goes along for anything else.
+func peopleForbiddenError(body []byte) error {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+			Details []struct {
+				Reason   string            `json:"reason"`
+				Metadata map[string]string `json:"metadata"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &e)
+	reason, activate := "", ""
+	for _, d := range e.Error.Details {
+		if reason == "" {
+			reason = d.Reason
+		}
+		if u := d.Metadata["activationUrl"]; u != "" {
+			activate = u
+		}
+	}
+	msg := strings.TrimSpace(e.Error.Message)
+	switch {
+	case reason == "SERVICE_DISABLED" || strings.Contains(msg, "has not been used") || strings.Contains(msg, "is disabled"):
+		if activate == "" {
+			activate = "https://console.cloud.google.com/apis/library/people.googleapis.com"
+		}
+		return fmt.Errorf("Google Contacts: Die People API ist im Google-Cloud-Projekt deiner Client-ID nicht aktiviert. Aktivieren: %s – danach ein paar Minuten warten und erneut synchronisieren", activate)
+	case reason == "ACCESS_TOKEN_SCOPE_INSUFFICIENT" || strings.Contains(strings.ToLower(msg), "insufficient"):
+		return fmt.Errorf("Google Contacts: Bei der Google-Anmeldung wurde der Zugriff auf Kontakte nicht erlaubt. Google im Kalender-Tab trennen, neu verbinden und dabei „Kontakte ansehen“ anhaken")
+	case msg != "":
+		return fmt.Errorf("Google Contacts verweigert (403): %s", msg)
+	}
+	return fmt.Errorf("Google Contacts Berechtigung fehlt — bitte Google-Konto im Kalender-Tab erneut verbinden (People API aktivieren)")
 }

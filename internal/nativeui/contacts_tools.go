@@ -194,7 +194,7 @@ func contactNameKey(name string) string {
 	if strings.Contains(name, "@") {
 		return ""
 	}
-	if parts := strings.Split(name, ","); len(parts) == 2 {
+	if parts := strings.FieldsFunc(name, func(r rune) bool { return r == ',' || r == ';' }); len(parts) == 2 {
 		name = parts[1] + " " + parts[0]
 	}
 	if s, _, err := transform.String(transform.Chain(norm.NFD, stripMarks, norm.NFC), name); err == nil {

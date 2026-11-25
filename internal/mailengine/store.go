@@ -350,6 +350,11 @@ func (s *Store) migrate() error {
 	if err := s.rethreadOnce(); err != nil {
 		return fmt.Errorf("rethread messages: %w", err)
 	}
+	// Names taken from Outlook headers kept their quotes ('Becker, Thomas'); added in 0.7.43.
+	if _, err := s.db.Exec(`UPDATE contacts SET display_name = trim(substr(display_name, 2, length(display_name) - 2))
+		WHERE length(display_name) >= 2 AND (display_name LIKE '''%''' OR display_name LIKE '"%"')`); err != nil {
+		return fmt.Errorf("unquote contact names: %w", err)
+	}
 	// Ensure default local writable calendar always exists.
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO calendars(id, name, source, read_only, color) VALUES(?, ?, 'local', 0, '#7aa2f7')`,
@@ -1635,6 +1640,7 @@ func (s *Store) UpsertContact(ctx context.Context, req backend.ContactUpsertRequ
 			found = true
 		}
 	}
+	c.DisplayName = cleanContactName(c.DisplayName)
 	if found {
 		action = "enriched"
 		c.ID = existing.ID

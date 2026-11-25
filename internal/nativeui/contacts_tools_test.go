@@ -10,7 +10,7 @@ import (
 
 func TestContactNameKeyMatchesTheUsualSpellingsOfOneName(t *testing.T) {
 	want := "lukas carle"
-	for _, n := range []string{"Carlé, Lukas", "Lukas Carle", "Lukas Carlé (extern)", "'Lukas Carlé'", "  lukas   CARLÉ "} {
+	for _, n := range []string{"Carlé, Lukas", "Carlé; Lukas", "Lukas Carle", "Lukas Carlé (extern)", "'Lukas Carlé'", "  lukas   CARLÉ "} {
 		if got := contactNameKey(n); got != want {
 			t.Errorf("contactNameKey(%q) = %q, want %q", n, got, want)
 		}
