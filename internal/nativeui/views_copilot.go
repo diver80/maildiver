@@ -94,10 +94,8 @@ func (a *App) renderCopilotControls(c *ui.Context, phone bool) {
 				"Check my recent emails from the last 7 days: where am I still waiting for a reply or need to follow up? List open threads with recipients and offer follow-up drafts if helpful.",
 			))
 		}
-		if phone {
-			if ui.Button(c.Key("qp-brief"), a.tr("Tagesbriefing", "Daily briefing")).Clicked() {
-				a.OpenDayBriefing(context.Background())
-			}
+		if ui.Button(c.Key("qp-brief"), a.tr("Tagesbriefing", "Daily briefing")).Clicked() {
+			a.OpenDayBriefing(context.Background())
 		}
 		if a.selectedMsg != nil {
 			if ui.Button(c.Key("qp-sel"), a.tr("Diese Mail", "This Email")).Clicked() {

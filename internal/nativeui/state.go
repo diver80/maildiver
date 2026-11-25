@@ -332,6 +332,7 @@ type App struct {
 
 	// Navigation & filters
 	navID              string // "focus", "recent", "action", "calendar", "contacts", or "folder:<id>"
+	lastMailNavID      string // remembered mail view when switching between Mail / Calendar / Contacts
 	secViewsOpen       bool
 	secFoldersOpen     bool
 	secAccountOpen     map[string]*bool // per-account folder sections (folders.go)
@@ -496,6 +497,7 @@ func NewApp(opts Options) *App {
 		langLabel:        langLabelForPref(langChoice),
 		lang:             resolvedLang,
 		navID:            "focus",
+		lastMailNavID:    "focus",
 		secViewsOpen:     true,
 		secFoldersOpen:   true,
 		selectedAccount:  "",
@@ -504,11 +506,11 @@ func NewApp(opts Options) *App {
 		calDays:          14,
 		calViewMode:      calendarViewModeFromName(cfg.App.CalendarView),
 		calCursor:        time.Now(),
-		showCopilot:      cfg.App.ShowCopilot == nil || *cfg.App.ShowCopilot,
+		showCopilot:      cfg.App.ShowCopilot != nil && *cfg.App.ShowCopilot,
 		hideSidebar:      cfg.App.HideSidebar != nil && *cfg.App.HideSidebar,
 		notifyEnabled:    cfg.App.NotifyEnabled == nil || *cfg.App.NotifyEnabled,
 		sidebarSplit:     max(float32(180), cfg.App.SidebarSplit),
-		mailSplit:        max(float32(280), cfg.App.MailSplit),
+		mailSplit:        defaultMailSplit(cfg.App.MailSplit),
 		copilotSplit:     cfg.App.CopilotSplit,
 		helpTopic:        "all",
 		seenMails:        make(map[string]bool),
@@ -538,6 +540,13 @@ func NewApp(opts Options) *App {
 		AnyLLMOpts:   opts.AnyLLMOpts,
 	}
 	return a
+}
+
+func defaultMailSplit(saved float32) float32 {
+	if saved <= 0 {
+		return 340
+	}
+	return max(float32(280), saved)
 }
 
 func (a *App) SetHooks(update func(func()), onTray func(), onShowMain func(), onHideFly func(), onNotify func(AlertItem)) {
@@ -1415,6 +1424,9 @@ func (a *App) setMessages(msgs []backend.MessageHeader) {
 
 // setNav switches the view (UI thread) and resets the multi-select anchor.
 func (a *App) setNav(nav string) {
+	if nav != "calendar" && nav != "contacts" && nav != "" {
+		a.lastMailNavID = nav
+	}
 	if a.navID != nav {
 		a.navID = nav
 		a.serverSearchDoneKey = ""

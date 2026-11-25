@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -9,19 +10,21 @@ import (
 	"github.com/diver80/postdive/internal/mailengine"
 )
 
-// Window chrome: the slim toolbar on top (menu, search, primary actions) and the status bar at
-// the bottom (connection, selection, account, sync time, keyboard legend). Settings that are not
-// used daily (language, theme, alerts, panels) live in the ☰ menu.
+// Window chrome: the slim toolbar on top (menu, workspace switcher, search, primary actions) and
+// the status bar at the bottom (connection, selection, account, sync time, keyboard legend).
+// Settings that are not used daily (language, theme, alerts, panels) live in the ☰ menu.
 
 func (a *App) renderToolbar(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).FillWidth().Padding(8, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+	ui.Row(c).FillWidth().Padding(8, 14).Gap(10).AlignItems(ui.Center).Background(t.Surface).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 			a.renderAppMenuButton(c)
 			ui.Text(c, "PostDive").FontSize(14).Bold().SingleLine()
 			if v := a.versionTag(); v != "" {
 				ui.Text(c, v).FontSize(9.5).TextColor(withAlpha(t.TextMuted, 0.68)).Margin(2, 0, 0, 0).SingleLine()
 			}
+			ui.Box(c).Size(1, 18).Background(t.Border).Margin(0, 4)
+			a.renderWorkspaceSwitcher(c)
 		})
 
 		// Context-aware search & filter (Calendar search + multi-select calendars in Calendar view;
@@ -104,20 +107,77 @@ func (a *App) renderToolbar(c *ui.Context) {
 					}
 				}
 			}
-			if iconLabelBtn(c.Key("tb-compose"), iconCompose, a.tr("Verfassen", "Compose"), false, a.tr("Neue E-Mail (c / ⌘N)", "New email (c / ⌘N)")).Clicked() {
-				a.OpenComposeNew()
+			if a.hideSidebar && a.navID != "calendar" && a.navID != "contacts" {
+				if iconLabelBtn(c.Key("tb-compose"), iconCompose, a.tr("Verfassen", "Compose"), false, a.tr("Neue E-Mail (c / ⌘N)", "New email (c / ⌘N)")).Clicked() {
+					a.OpenComposeNew()
+				}
 			}
-			if iconLabelBtn(c.Key("tb-briefing"), iconSparkles, a.tr("Briefing", "Briefing"), true, a.tr("Tages-Briefing (KI · benötigt Tokens)", "Daily Briefing (AI · uses tokens)")).Clicked() {
-				a.OpenDayBriefing(context.Background())
-			}
-			if iconBtn(c.Key("tb-preview"), iconLink, a.tr("Auto-Web-Vorschau ein/aus", "Toggle auto web preview"), ui.Color{}, a.cfg.App.LinkPreview.Enabled).Clicked() {
-				a.ToggleWebPreviewAuto()
-			}
-			if iconBtn(c.Key("tb-copilot"), iconSidebar, a.tr("KI-Assistent ein/aus (⌘J)", "Toggle AI Assistant (⌘J)"), ui.Color{}, a.showCopilot).Clicked() {
+			if iconLabelBtn(c.Key("tb-copilot"), iconSparkles, a.tr("KI", "AI"), a.showCopilot, a.tr("KI-Assistent ein/aus (⌘J)", "Toggle AI Assistant (⌘J)")).Clicked() {
 				a.showCopilot = !a.showCopilot
 				a.persistLayoutPrefs()
 			}
 		})
+	})
+}
+
+// renderWorkspaceSwitcher separates top-level app modes (Mail, Calendar, Contacts) cleanly in
+// the toolbar so Calendar and Contacts do not get lost among mail folders in the sidebar.
+func (a *App) renderWorkspaceSwitcher(c *ui.Context) {
+	t := c.Theme()
+	isCal := a.navID == "calendar"
+	isContacts := a.navID == "contacts"
+	isMail := !isCal && !isContacts
+
+	modeTab := func(key string, svg *ui.SVG, label string, badge int, active bool) bool {
+		b := ui.ButtonBase(c.Key(key)).Padding(4, 10).Radius(6).Gap(5).AlignItems(ui.Center).Shrink(0).Label(label)
+		fg := t.TextMuted
+		if active {
+			b.Background(withAlpha(t.Accent, 0.16))
+			fg = t.Accent
+		}
+		b.Children(func() {
+			ui.Icon(c, svg).Size(14, 14).TextColor(fg)
+			txt := ui.Text(c, label).FontSize(12).TextColor(fg).SingleLine()
+			if active {
+				txt.Bold()
+			}
+			if badge > 0 {
+				bBg := withAlpha(t.TextMuted, 0.16)
+				bFg := t.TextMuted
+				if active {
+					bBg = withAlpha(t.Accent, 0.22)
+					bFg = t.Accent
+				}
+				ui.Text(c, fmt.Sprintf("%d", badge)).FontSize(10).Bold().TextColor(bFg).Padding(1, 5).Radius(999).Background(bBg).SingleLine()
+			}
+		})
+		return b.Clicked()
+	}
+
+	mailBadge := 0
+	if !isMail {
+		mailBadge = a.focusCount()
+	}
+	calBadge := len(a.todayEvents())
+
+	ui.Row(c.Key("tb-mode")).Padding(2).Gap(2).Radius(8).Background(t.Background).Border(1, t.Border).AlignItems(ui.Center).Shrink(0).Children(func() {
+		if modeTab("tb-mode-mail", iconMail, a.tr("Mail", "Mail"), mailBadge, isMail) && !isMail {
+			target := a.lastMailNavID
+			if target == "" || target == "calendar" || target == "contacts" {
+				target = "focus"
+			}
+			a.setNav(target)
+			a.LoadMessages(context.Background())
+		}
+		if modeTab("tb-mode-cal", iconCal, a.tr("Kalender", "Calendar"), calBadge, isCal) && !isCal {
+			a.setNav("calendar")
+		}
+		if a.isDirectMode() {
+			if modeTab("tb-mode-contacts", iconUsers, a.tr("Kontakte", "Contacts"), 0, isContacts) && !isContacts {
+				a.setNav("contacts")
+				a.LoadContacts(context.Background())
+			}
+		}
 	})
 }
 
@@ -137,6 +197,9 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		if m.Item(a.tr("KI-Assistent", "AI Assistant")).Checked(a.showCopilot).Shortcut(ui.Cmd, ui.KeyJ).Chosen() {
 			a.showCopilot = !a.showCopilot
 			a.persistLayoutPrefs()
+		}
+		if m.Item(a.tr("Tages-Briefing (KI)", "Daily Briefing (AI)")).Chosen() {
+			a.OpenDayBriefing(context.Background())
 		}
 		if m.Item(a.tr("Web-Vorschau (automatisch)", "Web preview (auto)")).Checked(a.cfg.App.LinkPreview.Enabled).Chosen() {
 			a.ToggleWebPreviewAuto()
@@ -315,9 +378,9 @@ func (a *App) renderFooter(c *ui.Context) {
 	})
 }
 
-// sidebarWidth is the width the left sidebar takes (0 while hidden).
+// sidebarWidth is the width the left mail sidebar takes (0 while hidden or in Calendar/Contacts).
 func (a *App) sidebarWidth() float32 {
-	if a.hideSidebar {
+	if a.hideSidebar || a.navID == "calendar" || a.navID == "contacts" {
 		return 0
 	}
 	return 230

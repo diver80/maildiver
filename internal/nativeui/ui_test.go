@@ -228,6 +228,9 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 	if _, ok := tt.Find("Angebot Q4"); !ok {
 		t.Fatal("expected message subject in main view")
 	}
+	// AI Assistant starts collapsed by default and opens when toggled.
+	app.showCopilot = true
+	tt.Frame()
 	if !tt.HasText("KI-Assistent") {
 		t.Fatalf("expected renamed KI-Assistent header in DE mode; texts=%v", tt.Texts())
 	}
@@ -331,7 +334,7 @@ func TestNativeUIRendersMainAndStatusWidgetHeadlessly(t *testing.T) {
 		t.Fatalf("expected language switched to en, got ui=%q cfg=%q", app.uiLang(), cur.Language)
 	}
 	tt.Frame()
-	if !tt.HasText("AI Assistant") || !tt.HasText("Focus (Unread & ★)") || !tt.HasText("Summarize") || !tt.HasText("Contacts") {
+	if !tt.HasText("AI Assistant") || !tt.HasText("Focus (Unread & ★)") || !tt.HasText("AI ▾") || !tt.HasText("More actions") {
 		t.Fatalf("expected English main view labels; texts=%v", tt.Texts())
 	}
 	if !tt.HasText("Complete Missing Fields") || !tt.HasText("Import Contact") {
@@ -815,5 +818,58 @@ func TestPasswordInputToggleAndPasteSanitize(t *testing.T) {
 	tt.Click("Hide password")
 	if show {
 		t.Fatalf("expected show=false after clicking Hide password")
+	}
+}
+
+func TestAccountFormSimpleDefaultAndGmailHint(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }})
+	app.storeLang("en")
+	if app.showCopilot {
+		t.Fatalf("expected showCopilot=false by default for calmer 3-pane layout")
+	}
+	if app.mailSplit != 340 {
+		t.Fatalf("expected default mailSplit=340, got %.0f", app.mailSplit)
+	}
+	app.resetDirectAccountForm()
+	if app.direct.accShowAdvanced {
+		t.Fatalf("expected advanced settings collapsed by default for preset account")
+	}
+
+	presets := config.MailProviderPresets()
+	if len(presets) < 2 || presets[1].ID != "gmail" || presets[1].AuthType != "" {
+		t.Fatalf("expected Gmail App Password preset right after IONOS, got %+v", presets[:min(3, len(presets))])
+	}
+	app.applyDirectPreset(presets[1])
+	if app.direct.accShowAdvanced {
+		t.Fatalf("expected Gmail App Password preset to stay in simple mode")
+	}
+	app.applyDirectPreset(presets[len(presets)-1]) // Custom
+	if !app.direct.accShowAdvanced {
+		t.Fatalf("expected Custom preset to expand advanced settings automatically")
+	}
+}
+
+func TestWorkspaceModeSwitcherSeparatesMailAndCalendar(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }})
+	app.storeLang("en")
+	app.setNav("recent")
+
+	tt := ui.NewTester(app.RenderMain, 1380, 860)
+	tt.Frame()
+	if !tt.HasText("Mailbox") || tt.HasText("Calendar & Events") {
+		t.Fatalf("expected Mail-only sidebar without Calendar mixed in; texts=%v", tt.Texts())
+	}
+
+	tt.Click("Calendar")
+	if app.navID != "calendar" {
+		t.Fatalf("expected navID=calendar after clicking Calendar tab, got %q", app.navID)
+	}
+	if app.sidebarWidth() != 0 {
+		t.Fatalf("expected mail sidebar hidden in calendar mode, got width %.0f", app.sidebarWidth())
+	}
+
+	tt.Click("Mail")
+	if app.navID != "recent" {
+		t.Fatalf("expected Mail tab to restore lastMailNavID=recent, got %q", app.navID)
 	}
 }

@@ -542,6 +542,7 @@ func TestCopilotProposalNeedsExplicitExecute(t *testing.T) {
 	app := st.newApp()
 	loop := attachUILoop(app, nil)
 	app.readOnly = false
+	app.showCopilot = true
 	app.chatEntries = []ChatEntry{{ID: "a-1", Role: "assistant", Streaming: true}}
 	prop := &copilot.PendingAction{ID: "p-1", Kind: copilot.ActionDraft, IdempotencyKey: "k-1", Draft: &copilot.DraftProposal{
 		To: []string{"alice@acme.de"}, CC: []string{"boss@acme.de"}, Subject: "Re: Angebot", Body: "Passt.",

@@ -93,7 +93,7 @@ func TestDesktopLayoutPersistenceRoundTrip(t *testing.T) {
 		},
 	})
 	app.hideSidebar = true
-	app.showCopilot = false
+	app.showCopilot = true
 	app.notifyEnabled = false
 	app.sidebarSplit = 275
 	app.mailSplit = 420
@@ -110,7 +110,7 @@ func TestDesktopLayoutPersistenceRoundTrip(t *testing.T) {
 	app2 := NewApp(Options{
 		ConfigLoader: func() (config.Config, error) { return loadedCfg, nil },
 	})
-	if !app2.hideSidebar || app2.showCopilot || app2.notifyEnabled || app2.sidebarSplit != 275 || app2.mailSplit != 420 || app2.copilotSplit != 590 {
+	if !app2.hideSidebar || !app2.showCopilot || app2.notifyEnabled || app2.sidebarSplit != 275 || app2.mailSplit != 420 || app2.copilotSplit != 590 {
 		t.Fatalf("restored layout mismatch: hideSidebar=%v showCopilot=%v notify=%v splits=(%.0f,%.0f,%.0f)",
 			app2.hideSidebar, app2.showCopilot, app2.notifyEnabled, app2.sidebarSplit, app2.mailSplit, app2.copilotSplit)
 	}

@@ -118,18 +118,18 @@ type MailProviderPreset struct {
 	OAuthProvider string
 }
 
-// MailProviderPresets returns common provider presets (IONOS, Gmail OAuth2, Microsoft 365 OAuth2, iCloud, etc.).
+// MailProviderPresets returns common provider presets (IONOS, Gmail, iCloud, Fastmail, etc.).
 func MailProviderPresets() []MailProviderPreset {
 	return []MailProviderPreset{
 		{ID: "ionos", Label: "IONOS", IMAPHost: "imap.ionos.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.ionos.de", SMTPPort: 465, SMTPTLS: "tls"},
-		{ID: "gmail-oauth", Label: "Gmail (OAuth2 / XOAUTH2)", IMAPHost: "imap.gmail.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "tls", AuthType: "xoauth2", OAuthProvider: "google"},
-		{ID: "m365-oauth", Label: "Microsoft 365 / Outlook (XOAUTH2)", IMAPHost: "outlook.office365.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.office365.com", SMTPPort: 587, SMTPTLS: "starttls", AuthType: "xoauth2", OAuthProvider: "microsoft"},
 		{ID: "gmail", Label: "Gmail (App-Passwort)", IMAPHost: "imap.gmail.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "tls"},
 		{ID: "icloud", Label: "iCloud Mail", IMAPHost: "imap.mail.me.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.mail.me.com", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "fastmail", Label: "Fastmail", IMAPHost: "imap.fastmail.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.fastmail.com", SMTPPort: 465, SMTPTLS: "tls"},
 		{ID: "gmx", Label: "GMX", IMAPHost: "imap.gmx.net", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "mail.gmx.net", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "webde", Label: "WEB.DE", IMAPHost: "imap.web.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.web.de", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "strato", Label: "STRATO", IMAPHost: "imap.strato.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.strato.de", SMTPPort: 465, SMTPTLS: "tls"},
+		{ID: "gmail-oauth", Label: "Gmail (OAuth2 · eigene Client-ID)", IMAPHost: "imap.gmail.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "tls", AuthType: "xoauth2", OAuthProvider: "google"},
+		{ID: "m365-oauth", Label: "Microsoft 365 / Outlook (OAuth2 · eigene Client-ID)", IMAPHost: "outlook.office365.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.office365.com", SMTPPort: 587, SMTPTLS: "starttls", AuthType: "xoauth2", OAuthProvider: "microsoft"},
 		{ID: "custom", Label: "Benutzerdefiniert / Custom", IMAPHost: "", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "", SMTPPort: 465, SMTPTLS: "tls"},
 	}
 }

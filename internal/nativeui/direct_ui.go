@@ -108,6 +108,7 @@ type directUI struct {
 	accPassword       string
 	accPasswordShow   bool
 	accPasswordPaste  string
+	accShowAdvanced   bool
 	accSignature      string
 	accSignatureHTML  string
 	accSigPos         int // 0 = above reply quote, 1 = below quote
@@ -322,6 +323,9 @@ func (a *App) applyDirectPreset(p config.MailProviderPreset) {
 	if d.oauthProvider == "microsoft" && strings.TrimSpace(d.oauthTenant) == "" {
 		d.oauthTenant = "common"
 	}
+	if p.IMAPHost == "" || p.ID == "custom" {
+		d.accShowAdvanced = true
+	}
 }
 
 func (a *App) resetDirectAccountForm() {
@@ -337,6 +341,7 @@ func (a *App) resetDirectAccountForm() {
 	d.accPassword = ""
 	d.accPasswordShow = false
 	d.accPasswordPaste = ""
+	d.accShowAdvanced = false
 	d.accSignature = ""
 	d.accSignatureHTML = ""
 	d.accSigPos = 0
@@ -372,6 +377,7 @@ func (a *App) editDirectAccount(accountID string) {
 			d.accPassword = ""
 			d.accPasswordShow = false
 			d.accPasswordPaste = ""
+			d.accShowAdvanced = strings.EqualFold(acc.AuthType, "xoauth2")
 			d.accSignature = acc.Signature
 			d.accSignatureHTML = acc.SignatureHTML
 			d.accSigPos = 0
@@ -1438,7 +1444,7 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 	for i, p := range presets {
 		presetLabels[i] = p.Label
 	}
-	formFieldRow(a.tr("Anbieter-Vorlage", "Provider Preset"), func() {
+	formFieldRow(a.tr("Anbieter", "Provider"), func() {
 		sel := ui.Select(c.Key("dir-preset"), &d.presetLabel, presetLabels)
 		fieldGrow(sel)
 		if sel.Changed() {
@@ -1455,36 +1461,22 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		fieldGrow(ui.TextInput(c.Key("dir-email"), &d.accEmail).Placeholder("name@domain.de"))
 	})
 	formFieldRow(a.tr("Dein Name", "Your Name"), func() {
-		fieldGrow(ui.TextInput(c.Key("dir-sender"), &d.accSender).Placeholder(a.tr("steht als Absender in deinen Mails", "shown as the sender of your emails")))
-	})
-	a.renderDirectAliasRows(c, formFieldRow)
-	formFieldRow(a.tr("Kontoname", "Account Name"), func() {
-		fieldGrow(ui.TextInput(c.Key("dir-name"), &d.accName).Placeholder(a.tr("optional, z. B. IONOS Privat", "optional, e.g. Work")))
-	})
-	formFieldRow(a.tr("Benutzername", "Username"), func() {
-		fieldGrow(ui.TextInput(c.Key("dir-user"), &d.accUser).Placeholder(a.tr("leer = E-Mail-Adresse", "empty = email address")))
+		fieldGrow(ui.TextInput(c.Key("dir-sender"), &d.accSender).Placeholder(a.tr("optional, erscheint als Absender", "optional, shown as sender")))
 	})
 	pwHint := a.tr("Passwort / App-Passwort", "Password / App password")
 	if d.editingID != "" {
 		pwHint = a.tr("leer lassen, um gespeichertes Passwort zu behalten", "leave empty to keep stored password")
 	}
-	authChoices := []string{"password", "xoauth2"}
 	if d.authType == "" {
 		d.authType = "password"
 	}
-	formFieldRow(a.tr("Anmeldung", "Auth Method"), func() {
-		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-			ui.Select(c.Key("dir-auth"), &d.authType, authChoices).Width(130)
-			if d.authType == "xoauth2" {
-				provChoices := []string{"google", "microsoft"}
-				if d.oauthProvider == "" {
-					d.oauthProvider = "google"
-				}
-				ui.Select(c.Key("dir-oauth-prov"), &d.oauthProvider, provChoices).Width(120)
-			}
-		})
-	})
 	if d.authType == "xoauth2" {
+		formFieldRow("", func() {
+			ui.Text(c, a.tr(
+				"Erfordert eine eigene Desktop-App Client-ID (Google Cloud Console / Entra ID). Schneller für Gmail: Vorlage „Gmail (App-Passwort)“ wählen.",
+				"Requires your own desktop app Client ID (Google Cloud Console / Entra ID). Faster for Gmail: choose preset “Gmail (App-Passwort)”.")).
+				FontSize(11).TextColor(t.TextMuted)
+		})
 		formFieldRow("OAuth Client-ID", func() {
 			fieldGrow(ui.TextInput(c.Key("dir-oauth-cid"), &d.oauthClientID).Placeholder("Client-ID (Google Cloud / Entra ID)"))
 		})
@@ -1550,70 +1542,122 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 				ui.Text(c, a.tr("Hinweis: Das Passwort beginnt oder endet mit einem Leerzeichen.", "Note: Password starts or ends with a space.")).FontSize(11).TextColor(t.Warning)
 			})
 		}
+		if strings.Contains(strings.ToLower(strings.TrimSpace(d.imapHost)), "gmail.com") {
+			formFieldRow("", func() {
+				ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+					ui.Text(c, a.tr(
+						"Google verlangt ein 16-stelliges App-Passwort (kein normales Login-Passwort).",
+						"Google requires a 16-character App Password (not your regular login password).")).
+						FontSize(11).TextColor(t.TextMuted).Grow(1)
+					if ui.Button(c.Key("dir-gmail-apppw"), a.tr("App-Passwort erstellen ↗", "Create App Password ↗")).Padding(3, 8).Clicked() {
+						_ = openExternalURL("https://myaccount.google.com/apppasswords")
+					}
+				})
+			})
+		}
 	}
 
-	tlsChoices := []string{"tls", "starttls"}
-	formFieldRow("IMAP-Server", func() {
-		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("dir-imap-h"), &d.imapHost).Placeholder("imap.ionos.de").Grow(1).MinWidth(140)
-			ui.TextInput(c.Key("dir-imap-p"), &d.imapPort).Placeholder("993").Width(68)
-			ui.Select(c.Key("dir-imap-t"), &d.imapTLS, tlsChoices).Width(100)
-		})
+	// Collapsible advanced settings (server/ports, username, aliases, auth method, signatures, sync limit).
+	advOpen := d.accShowAdvanced || strings.TrimSpace(d.imapHost) == ""
+	advLabel := a.tr("▸ Erweiterte Einstellungen (Server, Signatur, Aliase…)", "▸ Advanced settings (servers, signature, aliases…)")
+	if advOpen {
+		advLabel = a.tr("▾ Erweiterte Einstellungen ausblenden", "▾ Hide advanced settings")
+	}
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Padding(4, 0, 2, 0).Children(func() {
+		if ui.Button(c.Key("dir-adv-toggle"), advLabel).Padding(4, 10).Clicked() {
+			d.accShowAdvanced = !advOpen
+		}
+		if !advOpen && strings.TrimSpace(d.imapHost) != "" {
+			summary := fmt.Sprintf("%s:%s · %s:%s", strings.TrimSpace(d.imapHost), strings.TrimSpace(d.imapPort), strings.TrimSpace(d.smtpHost), strings.TrimSpace(d.smtpPort))
+			ui.Text(c, summary).FontSize(11).TextColor(t.TextMuted).SingleLine().Grow(1)
+		}
 	})
-	formFieldRow("SMTP-Server", func() {
-		ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("dir-smtp-h"), &d.smtpHost).Placeholder("smtp.ionos.de").Grow(1).MinWidth(140)
-			ui.TextInput(c.Key("dir-smtp-p"), &d.smtpPort).Placeholder("465").Width(68)
-			ui.Select(c.Key("dir-smtp-t"), &d.smtpTLS, tlsChoices).Width(100)
+
+	if advOpen {
+		formFieldRow(a.tr("Kontoname", "Account Name"), func() {
+			fieldGrow(ui.TextInput(c.Key("dir-name"), &d.accName).Placeholder(a.tr("optional, z. B. IONOS Privat", "optional, e.g. Work")))
 		})
-	})
-	if a.isPhone() {
-		ui.Column(c).FillWidth().Gap(6).Children(func() {
-			ui.Text(c, a.tr("Signatur (Text)", "Signature (plain text)")).FontSize(12).TextColor(t.TextMuted)
-			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).FillWidth().Height(64)
-			ui.Text(c, a.tr("HTML-Signatur (optional)", "HTML signature (optional)")).FontSize(12).TextColor(t.TextMuted)
-			ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("leer = automatisch aus Text-Signatur formatiert; sonst eigenes HTML…", "empty = auto-styled from plain signature; else custom HTML…")).FillWidth().Height(64)
-			ui.Text(c, a.tr("Signatur-Position bei Antworten", "Signature position in replies")).FontSize(12).TextColor(t.TextMuted)
-			ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat", "Above quote"), a.tr("Unter Zitat", "Below quote"))
+		formFieldRow(a.tr("Benutzername", "Username"), func() {
+			fieldGrow(ui.TextInput(c.Key("dir-user"), &d.accUser).Placeholder(a.tr("leer = E-Mail-Adresse", "empty = email address")))
 		})
-	} else {
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-			ui.Text(c, a.tr("Signatur (Text)", "Signature (plain)")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
-			ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(64)
-		})
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
-			ui.Column(c).Width(135).Gap(4).Padding(4, 0, 0, 0).Children(func() {
-				ui.Text(c, a.tr("HTML-Signatur", "HTML signature")).FontSize(12).TextColor(t.TextMuted)
-				if strings.TrimSpace(d.accSignature) != "" {
-					if ui.Button(c.Key("dir-sig-gen"), a.tr("Aus Text erzeugen", "Generate from text")).Padding(2, 6).Clicked() {
-						d.accSignatureHTML = composeSignatureBlockHTML(stripSignatureDelim(d.accSignature))
+		a.renderDirectAliasRows(c, formFieldRow)
+		authChoices := []string{"password", "xoauth2"}
+		formFieldRow(a.tr("Anmeldung", "Auth Method"), func() {
+			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.Select(c.Key("dir-auth"), &d.authType, authChoices).Width(130)
+				if d.authType == "xoauth2" {
+					provChoices := []string{"google", "microsoft"}
+					if d.oauthProvider == "" {
+						d.oauthProvider = "google"
 					}
+					ui.Select(c.Key("dir-oauth-prov"), &d.oauthProvider, provChoices).Width(120)
 				}
 			})
-			ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("optional (leer = wird automatisch aus Text-Signatur hübsch formatiert; oder eigenes HTML z. B. <p><b>Name</b></p>)", "optional (empty = auto-styled from plain signature; or custom HTML e.g. <p><b>Name</b></p>)")).Grow(1).Height(64)
 		})
-		formFieldRow(a.tr("Signatur-Position", "Signature position"), func() {
-			ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat (Standard)", "Above quote (default)"), a.tr("Unter Zitat (ganz unten)", "Below quote (bottom)"))
-		})
-	}
 
-	formFieldRow(a.tr("Mails pro Ordner synchronisieren", "Emails synced per folder"), func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-			ui.TextInput(c.Key("dir-sync-limit"), &d.accSyncLimit).Placeholder(strconv.Itoa(config.DefaultSyncLimit)).Width(90)
-			ui.Text(c, a.tr(
-				fmt.Sprintf("Neueste Mails, die jeder Abgleich prüft (%d–%d, leer = %d). Gilt für den Posteingang; andere Ordner höchstens 200. Ältere Mails werden nach und nach nachgeladen.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit),
-				fmt.Sprintf("Newest emails every sync checks (%d–%d, empty = %d). Applies to the inbox; other folders at most 200. Older emails are loaded gradually.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit))).
-				FontSize(11).TextColor(t.TextMuted)
-		})
-	})
-	if d.editingID != "" {
-		formFieldRow("", func() {
-			ui.Checkbox(c.Key("dir-acc-enabled"), &d.accEnabled, a.tr("Dieses Konto synchronisieren", "Sync this account"))
-		})
-		if !d.accEnabled {
-			formFieldRow("", func() {
-				ui.Text(c, a.tr("Pausiert: keine Abrufe mehr, bereits geladene Mails bleiben sichtbar.", "Paused: no more fetching, emails already loaded stay visible.")).FontSize(11).TextColor(t.TextMuted)
+		tlsChoices := []string{"tls", "starttls"}
+		formFieldRow("IMAP-Server", func() {
+			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c.Key("dir-imap-h"), &d.imapHost).Placeholder("imap.ionos.de").Grow(1).MinWidth(140)
+				ui.TextInput(c.Key("dir-imap-p"), &d.imapPort).Placeholder("993").Width(68)
+				ui.Select(c.Key("dir-imap-t"), &d.imapTLS, tlsChoices).Width(100)
 			})
+		})
+		formFieldRow("SMTP-Server", func() {
+			ui.Row(c).FillWidth().Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c.Key("dir-smtp-h"), &d.smtpHost).Placeholder("smtp.ionos.de").Grow(1).MinWidth(140)
+				ui.TextInput(c.Key("dir-smtp-p"), &d.smtpPort).Placeholder("465").Width(68)
+				ui.Select(c.Key("dir-smtp-t"), &d.smtpTLS, tlsChoices).Width(100)
+			})
+		})
+		if a.isPhone() {
+			ui.Column(c).FillWidth().Gap(6).Children(func() {
+				ui.Text(c, a.tr("Signatur (Text)", "Signature (plain text)")).FontSize(12).TextColor(t.TextMuted)
+				ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).FillWidth().Height(64)
+				ui.Text(c, a.tr("HTML-Signatur (optional)", "HTML signature (optional)")).FontSize(12).TextColor(t.TextMuted)
+				ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("leer = automatisch aus Text-Signatur formatiert; sonst eigenes HTML…", "empty = auto-styled from plain signature; else custom HTML…")).FillWidth().Height(64)
+				ui.Text(c, a.tr("Signatur-Position bei Antworten", "Signature position in replies")).FontSize(12).TextColor(t.TextMuted)
+				ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat", "Above quote"), a.tr("Unter Zitat", "Below quote"))
+			})
+		} else {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
+				ui.Text(c, a.tr("Signatur (Text)", "Signature (plain)")).FontSize(12).Width(135).TextColor(t.TextMuted).Padding(6, 0, 0, 0)
+				ui.TextArea(c.Key("dir-sig"), &d.accSignature).Placeholder(a.tr("optional, wird automatisch an neue Mails angehängt…", "optional, automatically appended to new emails…")).Grow(1).Height(64)
+			})
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Start).Children(func() {
+				ui.Column(c).Width(135).Gap(4).Padding(4, 0, 0, 0).Children(func() {
+					ui.Text(c, a.tr("HTML-Signatur", "HTML signature")).FontSize(12).TextColor(t.TextMuted)
+					if strings.TrimSpace(d.accSignature) != "" {
+						if ui.Button(c.Key("dir-sig-gen"), a.tr("Aus Text erzeugen", "Generate from text")).Padding(2, 6).Clicked() {
+							d.accSignatureHTML = composeSignatureBlockHTML(stripSignatureDelim(d.accSignature))
+						}
+					}
+				})
+				ui.TextArea(c.Key("dir-sig-html"), &d.accSignatureHTML).Placeholder(a.tr("optional (leer = wird automatisch aus Text-Signatur hübsch formatiert; oder eigenes HTML z. B. <p><b>Name</b></p>)", "optional (empty = auto-styled from plain signature; or custom HTML e.g. <p><b>Name</b></p>)")).Grow(1).Height(64)
+			})
+			formFieldRow(a.tr("Signatur-Position", "Signature position"), func() {
+				ui.Segmented(c.Key("dir-sig-pos"), &d.accSigPos, a.tr("Über Zitat (Standard)", "Above quote (default)"), a.tr("Unter Zitat (ganz unten)", "Below quote (bottom)"))
+			})
+		}
+
+		formFieldRow(a.tr("Mails pro Ordner synchronisieren", "Emails synced per folder"), func() {
+			ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+				ui.TextInput(c.Key("dir-sync-limit"), &d.accSyncLimit).Placeholder(strconv.Itoa(config.DefaultSyncLimit)).Width(90)
+				ui.Text(c, a.tr(
+					fmt.Sprintf("Neueste Mails, die jeder Abgleich prüft (%d–%d, leer = %d). Gilt für den Posteingang; andere Ordner höchstens 200. Ältere Mails werden nach und nach nachgeladen.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit),
+					fmt.Sprintf("Newest emails every sync checks (%d–%d, empty = %d). Applies to the inbox; other folders at most 200. Older emails are loaded gradually.", config.MinSyncLimit, config.MaxSyncLimit, config.DefaultSyncLimit))).
+					FontSize(11).TextColor(t.TextMuted)
+			})
+		})
+		if d.editingID != "" {
+			formFieldRow("", func() {
+				ui.Checkbox(c.Key("dir-acc-enabled"), &d.accEnabled, a.tr("Dieses Konto synchronisieren", "Sync this account"))
+			})
+			if !d.accEnabled {
+				formFieldRow("", func() {
+					ui.Text(c, a.tr("Pausiert: keine Abrufe mehr, bereits geladene Mails bleiben sichtbar.", "Paused: no more fetching, emails already loaded stay visible.")).FontSize(11).TextColor(t.TextMuted)
+				})
+			}
 		}
 	}
 

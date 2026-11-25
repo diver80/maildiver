@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.33 (2026-11-25)
+
+### Ruhigere Oberfläche (Apple Mail / Canary-Stil), einfaches Konto-Setup & klar getrennte Bereiche
+- **Modus-Umschalter `Mail | Kalender | Kontakte` in der Top-Leiste:** Kalender (inkl. Tages-Badge) und Kontakte sind jetzt klar von den Mail-Ordnern getrennt und öffnen sich über die volle Fensterbreite; ein Klick auf `Mail` kehrt exakt zur letzten Mail-Ansicht zurück. Klicks auf `Heute`-Termine unten in der Mail-Seitenleiste öffnen direkt den Kalender.
+- **Einfaches Konto-Setup (4 Felder + klappbare Profi-Optionen):** Beim Hinzufügen/Bearbeiten eines Kontos sind standardmäßig nur noch Anbieter, E-Mail-Adresse, Name und Passwort (mit `👁`-Auge) sichtbar. Server/Ports, Aliase, Signaturen, Sync-Limit und eigene OAuth2-Client-ID liegen sauber eingeklappt unter **„▸ Erweiterte Einstellungen“** (bei „Benutzerdefiniert“ automatisch offen).
+- **Klarerer Gmail-Einstieg:** `Gmail (App-Passwort)` steht direkt als empfohlener Standard bereit inkl. Direktlink zu `myaccount.google.com/apppasswords`; OAuth2-Vorlagen sind transparent als `OAuth2 · eigene Client-ID` beschriftet.
+- **Aufgeräumtere, luftigere Hauptansicht:** Der KI-Assistent rechts startet standardmäßig eingeklappt (1 Klick auf **`✨ KI`** oder `⌘J`), die Mail-Liste hat mehr Platz (`340px` Standardbreite, luftigere Zeilen, Stern nur bei markierten Mails), doppelte Toolbar-Buttons wurden entfernt und die bisher zweireihige Mail-Aktionsleiste (17 Buttons) auf eine ruhige Zeile (`Antworten/Archiv/Papierkorb/Stern` + **`✨ KI ▾`** + **`⋯`**) verdichtet.
+
 ## 0.7.32 (2026-11-25)
 
 ### Passwort-Anzeige & Einfüge-Schutz in den Konto-Einstellungen

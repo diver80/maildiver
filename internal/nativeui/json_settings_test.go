@@ -50,7 +50,7 @@ func TestDirectAccountFormSyncLimitSwitchAndAliases(t *testing.T) {
 		t.Fatal("a sync limit below the minimum must be rejected")
 	}
 
-	// The form renders at phone width with alias rows and the switch.
+	// The form starts compact and expands advanced settings (sync limit, switch, aliases) on click.
 	d.accSyncLimit = ""
 	app.opts.Direct = struct{ DirectController }{}
 	tt := ui.NewTester(func(c *ui.Context) {
@@ -58,6 +58,10 @@ func TestDirectAccountFormSyncLimitSwitchAndAliases(t *testing.T) {
 		app.renderDirectMailTab(c)
 	}, 380, 2400)
 	tt.Frame()
+	if tt.HasText("Emails synced per folder") {
+		t.Fatalf("advanced fields should be collapsed by default: %v", tt.Texts())
+	}
+	tt.Click("▸ Advanced settings (servers, signature, aliases…)")
 	for _, want := range []string{"Emails synced per folder", "Sync this account", "+ Add alias", "Paused: no more fetching, emails already loaded stay visible."} {
 		if !tt.HasText(want) {
 			t.Fatalf("missing %q at phone width: %v", want, tt.Texts())
