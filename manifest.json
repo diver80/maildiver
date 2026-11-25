@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "postdive",
   "name": "PostDive",
-  "version": "0.7.44",
+  "version": "0.7.45",
   "author": "diver80",
   "license": "MIT",
   "description": "Standalone native IMAP/SMTP mail, calendar, contacts and AI assistant desktop app.",

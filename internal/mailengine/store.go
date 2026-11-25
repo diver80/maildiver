@@ -355,6 +355,9 @@ func (s *Store) migrate() error {
 		WHERE length(display_name) >= 2 AND (display_name LIKE '''%''' OR display_name LIKE '"%"')`); err != nil {
 		return fmt.Errorf("unquote contact names: %w", err)
 	}
+	if err := s.migrateActivity(); err != nil {
+		return fmt.Errorf("migrate activity: %w", err)
+	}
 	// Ensure default local writable calendar always exists.
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO calendars(id, name, source, read_only, color) VALUES(?, ?, 'local', 0, '#7aa2f7')`,

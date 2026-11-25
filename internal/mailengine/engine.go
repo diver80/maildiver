@@ -31,6 +31,9 @@ type Options struct {
 	Events       *events.Hub
 	ConfigLoader func() (config.Config, error)
 	ConfigSaver  func(config.Config) error
+	// ActivitySource is who the activity log names for actions without one of their own:
+	// ActivityByMCP for the MCP server, else the user.
+	ActivitySource string
 }
 
 // AccountSyncStatus reports live sync state for one configured IMAP/SMTP account.
@@ -65,6 +68,9 @@ type Engine struct {
 	events  *events.Hub
 	loadCfg func() (config.Config, error)
 	saveCfg func(config.Config) error
+
+	// activitySource is who the activity log names by default (Options.ActivitySource).
+	activitySource string
 
 	// Test hooks for Google Calendar/Contacts/iCal httptest mocking.
 	gcalAPIBase        string
@@ -144,6 +150,8 @@ func New(opts Options) (*Engine, error) {
 		accLastSync: map[string]time.Time{},
 		accLastErr:  map[string]string{},
 		syncLocks:   map[string]*sync.Mutex{},
+
+		activitySource: opts.ActivitySource,
 	}, nil
 }
 
@@ -1757,6 +1765,9 @@ func (e *Engine) RespondMessageICS(ctx context.Context, msgID, calendarID, statu
 	if err != nil {
 		return ICSRespondResult{}, fmt.Errorf("not_found: Nachricht %q", msgID)
 	}
+	rsvp := activityFor(ActivityRSVP, m)
+	rsvp.Target = status
+	e.logActivity(ctx, rsvp)
 	var icsBody string
 	m, icsBody = e.resolveMessageICSBody(ctx, m)
 	if strings.TrimSpace(icsBody) == "" {
@@ -2192,6 +2203,9 @@ func (e *Engine) MarkSpam(ctx context.Context, msgID string) error {
 		return err
 	}
 	_ = e.store.DeleteMessage(ctx, m.ID)
+	a := activityFor(ActivitySpam, m)
+	a.Target = target
+	e.logActivity(ctx, a)
 	e.emitMailSync(acc.ID)
 	return nil
 }

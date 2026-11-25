@@ -213,9 +213,12 @@ func (a *App) phoneOpenView(nav string) {
 	a.phone.swipes.closeAll()
 	a.setNav(nav)
 	switch nav {
-	case "calendar", "contacts":
+	case "calendar", "contacts", "activity":
 		if nav == "contacts" {
 			a.LoadContacts(context.Background())
+		}
+		if nav == "activity" {
+			a.LoadActivity(context.Background(), false)
 		}
 	default:
 		a.LoadMessages(context.Background())
@@ -385,6 +388,7 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 					a.phoneBoxRow(c, "calendar", iconCal, a.tr("Kalender & Termine", "Calendar & Events"), len(a.todayEvents()), 0)
 					if a.isDirectMode() {
 						a.phoneBoxRow(c, "contacts", iconUsers, a.tr("Kontakte", "Contacts"), 0, 0)
+						a.phoneBoxRow(c, "activity", iconActivity, a.tr("Aktivität", "Activity"), 0, 0)
 					}
 				})
 				groups := a.groupFoldersByAccount()
@@ -674,7 +678,7 @@ func (a *App) phoneComposeButton(c *ui.Context) {
 func (a *App) renderPhoneList(c *ui.Context) {
 	t := c.Theme()
 	checked := a.CheckedMessages()
-	selecting := len(checked) > 0 && a.navID != "calendar" && a.navID != "contacts"
+	selecting := len(checked) > 0 && isMailNav(a.navID)
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
 		if selecting {
 			bg := t.Surface
@@ -699,7 +703,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			ui.Divider(c)
 		} else {
 			a.phoneBar(c, a.currentViewTitle(), true, func() {
-				if a.navID != "calendar" && a.navID != "contacts" {
+				if isMailNav(a.navID) {
 					if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
 						if phoneIconButton(c.Key("ph-mark-all-read"), iconMailOpen, a.tr("Alle gelesen", "Mark all read"), ui.Color{}).Clicked() {
 							a.MarkCurrentViewAllRead(context.Background())
@@ -740,6 +744,9 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			return
 		case "contacts":
 			a.renderContactsWorkspace(c)
+			return
+		case "activity":
+			a.renderActivityWorkspace(c)
 			return
 		}
 		if a.phone.search || strings.TrimSpace(a.searchQuery) != "" {

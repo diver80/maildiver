@@ -58,6 +58,8 @@ type DirectController interface {
 	MarkSpam(ctx context.Context, msgID string) error
 	ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error)
 	AllContacts(ctx context.Context) ([]backend.ContactRecord, error)
+	ListActivity(ctx context.Context, q mailengine.ActivityQuery) ([]mailengine.ActivityEntry, error)
+	LocateActivityMessage(ctx context.Context, a mailengine.ActivityEntry) (mailengine.ActivityMessage, bool)
 	SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error)
 	DeleteContact(ctx context.Context, id string) error
 	MailsFromSender(ctx context.Context, emails []string, limit int) ([]triage.MessageInput, error)

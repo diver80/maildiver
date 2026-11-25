@@ -46,7 +46,7 @@ func (a *App) RenderMain(c *ui.Context) {
 		ui.Divider(c)
 
 		ui.Row(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
-			if !a.hideSidebar && a.navID != "calendar" && a.navID != "contacts" {
+			if !a.hideSidebar && isMailNav(a.navID) {
 				a.renderSidebar(c)
 				ui.Divider(c).Vertical()
 			}
@@ -215,6 +215,8 @@ func (a *App) renderSidebar(c *ui.Context) {
 				// Calendar events are loaded via RefreshAll.
 			case "contacts":
 				a.LoadContacts(context.Background())
+			case "activity":
+				a.LoadActivity(context.Background(), false)
 			default:
 				a.LoadMessages(context.Background())
 			}
@@ -261,6 +263,8 @@ func (a *App) renderWorkspace(c *ui.Context) {
 		a.renderCalendarWorkspace(c)
 	case "contacts":
 		a.renderContactsWorkspace(c)
+	case "activity":
+		a.renderActivityWorkspace(c)
 	default:
 		a.renderMailWorkspace(c)
 	}
@@ -1856,6 +1860,8 @@ func (a *App) currentViewTitle() string {
 		return a.tr("Kalender & Termine", "Calendar & Events")
 	case "contacts":
 		return a.tr("Kontakte", "Contacts")
+	case "activity":
+		return a.tr("Aktivität", "Activity")
 	default:
 		if strings.HasPrefix(a.navID, "folder:") {
 			fid := strings.TrimPrefix(a.navID, "folder:")

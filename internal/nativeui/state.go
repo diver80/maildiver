@@ -436,6 +436,7 @@ type App struct {
 	movePickerState
 	direct   directUI
 	contacts contactsUI
+	activity activityUI
 	preview  webPreviewState
 
 	// Keyboard: "press again to confirm" for key actions on several mails (keymap.go).
@@ -1433,7 +1434,7 @@ func (a *App) setMessages(msgs []backend.MessageHeader) {
 
 // setNav switches the view (UI thread) and resets the multi-select anchor.
 func (a *App) setNav(nav string) {
-	if nav != "calendar" && nav != "contacts" && nav != "" {
+	if isMailNav(nav) && nav != "" {
 		a.lastMailNavID = nav
 	}
 	if a.navID != nav {

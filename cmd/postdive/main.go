@@ -21,7 +21,7 @@ import (
 	"github.com/diver80/postdive/internal/triage"
 )
 
-var version = "0.7.44-dev"
+var version = "0.7.45-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -133,6 +133,8 @@ func runMCP(parent context.Context, allowDrafts, allowWrites bool) error {
 	eng, err := mailengine.New(mailengine.Options{
 		ConfigLoader: config.Load,
 		ConfigSaver:  config.Save,
+		// What an agent does over MCP shows as such in the activity log.
+		ActivitySource: mailengine.ActivityByMCP,
 	})
 	if err != nil {
 		return fmt.Errorf("postdive --mcp: engine init failed: %w", err)

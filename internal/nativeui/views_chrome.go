@@ -51,7 +51,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 					a.focusSearch = false
 				}
 				if sf.Submitted() {
-					if a.navID == "contacts" {
+					if !isMailNav(a.navID) && a.navID != "calendar" {
 						a.setNav("recent")
 					}
 					a.lastSearchQuery = strings.TrimSpace(a.searchQuery)
@@ -107,7 +107,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 					}
 				}
 			}
-			if a.hideSidebar && a.navID != "calendar" && a.navID != "contacts" {
+			if a.hideSidebar && isMailNav(a.navID) {
 				if iconLabelBtn(c.Key("tb-compose"), iconCompose, a.tr("Verfassen", "Compose"), false, a.tr("Neue E-Mail (c / ⌘N)", "New email (c / ⌘N)")).Clicked() {
 					a.OpenComposeNew()
 				}
@@ -120,13 +120,20 @@ func (a *App) renderToolbar(c *ui.Context) {
 	})
 }
 
+// isMailNav reports whether nav is a mail view (a box or folder), not one of the other
+// workspaces.
+func isMailNav(nav string) bool {
+	return nav != "calendar" && nav != "contacts" && nav != "activity"
+}
+
 // renderWorkspaceSwitcher separates top-level app modes (Mail, Calendar, Contacts) cleanly in
 // the toolbar so Calendar and Contacts do not get lost among mail folders in the sidebar.
 func (a *App) renderWorkspaceSwitcher(c *ui.Context) {
 	t := c.Theme()
 	isCal := a.navID == "calendar"
 	isContacts := a.navID == "contacts"
-	isMail := !isCal && !isContacts
+	isActivity := a.navID == "activity"
+	isMail := isMailNav(a.navID)
 
 	modeTab := func(key string, svg *ui.SVG, label string, badge int, active bool) bool {
 		b := ui.ButtonBase(c.Key(key)).Padding(4, 10).Radius(6).Gap(5).AlignItems(ui.Center).Shrink(0).Label(label)
@@ -163,7 +170,7 @@ func (a *App) renderWorkspaceSwitcher(c *ui.Context) {
 	ui.Row(c.Key("tb-mode")).Padding(2).Gap(2).Radius(8).Background(t.Background).Border(1, t.Border).AlignItems(ui.Center).Shrink(0).Children(func() {
 		if modeTab("tb-mode-mail", iconMail, a.tr("Mail", "Mail"), mailBadge, isMail) && !isMail {
 			target := a.lastMailNavID
-			if target == "" || target == "calendar" || target == "contacts" {
+			if target == "" || !isMailNav(target) {
 				target = "focus"
 			}
 			a.setNav(target)
@@ -176,6 +183,10 @@ func (a *App) renderWorkspaceSwitcher(c *ui.Context) {
 			if modeTab("tb-mode-contacts", iconUsers, a.tr("Kontakte", "Contacts"), 0, isContacts) && !isContacts {
 				a.setNav("contacts")
 				a.LoadContacts(context.Background())
+			}
+			if modeTab("tb-mode-activity", iconActivity, a.tr("Aktivität", "Activity"), 0, isActivity) && !isActivity {
+				a.setNav("activity")
+				a.LoadActivity(context.Background(), false)
 			}
 		}
 	})
@@ -398,7 +409,7 @@ func (a *App) renderFooter(c *ui.Context) {
 
 // sidebarWidth is the width the left mail sidebar takes (0 while hidden or in Calendar/Contacts).
 func (a *App) sidebarWidth() float32 {
-	if a.hideSidebar || a.navID == "calendar" || a.navID == "contacts" {
+	if a.hideSidebar || !isMailNav(a.navID) {
 		return 0
 	}
 	return 230

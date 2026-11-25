@@ -37,6 +37,7 @@ const (
 	keyCtxSelection                   // mails are checked in the list
 	keyCtxCalendar
 	keyCtxContacts
+	keyCtxActivity
 	keyCtxOffline
 	keyCtxModal
 )
@@ -64,6 +65,8 @@ func (a *App) currentKeyContext() keyContext {
 		return keyCtxCalendar
 	case a.navID == "contacts":
 		return keyCtxContacts
+	case a.navID == "activity":
+		return keyCtxActivity
 	case len(a.checkedIDs) > 0:
 		return keyCtxSelection
 	case a.selectedID != "":
@@ -94,6 +97,8 @@ func (a *App) footerHints() []keyHint {
 		out = append(out, h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
 	case keyCtxContacts:
 		out = append(out, h("n", "Neuer Kontakt", "new contact"), h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
+	case keyCtxActivity:
+		out = append(out, h("c", "Verfassen", "compose"), h("⌘R", "Aktualisieren", "refresh"), h("h", "Hilfe", "help"))
 	case keyCtxSelection:
 		out = append(out, h("x", "Markieren", "check"), h("shift+x", "Bereich", "range"), h("⌘A", "Alle", "all"))
 		if !ro {

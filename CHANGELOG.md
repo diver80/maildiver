@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.45 (2026-11-25)
+
+### Aktivität
+- **Neuer Bereich „Aktivität“** neben Mail, Kalender und Kontakte: was in PostDive auf diesem Gerät mit Mails passiert ist – gelesen, markiert, verschoben, archiviert, gelöscht, als Spam markiert, gesendet oder geplant, Termin zu- oder abgesagt –, nach Tagen gruppiert und durchsuchbar.
+- **Wer es war:** Einträge von Filterregeln tragen den Namen der Regel, Aktionen eines Agenten über MCP sind als „Agent (MCP)“ gekennzeichnet, automatische Aufräum-Jobs als „Automatik“.
+- **Öffnen und Rückgängig:** Jeder Eintrag öffnet seine Mail dort, wo sie jetzt liegt (auch im Papierkorb); verschobene, archivierte und gelöschte Mails lassen sich zurückholen. Sammelaktionen erscheinen als eine Zeile.
+- **Nur dieses Gerät, nur lokal:** Das Protokoll liegt in der lokalen Datenbank, wird nirgends hochgeladen und nach 90 Tagen gelöscht. Was in anderen Mail-Programmen, im Webmail oder auf anderen Geräten passiert, erscheint nicht. „Gelesen“ ist anfangs ausgeblendet.
+
 ## 0.7.44 (2026-11-25)
 
 ### Statusleiste

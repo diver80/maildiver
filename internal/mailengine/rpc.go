@@ -764,6 +764,7 @@ func (e *Engine) rpcMessagesActions(ctx context.Context, params any) (json.RawMe
 	} else if !inPlaceFlags {
 		_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 	}
+	e.logActivity(ctx, actionActivities(m, p.Read, p.Flagged, p.Trash, p.Archive, moved, permanentDelete, moveTarget, "")...)
 	e.emitMailSync(m.AccountID)
 	resp := map[string]any{"ok": true}
 	if moved {
@@ -810,6 +811,12 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 
 	p := req.Action
 	archiveCreated := map[string]bool{}
+	var acts []ActivityEntry
+	batch := ""
+	if len(req.Items) > 1 {
+		batch = randomHex(6)
+	}
+	defer func() { e.logActivity(ctx, acts...) }()
 
 	for _, item := range req.Items {
 		m, err := e.store.GetMessage(ctx, item.ID)
@@ -951,6 +958,7 @@ func (e *Engine) rpcMessagesBatchActions(ctx context.Context, params any) (json.
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, p.Read, p.Flagged)
 				}
 				resp.OKIDs = append(resp.OKIDs, m.ID)
+				acts = append(acts, actionActivities(m, p.Read, p.Flagged, p.Trash, p.Archive, moved, op.PermanentDelete, op.MoveTargetPath, batch)...)
 				anyOK = true
 			}
 		}
@@ -1032,6 +1040,13 @@ func (e *Engine) rpcMessagesMarkAllRead(ctx context.Context, params any) (json.R
 		if anyLocal {
 			e.emitMailSync(accID)
 		}
+	}
+	if updated > 0 {
+		a := ActivityEntry{Kind: ActivityReadAll, AccountID: p.AccountID, Count: updated}
+		if len(folders) == 1 {
+			a.AccountID, a.Folder = folders[0].AccountID, folders[0].Path
+		}
+		e.logActivity(ctx, a)
 	}
 	if firstErr != nil && updated == 0 {
 		return nil, firstErr
@@ -1176,6 +1191,14 @@ func (e *Engine) rpcMessagesUndoMove(ctx context.Context, params any) (json.RawM
 				}
 			}
 			_ = e.syncSpecificFoldersIMAP(ctx, acc, affected)
+			var acts []ActivityEntry
+			for _, it := range byAcc[accID] {
+				a := ActivityEntry{Kind: ActivityRestore, AccountID: accID, MessageID: it.MessageID, Folder: it.ToFolderPath, Target: it.FromFolderPath}
+				_ = e.store.db.QueryRowContext(ctx, `SELECT id, subject, from_addr FROM messages WHERE trim(message_id, '<> ') = ? AND account_id = ? ORDER BY date_unix DESC LIMIT 1`,
+					strings.Trim(it.MessageID, "<> "), accID).Scan(&a.LocalID, &a.Subject, &a.Peer)
+				acts = append(acts, a)
+			}
+			e.logActivity(ctx, acts...)
 		}
 	}
 	return marshalJSON(backend.UndoMoveResponse{OK: true, Restored: totalRestored})
@@ -1732,8 +1755,15 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	if err != nil {
 		return nil, err
 	}
+	sendAct := ActivityEntry{Kind: ActivitySend, AccountID: acc.ID, MessageID: msgID, Subject: req.Subject, Peer: strings.Join(req.To, ", ")}
 	if req.SendAt > time.Now().Unix() {
-		return e.scheduleComposeSend(ctx, acc.ID, fromEmail, msgID, recipients, raw, req, compSec, idemKey)
+		res, err := e.scheduleComposeSend(ctx, acc.ID, fromEmail, msgID, recipients, raw, req, compSec, idemKey)
+		if err == nil {
+			a := sendAct
+			a.Kind, a.Target = ActivitySchedule, time.Unix(req.SendAt, 0).Format(time.RFC3339)
+			e.logActivity(ctx, a)
+		}
+		return res, err
 	}
 	if err := SendSMTP(ctx, acc, pass, fromEmail, recipients, raw); err != nil {
 		if isTransientNetworkError(err) {
@@ -1749,6 +1779,9 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 				RawEML:         raw,
 				LastError:      err.Error(),
 			}); qerr == nil {
+				a := sendAct
+				a.Target = "outbox"
+				e.logActivity(ctx, a)
 				e.emitOutboxChanged()
 				resPayload := map[string]any{"ok": true, "queued": true, "outboxId": obID, "messageId": msgID}
 				if compSec != nil {
@@ -1774,6 +1807,7 @@ func (e *Engine) rpcComposeSend(ctx context.Context, params any) (json.RawMessag
 	if req.DraftMessageID != "" {
 		e.deleteDraftIfExists(postCtx, acc.ID, req.DraftMessageID)
 	}
+	e.logActivity(postCtx, sendAct)
 	e.emitMailSync(acc.ID)
 
 	resPayload := map[string]any{"ok": true, "messageId": msgID, "sent": true, "sentCopyFailed": sentErr != nil}
@@ -2241,6 +2275,7 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 	}
 	var ops []folderBatchOp
 	opIdx := map[fltKey]int{}
+	ruleOf := map[string]string{} // the first rule that matched each mail, for the activity log
 	junkFolderPath := ""
 	if jf, ok := e.store.FindFolderByType(ctx, acc.ID, "junk"); ok {
 		junkFolderPath = jf.Path
@@ -2280,6 +2315,9 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 					}
 					if !matchFilterAgainstMessage(flt, m) {
 						continue
+					}
+					if ruleOf[m.ID] == "" {
+						ruleOf[m.ID] = flt.Name
 					}
 					stop := false
 					for _, act := range flt.Actions {
@@ -2378,6 +2416,8 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 
 	executed := 0
 	var firstErr error
+	var ruleActs []ActivityEntry
+	defer func() { e.logActivity(ctx, ruleActs...) }()
 	if len(ops) > 0 {
 		results := e.applyBatchActionsIMAP(ctx, acc, ops)
 		for i, op := range ops {
@@ -2394,6 +2434,13 @@ func (e *Engine) rpcFiltersRun(ctx context.Context, params any) (json.RawMessage
 					_ = e.store.DeleteMessage(ctx, m.ID)
 				} else {
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, op.Read, op.Flagged)
+				}
+				for _, a := range actionActivities(m, op.Read, op.Flagged, false, false, moved, op.PermanentDelete, op.MoveTargetPath, "") {
+					if moved && strings.EqualFold(op.MoveTargetPath, junkFolderPath) {
+						a.Kind = ActivitySpam
+					}
+					a.Source, a.SourceName = ActivityByRule, ruleOf[m.ID]
+					ruleActs = append(ruleActs, a)
 				}
 				executed++
 			}
@@ -2660,6 +2707,12 @@ func (e *Engine) rpcHostArchiveFinish(ctx context.Context, params any) (json.Raw
 			}
 		}
 		_ = e.store.DeleteMessage(ctx, m.ID)
+		a := activityFor(ActivityTrash, m)
+		if p.SkipTrash {
+			a.Kind = ActivityDelete
+		}
+		a.Source = ActivityByAuto
+		e.logActivity(ctx, a)
 		e.emitMailSync(acc.ID)
 	}
 	return marshalJSON(map[string]any{"ok": true})

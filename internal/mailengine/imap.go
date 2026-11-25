@@ -1664,6 +1664,8 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 	}
 
 	var remaining []StoredMessage
+	var acts []ActivityEntry
+	defer func() { e.logActivity(ctx, acts...) }()
 	for _, m := range msgs {
 		removed := false
 		for _, flt := range filters {
@@ -1672,6 +1674,11 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 			}
 			if !matchFilterAgainstMessage(flt, m) {
 				continue
+			}
+			ruleAct := func(kind, target string) {
+				a := activityFor(kind, m)
+				a.Target, a.Source, a.SourceName = target, ActivityByRule, flt.Name
+				acts = append(acts, a)
 			}
 			var uidSet imap.UIDSet
 			uidSet.AddNum(imap.UID(m.UID))
@@ -1682,11 +1689,17 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
 					t := true
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, &t, nil)
+					if !m.Read {
+						ruleAct(ActivityRead, "")
+					}
 					m.Read = true
 				case "addStar":
 					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagFlagged}}, nil).Close()
 					t := true
 					_ = e.store.UpdateMessageLocal(ctx, m.ID, nil, &t)
+					if !m.Flagged {
+						ruleAct(ActivityFlag, "")
+					}
 					m.Flagged = true
 				case "copyToFolder":
 					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
@@ -1697,6 +1710,7 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 					if junkFolderPath != "" && !strings.EqualFold(junkFolderPath, folder.Path) {
 						_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
 						if err := moveMessagesIMAP(c, uidSet, junkFolderPath); err == nil {
+							ruleAct(ActivitySpam, junkFolderPath)
 							_ = e.store.DeleteMessage(ctx, m.ID)
 							removed = true
 							stop = true
@@ -1705,10 +1719,13 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 				case "moveToFolder":
 					target := e.resolveTargetFolderPath(ctx, acc.ID, act.TargetFolderPath)
 					if target != "" && !strings.EqualFold(target, folder.Path) {
+						kind := ActivityMove
 						if tf, ok := e.store.FindFolderByType(ctx, acc.ID, "trash"); ok && strings.EqualFold(target, tf.Path) {
 							_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagSeen}}, nil).Close()
+							kind = ActivityTrash
 						}
 						if err := moveMessagesIMAP(c, uidSet, target); err == nil {
+							ruleAct(kind, target)
 							_ = e.store.DeleteMessage(ctx, m.ID)
 							removed = true
 							stop = true
@@ -1718,6 +1735,7 @@ func (e *Engine) applyLocalFiltersOnNewMessages(ctx context.Context, c *imapclie
 					_ = c.Store(uidSet, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close()
 					_ = uidExpungeIMAP(c, uidSet)
 					_ = e.store.DeleteMessage(ctx, m.ID)
+					ruleAct(ActivityDelete, "")
 					removed = true
 					stop = true
 				case "stopExecution":

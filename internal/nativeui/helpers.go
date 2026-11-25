@@ -41,6 +41,7 @@ type uiWidgetsState struct {
 	quickRuleScroll      ui.ScrollState
 	directScroll         ui.ScrollState
 	contactsDetailScroll ui.ScrollState
+	activityScroll       ui.ScrollState
 	mdInspector          markdown.Options
 	mdBody               markdown.Options
 	mdChat               map[string]*markdown.Options
