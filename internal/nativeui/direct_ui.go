@@ -57,8 +57,10 @@ type DirectController interface {
 	EmptySpam(ctx context.Context, accountID string) (int, error)
 	MarkSpam(ctx context.Context, msgID string) error
 	ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error)
+	AllContacts(ctx context.Context) ([]backend.ContactRecord, error)
 	SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error)
 	DeleteContact(ctx context.Context, id string) error
+	MailsFromSender(ctx context.Context, emails []string, limit int) ([]triage.MessageInput, error)
 	SuggestRecipients(ctx context.Context, query string, limit int) []mailengine.RecipientSuggestion
 	ImportVCFFile(ctx context.Context, filePath string) (int, error)
 	ExportVCFFile(ctx context.Context, filePath string) (int, error)

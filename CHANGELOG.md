@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.41 (2026-11-25)
+
+### Kalender: Wochenansicht wie die Tagesansicht
+- **Zeitleiste statt Stundenkästen:** Termine stehen in der Woche zu ihrer Uhrzeit und sind so hoch, wie sie dauern; überschneidende Termine liegen nebeneinander. Die leeren Stundenblöcke sind weg.
+- **Echte Uhrzeiten auch früh und spät:** Termine vor 07:00 und nach 21:00 wurden bisher an den Rand verschoben; jetzt zeigt die Woche 0–24 Uhr und öffnet bei 07:00 (oder beim frühesten Termin der Woche).
+- **Rote Jetzt-Linie** in der heutigen Spalte, Klick auf eine freie Stunde legt dort einen Termin an.
+
+### Kontakte
+- **Duplikate zusammenführen:** Kontakte mit gleichem Namen (auch „Nachname, Vorname“, mit/ohne Akzent oder Zusatz wie „(extern)“) werden nebeneinander gezeigt; pro Feld wählst du den Wert, der bleibt. Alle E-Mail-Adressen bleiben erhalten (zwei als Felder, weitere in den Notizen), Notizen werden zusammengefasst.
+- **Mit KI vervollständigen:** Ergänzt leere Felder eines Kontakts (Telefon, Mobil, Firma, Position, Website, Adresse) aus den Signaturen der letzten Mails dieser Person. Verschlüsselte Mails werden nicht gelesen, nichts wird überschrieben, gespeichert wird erst nach deiner Prüfung.
+
 ## 0.7.40 (2026-11-25)
 
 ### S/MIME-Signatur

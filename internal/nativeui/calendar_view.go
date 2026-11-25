@@ -705,33 +705,48 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 		weekdays = weekdayShortEN
 	}
 
-	// Precompute days & bucket timed events by (dayIdx, hour)
+	// Precompute days, all-day events and the timed events laid out like the day view.
 	days := make([]time.Time, 7)
 	dayKeys := make([]string, 7)
 	allDay := make([][]backend.CalendarEvent, 7)
-	bySlot := make(map[string][]backend.CalendarEvent)
-
+	blocks := make([][]dayEventBlock, 7)
+	firstMin := float32(-1)
 	for d := 0; d < 7; d++ {
 		days[d] = weekStart.AddDate(0, 0, d)
 		dayKeys[d] = days[d].Format("2006-01-02")
 		for _, ev := range byDay[dayKeys[d]] {
 			if ev.AllDay {
 				allDay[d] = append(allDay[d], ev)
-				continue
 			}
-			hour := 9
-			if st, err := parseEventTime(ev.Start); err == nil {
-				hour = st.Local().Hour()
-			}
-			if hour < 7 {
-				hour = 7
-			}
-			if hour > 21 {
-				hour = 21
-			}
-			slotKey := fmt.Sprintf("%d-%d", d, hour)
-			bySlot[slotKey] = append(bySlot[slotKey], ev)
 		}
+		blocks[d] = layoutDayEvents(byDay[dayKeys[d]], days[d])
+		if len(blocks[d]) > 0 && (firstMin < 0 || blocks[d][0].startMin < firstMin) {
+			firstMin = blocks[d][0].startMin
+		}
+	}
+
+	const gutterW float32 = 52
+	const hourHeight float32 = 48
+	const minuteH = hourHeight / 60
+	const totalHeight = 24*hourHeight + 12
+	now := time.Now().In(loc)
+	nowY := (float32(now.Hour()*60+now.Minute()) + float32(now.Second())/60) * minuteH
+	todayIdx := -1
+	for d := range dayKeys {
+		if dayKeys[d] == todayKey {
+			todayIdx = d
+		}
+	}
+
+	// Scroll once per week to the start of the working day (07:00), or earlier when an event of
+	// the week starts earlier: a week is read from the morning on, unlike a single day.
+	if wk := "wk:" + dayKeys[0]; a.calDayScrolledKey != wk {
+		a.calDayScrolledKey = wk
+		targetY := 7*hourHeight - hourHeight/4
+		if firstMin >= 0 && firstMin*minuteH-hourHeight/4 < targetY {
+			targetY = firstMin*minuteH - hourHeight/4
+		}
+		a.widgets.calWeekScroll.Y = max(0, min(targetY, totalHeight-360))
 	}
 
 	weekGrid := func() {
@@ -744,7 +759,7 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 		col.Children(func() {
 			// Day column headers (with ISO calendar week badge in top-left gutter)
 			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Box(c.Key("cal-wk-kw")).Width(48).Shrink(0).Padding(4, 2).Radius(6).Background(withAlpha(t.Accent, 0.14)).Border(1, withAlpha(t.Accent, 0.4)).Center().Children(func() {
+				ui.Box(c.Key("cal-wk-kw")).Width(gutterW).Shrink(0).Padding(4, 2).Radius(6).Background(withAlpha(t.Accent, 0.14)).Border(1, withAlpha(t.Accent, 0.4)).Center().Children(func() {
 					ui.Text(c, a.calendarWeekLabel(days[0])).FontSize(10.5).Bold().TextColor(t.Accent).SingleLine()
 				})
 				for d := 0; d < 7; d++ {
@@ -788,7 +803,7 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 			}
 			if hasAllDay {
 				ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
-					ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(10.5).TextColor(t.TextMuted).Width(48).Shrink(0)
+					ui.Text(c, a.tr("Ganztag", "All-day")).FontSize(10.5).TextColor(t.TextMuted).Width(gutterW).Shrink(0)
 					for d := 0; d < 7; d++ {
 						ui.Column(c.Key(fmt.Sprintf("cal-wkad-%d", d))).Grow(1).MinWidth(0).Gap(3).Children(func() {
 							for idx, ev := range allDay[d] {
@@ -804,48 +819,31 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 				})
 			}
 
-			// Scrollable hourly rows 07:00 – 21:00
-			now := time.Now()
+			// 24-hour timeline like the day view: events sit at their time, as tall as they last,
+			// overlapping ones side by side; the red line marks now in today's column.
 			nowClr := ui.RGB(239, 68, 68)
-			ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
-				ui.Column(c).FillWidth().Gap(4).Children(func() {
-					for h := 7; h <= 21; h++ {
-						hour := h
-						ui.Row(c.Key(fmt.Sprintf("cal-wkh-%02d", hour))).FillWidth().Gap(6).AlignItems(ui.Start).Children(func() {
-							ui.Text(c, fmt.Sprintf("%02d:00", hour)).FontSize(11).TextColor(t.TextMuted).Width(48).Shrink(0)
-							for d := 0; d < 7; d++ {
-								slotKey := fmt.Sprintf("%d-%d", d, hour)
-								evs := bySlot[slotKey]
-								isNowSlot := dayKeys[d] == todayKey && now.Hour() == hour
-								slotBorder := withAlpha(t.Border, 0.7)
-								if isNowSlot {
-									slotBorder = withAlpha(nowClr, 0.55)
-								}
-								ui.Column(c.Key("cal-slot-"+slotKey)).Grow(1).MinWidth(0).MinHeight(38).Padding(3).Radius(6).Background(t.Surface).Border(1, slotBorder).Gap(3).Children(func() {
-									if isNowSlot {
-										ui.Row(c.Key("cal-wk-now")).FillWidth().AlignItems(ui.Center).Gap(3).Children(func() {
-											ui.Box(c).Size(6, 6).Radius(3).Background(nowClr).Shrink(0)
-											ui.Box(c).Height(2).Grow(1).Radius(1).Background(nowClr)
-										})
-									}
-									for idx, ev := range evs {
-										evCopy := ev
-										evClr := a.calColorForEvent(evCopy, t.Accent)
-										lbl := evCopy.Title
-										if st, err := parseEventTime(evCopy.Start); err == nil {
-											lbl = st.Local().Format("15:04") + " " + lbl
-										}
-										if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
-											lbl = "↻ " + lbl
-										}
-										if ui.Button(c.Key(fmt.Sprintf("cal-wkev-%s-%d", slotKey, idx)), truncateText(lbl, 30)).
-											FillWidth().Padding(3, 5).Radius(4).Background(withAlpha(evClr, 0.18)).Border(1, withAlpha(evClr, 0.45)).TextColor(t.Text).Clicked() {
-											a.OpenEventDetails(evCopy)
-										}
-									}
-								})
+			ui.Scroll(c.Key("cal-week-scroll")).TrackScroll(&a.widgets.calWeekScroll).Grow(1).MinHeight(0).FillWidth().Children(func() {
+				ui.Row(c.Key("cal-week-grid-" + dayKeys[0])).FillWidth().Height(totalHeight).Gap(6).AlignItems(ui.Start).Children(func() {
+					ui.Box(c.Key("cal-wk-gutter")).Width(gutterW).Height(totalHeight).Shrink(0).Children(func() {
+						for h := 0; h < 24; h++ {
+							y := float32(h) * hourHeight
+							if todayIdx >= 0 && y-nowY > -12 && y-nowY < 12 {
+								continue
 							}
-						})
+							ui.Text(c, fmt.Sprintf("%02d:00", h)).FontSize(11).TextColor(t.TextMuted).
+								Absolute().Top(max(1, y-7)).Right(6)
+						}
+						if todayIdx >= 0 {
+							ui.Box(c.Key("cal-wk-now-badge")).
+								Absolute().Top(max(0, min(nowY-9, totalHeight-18))).Left(2).Right(4).ZIndex(30).
+								Padding(1, 4).Radius(4).Background(nowClr).Center().
+								Children(func() {
+									ui.Text(c, now.Format("15:04")).FontSize(10.5).Bold().TextColor(ui.RGB(255, 255, 255)).SingleLine()
+								})
+						}
+					})
+					for d := 0; d < 7; d++ {
+						a.renderCalendarWeekColumn(c, days[d], dayKeys[d], blocks[d], d == todayIdx, nowY, hourHeight, totalHeight)
 					}
 				})
 			})
@@ -856,6 +854,90 @@ func (a *App) renderCalendarWeekGrid(c *ui.Context, byDay map[string][]backend.C
 		return
 	}
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(8, 14).Children(weekGrid)
+}
+
+// renderCalendarWeekColumn is one day of the week view: the day view's timeline, with compact
+// cards because seven columns share the width.
+func (a *App) renderCalendarWeekColumn(c *ui.Context, day time.Time, dayKey string, blocks []dayEventBlock, isToday bool, nowY, hourHeight, totalHeight float32) {
+	t := c.Theme()
+	minuteH := hourHeight / 60
+	nowClr := ui.RGB(239, 68, 68)
+	canvasBorder := t.Border
+	if isToday {
+		canvasBorder = withAlpha(t.Accent, 0.6)
+	}
+	ui.Box(c.Key("cal-wk-col-"+dayKey)).Grow(1).MinWidth(0).Height(totalHeight).Radius(8).Border(1, canvasBorder).Background(t.Background).Clip().Children(func() {
+		for h := 0; h < 24; h++ {
+			hour := h
+			rowBg := t.Background
+			if hour < 7 || hour >= 20 {
+				rowBg = withAlpha(t.Surface, 0.45)
+			}
+			slot := ui.Box(c.Key(fmt.Sprintf("cal-wk-h-%s-%02d", dayKey, hour))).
+				Absolute().Top(float32(hour) * hourHeight).Left(0).Right(0).Height(hourHeight).
+				Background(rowBg)
+			if hour > 0 {
+				slot.BorderWidth(1, 0, 0, 0).BorderColor(withAlpha(t.Border, 0.75))
+			}
+			if !a.readOnly || a.isDirectMode() {
+				slot.OnClick(func() {
+					a.OpenNewEventOnDateHour(day, hour)
+				})
+			}
+			slot.Children(func() {
+				ui.Box(c).Absolute().Top(hourHeight / 2).Left(0).Right(0).Height(1).
+					Background(withAlpha(t.Border, 0.28)).PassThrough()
+			})
+		}
+
+		for idx, blk := range blocks {
+			evCopy := blk.ev
+			evClr := a.calColorForEvent(evCopy, t.Accent)
+			cardH := max((blk.endMin-blk.startMin)*minuteH-2, 20)
+			colW := float32(100) / float32(blk.numCols)
+			title := evCopy.Title
+			if evCopy.IsRecurring || evCopy.RecurrenceRule != "" {
+				title = "↻ " + title
+			}
+			startText := ""
+			if st, err := parseEventTime(evCopy.Start); err == nil {
+				startText = st.Local().Format("15:04")
+			}
+			ui.Box(c.Key(fmt.Sprintf("cal-wk-evwrap-%s-%d", dayKey, idx))).
+				Absolute().Top(blk.startMin*minuteH+1).Height(cardH).LeftPercent(float32(blk.col)*colW).WidthPercent(colW).
+				Padding(0, 2).ZIndex(10).
+				Children(func() {
+					card := ui.Row(c.Key(fmt.Sprintf("cal-wk-ev-%s-%d", dayKey, idx))).
+						Fill().Radius(5).Background(withAlpha(evClr, 0.20)).Border(1, withAlpha(evClr, 0.55)).
+						Clip().AlignItems(ui.Start).
+						Tooltip(title + " · " + formatEventRangeLang(false, evCopy.Start, evCopy.End, a.uiLang()))
+					card.OnClick(func() {
+						a.OpenEventDetails(evCopy)
+					})
+					card.Children(func() {
+						ui.Box(c).Width(3).FillHeight().Background(evClr).Shrink(0)
+						ui.Column(c).Grow(1).MinWidth(0).Padding(2, 5).Gap(1).Children(func() {
+							if cardH < 34 {
+								ui.Text(c, strings.TrimSpace(startText+" "+title)).FontSize(11).Bold().TextColor(t.Text).SingleLine()
+								return
+							}
+							ui.Text(c, title).FontSize(11.5).Bold().TextColor(t.Text).SingleLine()
+							ui.Text(c, startText).FontSize(10.5).TextColor(evClr).SingleLine()
+							if cardH >= 58 && evCopy.Location != "" {
+								ui.Text(c, evCopy.Location).FontSize(10.5).TextColor(t.TextMuted).SingleLine()
+							}
+						})
+					})
+				})
+		}
+
+		if isToday {
+			ui.Box(c.Key("cal-wk-now-dot")).Absolute().Top(nowY-4).Left(0).Size(8, 8).Radius(4).
+				Background(nowClr).ZIndex(31).PassThrough()
+			ui.Box(c.Key("cal-wk-now-line")).Absolute().Top(nowY - 1).Left(0).Right(0).Height(2).
+				Background(nowClr).ZIndex(30).PassThrough()
+		}
+	})
 }
 
 type dayEventBlock struct {

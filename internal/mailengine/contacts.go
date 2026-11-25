@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/diver80/postdive/internal/backend"
+	"github.com/diver80/postdive/internal/triage"
 )
 
 const (
@@ -156,6 +157,11 @@ func (s *Store) SuggestRecipients(ctx context.Context, query string, limit int) 
 
 func (e *Engine) ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error) {
 	return e.store.SearchContacts(ctx, query)
+}
+
+// AllContacts lists every contact, without the limit of a search.
+func (e *Engine) AllContacts(ctx context.Context) ([]backend.ContactRecord, error) {
+	return e.store.ListAllContacts(ctx)
 }
 
 func (e *Engine) SaveContact(ctx context.Context, c backend.ContactRecord) (backend.ContactRecord, error) {
@@ -626,4 +632,54 @@ func (e *Engine) SyncGoogleContacts(ctx context.Context) (int, error) {
 		pageToken = page.NextPageToken
 	}
 	return synced, nil
+}
+
+// MailsFromSender returns up to limit of the newest cached mails sent by one of emails, for
+// reading their signatures. Encrypted mails and mails whose body was never fetched are left
+// out: their text is not handed on.
+func (e *Engine) MailsFromSender(ctx context.Context, emails []string, limit int) ([]triage.MessageInput, error) {
+	want := map[string]bool{}
+	var args []any
+	var conds []string
+	for _, em := range emails {
+		if em = strings.ToLower(strings.TrimSpace(em)); em != "" && !want[em] {
+			want[em] = true
+			conds = append(conds, `lower(from_addr) LIKE ?`)
+			args = append(args, "%"+em+"%")
+		}
+	}
+	if len(conds) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	rows, err := e.store.db.QueryContext(ctx, `SELECT id FROM messages WHERE body_fetched=1 AND (`+
+		strings.Join(conds, " OR ")+`) ORDER BY date_unix DESC LIMIT 40`, args...)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	var out []triage.MessageInput
+	for _, id := range ids {
+		if len(out) >= limit {
+			break
+		}
+		m, err := e.store.GetMessage(ctx, id)
+		if err != nil || isMessageEncrypted(m) || strings.TrimSpace(m.BodyText) == "" {
+			continue
+		}
+		if a, perr := mail.ParseAddress(m.From); perr != nil || !want[strings.ToLower(a.Address)] {
+			continue
+		}
+		out = append(out, triage.MessageInput{
+			ID: m.ID, ThreadID: m.ThreadID, AccountID: m.AccountID, Subject: m.Subject,
+			From: m.From, To: m.To, CC: m.CC, Date: m.DateISO, BodyText: m.BodyText,
+		})
+	}
+	return out, nil
 }

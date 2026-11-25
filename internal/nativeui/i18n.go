@@ -262,6 +262,8 @@ func dayHeadingLang(dayKey, lang string) string {
 
 func contactFieldLabelLang(key, lang string) string {
 	switch key {
+	case "displayName":
+		return trLang(lang, "Anzeigename", "Display name")
 	case "firstName":
 		return trLang(lang, "Vorname", "First name")
 	case "lastName":

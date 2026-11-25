@@ -46,6 +46,17 @@ type contactsUI struct {
 	statusErr bool
 	delArmID  string
 	delArmAt  time.Time
+
+	// AI completion from mail signatures: the fields it filled are marked until saved.
+	aiBusy   bool
+	aiFilled map[string]bool
+
+	// Merging contacts with the same name.
+	dupOpen    bool
+	dupLoading bool
+	dupGroups  [][]backend.ContactRecord
+	dupIdx     int
+	dupMerge   *contactMerge
 }
 
 // LoadContacts fetches contacts matching the current search query (UI thread).
@@ -95,6 +106,8 @@ func (a *App) LoadContacts(ctx context.Context) {
 func (a *App) selectContact(rec backend.ContactRecord) {
 	ct := &a.contacts
 	ct.editingNew = false
+	ct.dupOpen = false
+	ct.aiFilled = nil
 	ct.selectedID = rec.ID
 	ct.editBookID = rec.AddressBookID
 	ct.editDisplay = rec.DisplayName
@@ -116,6 +129,8 @@ func (a *App) selectContact(rec backend.ContactRecord) {
 func (a *App) startNewContact() {
 	ct := &a.contacts
 	ct.editingNew = true
+	ct.dupOpen = false
+	ct.aiFilled = nil
 	ct.selectedID = ""
 	ct.editBookID = mailengine.LocalAddressBookID
 	ct.editDisplay = ""
@@ -323,6 +338,9 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 			if iconLabelBtn(c.Key("ct-new"), iconUserPlus, a.tr("Neuer Kontakt", "New Contact"), true, a.tr("Neuen Kontakt anlegen", "Create new contact")).Clicked() {
 				a.startNewContact()
 			}
+			if iconLabelBtn(c.Key("ct-dups"), iconUsers, a.tr("Duplikate", "Duplicates"), false, a.tr("Kontakte mit gleichem Namen vergleichen und zusammenführen", "Compare and merge contacts with the same name")).Clicked() {
+				a.openContactDuplicates(context.Background())
+			}
 			if ui.Button(c.Key("ct-vcf-tog"), a.tr(".vcf Import/Export", ".vcf Import/Export")).Clicked() {
 				ct.vcfOpen = !ct.vcfOpen
 			}
@@ -460,12 +478,13 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 		}
 
 		if a.isPhone() {
-			if ct.editingNew || ct.selectedID != "" {
+			if ct.editingNew || ct.selectedID != "" || ct.dupOpen {
 				ui.Column(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
 					ui.Row(c).FillWidth().Padding(6, 12).Gap(8).AlignItems(ui.Center).Background(t.Surface).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 						if ui.Button(c.Key("ct-ph-back"), "← "+a.tr("Alle Kontakte", "All Contacts")).Padding(4, 10).Clicked() {
 							ct.selectedID = ""
 							ct.editingNew = false
+							ct.dupOpen = false
 						}
 					})
 					ui.Box(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
@@ -488,6 +507,10 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 func (a *App) renderContactDetail(c *ui.Context) {
 	t := c.Theme()
 	ct := &a.contacts
+	if ct.dupOpen {
+		a.renderContactDuplicates(c)
+		return
+	}
 	if !ct.editingNew && ct.selectedID == "" {
 		ui.Column(c).Fill().Center().Padding(28).Gap(10).Children(func() {
 			ui.Icon(c, iconUsers).Size(28, 28).TextColor(t.TextMuted)
@@ -517,6 +540,19 @@ func (a *App) renderContactDetail(c *ui.Context) {
 						a.OpenComposeTo(target)
 					}
 				}
+				if !ct.editingNew && ct.selectedID != "" && strings.TrimSpace(ct.editEmail+ct.editEmail2) != "" {
+					lbl := a.tr("Mit KI vervollständigen", "Complete with AI")
+					if ct.aiBusy {
+						lbl = a.tr("KI liest…", "AI reading…")
+					}
+					aiBtn := iconLabelBtn(c.Key("ct-ai"), iconSparkles, lbl, false, a.tr("Leere Felder aus den Signaturen der letzten Mails dieser Person ergänzen (verschlüsselte Mails werden nicht gelesen). Danach prüfen und speichern.", "Fill empty fields from the signatures of this person's latest mails (encrypted mails are not read). Then check and save."))
+					if ct.aiBusy {
+						aiBtn.Disabled(true)
+					}
+					if aiBtn.Clicked() && !ct.aiBusy {
+						a.enrichContactWithAI(context.Background())
+					}
+				}
 				if !ct.editingNew && ct.selectedID != "" {
 					armed := ct.delArmID == ct.selectedID && time.Since(ct.delArmAt) < 5*time.Second
 					if armed {
@@ -533,6 +569,15 @@ func (a *App) renderContactDetail(c *ui.Context) {
 				}
 			})
 
+			// Fields the AI just filled carry a ✦ until the contact is saved or another one opened.
+			mark := func(label string, keys ...string) string {
+				for _, k := range keys {
+					if ct.aiFilled[k] {
+						return label + " ✦"
+					}
+				}
+				return label
+			}
 			rowField := func(label string, inputs func()) {
 				if a.isPhone() {
 					ui.Column(c).FillWidth().Gap(4).Children(func() {
@@ -558,7 +603,7 @@ func (a *App) renderContactDetail(c *ui.Context) {
 			}
 
 			field("ct-f-disp", a.tr("Anzeigename", "Display Name"), &ct.editDisplay, a.tr("z. B. Max Mustermann", "e.g. Jane Doe"))
-			rowField(a.tr("Vor- / Nachname", "First / Last"), func() {
+			rowField(mark(a.tr("Vor- / Nachname", "First / Last"), "firstName", "lastName"), func() {
 				if a.isPhone() {
 					ui.TextInput(c.Key("ct-f-first"), &ct.editFirst).Placeholder(a.tr("Vorname", "First name")).FillWidth()
 					ui.TextInput(c.Key("ct-f-last"), &ct.editLast).Placeholder(a.tr("Nachname", "Last name")).FillWidth()
@@ -569,7 +614,7 @@ func (a *App) renderContactDetail(c *ui.Context) {
 			})
 			field("ct-f-em", a.tr("E-Mail", "Email"), &ct.editEmail, "name@domain.de")
 			field("ct-f-em2", a.tr("2. E-Mail", "2nd Email"), &ct.editEmail2, a.tr("optional", "optional"))
-			rowField(a.tr("Telefon / Mobil", "Phone / Mobile"), func() {
+			rowField(mark(a.tr("Telefon / Mobil", "Phone / Mobile"), "phone", "mobile"), func() {
 				if a.isPhone() {
 					ui.TextInput(c.Key("ct-f-ph"), &ct.editPhone).Placeholder(a.tr("Telefon", "Phone")).FillWidth()
 					ui.TextInput(c.Key("ct-f-mob"), &ct.editMobile).Placeholder(a.tr("Mobil", "Mobile")).FillWidth()
@@ -578,7 +623,7 @@ func (a *App) renderContactDetail(c *ui.Context) {
 					ui.TextInput(c.Key("ct-f-mob"), &ct.editMobile).Placeholder(a.tr("Mobil", "Mobile")).Grow(1)
 				}
 			})
-			rowField(a.tr("Firma / Position", "Company / Role"), func() {
+			rowField(mark(a.tr("Firma / Position", "Company / Role"), "company", "jobTitle"), func() {
 				if a.isPhone() {
 					ui.TextInput(c.Key("ct-f-comp"), &ct.editCompany).Placeholder(a.tr("Firma", "Company")).FillWidth()
 					ui.TextInput(c.Key("ct-f-title"), &ct.editTitle).Placeholder(a.tr("Position", "Job title")).FillWidth()
@@ -587,8 +632,8 @@ func (a *App) renderContactDetail(c *ui.Context) {
 					ui.TextInput(c.Key("ct-f-title"), &ct.editTitle).Placeholder(a.tr("Position", "Job title")).Grow(1)
 				}
 			})
-			field("ct-f-web", "Website", &ct.editWebsite, "https://…")
-			field("ct-f-adr", a.tr("Adresse", "Address"), &ct.editAddress, a.tr("Straße, PLZ Ort", "Street, City"))
+			field("ct-f-web", mark("Website", "website"), &ct.editWebsite, "https://…")
+			field("ct-f-adr", mark(a.tr("Adresse", "Address"), "address"), &ct.editAddress, a.tr("Straße, PLZ Ort", "Street, City"))
 			if a.isPhone() {
 				ui.Column(c).FillWidth().Gap(4).Children(func() {
 					ui.Text(c, a.tr("Notizen", "Notes")).FontSize(12).TextColor(t.TextMuted)
