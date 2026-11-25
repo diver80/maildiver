@@ -410,7 +410,7 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 			ui.Spacer(c)
 
 			// Mode switcher: Month | Week | Day | Agenda
-			if ui.Segmented(c.Key("cal-mode"), &a.calViewMode, a.tr("Monat", "Month"), a.tr("Woche", "Week"), a.tr("Tag", "Day"), a.tr("Agenda", "Agenda")).Changed() {
+			if pillTabs(c, "cal-mode", &a.calViewMode, []string{a.tr("Monat", "Month"), a.tr("Woche", "Week"), a.tr("Tag", "Day"), a.tr("Agenda", "Agenda")}, false, false) {
 				if a.calViewMode == 2 {
 					a.calDayScrolledKey = ""
 				}

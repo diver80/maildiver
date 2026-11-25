@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"context"
+	"fmt"
 	"net/mail"
 	"strings"
 	"time"
@@ -90,6 +91,44 @@ func pillBadge(c *ui.Context, text string, bg, fg ui.Color) {
 
 func statusDot(c *ui.Context, clr ui.Color, size float32) {
 	ui.Box(c).Size(size, size).Radius(size / 2).Background(clr).Shrink(0)
+}
+
+// pillTabs renders a consistent pill tab bar with high-contrast active highlight across
+// Settings, Accounts, Security, and Calendar view switchers.
+func pillTabs(c *ui.Context, key string, selected *int, labels []string, fillWidth, wrap bool) bool {
+	t := c.Theme()
+	changed := false
+	row := ui.Row(c.Key(key)).Padding(3).Gap(3).Radius(8).Background(t.Background).Border(1, t.Border).AlignItems(ui.Center)
+	if fillWidth {
+		row.FillWidth()
+	} else {
+		row.Shrink(0)
+	}
+	if wrap {
+		row.Wrap()
+	}
+	row.Children(func() {
+		for i, lbl := range labels {
+			active := *selected == i
+			b := ui.ButtonBase(c.Key(fmt.Sprintf("%s-%d", key, i))).Padding(4, 10).Radius(6).AlignItems(ui.Center).Shrink(0).Label(lbl)
+			fg := t.TextMuted
+			if active {
+				b.Background(withAlpha(t.Accent, 0.18)).Border(1, withAlpha(t.Accent, 0.45))
+				fg = t.Accent
+			}
+			b.Children(func() {
+				txt := ui.Text(c, lbl).FontSize(12).TextColor(fg).SingleLine()
+				if active {
+					txt.Bold()
+				}
+			})
+			if b.Clicked() && !active {
+				*selected = i
+				changed = true
+			}
+		}
+	})
+	return changed
 }
 
 func iconBtn(c *ui.Context, svg *ui.SVG, tooltip string, fg ui.Color, active bool) ui.Element {

@@ -547,26 +547,10 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 				}
 			}
 			prevTab := s.tab
-			if a.isPhone() {
-				ui.Row(c.Key("set-tabs-ph")).FillWidth().Wrap().Gap(6).Children(func() {
-					for i, tb := range tabs {
-						idx := tb.id
-						var btn ui.Element
-						if s.tab == idx {
-							btn = ui.PrimaryButton(c.Key(fmt.Sprintf("set-tab-%d", i)), tb.label).Padding(4, 10)
-						} else {
-							btn = ui.Button(c.Key(fmt.Sprintf("set-tab-%d", i)), tb.label).Padding(4, 10)
-						}
-						if btn.Clicked() {
-							s.tab = idx
-						}
-					}
-				})
-			} else {
-				if ui.Segmented(c.Key("set-tabs"), &selIdx, tabLabels...).Changed() && selIdx >= 0 && selIdx < len(tabs) {
-					s.tab = tabs[selIdx].id
-				}
+			if pillTabs(c, "set-tabs", &selIdx, tabLabels, true, a.isPhone()) && selIdx >= 0 && selIdx < len(tabs) {
+				s.tab = tabs[selIdx].id
 			}
+			ui.Divider(c)
 			if s.tab == settingsTabAccounts && prevTab != settingsTabAccounts {
 				a.initDirectTabState(a.direct.tab)
 			}
@@ -582,6 +566,7 @@ func (a *App) renderSettingsModal(c *ui.Context) {
 			if s.err != "" && s.tab != settingsTabAccounts {
 				ui.Text(c, s.err).FontSize(12).TextColor(t.Danger)
 			}
+			ui.Divider(c)
 			if s.tab == settingsTabAccounts {
 				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Icon(c, iconLock).Size(13, 13).TextColor(t.TextMuted)

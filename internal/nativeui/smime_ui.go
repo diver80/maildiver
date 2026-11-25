@@ -41,10 +41,10 @@ func (a *App) renderDirectSMIMETab(c *ui.Context) {
 		a.reloadPGPKeys()
 	}
 
-	ui.Segmented(c.Key("sec-subtab"), &d.secSubTab,
+	pillTabs(c, "sec-subtab", &d.secSubTab, []string{
 		a.tr("S/MIME (Zertifikate)", "S/MIME (Certificates)"),
 		a.tr("OpenPGP (PGP/MIME)", "OpenPGP (PGP/MIME)"),
-	)
+	}, false, true)
 
 	if d.secSubTab == 1 {
 		a.renderDirectPGPTab(c)

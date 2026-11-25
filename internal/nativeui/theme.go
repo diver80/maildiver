@@ -22,11 +22,31 @@ func PaletteToUITheme(pal theme.Palette) *ui.Theme {
 		surface = hexColor(pal.DarkBackground, base.Surface)
 	}
 	surfaceHover := hexColor(pal.Selection, base.SurfaceHover)
-	surfacePressed := blendColor(surfaceHover, bg, 0.25)
 	border := hexColor(pal.Border, base.Border)
 	text := hexColor(pal.Foreground, base.Text)
 	muted := hexColor(pal.DarkForeground, base.TextMuted)
 	accent := hexColor(pal.Accent, base.Accent)
+
+	// Guarantee clear visual separation between Surface, SurfaceHover (button hover & active
+	// segmented tab), and Border across all palettes — several dark palettes (Tokyo Night,
+	// Catppuccin, Gruvbox, Kanagawa) reuse pal.LighterBg or a near-identical tone for
+	// pal.Border and pal.Selection, which makes inputs, buttons and tabs blend into cards.
+	if pal.IsLight {
+		if luminance(surface)-luminance(surfaceHover) < 0.05 {
+			surfaceHover = blendColor(surface, text, 0.10)
+		}
+		if luminance(surface)-luminance(border) < 0.08 {
+			border = blendColor(surface, text, 0.18)
+		}
+	} else {
+		if luminance(surfaceHover)-luminance(surface) < 0.05 {
+			surfaceHover = blendColor(surface, text, 0.15)
+		}
+		if luminance(border)-luminance(surface) < 0.06 {
+			border = blendColor(surface, text, 0.22)
+		}
+	}
+	surfacePressed := blendColor(surfaceHover, bg, 0.25)
 
 	var accentHover, accentPressed, accentText ui.Color
 	if pal.IsLight {

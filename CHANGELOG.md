@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.35 (2026-11-25)
+
+### Klarerer Theme-Kontrast & einheitliche Tab-Leisten
+- **Theme-Kontrast über alle 22 Themes verbessert:** `PaletteToUITheme` stellt jetzt automatisch klaren Kontrast zwischen `Surface`, `SurfaceHover` und `Border` sicher (insbesondere für Dark-Themes wie *Tokyo Night*, *Catppuccin Mocha*, *Gruvbox* und *Kanagawa*), sodass Buttons, Eingabefelder, Dropdowns und aktive Segmente deutlich erkennbar bleiben.
+- **Einheitliche Pill-Tab-Leisten (`pillTabs`):** Einstellungen, Konten-Untertabs (`E-Mail | Kalender | Regeln | TB-Import | S/MIME & PGP`), Sicherheits-Subtabs (`S/MIME | OpenPGP`) und der Kalender-Ansichts-Umschalter (`Monat | Woche | Tag | Agenda`) teilen jetzt denselben kontrastreichen Stil wie der `Mail | Kalender | Kontakte`-Umschalter oben, inkl. sauberer Trennlinien im Einstellungsdialog.
+
 ## 0.7.34 (2026-11-25)
 
 ### Saubere Dialoge ohne Doppelrahmen

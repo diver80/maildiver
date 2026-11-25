@@ -1249,7 +1249,7 @@ func (a *App) renderDirectContent(c *ui.Context) {
 			tabsChanged = true
 		}
 	} else {
-		tabsChanged = ui.Segmented(c.Key("dir-tabs"), &sel, labels...).Changed()
+		tabsChanged = pillTabs(c, "dir-tabs", &sel, labels, true, false)
 	}
 	if tabsChanged {
 		d.tab = views[sel]
