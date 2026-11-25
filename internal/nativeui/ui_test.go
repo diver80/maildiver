@@ -779,3 +779,41 @@ func (b *cfgBox) save(next config.Config) error {
 	b.cfg = next
 	return nil
 }
+
+func TestPasswordInputToggleAndPasteSanitize(t *testing.T) {
+	if got := stripPasswordLineBreaks("  s€crät 123\r\n"); got != "  s€crät 123" {
+		t.Fatalf("stripPasswordLineBreaks = %q, want %q", got, "  s€crät 123")
+	}
+
+	app := &App{cfg: config.Default()}
+	app.storeLang("en")
+	var pw, pending string
+	show := false
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).FillWidth().Padding(8).Children(func() {
+			app.renderPasswordInput(c, "test-pw", &pw, &show, &pending, "Password", true)
+		})
+	}, 420, 120)
+
+	// Paste with trailing CRLF should strip line breaks while keeping characters intact.
+	tt.Click("Password")
+	tt.SetClipboard("my-pass-word!\r\n")
+	tt.Key(ui.Cmd, ui.KeyV)
+	if pw != "my-pass-word!" {
+		t.Fatalf("after paste pw = %q, want %q", pw, "my-pass-word!")
+	}
+	if show {
+		t.Fatalf("expected password hidden initially")
+	}
+
+	// Clicking the eye button toggles reveal on and back off.
+	tt.Click("Show password")
+	if !show {
+		t.Fatalf("expected show=true after clicking Show password")
+	}
+	tt.Click("Hide password")
+	if show {
+		t.Fatalf("expected show=false after clicking Hide password")
+	}
+}

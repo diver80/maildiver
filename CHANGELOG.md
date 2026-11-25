@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.32 (2026-11-25)
+
+### Passwort-Anzeige & Einfüge-Schutz in den Konto-Einstellungen
+- **Passwort anzeigen / verbergen (`👁`):** Neben dem IMAP/SMTP-Kontopasswort und dem CalDAV/CardDAV-Passwort gibt es jetzt ein Auge-Icon, um eingegebene oder eingefügte Passwörter direkt auf Tippfehler oder überflüssige Zeichen zu prüfen. Beim Wechseln oder Zurücksetzen des Formulars wird das Passwort automatisch wieder maskiert.
+- **Sauberes Einfügen aus Passwortmanagern/Notizen:** Versehentliche Zeilenumbrüche (`\r`/`\n`) werden beim Einfügen automatisch entfernt (Leerzeichen in Passphrasen bleiben unverändert).
+- **Leerzeichen-Hinweis:** Beginnt oder endet das Kontopasswort mit einem Leerzeichen, zeigt das Formular direkt einen Hinweis unter dem Feld an.
+
 ## 0.7.31 (2026-11-24)
 
 ### Umbenennung zu PostDive + Linux / Omarchy (Wayland & Hyprland) Fixes & Polish

@@ -106,6 +106,8 @@ type directUI struct {
 	accEnabled        bool   // "Dieses Konto synchronisieren"
 	accUser           string
 	accPassword       string
+	accPasswordShow   bool
+	accPasswordPaste  string
 	accSignature      string
 	accSignatureHTML  string
 	accSigPos         int // 0 = above reply quote, 1 = below quote
@@ -144,9 +146,11 @@ type directUI struct {
 	davKind     int // 0 = CalDAV, 1 = CardDAV
 	davName     string
 	davURL      string
-	davUser     string
-	davPass     string
-	davBusy     bool
+	davUser      string
+	davPass      string
+	davPassShow  bool
+	davPassPaste string
+	davBusy      bool
 	davMsg      string
 	davErr      bool
 	caldavList  []config.DAVAccountConfig
@@ -331,6 +335,8 @@ func (a *App) resetDirectAccountForm() {
 	d.accEnabled = true
 	d.accUser = ""
 	d.accPassword = ""
+	d.accPasswordShow = false
+	d.accPasswordPaste = ""
 	d.accSignature = ""
 	d.accSignatureHTML = ""
 	d.accSigPos = 0
@@ -364,6 +370,8 @@ func (a *App) editDirectAccount(accountID string) {
 			d.accEnabled = acc.Enabled
 			d.accUser = acc.Username
 			d.accPassword = ""
+			d.accPasswordShow = false
+			d.accPasswordPaste = ""
 			d.accSignature = acc.Signature
 			d.accSignatureHTML = acc.SignatureHTML
 			d.accSigPos = 0
@@ -497,7 +505,60 @@ func (a *App) buildDirectAccountFromForm() (config.DirectAccount, string, error)
 		OAuthTenant:       strings.TrimSpace(d.oauthTenant),
 		Enabled:           d.accEnabled || d.editingID == "",
 	}
-	return acc, d.accPassword, nil
+	return acc, stripPasswordLineBreaks(d.accPassword), nil
+}
+
+// stripPasswordLineBreaks removes accidental CR/LF characters (e.g. from copy-pasting
+// a password from notes or a password manager) without altering spaces inside passphrases.
+func stripPasswordLineBreaks(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
+// renderPasswordInput renders a single-line password field with a show/hide eye toggle
+// and strips accidental CR/LF line breaks on paste.
+func (a *App) renderPasswordInput(c *ui.Context, key string, value *string, show *bool, pendingPaste *string, placeholder string, fillWidth bool) {
+	t := c.Theme()
+	row := ui.Row(c.Key(key + "-row")).Gap(6).AlignItems(ui.Center)
+	if fillWidth {
+		row.FillWidth()
+	} else {
+		row.Grow(1)
+	}
+	row.Children(func() {
+		in := ui.TextInput(c.Key(key), value).Label(a.tr("Passwort", "Password")).Placeholder(placeholder).Grow(1)
+		if !*show {
+			in.Password()
+		}
+		if pendingPaste != nil {
+			in.OnPaste(func(s string) bool {
+				cleaned := stripPasswordLineBreaks(s)
+				if cleaned == s {
+					return false
+				}
+				*pendingPaste = cleaned
+				return true
+			})
+			if *pendingPaste != "" {
+				start, end := in.TextSelection()
+				in.ReplaceText(start, end, *pendingPaste)
+				*pendingPaste = ""
+			}
+		}
+		eyeIcon := iconEye
+		eyeTip := a.tr("Passwort anzeigen", "Show password")
+		eyeColor := t.TextMuted
+		if *show {
+			eyeIcon = iconEyeOff
+			eyeTip = a.tr("Passwort verbergen", "Hide password")
+			eyeColor = t.Accent
+		}
+		if iconBtn(c.Key(key+"-vis"), eyeIcon, eyeTip, eyeColor, *show).Clicked() {
+			*show = !*show
+		}
+	})
 }
 
 func (a *App) testDirectAccountForm(ctx context.Context) {
@@ -1482,8 +1543,13 @@ func (a *App) renderDirectMailTab(c *ui.Context) {
 		})
 	} else {
 		formFieldRow(a.tr("Passwort", "Password"), func() {
-			fieldGrow(ui.TextInput(c.Key("dir-pw"), &d.accPassword).Password().Placeholder(pwHint))
+			a.renderPasswordInput(c, "dir-pw", &d.accPassword, &d.accPasswordShow, &d.accPasswordPaste, pwHint, a.isPhone())
 		})
+		if d.accPassword != "" && strings.TrimSpace(d.accPassword) != d.accPassword {
+			formFieldRow("", func() {
+				ui.Text(c, a.tr("Hinweis: Das Passwort beginnt oder endet mit einem Leerzeichen.", "Note: Password starts or ends with a space.")).FontSize(11).TextColor(t.Warning)
+			})
+		}
 	}
 
 	tlsChoices := []string{"tls", "starttls"}
@@ -1772,13 +1838,13 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 		})
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c.Key("dir-dav-user"), &d.davUser).Placeholder(a.tr("Benutzername", "Username")).Grow(1)
-			ui.TextInput(c.Key("dir-dav-pass"), &d.davPass).Password().Placeholder(a.tr("Passwort / App-Passwort", "Password / App password")).Grow(1)
+			a.renderPasswordInput(c, "dir-dav-pass", &d.davPass, &d.davPassShow, &d.davPassPaste, a.tr("Passwort / App-Passwort", "Password / App password"), false)
 			davBtn := ui.PrimaryButton(c.Key("dir-dav-add"), a.tr("Verbinden", "Connect"))
 			if d.davBusy {
 				davBtn.Disabled(true)
 			}
 			if davBtn.Clicked() && !d.davBusy && strings.TrimSpace(d.davURL) != "" {
-				kind, name, rawURL, user, pass := d.davKind, strings.TrimSpace(d.davName), strings.TrimSpace(d.davURL), strings.TrimSpace(d.davUser), d.davPass
+				kind, name, rawURL, user, pass := d.davKind, strings.TrimSpace(d.davName), strings.TrimSpace(d.davURL), strings.TrimSpace(d.davUser), stripPasswordLineBreaks(d.davPass)
 				d.davBusy = true
 				d.davMsg = ""
 				go func() {
@@ -1799,6 +1865,8 @@ func (a *App) renderDirectCalendarTab(c *ui.Context) {
 							return
 						}
 						a.direct.davName, a.direct.davURL, a.direct.davUser, a.direct.davPass = "", "", "", ""
+						a.direct.davPassShow = false
+						a.direct.davPassPaste = ""
 						a.direct.davErr = false
 						if kind == 0 {
 							a.direct.davMsg = a.trf("CalDAV verbunden (%d Termine geladen)", "CalDAV connected (%d events synced)", n)
