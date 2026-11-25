@@ -155,8 +155,9 @@ func (s *Store) SuggestRecipients(ctx context.Context, query string, limit int) 
 
 // --- Engine contact management methods ---
 
+// ListContacts is the address book list: every match, as the list only builds the rows it shows.
 func (e *Engine) ListContacts(ctx context.Context, query string) ([]backend.ContactRecord, error) {
-	return e.store.SearchContacts(ctx, query)
+	return e.store.listContacts(ctx, query, 0)
 }
 
 // AllContacts lists every contact, without the limit of a search.

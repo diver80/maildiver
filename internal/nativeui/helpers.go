@@ -40,7 +40,6 @@ type uiWidgetsState struct {
 	helpScroll           ui.ScrollState
 	quickRuleScroll      ui.ScrollState
 	directScroll         ui.ScrollState
-	contactsListScroll   ui.ScrollState
 	contactsDetailScroll ui.ScrollState
 	mdInspector          markdown.Options
 	mdBody               markdown.Options

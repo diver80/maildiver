@@ -370,7 +370,7 @@ func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, 
 
 	// 4. Contacts
 	if opts.ImportContacts && len(prev.Contacts) > 0 {
-		existing, _ := e.store.SearchContacts(ctx, "")
+		existing, _ := e.store.ListAllContacts(ctx)
 		existingEmails := map[string]bool{}
 		for _, c := range existing {
 			if c.Email != "" {

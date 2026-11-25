@@ -2,6 +2,7 @@ package mailengine
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -52,5 +53,31 @@ func TestMailsFromSenderSkipsEncryptedAndOtherSenders(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].BodyText != "second" || got[1].BodyText != "third" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// The address book list and the Thunderbird import see every contact, not the first 500.
+func TestListContactsHasNoLimit(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	eng, err := New(Options{
+		DBPath:       filepath.Join(t.TempDir(), "test.db"),
+		ConfigLoader: func() (config.Config, error) { return cfg, nil },
+		ConfigSaver:  func(c config.Config) error { cfg = c; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	for i := 0; i < 620; i++ {
+		if _, err := eng.store.SaveContactFull(ctx, backend.ContactRecord{ID: fmt.Sprintf("c%d", i), DisplayName: fmt.Sprintf("Person %03d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := eng.ListContacts(ctx, ""); len(got) != 620 {
+		t.Fatalf("ListContacts = %d, want 620", len(got))
+	}
+	if got, _ := eng.ListContacts(ctx, "Person 6"); len(got) != 20 {
+		t.Fatalf("ListContacts(query) = %d, want 20", len(got))
 	}
 }

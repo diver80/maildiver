@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.42 (2026-11-25)
+
+### Kontakte: alle statt 500
+- **Kontaktliste ohne 500er-Grenze:** Liste, Suche und Zähler zeigen jetzt alle Kontakte. Die Liste baut nur die sichtbaren Zeilen und bleibt auch bei Tausenden Einträgen flüssig.
+- **Thunderbird-Import erkennt vorhandene Kontakte vollständig:** Beim Abgleich wurden nur die ersten 500 Kontakte berücksichtigt; bei größeren Adressbüchern konnten so Duplikate entstehen.
+
 ## 0.7.41 (2026-11-25)
 
 ### Kalender: Wochenansicht wie die Tagesansicht

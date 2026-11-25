@@ -46,6 +46,7 @@ type contactsUI struct {
 	statusErr bool
 	delArmID  string
 	delArmAt  time.Time
+	listState ui.ListState
 
 	// AI completion from mail signatures: the fields it filled are marked until saved.
 	aiBusy   bool
@@ -436,44 +437,51 @@ func (a *App) renderContactsWorkspace(c *ui.Context) {
 					return
 				}
 
-				ui.Scroll(c.Key("ct-list-scroll")).TrackScroll(&a.widgets.contactsListScroll).Fill().Children(func() {
-					ui.Column(c).FillWidth().Children(func() {
-						for _, rec := range ct.list {
-							r := rec
-							sel := !ct.editingNew && r.ID == ct.selectedID
-							bg := t.Background
-							if sel {
-								bg = withAlpha(t.Accent, 0.14)
+				// A virtual list: only the visible rows are built, so thousands of contacts stay fast.
+				ls := &ct.listState
+				ls.Key = func(row int) any {
+					if row >= 0 && row < len(ct.list) {
+						return ct.list[row].ID
+					}
+					return row
+				}
+				ui.List(c, ls, len(ct.list), func(i int) {
+					if i < 0 || i >= len(ct.list) {
+						return
+					}
+					r := ct.list[i]
+					sel := !ct.editingNew && r.ID == ct.selectedID
+					bg := t.Background
+					if sel {
+						bg = withAlpha(t.Accent, 0.14)
+					}
+					row := ui.Column(c.Key("ct-row-"+r.ID)).FillWidth().Padding(9, 12).Gap(2).Background(bg).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+						ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+							title := r.DisplayName
+							if title == "" {
+								title = r.Email
 							}
-							row := ui.Column(c.Key("ct-row-"+r.ID)).FillWidth().Padding(9, 12).Gap(2).Background(bg).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-								ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-									title := r.DisplayName
-									if title == "" {
-										title = r.Email
-									}
-									ui.Text(c, title).FontSize(13).Bold().SingleLine().Grow(1)
-									if r.AddressBookID == mailengine.GoogleAddressBookID {
-										miniTag(c, "Google", t.Accent, withAlpha(t.Accent, 0.14))
-									}
-								})
-								sub := r.Email
-								if r.Company != "" {
-									if sub != "" {
-										sub += " · " + r.Company
-									} else {
-										sub = r.Company
-									}
-								}
-								if sub != "" {
-									ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
-								}
-							})
-							if row.Clicked() {
-								a.selectContact(r)
+							ui.Text(c, title).FontSize(13).Bold().SingleLine().Grow(1)
+							if r.AddressBookID == mailengine.GoogleAddressBookID {
+								miniTag(c, "Google", t.Accent, withAlpha(t.Accent, 0.14))
+							}
+						})
+						sub := r.Email
+						if r.Company != "" {
+							if sub != "" {
+								sub += " · " + r.Company
+							} else {
+								sub = r.Company
 							}
 						}
+						if sub != "" {
+							ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
+						}
 					})
-				})
+					if row.Clicked() {
+						a.selectContact(r)
+					}
+				}).Fill()
 			})
 		}
 
