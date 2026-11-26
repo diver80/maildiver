@@ -1,6 +1,6 @@
 # Maintainer: Frank Hess <https://github.com/diver80>
 pkgname=postdive-bin
-pkgver=0.7.52
+pkgver=0.7.53
 pkgrel=1
 pkgdesc="Native Go + MyGo IMAP/SMTP email, calendar & contacts client with optional local/cloud AI and live Omarchy theme sync"
 arch=('x86_64' 'aarch64')
@@ -36,10 +36,10 @@ sha256sums=(
   'c64bd7fd8fccc88360152ee74918af879427d37dba5463bceca7919432ecd567'
 )
 sha256sums_x86_64=(
-  '924d06e3d692757b7b2c963e5405786b7dd8b3b2e8c283758ff364d3c0962bed'
+  'ef46c71b28437d76ab299cb422f064133f97b9b84fef034a0055dcc0e42678ff'
 )
 sha256sums_aarch64=(
-  '32e386fd06502577e1b558aa46d5c012d2a327b09cb42bac0d4b1b8011949e7e'
+  '08576c0788055d5e822371c8e65531f2a06c93ec33dc55c20fec387f0d096018'
 )
 
 package() {
