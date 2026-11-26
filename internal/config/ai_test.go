@@ -23,8 +23,17 @@ func TestNormalizeCanonicalizesAIBackends(t *testing.T) {
 	if got := Normalize(cfg).AI.Agent.Backend; got != "claude" || IsKnownBackend(got) {
 		t.Fatalf("ambiguous backend must stay unknown, got %q", got)
 	}
-	if !IsKnownBackend("llama_cpp") || CanonicalBackend("OpenCode") != "opencode-cli" {
+	if !IsKnownBackend("llama_cpp") || CanonicalBackend("OpenCode") != "opencode-cli" || CanonicalBackend("MTPLX") != "openaicompat" {
 		t.Fatal("aliases")
+	}
+
+	// The Gemini CLI became agy; its model names mean nothing there.
+	cfg.AI.Agent = ProviderConfig{Backend: "gemini-cli", Model: "gemini-2.5-pro"}
+	if got := Normalize(cfg).AI.Agent; got.Backend != "agy" || got.Model != "" {
+		t.Fatalf("gemini-cli must become agy with its default model: %+v", got)
+	}
+	if !IsLegacyBackend("DeepSeek") || IsLegacyBackend("agy") || IsLegacyBackend("openaicompat") {
+		t.Fatal("legacy backends")
 	}
 }
 

@@ -58,7 +58,7 @@ type copilotState struct {
 }
 
 func (a *App) initProvidersFromStatic() {
-	a.providers = ai.SupportedProviders()
+	a.providers = ai.SupportedProviders(a.agentBackend)
 	a.backendByLabel = make(map[string]string, len(a.providers))
 	a.providerLabels = make([]string, 0, len(a.providers))
 	want := ai.CanonicalBackend(a.agentBackend)

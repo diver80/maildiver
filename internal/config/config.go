@@ -194,7 +194,7 @@ type AIConfig struct {
 	// MaxAICallsPerScan caps classifier calls per scan; mails beyond it get the local estimate
 	// and are picked up by a later scan.
 	MaxAICallsPerScan int `json:"maxAiCallsPerScan"`
-	// AllowUnrestrictedCLI permits the gemini-cli and opencode-cli backends. They cannot be started
+	// AllowUnrestrictedCLI permits the agy and opencode-cli backends. They cannot be started
 	// with tools disabled, so a prompt injection in a mail could trigger tool use. Off by default.
 	AllowUnrestrictedCLI bool `json:"allowUnrestrictedCli"`
 	// Endpoints optionally sets a base URL per backend (canonical name -> URL) for backends picked

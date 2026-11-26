@@ -593,7 +593,7 @@ func (c *Client) StartArchive(ctx context.Context, req jobs.ArchiveRequest) (str
 
 func (c *Client) AIProviders(ctx context.Context, includeModels bool, backend string) (AIProvidersResponse, error) {
 	cfg := c.config()
-	out := AIProvidersResponse{Providers: ai.SupportedProviders(), Agent: cfg.AI.Agent, Classifier: cfg.AI.Classifier}
+	out := AIProvidersResponse{Providers: ai.SupportedProviders(cfg.AI.Agent.Backend, cfg.AI.Classifier.Backend), Agent: cfg.AI.Agent, Classifier: cfg.AI.Classifier}
 	if includeModels {
 		// The endpoint always comes from config.json; a request can only pick the backend.
 		if strings.TrimSpace(backend) == "" {

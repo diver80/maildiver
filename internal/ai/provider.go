@@ -132,12 +132,12 @@ func (r refusedCompleter) Complete(context.Context, string, string, bool) (strin
 	return "", errors.New(ErrUnrestrictedCLI)
 }
 
-// CompleterFor returns the backend for a provider taken from config. gemini-cli and opencode-cli
-// run with their tools enabled, so they need an explicit opt-in. An empty endpoint is filled from
+// CompleterFor returns the backend for a provider taken from config. agy and opencode-cli cannot
+// switch all their tools off, so they need an explicit opt-in. An empty endpoint is filled from
 // ai.endpoints.
 func CompleterFor(ai config.AIConfig, p config.ProviderConfig) TextCompleter {
 	p = withConfiguredEndpoint(ai, p)
-	if (p.Backend == "gemini-cli" || p.Backend == "opencode-cli") && !ai.AllowUnrestrictedCLI {
+	if b := CanonicalBackend(p.Backend); (b == "agy" || b == "opencode-cli") && !ai.AllowUnrestrictedCLI {
 		return refusedCompleter{name: p.Backend, model: p.Model}
 	}
 	return NewCompleter(p)
@@ -155,15 +155,8 @@ func NewCompleter(cfg config.ProviderConfig) TextCompleter {
 	switch spec.ID {
 	case "claude-cli":
 		return NewClaudeCLI(cfg.Model)
-	case "gemini-cli":
-		// gemini reads the piped stdin and appends the -p text to it.
-		return NewCLICompleter("gemini-cli", "gemini", cfg.Model, func(prompt string, model string) []string {
-			args := []string{"-p", prompt}
-			if model != "" {
-				args = append(args, "-m", model)
-			}
-			return args
-		})
+	case "agy":
+		return NewAgyCLI(cfg.Model)
 	case "opencode-cli":
 		return NewCLICompleter("opencode-cli", "opencode", cfg.Model, func(prompt string, model string) []string {
 			args := []string{"run", prompt}

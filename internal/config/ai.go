@@ -5,10 +5,20 @@ import "strings"
 // backendNames lists the canonical AI backend identifiers in display order. The ai package
 // implements exactly these (a test there keeps both lists in sync).
 var backendNames = []string{
-	"gemini-api", "claude-api", "openai", "openaicompat", "deepseek", "groq", "mistral", "zai",
-	"ollama", "llamacpp", "llamafile",
-	"claude-cli", "gemini-cli", "opencode-cli",
+	"claude-cli", "agy", "ollama", "openaicompat", "claude-api", "gemini-api", "openai",
+	// Legacy: still run from an existing config.json, but no longer offered in the settings.
+	"deepseek", "groq", "mistral", "zai", "llamacpp", "llamafile", "opencode-cli",
 }
+
+// legacyBackends are kept for configs that already use them; the settings only offer them while
+// selected.
+var legacyBackends = map[string]bool{
+	"deepseek": true, "groq": true, "mistral": true, "zai": true,
+	"llamacpp": true, "llamafile": true, "opencode-cli": true,
+}
+
+// IsLegacyBackend reports whether backend still runs but is no longer offered for new setups.
+func IsLegacyBackend(backend string) bool { return legacyBackends[CanonicalBackend(backend)] }
 
 // backendAliasList lists the extra accepted spellings per canonical backend (compared lower case,
 // with "_" and " " folded to "-"). "claude" alone is deliberately not an alias: it could mean the
@@ -17,13 +27,15 @@ var backendAliasList = map[string][]string{
 	"gemini-api":   {"gemini", "google", "google-gemini", "google-ai", "googleai"},
 	"claude-api":   {"anthropic", "anthropic-api"},
 	"openai":       {"openai-api"},
-	"openaicompat": {"openai-compat", "openai-compatible", "openaicompatible"},
+	"openaicompat": {"openai-compat", "openai-compatible", "openaicompatible", "mtplx", "lmstudio", "lm-studio"},
 	"deepseek":     {"deepseek-api"},
 	"groq":         {"groq-api"},
 	"mistral":      {"mistral-api", "mistralai"},
 	"zai":          {"z.ai", "z-ai", "zhipu"},
 	"llamacpp":     {"llama.cpp", "llama-cpp"},
 	"claude-cli":   {"claude-code", "claudecode"},
+	// Google replaced the Gemini CLI with the Antigravity CLI (agy).
+	"agy":          {"agy-cli", "antigravity", "antigravity-cli", "gemini-cli"},
 	"opencode-cli": {"opencode"},
 }
 
@@ -67,12 +79,15 @@ func BackendNames() []string {
 }
 
 func normalizeProvider(p ProviderConfig) ProviderConfig {
+	p.Model = strings.TrimSpace(p.Model)
 	if strings.TrimSpace(p.Backend) != "" {
+		if backendKey(p.Backend) == "gemini-cli" {
+			p.Model = "" // Gemini CLI model names mean nothing to agy: use its default
+		}
 		p.Backend = CanonicalBackend(p.Backend)
 	} else {
 		p.Backend = ""
 	}
-	p.Model = strings.TrimSpace(p.Model)
 	p.Endpoint = strings.TrimSpace(p.Endpoint)
 	return p
 }

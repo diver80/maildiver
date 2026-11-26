@@ -46,7 +46,7 @@ func (a *AnyLLMCompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 	if err := requireModel(spec, model); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, spec.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, spec.timeoutFor(a.cfg.Endpoint))
 	defer cancel()
 	temp := 0.2
 	params := anyllm.CompletionParams{
@@ -157,7 +157,7 @@ func Chat(ctx context.Context, aiCfg config.AIConfig, req ChatRequest, extraOpts
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, spec.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, spec.timeoutFor(pCfg.Endpoint))
 	defer cancel()
 	if spec.Kind == kindCLI {
 		return chatViaCLI(ctx, aiCfg, pCfg, req)

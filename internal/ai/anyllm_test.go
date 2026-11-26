@@ -23,25 +23,51 @@ import (
 )
 
 func TestSupportedProvidersComeFromRegistry(t *testing.T) {
+	var all []string
+	for _, s := range backendRegistry {
+		all = append(all, s.ID)
+	}
+	if !slices.Equal(all, config.BackendNames()) {
+		t.Fatalf("registry %v and config.BackendNames %v must match (same order)", all, config.BackendNames())
+	}
 	var ids []string
 	for _, d := range SupportedProviders() {
 		ids = append(ids, d.ID)
 	}
-	if !slices.Equal(ids, config.BackendNames()) {
-		t.Fatalf("registry %v and config.BackendNames %v must match (same order)", ids, config.BackendNames())
+	want := []string{"claude-cli", "agy", "ollama", "openaicompat", "claude-api", "gemini-api", "openai"}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("offered providers %v, want %v", ids, want)
 	}
-	for _, want := range []string{"gemini-api", "claude-api", "openai", "deepseek", "ollama", "claude-cli"} {
-		if !slices.Contains(ids, want) {
-			t.Fatalf("missing provider %s in SupportedProviders()", want)
-		}
+	// A legacy backend stays in the list while it is selected.
+	ids = nil
+	for _, d := range SupportedProviders("DeepSeek", "") {
+		ids = append(ids, d.ID)
 	}
-	for _, d := range SupportedProviders() {
+	if !slices.Equal(ids, append(slices.Clone(want), "deepseek")) {
+		t.Fatalf("selected legacy backend must stay listed: %v", ids)
+	}
+	for _, d := range SupportedProviders(config.BackendNames()...) {
 		if d.Kind == kindCLI && (d.Streaming || d.Tools) {
 			t.Fatalf("CLI backend %s must not claim streaming/tools", d.ID)
 		}
 		if got := defaultModelForBackend(d.ID); got != d.DefaultModel {
 			t.Fatalf("%s: default model %q vs descriptor %q", d.ID, got, d.DefaultModel)
 		}
+	}
+}
+
+func TestLocalOpenAICompatGetsTheLocalTimeout(t *testing.T) {
+	spec := backendByID["openaicompat"]
+	for ep, want := range map[string]time.Duration{
+		"http://127.0.0.1:8000/v1": localTimeout, "http://localhost:1234/v1": localTimeout, "http://[::1]:8000/v1": localTimeout,
+		"https://llm.example.com/v1": apiTimeout, "": apiTimeout,
+	} {
+		if got := spec.timeoutFor(ep); got != want {
+			t.Errorf("timeoutFor(%q) = %v, want %v", ep, got, want)
+		}
+	}
+	if got := backendByID["openai"].timeoutFor("http://127.0.0.1:8000/v1"); got != apiTimeout {
+		t.Errorf("only openaicompat is stretched, openai got %v", got)
 	}
 }
 
@@ -83,9 +109,11 @@ func TestBackendNamesAreCaseInsensitiveAndUnknownIsRefused(t *testing.T) {
 	if rec.count() != 0 {
 		t.Fatalf("no request may reach any provider, got %d", rec.count())
 	}
-	// Opt-in check also works case-insensitively.
-	if _, err := CompleterFor(config.Default().AI, config.ProviderConfig{Backend: "Gemini-CLI"}).Complete(context.Background(), "s", "u", false); err == nil || err.Error() != ErrUnrestrictedCLI {
-		t.Fatalf("Gemini-CLI must need the opt-in, got %v", err)
+	// Opt-in check also works case-insensitively and for the old Gemini CLI name.
+	for _, b := range []string{"Gemini-CLI", "AGY"} {
+		if _, err := CompleterFor(config.Default().AI, config.ProviderConfig{Backend: b}).Complete(context.Background(), "s", "u", false); err == nil || err.Error() != ErrUnrestrictedCLI {
+			t.Fatalf("%s must need the opt-in, got %v", b, err)
+		}
 	}
 }
 
@@ -450,17 +478,53 @@ func TestCLIChatKeepsContentOutOfArgv(t *testing.T) {
 }
 
 func TestUnrestrictedCLIUsesStdin(t *testing.T) {
-	argsFile, stdinFile := fakeCLI(t, "gemini", "ok")
+	argsFile, stdinFile := fakeCLI(t, "opencode", "ok")
 	cfg := config.Default().AI
 	cfg.AllowUnrestrictedCLI = true
-	out, err := CompleterFor(cfg, config.ProviderConfig{Backend: "gemini-cli"}).Complete(context.Background(), "SYS-SECRET", "MAIL-SECRET", false)
+	out, err := CompleterFor(cfg, config.ProviderConfig{Backend: "opencode-cli"}).Complete(context.Background(), "SYS-SECRET", "MAIL-SECRET", false)
 	if err != nil || out != "ok" {
-		t.Fatalf("gemini-cli: %q %v", out, err)
+		t.Fatalf("opencode-cli: %q %v", out, err)
 	}
 	args, _ := os.ReadFile(argsFile)
 	stdin, _ := os.ReadFile(stdinFile)
 	if strings.Contains(string(args), "SECRET") || !strings.Contains(string(stdin), "MAIL-SECRET") {
 		t.Fatalf("argv=%q stdin=%q", args, stdin)
+	}
+}
+
+func TestAgyRunsWithToolsDeniedAndContentOnStdin(t *testing.T) {
+	result := `{"event":"result","result":{"status":"SUCCESS","response":"Antwort von agy\n"}}`
+	argsFile, stdinFile := fakeCLI(t, "agy", result)
+	cfg := config.Default().AI
+	cfg.AllowUnrestrictedCLI = true
+	out, err := CompleterFor(cfg, config.ProviderConfig{Backend: "gemini-cli", Model: "gemini-3.8-flash-low"}).Complete(context.Background(), "SYS-SECRET", "MAIL-SECRET", false)
+	if err != nil || out != "Antwort von agy" {
+		t.Fatalf("agy: %q %v", out, err)
+	}
+	args, _ := os.ReadFile(argsFile)
+	stdin, _ := os.ReadFile(stdinFile)
+	if strings.Contains(string(args), "SECRET") {
+		t.Fatalf("mail content leaked into argv: %s", args)
+	}
+	for _, want := range []string{"read_file(*)", "read_url_content(*)", "run_command(*)", "command(*)", "mcp(*)",
+		"--disable-slash-commands", "stream-json", "gemini-3.8-flash-low", "-p="} {
+		if !strings.Contains(string(args), want) {
+			t.Fatalf("agy argument %s missing from %s", want, args)
+		}
+	}
+	var msg struct {
+		Event   string `json:"event"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(stdin, &msg); err != nil || msg.Event != "user" ||
+		!strings.Contains(msg.Message.Content, "MAIL-SECRET") || !strings.Contains(msg.Message.Content, "<postdive_instructions>") {
+		t.Fatalf("stdin must be one stream-json user message with the content: %q (%v)", stdin, err)
+	}
+
+	if _, err := parseAgyResult([]byte(`{"event":"result","result":{"status":"ERROR","error":"quota"}}`)); err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("agy errors must surface: %v", err)
 	}
 }
 

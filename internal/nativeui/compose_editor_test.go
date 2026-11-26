@@ -397,3 +397,41 @@ func TestComposeEditorCaretUsesAccent(t *testing.T) {
 		t.Fatal("format verbs broken in the editor document")
 	}
 }
+
+func TestComposeAIPromptGrowsAndReturnBreaksTheLine(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) {
+		c := config.Default()
+		c.Language = "de"
+		return c, nil
+	}})
+	app.OpenComposeReply(&backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{ID: "m-1", Subject: "Termin", From: "Alice <alice@example.com>", Date: "2026-11-23T10:00:00Z"},
+		BodyText:      "Passt Freitag?",
+	}, "")
+	app.composeAIOpen = true
+
+	tt := ui.NewTester(app.RenderComposeWindow, 760, 680)
+	tt.Frame()
+	before, ok := tt.Find("Antwort entwerfen")
+	if !ok {
+		t.Fatalf("quick actions missing, texts=%v", tt.Texts())
+	}
+	gen, ok := tt.Find("Generieren")
+	if !ok {
+		t.Fatalf("generate button missing, texts=%v", tt.Texts())
+	}
+	tt.ClickAt(gen.X-150, gen.Y+gen.H/2) // the prompt field left of it
+	tt.Type("Freitag passt")
+	for _, line := range []string{"ab 14 Uhr", "Agenda vorab schicken", "Raum buchen"} {
+		tt.Key(0, ui.KeyEnter)
+		tt.Type(line)
+	}
+	tt.Frame()
+	if app.composeAILoading || strings.Count(app.composeAIPrompt, "\n") != 3 {
+		t.Fatalf("Return must break the line, not generate: loading=%v prompt=%q", app.composeAILoading, app.composeAIPrompt)
+	}
+	after, _ := tt.Find("Antwort entwerfen")
+	if after.Y < before.Y+40 {
+		t.Fatalf("the prompt field should grow with its lines: quick actions at %v, before %v", after.Y, before.Y)
+	}
+}

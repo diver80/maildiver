@@ -391,18 +391,20 @@ func (a *App) renderComposeAIAssist(c *ui.Context) {
 		})
 
 		// Prompt input + Generate button
-		ph := a.tr("Worum geht es? (z. B. „Termin auf Donnerstag 10 Uhr verschieben“)…", "What should this email say? (e.g. “reschedule to Thursday 10am”)…")
+		ph := a.tr("Worum geht es? Stichworte reichen, ⌘↩ generiert (z. B. „Termin auf Donnerstag 10 Uhr verschieben“)…", "What should this email say? Notes are enough, ⌘↩ generates (e.g. “reschedule to Thursday 10am”)…")
 		if hasReplySource {
-			ph = a.tr("Anweisung an die KI (z. B. „kurz zusagen, ab 15 Uhr passt“)…", "Instruction for AI (e.g. “accept briefly, free after 3pm”)…")
+			ph = a.tr("Anweisung oder Stichworte für die KI, ⌘↩ generiert (z. B. „kurz zusagen, ab 15 Uhr passt“)…", "Instruction or notes for the AI, ⌘↩ generates (e.g. “accept briefly, free after 3pm”)…")
 		}
-		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("cmp-ai-prompt"), &a.composeAIPrompt).Placeholder(ph).Grow(1)
+		// Multi-line, growing with the notes: Return breaks the line, ⌘↩ generates.
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.End).Children(func() {
+			in := ui.TextArea(c.Key("cmp-ai-prompt"), &a.composeAIPrompt).Placeholder(ph).Grow(1).MinWidth(0).
+				MinHeight(0).Lines(1, 10)
 			goLabel := a.tr("Generieren", "Generate")
 			if a.composeAILoading {
 				goLabel = a.tr("Läuft…", "Working…")
 			}
-			goClicked := ui.PrimaryButton(c.Key("cmp-ai-go"), goLabel).Clicked()
-			if (goClicked || in.Submitted()) && !a.composeAILoading {
+			goClicked := ui.PrimaryButton(c.Key("cmp-ai-go"), goLabel).Tooltip(a.tr("Generieren (⌘↩)", "Generate (⌘↩)")).Clicked()
+			if (goClicked || in.Shortcut(ui.Cmd, ui.KeyEnter)) && !a.composeAILoading {
 				a.RunComposeAI(context.Background(), "", "")
 			}
 		})

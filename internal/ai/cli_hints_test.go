@@ -3,7 +3,7 @@ package ai
 import "testing"
 
 func TestCLIModelHints(t *testing.T) {
-	for _, id := range []string{"claude-cli", "gemini-cli", "opencode-cli"} {
+	for _, id := range []string{"claude-cli", "agy", "opencode-cli"} {
 		h, ok := CLIModelHints(id)
 		if !ok {
 			t.Fatalf("expected CLIModelHints(%q) to return ok=true", id)

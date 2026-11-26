@@ -29,7 +29,7 @@ On the first run, MTPLX downloads the model (~17 GB) and starts an OpenAI-compat
 
 Open **Settings (`⌘,`) → AI & Sync**:
 
-- **Provider:** `llamacpp` *(recommended: 300 s local timeout & "Local · 0 Cloud Tokens" badge; `openaicompat` also works)*
+- **Provider:** `openaicompat` *(on a localhost endpoint it gets the 300 s local timeout & the "Local (0 Cloud Tokens)" badge)*
 - **Endpoint:** `http://127.0.0.1:8000/v1`
 - **Model:** `mtplx-inkling-2-mini-optimized-speed` *(auto-loaded into the dropdown via `/v1/models`)*
 - **API Key:** leave empty (no key required on localhost)
@@ -62,10 +62,10 @@ mtplx connect opencode
 
 ---
 
-## Option 3: llama.cpp / llamafile / Any OpenAI-Compatible Server
+## Option 3: llama.cpp / llamafile / LM Studio / Any OpenAI-Compatible Server
 
 Any local server exposing `/v1/chat/completions` and `/v1/models` (llama-server, LM Studio, vLLM, MLX-LM) works out of the box:
 
-- **Provider:** `llamacpp` (local, 300 s timeout) or `openaicompat`
+- **Provider:** `openaicompat` (300 s timeout on localhost)
 - **Endpoint:** `http://127.0.0.1:<port>/v1`
 - **API Key:** leave blank for localhost

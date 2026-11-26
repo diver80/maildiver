@@ -79,7 +79,7 @@ func TestClaudeAPIAgentReviewDraft(t *testing.T) {
 
 func TestUnrestrictedCLIBackendsNeedOptIn(t *testing.T) {
 	cfg := config.Default().AI
-	for _, backend := range []string{"gemini-cli", "opencode-cli"} {
+	for _, backend := range []string{"agy", "gemini-cli", "opencode-cli"} {
 		p := config.ProviderConfig{Backend: backend}
 		if _, err := CompleterFor(cfg, p).Complete(context.Background(), "s", "u", false); err == nil || err.Error() != ErrUnrestrictedCLI {
 			t.Fatalf("%s must be refused by default, got %v", backend, err)

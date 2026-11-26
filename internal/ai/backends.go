@@ -3,6 +3,9 @@ package ai
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -84,19 +87,27 @@ func wrapProvider[T anyllm.Provider](f func(...anyllm.Option) (T, error)) func(.
 }
 
 // backendRegistry is in display order (SupportedProviders) and must cover config.BackendNames().
+// Backends after the CLI/local/API core are legacy (config.IsLegacyBackend): they still run, the
+// settings only list them while selected.
 var backendRegistry = []backendSpec{
+	{ID: "claude-cli", Kind: kindCLI, Timeout: cliTimeout},
+	{ID: "agy", Kind: kindCLI, Timeout: cliTimeout},
+	{ID: "ollama", Kind: kindLocal, DefaultModel: "qwen3:4b", OfficialURL: "http://127.0.0.1:11434",
+		Timeout: localTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(ollama.New)},
+	// OpenAI-compatible servers (MTPLX with Inkling, llama.cpp, LM Studio …) get their own key
+	// variable: OPENAI_API_KEY never leaves for a non-OpenAI host.
+	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "postdive-local",
+		Timeout: apiTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(openai.New)},
+	{ID: "claude-api", Kind: kindAPI, DefaultModel: "claude-sonnet-5-5", ClassifierModel: "claude-haiku-5-5",
+		EnvKeys: []string{"ANTHROPIC_API_KEY"}, OfficialURL: "https://api.anthropic.com", Timeout: apiTimeout,
+		Streaming: true, Tools: true, newProvider: wrapProvider(anthropic.New)},
 	{ID: "gemini-api", Kind: kindAPI, DefaultModel: "gemini-2.5-flash", EnvKeys: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		OfficialURL: "https://generativelanguage.googleapis.com", Timeout: apiTimeout, Streaming: true, Tools: true,
 		RewriteHost: true, newProvider: wrapProvider(gemini.New)},
-	{ID: "claude-api", Kind: kindAPI, DefaultModel: "claude-sonnet-4-5", ClassifierModel: "claude-haiku-4-5",
-		EnvKeys: []string{"ANTHROPIC_API_KEY"}, OfficialURL: "https://api.anthropic.com", Timeout: apiTimeout,
-		Streaming: true, Tools: true, newProvider: wrapProvider(anthropic.New)},
 	{ID: "openai", Kind: kindAPI, DefaultModel: "gpt-4o-mini", EnvKeys: []string{"OPENAI_API_KEY"},
 		OfficialURL: "https://api.openai.com/v1", Timeout: apiTimeout, Streaming: true, Tools: true,
 		newProvider: wrapProvider(openai.New)},
-	// OpenAI-compatible servers get their own key variable: OPENAI_API_KEY never leaves for a non-OpenAI host.
-	{ID: "openaicompat", Kind: kindAPI, EnvKeys: []string{"OPENAICOMPAT_API_KEY"}, PlaceholderKey: "postdive-local",
-		Timeout: apiTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(openai.New)},
+	// Legacy.
 	{ID: "deepseek", Kind: kindAPI, DefaultModel: "deepseek-chat", EnvKeys: []string{"DEEPSEEK_API_KEY"},
 		OfficialURL: "https://api.deepseek.com", Timeout: apiTimeout, Streaming: true, Tools: true,
 		newProvider: wrapProvider(deepseek.New)},
@@ -109,15 +120,33 @@ var backendRegistry = []backendSpec{
 	{ID: "zai", Kind: kindAPI, DefaultModel: "glm-4.5", EnvKeys: []string{"ZAI_API_KEY"},
 		OfficialURL: "https://api.z.ai/api/paas/v4", Timeout: apiTimeout, Streaming: true, Tools: true,
 		newProvider: wrapProvider(zai.New)},
-	{ID: "ollama", Kind: kindLocal, DefaultModel: "qwen3:4b", OfficialURL: "http://127.0.0.1:11434",
-		Timeout: localTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(ollama.New)},
 	{ID: "llamacpp", Kind: kindLocal, DefaultModel: "default", OfficialURL: "http://127.0.0.1:8080/v1",
 		Timeout: localTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(llamacpp.New)},
 	{ID: "llamafile", Kind: kindLocal, DefaultModel: "default", OfficialURL: "http://127.0.0.1:8080/v1",
 		Timeout: localTimeout, Streaming: true, Tools: true, newProvider: wrapProvider(llamafile.New)},
-	{ID: "claude-cli", Kind: kindCLI, Timeout: cliTimeout},
-	{ID: "gemini-cli", Kind: kindCLI, Timeout: cliTimeout},
 	{ID: "opencode-cli", Kind: kindCLI, Timeout: cliTimeout},
+}
+
+// timeoutFor is the deadline for one call to endpoint: an OpenAI-compatible server on this
+// machine (MTPLX with Inkling, llama.cpp, LM Studio) gets as long as the other local backends.
+func (s *backendSpec) timeoutFor(endpoint string) time.Duration {
+	if s.ID == "openaicompat" && isLoopbackURL(endpoint) {
+		return localTimeout
+	}
+	return s.Timeout
+}
+
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 var backendByID = func() map[string]*backendSpec {
@@ -134,7 +163,7 @@ func CanonicalBackend(name string) string {
 	return config.CanonicalBackend(name)
 }
 
-// IsCLIBackend reports whether the backend runs a local CLI (claude-cli, gemini-cli, opencode-cli).
+// IsCLIBackend reports whether the backend runs a local CLI (claude-cli, agy, opencode-cli).
 func IsCLIBackend(name string) bool {
 	spec, ok := backendByID[CanonicalBackend(name)]
 	return ok && spec.Kind == kindCLI
@@ -155,19 +184,19 @@ func CLIModelHints(backend string) (CLIModelHint, bool) {
 	switch CanonicalBackend(backend) {
 	case "claude-cli":
 		return CLIModelHint{
-			Models:        []string{"sonnet", "opus", "haiku", "claude-opus-4-6", "claude-sonnet-4-6"},
+			Models:        []string{"sonnet", "opus", "haiku"},
 			PlaceholderDE: "sonnet / opus / haiku (Standard)",
 			PlaceholderEN: "sonnet / opus / haiku (default)",
-			HintDE:        "Claude-CLI: Aliasse (sonnet, opus, haiku) nutzen immer die neueste Version, oder volle Modell-ID (z. B. claude-opus-4-6). Leer = CLI-Standard.",
-			HintEN:        "Claude CLI: aliases (sonnet, opus, haiku) always track the latest release, or enter a full model ID (e.g. claude-opus-4-6). Empty = CLI default.",
+			HintDE:        "Claude-CLI: Aliasse (sonnet, opus, haiku) nutzen immer die neueste Version, oder volle Modell-ID (z. B. claude-opus-5-5). Leer = CLI-Standard.",
+			HintEN:        "Claude CLI: aliases (sonnet, opus, haiku) always track the latest release, or enter a full model ID (e.g. claude-opus-5-5). Empty = CLI default.",
 		}, true
-	case "gemini-cli":
+	case "agy":
 		return CLIModelHint{
-			Models:        []string{"auto", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"},
-			PlaceholderDE: "gemini-2.5-pro / flash (Standard)",
-			PlaceholderEN: "gemini-2.5-pro / flash (default)",
-			HintDE:        "Gemini-CLI: z. B. auto, gemini-2.5-pro, gemini-2.5-flash oder Preview-ID eingeben. Leer = CLI-Standard.",
-			HintEN:        "Gemini CLI: e.g. auto, gemini-2.5-pro, gemini-2.5-flash, or any preview model ID. Empty = CLI default.",
+			Models:        []string{"gemini-3.8-flash-medium", "gemini-4-neon-medium", "claude-sonnet-5-5-medium"},
+			PlaceholderDE: "Modell-ID (Standard)",
+			PlaceholderEN: "model ID (default)",
+			HintDE:        "Antigravity-CLI (agy): Modell-ID aus „agy models“, z. B. gemini-3.8-flash-medium. Leer = agy-Standard.",
+			HintEN:        "Antigravity CLI (agy): a model ID from “agy models”, e.g. gemini-3.8-flash-medium. Empty = agy default.",
 		}, true
 	case "opencode-cli":
 		return CLIModelHint{
@@ -250,11 +279,15 @@ type ProviderDescriptor struct {
 	Tools        bool   `json:"tools"`
 }
 
-// SupportedProviders returns all AI backends (canonical IDs, display order) from the registry.
-func SupportedProviders() []ProviderDescriptor {
+// SupportedProviders returns the AI backends offered for new setups (canonical IDs, display
+// order) from the registry, plus the legacy backends among keep (the ones currently selected).
+func SupportedProviders(keep ...string) []ProviderDescriptor {
 	out := make([]ProviderDescriptor, 0, len(backendRegistry))
 	for i := range backendRegistry {
 		s := &backendRegistry[i]
+		if config.IsLegacyBackend(s.ID) && !slices.ContainsFunc(keep, func(k string) bool { return CanonicalBackend(k) == s.ID }) {
+			continue
+		}
 		configured := true
 		if len(s.EnvKeys) > 0 && s.PlaceholderKey == "" {
 			configured = s.envKey() != ""

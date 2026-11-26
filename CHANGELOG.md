@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.52 (2026-11-26)
+
+### AI providers
+- **Antigravity CLI (`agy`) replaces the Gemini CLI:** Google replaced the Gemini CLI with `agy`. A configured `gemini-cli` switches to `agy` automatically (with agy's default model). PostDive hands the prompt to agy on stdin and denies every agy tool by name (files, web, commands, MCP), so a crafted mail cannot make it read files or open URLs; as agy has no switch that turns all tools off, it stays behind “Allow unrestricted CLIs”.
+- **Shorter provider list:** claude-cli, agy, ollama, openaicompat (MTPLX with Inkling, llama.cpp, LM Studio), claude-api, gemini-api and openai. DeepSeek, Groq, Mistral, Z.ai, llamacpp, llamafile and opencode-cli keep working in existing setups and stay listed while selected.
+- **Local OpenAI-compatible servers get the local timeout:** `openaicompat` on a localhost endpoint waits as long as the other local backends (300 s), so MTPLX/Inkling no longer needs the `llamacpp` workaround.
+- **CLIs found when started from the Dock:** claude, agy and opencode are also looked up in Homebrew and `~/.local/bin`, which an app started from the Dock or Finder has no PATH to.
+- **Current Claude defaults:** claude-api uses Claude Sonnet 5.5 (Haiku 5.5 for sorting) when no model is set.
+
+### Compose
+- **AI help takes notes:** the instruction field of the AI Writing Assistant grows with its text (up to 10 lines); Return starts a new line, ⌘↩ generates.
+
 ## 0.7.51 (2026-11-26)
 
 *From this release on, the changelog is written in English.*

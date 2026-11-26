@@ -100,14 +100,14 @@ func TestClassifierUsesRoleDefaultModelAndUntrustedBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Model != "claude-api:claude-haiku-4-5" {
+	if c.Model != "claude-api:claude-haiku-5-5" {
 		t.Fatalf("classifier default model for claude-api: %q", c.Model)
 	}
 	body := rec.body(0)
 	// In the HTTP body the prompt is JSON-encoded once more: the real closing tag appears as
 	// \u003c/untrusted_email\u003e exactly once; the mail's copy is escaped twice (\\u003c...).
 	realClose := `\` + "u003c/untrusted_email" + `\` + "u003e"
-	if !strings.Contains(body, "claude-haiku-4-5") || strings.Count(body, realClose) != 1 {
+	if !strings.Contains(body, "claude-haiku-5-5") || strings.Count(body, realClose) != 1 {
 		t.Fatalf("unexpected request body: %s", body)
 	}
 }

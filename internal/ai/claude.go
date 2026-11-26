@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,7 +36,7 @@ func cliInput(systemPrompt, userPrompt string) string {
 	return b.String()
 }
 
-// CLICompleter runs a generic CLI (gemini, opencode). The prompt content goes in via stdin;
+// CLICompleter runs a generic CLI (opencode). The prompt content goes in via stdin;
 // buildArg receives only the fixed cliArgPrompt, never mail content.
 type CLICompleter struct {
 	name     string
@@ -57,12 +58,13 @@ func (c *CLICompleter) ModelName() string {
 }
 
 func (c *CLICompleter) Complete(ctx context.Context, systemPrompt, userPrompt string, _ bool) (string, error) {
-	if _, err := exec.LookPath(c.binary); err != nil {
+	bin, err := findCLI(c.binary)
+	if err != nil {
 		return "", fmt.Errorf("%s CLI nicht im PATH gefunden / not found in PATH", c.binary)
 	}
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, c.binary, c.buildArg(cliArgPrompt, c.model)...)
+	cmd := exec.CommandContext(ctx, bin, c.buildArg(cliArgPrompt, c.model)...)
 	cmd.Dir = cliWorkDir()
 	cmd.Stdin = strings.NewReader(cliInput(systemPrompt, userPrompt))
 	var stdout, stderr bytes.Buffer
@@ -112,11 +114,12 @@ func (c *ClaudeCLI) claudeArgs() []string {
 }
 
 func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt string, _ bool) (string, error) {
-	bin := c.binary
-	if bin == "" {
-		bin = "claude"
+	name := c.binary
+	if name == "" {
+		name = "claude"
 	}
-	if _, err := exec.LookPath(bin); err != nil {
+	bin, err := findCLI(name)
+	if err != nil {
 		return "", fmt.Errorf("claude CLI nicht im PATH gefunden / not found in PATH")
 	}
 	ctx, cancel := context.WithTimeout(ctx, cliTimeout)
@@ -151,6 +154,22 @@ func truncateForError(s string) string {
 		return string(r[:500]) + "…"
 	}
 	return s
+}
+
+// findCLI finds an AI command line program, also where an app started from the Dock or Finder
+// has no PATH to (Homebrew, ~/.local/bin).
+func findCLI(name string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	home, _ := os.UserHomeDir()
+	for _, d := range []string{"/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local")} {
+		p := filepath.Join(d, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", exec.ErrNotFound
 }
 
 // cliWorkDir is where a CLI agent runs: the temp directory, unless it is gone. An app started

@@ -2614,9 +2614,9 @@ func (a *App) renderHelpModal(c *ui.Context) {
 						helpSection(c, iconCpu, t.Warning,
 							a.tr("3. Wo Tokens anfallen — Lokal vs. Cloud vs. CLI", "3. Where Tokens Apply — Local vs. Cloud vs. CLI"),
 							[]string{
-								a.tr("• Cloud-APIs (anthropic, openai, gemini, mistral, deepseek, groq): Verbrauchen bezahlte API-Tokens beim jeweiligen Anbieter.", "• Cloud APIs (anthropic, openai, gemini, mistral, deepseek, groq): Consume paid API tokens with that provider."),
-								a.tr("• Lokale Modelle (ollama, llamacpp, llamafile): Laufen komplett auf deinem Gerät — keine Cloud-Übertragung, 0 Token-Kosten.", "• Local models (ollama, llamacpp, llamafile): Run entirely on your machine — no cloud traffic, 0 token cost."),
-								a.tr("• CLI-Agenten (claude-cli, gemini-cli, opencode-cli): Nutzen dein lokal installiertes CLI-Konto bzw. Abo.", "• CLI agents (claude-cli, gemini-cli, opencode-cli): Use your locally installed CLI account or subscription."),
+								a.tr("• Cloud-APIs (claude-api, gemini-api, openai): Verbrauchen bezahlte API-Tokens beim jeweiligen Anbieter.", "• Cloud APIs (claude-api, gemini-api, openai): Consume paid API tokens with that provider."),
+								a.tr("• Lokale Modelle (ollama, openaicompat für MTPLX/Inkling, llama.cpp, LM Studio): Laufen komplett auf deinem Gerät — keine Cloud-Übertragung, 0 Token-Kosten.", "• Local models (ollama, openaicompat for MTPLX/Inkling, llama.cpp, LM Studio): Run entirely on your machine — no cloud traffic, 0 token cost."),
+								a.tr("• CLI-Agenten (claude-cli, agy): Nutzen dein lokal installiertes CLI-Konto bzw. Abo.", "• CLI agents (claude-cli, agy): Use your locally installed CLI account or subscription."),
 							},
 						)
 					}

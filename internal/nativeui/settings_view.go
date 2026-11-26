@@ -203,7 +203,7 @@ func (a *App) OpenSettings() {
 	case config.MarkReadNever:
 		s.markRead = 2
 	}
-	for _, p := range ai.SupportedProviders() {
+	for _, p := range ai.SupportedProviders(cfg.AI.Agent.Backend, cfg.AI.Classifier.Backend) {
 		s.providers = append(s.providers, p.ID)
 	}
 	for _, k := range ai.APIKeyNames() {
@@ -1086,9 +1086,9 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 		}
 		field("set-lim", a.tr("Gelesene Mails je Posteingang", "Read emails per inbox"), func() { ui.TextInput(c.Key("set-lim-i"), &s.scanLimit).Width(90) })
 		field("set-days", a.tr("Zeitraum (Tage)", "Period (days)"), func() { ui.TextInput(c.Key("set-days-i"), &s.scanDays).Width(90) })
-		ui.Checkbox(c.Key("set-cli"), &s.allowCLI, a.tr("Unbeschränkte CLIs erlauben (gemini-cli, opencode-cli)", "Allow unrestricted CLIs (gemini-cli, opencode-cli)"))
+		ui.Checkbox(c.Key("set-cli"), &s.allowCLI, a.tr("Unbeschränkte CLIs erlauben (agy, opencode-cli)", "Allow unrestricted CLIs (agy, opencode-cli)"))
 		if s.allowCLI {
-			note(a.tr("Diese CLIs laufen ohne Werkzeugsperre: Ein präparierter Mailtext könnte sie Werkzeuge benutzen lassen.", "These CLIs run without a tool lock: a crafted email could make them use tools."), t.Warning)
+			note(a.tr("Diese CLIs lassen sich nicht vollständig ohne Werkzeuge starten (agy sperrt PostDive Werkzeug für Werkzeug): Ein präparierter Mailtext könnte sie Werkzeuge benutzen lassen.", "These CLIs cannot be started fully without tools (PostDive locks agy's tools one by one): a crafted email could make them use tools."), t.Warning)
 		}
 
 		a.settingsSection(c, a.tr("API-Schlüssel", "API keys"))
