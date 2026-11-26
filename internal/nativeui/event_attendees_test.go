@@ -103,6 +103,9 @@ func TestEventFormAttendeesEndToEnd(t *testing.T) {
 	if _, ok := tt.Find("Einladung an die Teilnehmer senden"); !ok {
 		t.Fatalf("invite checkbox not shown; texts=%v", tt.Texts())
 	}
+	if _, ok := tt.Find("In Teams planen"); !ok {
+		t.Fatalf("Teams button not shown; texts=%v", tt.Texts())
+	}
 
 	// Saved without mailing (no account here): the attendee stays with the event.
 	app.eventSendInvites = false
@@ -124,5 +127,35 @@ func TestEventFormAttendeesEndToEnd(t *testing.T) {
 	}
 	if _, ok := tt.Find("Erika Mustermann <erika@beispiel.de>"); !ok {
 		t.Fatalf("details should name the attendee; texts=%v", tt.Texts())
+	}
+}
+
+func TestTeamsMeetingURL(t *testing.T) {
+	loc := time.FixedZone("CET", 3600)
+	start := time.Date(2026, 12, 1, 10, 0, 0, 0, loc)
+	got := teamsMeetingURL("Planung & Review", start, start.Add(30*time.Minute), "Ort: Raum 2\n\nAgenda",
+		[]backend.EventAttendee{{Email: "anna@example.org", Name: "Anna"}, {Email: "ben+x@example.org"}, {Email: "ANNA@example.org"}})
+	want := "https://teams.microsoft.com/l/meeting/new?subject=Planung%20%26%20Review" +
+		"&startTime=2026-12-01T10%3A00%3A00%2B01%3A00&endTime=2026-12-01T10%3A30%3A00%2B01%3A00" +
+		"&content=Ort%3A%20Raum%202%0A%0AAgenda&attendees=anna%40example.org%2Cben%2Bx%40example.org"
+	if got != want {
+		t.Fatalf("teamsMeetingURL:\n got %s\nwant %s", got, want)
+	}
+	if teamsMeetingURL("", time.Time{}, time.Time{}, "", nil) != teamsScheduleURL {
+		t.Fatal("empty form should open the plain scheduling form")
+	}
+}
+
+func TestTeamsSelfAddressAndAllDayTimes(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }})
+	app.cfg.Direct.Accounts = []config.DirectAccount{{ID: "a1", Email: "ich@example.org"}, {ID: "a2", Email: "zwei@example.org"}}
+	app.eventInviteAccount = "a2"
+	if got := app.teamsSelfAddress(); got != "zwei@example.org" {
+		t.Fatalf("teamsSelfAddress: %q", got)
+	}
+	app.eventStart, app.eventEnd, app.eventAllDay = "2026-12-01", "2026-12-02", true
+	s, e := app.eventFormTimes()
+	if s.Hour() != 0 || e.Sub(s) != 48*time.Hour {
+		t.Fatalf("all-day times: %v – %v", s, e)
 	}
 }

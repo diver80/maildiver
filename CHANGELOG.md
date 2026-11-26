@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.47 (2026-11-26)
+
+### Teams-Besprechungen
+- **„In Teams planen“** im Termin-Editor (bei neuen Terminen): öffnet das Teams-Formular „Neue Besprechung“ mit Titel, Zeit, Notizen und den Teilnehmern; gesendet wird in Teams, das die Besprechung mit Beitrittslink anlegt – ohne App-Registrierung bei Microsoft. Teams übernimmt keinen Ort, er steht deshalb in den Notizen.
+- **Sich selbst einladen:** Auf Wunsch geht die Einladung auch an die eigene PostDive-Adresse; mit „Zusagen“ landet die Besprechung dann im PostDive-Kalender.
+
+### Dokumentation
+- **Meilensteine:** Neue Übersicht [docs/HISTORY.md](docs/HISTORY.md) und ein Abschnitt auf der Webseite – wann welche großen Funktionen dazukamen, Zwischenstände als Fehlerbehebungs-Bereiche.
+
 ## 0.7.46 (2026-11-26)
 
 ### Termine mit Teilnehmern

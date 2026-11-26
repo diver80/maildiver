@@ -311,6 +311,25 @@
       box-shadow: 0 30px 90px rgba(0, 0, 0, 0.8);
     }
 
+    /* Milestones timeline */
+    .timeline { list-style: none; margin: 0; padding: 0 0 0 22px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 14px; }
+    .tl-item { position: relative; display: grid; grid-template-columns: 150px 1fr; gap: 16px; align-items: baseline; }
+    .tl-item::before { content: ""; position: absolute; left: -29px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg); }
+    .tl-item.minor::before { width: 8px; height: 8px; left: -27px; top: 8px; background: var(--border); }
+    .tl-meta { display: flex; flex-direction: column; gap: 2px; }
+    .tl-ver { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; font-weight: 700; color: var(--text); }
+    .tl-date { font-size: 12.5px; color: var(--muted); }
+    .tl-body strong { font-size: 16px; letter-spacing: -0.01em; }
+    .tl-body p { margin: 3px 0 0; font-size: 14px; color: var(--muted); }
+    .tl-item.minor .tl-body strong { font-size: 14px; font-weight: 600; color: var(--muted); }
+    .tl-item.minor .tl-body p { font-size: 13px; }
+    .tl-more { margin: 22px 0 0; font-size: 14px; }
+    .tl-more a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 720px) {
+      .tl-item { grid-template-columns: 1fr; gap: 4px; }
+      .tl-meta { flex-direction: row; gap: 10px; align-items: baseline; }
+    }
+
     @media (max-width: 720px) {
       .nav-links .hide-sm { display: none; }
       .hero { padding-top: 46px; }
@@ -327,6 +346,7 @@
       <div class="nav-links">
         <a class="hide-sm" href="#features" data-i18n="nav.features">Features</a>
         <a class="hide-sm" href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
+        <a class="hide-sm" href="#milestones" data-i18n="nav.milestones">Milestones</a>
         <a class="hide-sm" href="#platforms" data-i18n="nav.platforms">Platforms</a>
         <a class="hide-sm" href="https://github.com/diver80/postdive" target="_blank" rel="noopener">GitHub</a>
         <div class="lang-switch" role="group" aria-label="Language">
@@ -493,6 +513,94 @@
       </div>
     </section>
 
+    <section id="milestones">
+      <div class="container">
+        <div class="sec-head">
+          <h2 data-i18n="ms.title">Milestones</h2>
+          <p data-i18n="ms.sub">From Thunderbird add-on to standalone suite – the big steps, release by release.</p>
+        </div>
+        <ol class="timeline">
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.2.0 – 0.2.4</span><span class="tl-date">13.–15.11.2026</span></div>
+            <div class="tl-body"><strong data-i18n="ms.0.t">Started as “OmaThunder”</strong><p data-i18n="ms.0.d">Thunderbird add-on with a Go helper: AI inbox triage, compose assistant, summaries, translation, questions about mails, Homebrew install.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.2.5 – 0.2.9</span><span class="tl-date">15.–16.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.1.t">Spaces &amp; cleanup</strong><p data-i18n="ms.1.d">Topic spaces, Kanban per mailbox, Thunderbird filters as the base layer, archive &amp; cleanup with verified .eml export.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.3.0</span><span class="tl-date">18.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.2.t">Own app instead of a Kanban board</strong><p data-i18n="ms.2.d">Native window with mail cockpit, calendar and contacts; settings move into the app.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.5.0</span><span class="tl-date">20.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.3.t">Standalone, no Thunderbird</strong><p data-i18n="ms.3.d">Own IMAP/SMTP engine with SQLite, conversations, Thunderbird import, S/MIME, Gmail &amp; Microsoft 365 sign-in, CalDAV/CardDAV, offline outbox, account transfer by QR code.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.6.0</span><span class="tl-date">20.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.4.t">Android app</strong><p data-i18n="ms.4.d">Phone layout with swipe gestures, accounts by QR code, new mail in the background, passwords in the Android Keystore.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.1 – 0.7.5</span><span class="tl-date">21.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.5.t">Encryption &amp; writing</strong><p data-i18n="ms.5.d">Native OpenPGP (no gpg), security hardening, WYSIWYG editor with inline images and tables, rule editor.</p></div>
+          </li>
+          <li class="tl-item minor">
+            <div class="tl-meta"><span class="tl-ver">0.7.6 – 0.7.16</span><span class="tl-date">22.–23.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.6.t">Polish &amp; fixes</strong><p data-i18n="ms.6.d">Compact folder sidebar, settings tabs, select all, Android background sync, focus counter, local AI guide.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.17 – 0.7.19</span><span class="tl-date">23.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.7.t">Calendar &amp; invitations</strong><p data-i18n="ms.7.d">Day view on a 24h timeline, visible RSVP status, choice of target calendar when accepting (Google &amp; CalDAV too).</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.21</span><span class="tl-date">23.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.8.t">AI help while writing</strong><p data-i18n="ms.8.d">“✨ AI Help” right in the reply and compose window.</p></div>
+          </li>
+          <li class="tl-item minor">
+            <div class="tl-meta"><span class="tl-ver">0.7.20 – 0.7.27</span><span class="tl-date">23.–24.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.9.t">Polish &amp; fixes</strong><p data-i18n="ms.9.d">Correct Sent folder, S/MIME decryption &amp; team import, invitations from encrypted mails, Jira preview, raw source &amp; header view, accounts/calendars/rules in Settings.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.28</span><span class="tl-date">24.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.10.t">AI assistant with tools</strong><p data-i18n="ms.10.d">Searches mails, threads, contacts and events and only proposes actions; personal AI instructions, rule suggestions from mail headers.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.29 – 0.7.30</span><span class="tl-date">24.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.11.t">MCP server</strong><p data-i18n="ms.11.d">postdive --mcp connects Claude Code, Claude Desktop, Cursor &amp; co. locally to mail, calendar and contacts; read-only by default.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.31</span><span class="tl-date">24.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.12.t">Renamed to PostDive</strong><p data-i18n="ms.12.d">Plus Linux support for Wayland/Hyprland (Omarchy).</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.32 – 0.7.35</span><span class="tl-date">25.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.13.t">UI redesign</strong><p data-i18n="ms.13.d">Calmer interface in the spirit of Apple Mail, simple account setup, clearly separated areas, cleaner dialogs, better theme contrast.</p></div>
+          </li>
+          <li class="tl-item minor">
+            <div class="tl-meta"><span class="tl-ver">0.7.36 – 0.7.40</span><span class="tl-date">25.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.14.t">Polish &amp; fixes</strong><p data-i18n="ms.14.d">Calendar weeks, password-free diagnostic log for sign-in problems, umlauts in passwords, S/MIME signing with intermediate certificates.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.41</span><span class="tl-date">25.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.15.t">Tidy contacts</strong><p data-i18n="ms.15.d">Merge duplicates side by side, complete contacts with AI from mails; week view on the day view&#x27;s timeline.</p></div>
+          </li>
+          <li class="tl-item minor">
+            <div class="tl-meta"><span class="tl-ver">0.7.42 – 0.7.44</span><span class="tl-date">25.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.16.t">Polish &amp; fixes</strong><p data-i18n="ms.16.d">All contacts instead of 500, Outlook quotes in names, clearer Google Contacts errors, status bar shows sync errors.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.45</span><span class="tl-date">25.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.17.t">Activity</strong><p data-i18n="ms.17.d">A log of what happened to mails on this device – by you, rules or agents – with a jump to the mail and undo.</p></div>
+          </li>
+          <li class="tl-item major">
+            <div class="tl-meta"><span class="tl-ver">0.7.46 – 0.7.47</span><span class="tl-date">26.11.</span></div>
+            <div class="tl-body"><strong data-i18n="ms.18.t">Events with attendees &amp; Teams</strong><p data-i18n="ms.18.d">Attendees in invitations and the calendar, invite others yourself (Google with a Meet link, otherwise by calendar mail), changes &amp; cancellations to everyone, answers recorded; “Plan in Teams” opens Teams&#x27; form prefilled.</p></div>
+          </li>
+        </ol>
+        <p class="tl-more"><a href="https://github.com/diver80/postdive/blob/main/docs/HISTORY.md" target="_blank" rel="noopener" data-i18n="ms.all">Full history &amp; changelog →</a></p>
+      </div>
+    </section>
+
     <section id="platforms">
       <div class="container">
         <div class="sec-head">
@@ -552,6 +660,7 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         <a href="https://github.com/diver80/postdive/blob/main/docs/MCP.md" target="_blank" rel="noopener">MCP Server</a>
         <a href="https://github.com/diver80/postdive/blob/main/docs/LOCAL_AI.md" target="_blank" rel="noopener" data-i18n="foot.localai">Local AI</a>
         <a href="https://github.com/diver80/postdive/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener" data-i18n="foot.arch">Architecture</a>
+        <a href="https://github.com/diver80/postdive/blob/main/docs/HISTORY.md" target="_blank" rel="noopener">History</a>
       </div>
     </div>
   </footer>
@@ -624,7 +733,50 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         "open.license": "MIT License",
         "foot.mit": "MIT Licensed Open Source",
         "foot.localai": "Local AI",
-        "foot.arch": "Architecture"
+        "foot.arch": "Architecture",
+        "nav.milestones": "Milestones",
+        "ms.title": "Milestones",
+        "ms.sub": "From Thunderbird add-on to standalone suite – the big steps, release by release.",
+        "ms.fixes": "Polish & fixes",
+        "ms.all": "Full history & changelog →",
+        "ms.0.t": "Started as “OmaThunder”",
+        "ms.0.d": "Thunderbird add-on with a Go helper: AI inbox triage, compose assistant, summaries, translation, questions about mails, Homebrew install.",
+        "ms.1.t": "Spaces & cleanup",
+        "ms.1.d": "Topic spaces, Kanban per mailbox, Thunderbird filters as the base layer, archive & cleanup with verified .eml export.",
+        "ms.2.t": "Own app instead of a Kanban board",
+        "ms.2.d": "Native window with mail cockpit, calendar and contacts; settings move into the app.",
+        "ms.3.t": "Standalone, no Thunderbird",
+        "ms.3.d": "Own IMAP/SMTP engine with SQLite, conversations, Thunderbird import, S/MIME, Gmail & Microsoft 365 sign-in, CalDAV/CardDAV, offline outbox, account transfer by QR code.",
+        "ms.4.t": "Android app",
+        "ms.4.d": "Phone layout with swipe gestures, accounts by QR code, new mail in the background, passwords in the Android Keystore.",
+        "ms.5.t": "Encryption & writing",
+        "ms.5.d": "Native OpenPGP (no gpg), security hardening, WYSIWYG editor with inline images and tables, rule editor.",
+        "ms.6.t": "Polish & fixes",
+        "ms.6.d": "Compact folder sidebar, settings tabs, select all, Android background sync, focus counter, local AI guide.",
+        "ms.7.t": "Calendar & invitations",
+        "ms.7.d": "Day view on a 24h timeline, visible RSVP status, choice of target calendar when accepting (Google & CalDAV too).",
+        "ms.8.t": "AI help while writing",
+        "ms.8.d": "“✨ AI Help” right in the reply and compose window.",
+        "ms.9.t": "Polish & fixes",
+        "ms.9.d": "Correct Sent folder, S/MIME decryption & team import, invitations from encrypted mails, Jira preview, raw source & header view, accounts/calendars/rules in Settings.",
+        "ms.10.t": "AI assistant with tools",
+        "ms.10.d": "Searches mails, threads, contacts and events and only proposes actions; personal AI instructions, rule suggestions from mail headers.",
+        "ms.11.t": "MCP server",
+        "ms.11.d": "postdive --mcp connects Claude Code, Claude Desktop, Cursor & co. locally to mail, calendar and contacts; read-only by default.",
+        "ms.12.t": "Renamed to PostDive",
+        "ms.12.d": "Plus Linux support for Wayland/Hyprland (Omarchy).",
+        "ms.13.t": "UI redesign",
+        "ms.13.d": "Calmer interface in the spirit of Apple Mail, simple account setup, clearly separated areas, cleaner dialogs, better theme contrast.",
+        "ms.14.t": "Polish & fixes",
+        "ms.14.d": "Calendar weeks, password-free diagnostic log for sign-in problems, umlauts in passwords, S/MIME signing with intermediate certificates.",
+        "ms.15.t": "Tidy contacts",
+        "ms.15.d": "Merge duplicates side by side, complete contacts with AI from mails; week view on the day view's timeline.",
+        "ms.16.t": "Polish & fixes",
+        "ms.16.d": "All contacts instead of 500, Outlook quotes in names, clearer Google Contacts errors, status bar shows sync errors.",
+        "ms.17.t": "Activity",
+        "ms.17.d": "A log of what happened to mails on this device – by you, rules or agents – with a jump to the mail and undo.",
+        "ms.18.t": "Events with attendees & Teams",
+        "ms.18.d": "Attendees in invitations and the calendar, invite others yourself (Google with a Meet link, otherwise by calendar mail), changes & cancellations to everyone, answers recorded; “Plan in Teams” opens Teams' form prefilled."
       },
       de: {
         "nav.features": "Funktionen",
@@ -688,7 +840,50 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         "open.license": "MIT-Lizenz",
         "foot.mit": "Open Source unter MIT-Lizenz",
         "foot.localai": "Lokale KI",
-        "foot.arch": "Architektur"
+        "foot.arch": "Architektur",
+        "nav.milestones": "Meilensteine",
+        "ms.title": "Meilensteine",
+        "ms.sub": "Vom Thunderbird-Add-on zur eigenständigen Suite – die großen Schritte, Release für Release.",
+        "ms.fixes": "Feinschliff & Fehlerbehebungen",
+        "ms.all": "Ganze Historie & Changelog →",
+        "ms.0.t": "Start als „OmaThunder“",
+        "ms.0.d": "Thunderbird-Add-on mit Go-Hilfsprogramm: KI-Sortierung des Posteingangs, Schreib-Assistent, Zusammenfassen, Übersetzen, Fragen an Mails, Homebrew-Installation.",
+        "ms.1.t": "Spaces & Aufräumen",
+        "ms.1.d": "Themenbereiche, Kanban pro Postfach, Thunderbird-Filter als Unterbau, Archiv & Cleanup mit geprüftem .eml-Export.",
+        "ms.2.t": "Eigene App statt Kanban-Board",
+        "ms.2.d": "Native Oberfläche mit Mail-Cockpit, Kalender und Kontakten; Einstellungen wandern in die App.",
+        "ms.3.t": "Eigenständig, ohne Thunderbird",
+        "ms.3.d": "Eigene IMAP/SMTP-Engine mit SQLite, Unterhaltungen, Thunderbird-Import, S/MIME, Gmail- & Microsoft-365-Anmeldung, CalDAV/CardDAV, Offline-Postausgang, Konto-Übertragung per QR-Code.",
+        "ms.4.t": "Android-App",
+        "ms.4.d": "Telefon-Ansicht mit Wischgesten, Konten per QR-Code, neue Mails im Hintergrund, Passwörter im Android-Keystore.",
+        "ms.5.t": "Verschlüsselung & Schreiben",
+        "ms.5.d": "Natives OpenPGP (ohne gpg), Sicherheits-Härtung, WYSIWYG-Editor mit Inline-Bildern und Tabellen, Regeleditor.",
+        "ms.6.t": "Feinschliff & Fehlerbehebungen",
+        "ms.6.d": "Kompakte Ordnerleiste, Einstellungs-Tabs, „Alle auswählen“, Android-Hintergrund-Sync, Fokus-Zähler, Anleitung für lokale KI.",
+        "ms.7.t": "Kalender & Einladungen",
+        "ms.7.d": "Tagesansicht mit 24h-Zeitleiste, sichtbarer Zusage-Status, Zielkalender beim Annehmen (auch Google & CalDAV).",
+        "ms.8.t": "KI-Hilfe beim Schreiben",
+        "ms.8.d": "„✨ KI-Hilfe“ direkt im Antwort- und Verfassen-Fenster.",
+        "ms.9.t": "Feinschliff & Fehlerbehebungen",
+        "ms.9.d": "Richtiger „Gesendet“-Ordner, S/MIME-Entschlüsselung & Team-Import, Einladungen aus verschlüsselten Mails, Jira-Vorschau, Quelltext- & Header-Ansicht, Konten/Kalender/Regeln in den Einstellungen.",
+        "ms.10.t": "KI-Assistent mit Werkzeugen",
+        "ms.10.d": "Sucht Mails, Unterhaltungen, Kontakte und Termine und schlägt Aktionen nur vor; persönliche KI-Hinweise, Regelvorschläge aus Mail-Headern.",
+        "ms.11.t": "MCP-Server",
+        "ms.11.d": "postdive --mcp verbindet Claude Code, Claude Desktop, Cursor & Co. lokal mit Postfach, Kalender und Kontakten; standardmäßig nur lesend.",
+        "ms.12.t": "Umbenennung zu PostDive",
+        "ms.12.d": "Plus Linux-Unterstützung für Wayland/Hyprland (Omarchy).",
+        "ms.13.t": "UI-Redesign",
+        "ms.13.d": "Ruhigere Oberfläche im Stil von Apple Mail, einfaches Konto-Setup, klar getrennte Bereiche, saubere Dialoge, besserer Theme-Kontrast.",
+        "ms.14.t": "Feinschliff & Fehlerbehebungen",
+        "ms.14.d": "Kalenderwochen, Diagnose-Log für Anmeldeprobleme (ohne Passwörter), Umlaute im Passwort, S/MIME-Signatur mit Zwischenzertifikaten.",
+        "ms.15.t": "Kontakte aufräumen",
+        "ms.15.d": "Duplikate im Vergleich zusammenführen, Kontaktdaten per KI aus Mails vervollständigen; Wochenansicht auf der Zeitleiste der Tagesansicht.",
+        "ms.16.t": "Feinschliff & Fehlerbehebungen",
+        "ms.16.d": "Alle Kontakte statt 500, Outlook-Anführungszeichen in Namen, klarere Google-Kontakte-Fehler, Statusleiste zeigt Sync-Fehler.",
+        "ms.17.t": "Aktivität",
+        "ms.17.d": "Protokoll, was auf diesem Gerät mit Mails passiert ist – von dir, Regeln oder Agenten – mit Sprung zur Mail und Rückgängig.",
+        "ms.18.t": "Termine mit Teilnehmern & Teams",
+        "ms.18.d": "Teilnehmer in Einladungen und Kalender, selbst einladen (Google mit Meet-Link, sonst per Kalender-Mail), Änderungen & Absagen an alle, Antworten werden eingetragen; „In Teams planen“ öffnet das Teams-Formular vorausgefüllt."
       }
     };
 

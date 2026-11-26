@@ -282,6 +282,7 @@ type eventState struct {
 	eventSendInvites   bool   // mail the invitation / the change
 	eventAddMeet       bool   // Google calendars: ask for a Meet link
 	eventInviteAccount string // account ID the invitation goes out from (local, CalDAV)
+	eventTeamsSelf     bool   // "Plan in Teams" also invites the own address
 	// attExpanded: attendee lists shown in full, keyed by where they are shown.
 	attExpanded map[string]bool
 }
@@ -3972,6 +3973,7 @@ func (a *App) resetEventAttendees(atts []backend.EventAttendee) {
 	a.eventSendInvites = true
 	a.eventAddMeet = false
 	a.eventInviteAccount = a.defaultComposeAccountID("")
+	a.eventTeamsSelf = true
 }
 
 // StartEventLoop starts the bridge event stream (live refresh + notifications), the meeting

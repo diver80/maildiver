@@ -21,7 +21,7 @@ import (
 	"github.com/diver80/postdive/internal/triage"
 )
 
-var version = "0.7.46-dev"
+var version = "0.7.47-dev"
 
 func main() {
 	if err := run(); err != nil {
