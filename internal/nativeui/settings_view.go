@@ -677,6 +677,37 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 				a.persistLayoutPrefs()
 			}
 		})
+		field("set-remind", a.tr("Termin-Erinnerung", "Event reminder"), func() {
+			// Applies at once: events without a reminder of their own (Google, subscriptions) and
+			// new events use it.
+			labels := []string{a.tr("Keine", "None"), "5 Min.", "10 Min.", "15 Min.", "30 Min.", a.tr("1 Std.", "1 hr")}
+			values := []int{0, 5, 10, 15, 30, 60}
+			cur := a.cfg.App.EffectiveEventReminderMinutes()
+			sel := labels[3]
+			for i, v := range values {
+				if v == cur {
+					sel = labels[i]
+				}
+			}
+			if ui.Select(c.Key("set-remind-s"), &sel, labels).Grow(1).MinWidth(0).Changed() {
+				for i, l := range labels {
+					if l != sel {
+						continue
+					}
+					cfg, err := a.opts.ConfigLoader()
+					if err != nil {
+						cfg = a.cfg
+					}
+					v := values[i]
+					cfg.App.EventReminderMinutes = &v
+					if a.opts.ConfigSaver != nil {
+						_ = a.opts.ConfigSaver(cfg)
+					}
+					a.applyConfig(cfg)
+				}
+			}
+		})
+		note(a.tr("Gilt für Termine ohne eigene Erinnerung (z. B. Google und Kalender-Abos) und als Vorgabe für neue Termine. Abgesagte Termine erinnern nicht.", "Applies to events without a reminder of their own (e.g. Google and subscriptions) and as the preset for new events. Declined events do not remind."), t.TextMuted)
 
 		a.settingsSection(c, a.tr("Lesen", "Reading"))
 		field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {

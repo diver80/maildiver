@@ -443,21 +443,25 @@ func (a EventAttendee) Display() string {
 }
 
 // ReminderNone (CalendarEvent.ReminderMinutes) turns an event's reminder off;
-// DefaultReminderMinutes is the reminder of events that set none.
+// DefaultReminderMinutes is the reminder of events that set none when the settings say nothing.
 const (
 	ReminderNone           = -1
-	DefaultReminderMinutes = 10
+	DefaultReminderMinutes = 15
 )
 
-// ReminderLead is how long before its start an event reminds, false for none.
-func (ev CalendarEvent) ReminderLead() (time.Duration, bool) {
+// ReminderLead is how long before its start an event reminds, false for none. defaultMin is the
+// reminder of events that set none (the settings' choice; 0: none). A declined event does not
+// remind.
+func (ev CalendarEvent) ReminderLead(defaultMin int) (time.Duration, bool) {
 	switch {
-	case ev.ReminderMinutes == ReminderNone:
+	case ev.ResponseStatus == "declined", ev.ReminderMinutes == ReminderNone:
 		return 0, false
 	case ev.ReminderMinutes > 0:
 		return time.Duration(ev.ReminderMinutes) * time.Minute, true
+	case defaultMin > 0:
+		return time.Duration(defaultMin) * time.Minute, true
 	}
-	return DefaultReminderMinutes * time.Minute, true
+	return 0, false
 }
 
 type CalendarEventsResponse struct {

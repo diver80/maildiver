@@ -482,7 +482,7 @@ func TestPhoneEventFormPickersReminderAndValidation(t *testing.T) {
 		app.renderEventModal(c)
 	}, 380, 760)
 	tt.Frame()
-	for _, want := range []string{"Jährlich", "Beginn", "Ende", "10 Minuten vorher"} {
+	for _, want := range []string{"Jährlich", "Beginn", "Ende", "15 Minuten vorher"} {
 		if !tt.HasText(want) {
 			t.Fatalf("event form lacks %q: %v", want, tt.Texts())
 		}

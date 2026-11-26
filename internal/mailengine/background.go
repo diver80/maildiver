@@ -178,8 +178,9 @@ func (e *Engine) MarkEventsReminded(ctx context.Context, evs []backend.CalendarE
 
 // TakeDueEventReminders returns the timed events starting after now whose reminder is due by
 // now+within – within being the time to the next wake-up, so a reminder never falls between two
-// – that were not reminded of yet, and records them. Events with the reminder off, all-day
-// events and those of skipCalendars are left out.
+// – that were not reminded of yet, and records them. Events with the reminder off, declined and
+// all-day events and those of skipCalendars are left out; events without a reminder of their
+// own use the default of the settings.
 func (e *Engine) TakeDueEventReminders(ctx context.Context, now time.Time, within time.Duration, skipCalendars []string) ([]backend.CalendarEvent, error) {
 	raw, err := e.store.ListRawEvents(ctx, nil)
 	if err != nil {
@@ -195,12 +196,13 @@ func (e *Engine) TakeDueEventReminders(ctx context.Context, now time.Time, withi
 	if err != nil {
 		return nil, err
 	}
+	defaultMin := e.loadConfig().App.EffectiveEventReminderMinutes()
 	var due []backend.CalendarEvent
 	for _, ev := range ExpandEventsInWindow(raw, now, now.Add(reminderHorizon), 0) {
 		if ev.AllDay || ev.ID == "" || skip[ev.CalendarID] {
 			continue
 		}
-		lead, ok := ev.ReminderLead()
+		lead, ok := ev.ReminderLead(defaultMin)
 		if !ok {
 			continue
 		}

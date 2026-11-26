@@ -173,3 +173,26 @@ func TestDeleteDialogOffersDeclineForInvitations(t *testing.T) {
 		t.Fatalf("decline option missing; texts=%v", tt.Texts())
 	}
 }
+
+func TestRemindersUseDefaultSettingAndSkipDeclined(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.notifyEnabled = true
+	now := time.Now()
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	app.events = []backend.CalendarEvent{
+		{ID: "e1", Title: "Standard", Start: at(14 * time.Minute)},
+		{ID: "e2", Title: "Abgesagt", Start: at(5 * time.Minute), ResponseStatus: "declined"},
+	}
+	app.checkUpcomingMeetingReminders()
+	if len(app.recentAlerts) != 1 || app.recentAlerts[0].Title != "Standard" {
+		t.Fatalf("15 min default should remind of the 14-minute event only: %+v", app.recentAlerts)
+	}
+	if app.defaultEventReminder() != 15 {
+		t.Fatalf("new events start with 15 minutes, got %d", app.defaultEventReminder())
+	}
+	none := 0
+	app.cfg.App.EventReminderMinutes = &none
+	if app.defaultEventReminder() != backend.ReminderNone {
+		t.Fatal("default off: new events start without a reminder")
+	}
+}

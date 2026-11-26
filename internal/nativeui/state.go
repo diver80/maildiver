@@ -3751,7 +3751,7 @@ func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 	a.eventRecurrence = 0
 	a.eventRecCount = ""
 	a.eventRecUntil = ""
-	a.eventReminder = backend.DefaultReminderMinutes
+	a.eventReminder = a.defaultEventReminder()
 	a.resetEventAttendees(nil)
 	if prefill != nil {
 		a.eventTitle = prefill.Title
@@ -3816,7 +3816,7 @@ func (a *App) OpenEditEventModal(ev backend.CalendarEvent) {
 	a.eventRecurrence, a.eventRecCount, a.eventRecUntil = parseEventRRule(ev.RecurrenceRule)
 	a.eventReminder = ev.ReminderMinutes
 	if a.eventReminder == 0 {
-		a.eventReminder = backend.DefaultReminderMinutes
+		a.eventReminder = a.defaultEventReminder()
 	}
 	a.resetEventAttendees(ev.Attendees)
 	// Match calendar label
@@ -4039,13 +4039,21 @@ func (a *App) tickMeetingReminders(ctx context.Context) {
 	})
 }
 
+// defaultEventReminder is the reminder a new event starts with: the settings' default, or none.
+func (a *App) defaultEventReminder() int {
+	if m := a.cfg.App.EffectiveEventReminderMinutes(); m > 0 {
+		return m
+	}
+	return backend.ReminderNone
+}
+
 // eventReminderKey names one occurrence (as mailengine.EventReminderKey).
 func eventReminderKey(ev backend.CalendarEvent) string {
 	return ev.ID + "|" + ev.RecurrenceID + "|" + ev.Start
 }
 
-// checkUpcomingMeetingReminders raises alerts for meetings whose reminder (per event, default
-// 10 minutes before) is due (UI thread).
+// checkUpcomingMeetingReminders raises alerts for meetings whose reminder (per event, else the
+// settings' default, 15 minutes unless changed) is due (UI thread).
 func (a *App) checkUpcomingMeetingReminders() {
 	if !a.notifyEnabled || len(a.events) == 0 {
 		return
@@ -4056,7 +4064,7 @@ func (a *App) checkUpcomingMeetingReminders() {
 		if ev.AllDay || ev.ID == "" || a.isCalendarHidden(ev.CalendarID) {
 			continue
 		}
-		lead, on := ev.ReminderLead()
+		lead, on := ev.ReminderLead(a.cfg.App.EffectiveEventReminderMinutes())
 		if !on {
 			continue
 		}

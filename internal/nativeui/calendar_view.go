@@ -1477,7 +1477,7 @@ func (a *App) renderEventFormContent(c *ui.Context, inWindow bool) {
 		ui.Row(c.Key("ev-rem-row")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr("Erinnerung", "Reminder")).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
 			labels, values := a.eventReminderOptions()
-			sel := labels[2] // 10 minutes, the default
+			sel := labels[3] // 15 minutes, the default unless the settings say otherwise
 			for i, v := range values {
 				if v == a.eventReminder {
 					sel = labels[i]

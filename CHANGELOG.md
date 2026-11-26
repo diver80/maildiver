@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.50 (2026-11-26)
+
+### Termin-Erinnerungen
+- **Standard einstellbar, jetzt 15 Minuten:** Einstellungen → Allgemein → Benachrichtigungen → „Termin-Erinnerung“ (Keine, 5, 10, 15, 30 Minuten, 1 Stunde). Gilt für Termine ohne eigene Erinnerung – Google-Kalender und Kalender-Abos – auf dem Desktop und auf Android, und als Vorgabe für neue Termine. Bisher waren es fest 10 Minuten.
+- **Abgesagte Termine erinnern nicht mehr.**
+
 ## 0.7.49 (2026-11-26)
 
 ### Suche: klar, wo gesucht wird

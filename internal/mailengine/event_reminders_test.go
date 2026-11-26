@@ -130,3 +130,32 @@ func TestTakeDueEventReminders(t *testing.T) {
 		t.Fatalf("hidden calendar reminded: %v", due)
 	}
 }
+
+// The settings' default applies to events without a reminder of their own; declined events and
+// a default of "none" do not remind.
+func TestDueRemindersFollowDefaultAndSkipDeclined(t *testing.T) {
+	eng := newReminderTestEngine(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	def := createTestEvent(t, eng, "Standard", now.Add(25*time.Minute), 0)
+	own := createTestEvent(t, eng, "Eigene", now.Add(25*time.Minute), 30)
+	declined := createTestEvent(t, eng, "Abgesagt", now.Add(5*time.Minute), 30)
+	eng.store.SetEventSelfResponse(ctx, declined.ID, "declined")
+
+	cfg := eng.loadConfig()
+	none := 0
+	cfg.App.EventReminderMinutes = &none
+	_ = eng.saveConfig(cfg)
+	due, _ := eng.TakeDueEventReminders(ctx, now, time.Minute, nil)
+	if len(due) != 1 || due[0].Title != own.Title {
+		t.Fatalf("default off: only the event's own reminder is due, got %v", due)
+	}
+
+	thirty := 30
+	cfg.App.EventReminderMinutes = &thirty
+	_ = eng.saveConfig(cfg)
+	due, _ = eng.TakeDueEventReminders(ctx, now, time.Minute, nil)
+	if len(due) != 1 || due[0].Title != def.Title {
+		t.Fatalf("default 30 min: the default event is due, got %v", due)
+	}
+}

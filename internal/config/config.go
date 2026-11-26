@@ -86,6 +86,9 @@ type AppConfig struct {
 	AllowedImageSenders []string `json:"allowedImageSenders,omitempty"`
 	// UndoSendSeconds sets the cancellation grace window before SMTP send (nil defaults to 5s; 0 sends immediately).
 	UndoSendSeconds *int `json:"undoSendSeconds,omitempty"`
+	// EventReminderMinutes is the reminder before events that set none of their own (nil: 15
+	// minutes, 0: no reminder).
+	EventReminderMinutes *int `json:"eventReminderMinutes,omitempty"`
 	// DraftAutoSaveSeconds sets the compose auto-save interval (nil defaults to 25s; 0 disables auto-save).
 	DraftAutoSaveSeconds *int              `json:"draftAutoSaveSeconds,omitempty"`
 	ComposeTemplates     []ComposeTemplate `json:"composeTemplates,omitempty"`
@@ -110,6 +113,18 @@ func (a AppConfig) EffectiveCompactFolders() bool {
 // EffectiveListSnippets reports whether the mail list shows a preview line (default true).
 func (a AppConfig) EffectiveListSnippets() bool {
 	return a.ListSnippets == nil || *a.ListSnippets
+}
+
+// DefaultEventReminderMinutes is the reminder before events when the settings choose none.
+const DefaultEventReminderMinutes = 15
+
+// EffectiveEventReminderMinutes is the default reminder in minutes before an event (0: none,
+// at most a day).
+func (a AppConfig) EffectiveEventReminderMinutes() int {
+	if a.EventReminderMinutes == nil {
+		return DefaultEventReminderMinutes
+	}
+	return min(max(*a.EventReminderMinutes, 0), 24*60)
 }
 
 // EffectiveUndoSendSeconds returns the configured undo-send grace period in seconds (default 5, 0..30).
