@@ -128,6 +128,7 @@ func MailProviderPresets() []MailProviderPreset {
 		{ID: "gmx", Label: "GMX", IMAPHost: "imap.gmx.net", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "mail.gmx.net", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "webde", Label: "WEB.DE", IMAPHost: "imap.web.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.web.de", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "strato", Label: "STRATO", IMAPHost: "imap.strato.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.strato.de", SMTPPort: 465, SMTPTLS: "tls"},
+		{ID: "1und1", Label: "1&1", IMAPHost: "imap.1und1.de", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.1und1.de", SMTPPort: 587, SMTPTLS: "starttls"},
 		{ID: "gmail-oauth", Label: "Gmail (OAuth2 · eigene Client-ID)", IMAPHost: "imap.gmail.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "tls", AuthType: "xoauth2", OAuthProvider: "google"},
 		{ID: "m365-oauth", Label: "Microsoft 365 / Outlook (OAuth2 · eigene Client-ID)", IMAPHost: "outlook.office365.com", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "smtp.office365.com", SMTPPort: 587, SMTPTLS: "starttls", AuthType: "xoauth2", OAuthProvider: "microsoft"},
 		{ID: "custom", Label: "Benutzerdefiniert / Custom", IMAPHost: "", IMAPPort: 993, IMAPTLS: "tls", SMTPHost: "", SMTPPort: 465, SMTPTLS: "tls"},

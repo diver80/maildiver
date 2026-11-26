@@ -245,6 +245,11 @@ type composeState struct {
 	composeCryptoTech int
 	// composeReplyEncrypted: the mail being answered is encrypted, so the reply is sent encrypted.
 	composeReplyEncrypted bool
+	// composeHasDecrypted: the body quotes or forwards the decrypted text of an encrypted mail;
+	// sending it unencrypted asks first (composePlainWarn, composePlainAck).
+	composeHasDecrypted bool
+	composePlainWarn    bool
+	composePlainAck     bool
 }
 
 // eventState is the create/edit event modal and the calendar picker data.
@@ -3072,6 +3077,7 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeAutoSaveSnap = ""
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
+	a.composeHasDecrypted, a.composePlainWarn, a.composePlainAck = false, false, false
 	a.composeWarnSendAt = 0
 	a.composeTplOpen = false
 	a.composeTplName = ""
@@ -3118,6 +3124,7 @@ func (a *App) closeCompose() {
 	a.composeAutoSaveSnap = ""
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
+	a.composeHasDecrypted, a.composePlainWarn, a.composePlainAck = false, false, false
 	a.composeWarnSendAt = 0
 	a.composeTplOpen = false
 	a.composeTplName = ""
@@ -3312,6 +3319,7 @@ func (a *App) OpenComposeReply(msg *backend.MessageDetail, body string) {
 	a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig(body, composeSignatureBlockHTMLFromParts(sig, sigHTML), sigBelow, "", "", nil, quote)
 	a.composeEditorGen++
 	a.composeReplyEncrypted = msg.Security.Encrypted
+	a.composeHasDecrypted = msg.Security.Encrypted && quote != ""
 	a.refreshReplyAutoEncrypt(msg.Security.Encrypted, msg.Security.PGP)
 }
 
@@ -3373,9 +3381,10 @@ func (a *App) refreshReplyAutoEncrypt(encrypted, isPGP bool) {
 const maxQuoteRunes = 20000
 
 // replyQuote is the original mail quoted below a reply ("Am … schrieb …:" and "> " lines).
-// Encrypted mails are not quoted: the reply would carry their text unencrypted.
+// An encrypted mail is quoted once it is decrypted (replying is the user's own action); sending
+// that reply unencrypted asks first (checkComposePlainDecrypted).
 func (a *App) replyQuote(msg *backend.MessageDetail) string {
-	if msg.Security.Encrypted {
+	if msg.Security.Encrypted && msg.Security.Decryption != "success" {
 		return ""
 	}
 	text := msg.BodyText
@@ -3518,6 +3527,7 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		md, _ := htmlMailMarkdown(msg.BodyHtml)
 		fwdBodyText = strings.TrimSpace(md)
 	}
+	a.composeHasDecrypted = msg.Security.Encrypted && fwdBodyText != ""
 	header := fmt.Sprintf("\n\n%s\n%s %s%s\n%s %s\n%s %s\n\n%s",
 		sep,
 		a.tr("Von:", "From:"), msg.From,

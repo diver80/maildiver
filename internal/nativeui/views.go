@@ -1430,7 +1430,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 				Background(withAlpha(t.Warning, 0.16)).Border(1, withAlpha(t.Warning, 0.5)).Children(func() {
 				ui.Text(c, a.tr("Nicht gesendet.", "Not sent.")).FontSize(12.5).Bold().Grow(1).MinWidth(0).SingleLine()
 				if !a.readOnly && ui.PrimaryButton(c.Key("cmp-ask-save"), a.tr("Als Entwurf speichern", "Save as draft")).Clicked() {
-					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.composeDraftSavedMsg())
 				}
 				if ui.Button(c.Key("cmp-ask-discard"), a.tr("Verwerfen", "Discard")).Clicked() {
 					a.discardCompose()
@@ -1646,7 +1646,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 				}
 			}
 			if c.Shortcut(ui.Cmd, ui.KeyS) {
-				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+				a.SaveDraft(context.Background(), a.buildComposeReq(false), a.composeDraftSavedMsg())
 			}
 		}
 		if a.composeForwardHTML != "" && (!a.composeUsingWYSIWYG() || a.composeEditor.Widget() == nil) {
@@ -1717,7 +1717,12 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			}
 		})
 
-		if a.composeReplyEncrypted {
+		if a.composeReplyEncrypted && a.composeHasDecrypted && a.composeEncrypt {
+			ui.Text(c, a.tr(
+				"Die Original-Mail war verschlüsselt und ist unten zitiert – die Antwort wird ebenfalls verschlüsselt gesendet. Entwürfe werden nicht automatisch gespeichert.",
+				"The original mail was encrypted and is quoted below – the reply is sent encrypted too. Drafts are not saved automatically.",
+			)).FontSize(11.5).TextColor(t.TextMuted)
+		} else if a.composeReplyEncrypted {
 			if a.composeCryptoTech == 2 {
 				ui.Text(c, a.tr(
 					"Hinweis: Die Original-Mail war OpenPGP-verschlüsselt. Aktiviere unten „Verschlüsseln“, falls der Empfänger-Public-Key vorhanden ist.",
@@ -1743,6 +1748,31 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 
 		if a.readOnly {
 			ui.Text(c, a.tr("Read-Only-Modus aktiv — Senden und Speichern sind deaktiviert.", "Read-only mode active — sending and saving are disabled.")).FontSize(11.5).TextColor(t.Warning)
+		}
+
+		if a.composePlainWarn {
+			ui.Row(c.Key("cmp-plain-warn")).FillWidth().Padding(8, 10).Radius(8).Gap(8).Wrap().AlignItems(ui.Center).
+				Background(withAlpha(t.Danger, 0.14)).Border(1, withAlpha(t.Danger, 0.5)).Children(func() {
+				ui.Text(c, a.tr("Die Mail enthält den Text einer verschlüsselten Mail, würde aber unverschlüsselt gesendet.", "This mail contains the text of an encrypted mail but would be sent unencrypted.")).
+					FontSize(12).Bold().Grow(1).MinWidth(0)
+				if ui.PrimaryButton(c.Key("cmp-plain-enc"), a.tr("Verschlüsselt senden", "Send encrypted")).Clicked() {
+					a.composePlainWarn = false
+					a.composeEncrypt = true
+					req := a.buildComposeReq(false)
+					req.SendAt = a.composeWarnSendAt
+					a.requestComposeSend(context.Background(), req)
+				}
+				if ui.Button(c.Key("cmp-plain-send"), a.tr("Unverschlüsselt senden", "Send unencrypted")).Clicked() {
+					a.composePlainWarn = false
+					a.composePlainAck = true
+					req := a.buildComposeReq(false)
+					req.SendAt = a.composeWarnSendAt
+					a.requestComposeSend(context.Background(), req)
+				}
+				if ui.Button(c.Key("cmp-plain-x"), "✕").Padding(2, 6).Clicked() {
+					a.composePlainWarn = false
+				}
+			})
 		}
 
 		if a.composeMissingAttWarn != "" {
@@ -1788,7 +1818,7 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 			ui.Spacer(c)
 			if !a.readOnly {
 				if ui.Button(c.Key("cmp-draft"), a.tr("Entwurf speichern", "Save Draft")).Clicked() {
-					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder"))
+					a.SaveDraft(context.Background(), a.buildComposeReq(false), a.composeDraftSavedMsg())
 				}
 				sendLabel := a.tr("Senden", "Send")
 				if a.composeConfirm {

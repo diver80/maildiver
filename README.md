@@ -16,6 +16,7 @@
   <a href="docs/MCP.md">🔌 MCP Server</a> ·
   <a href="docs/LOCAL_AI.md">🤖 Local AI Guide</a> ·
   <a href="docs/ARCHITECTURE.md">📐 Architecture</a> ·
+  <a href="docs/SETUP.md">🧩 Setup: Mail, Google &amp; Outlook</a> ·
   <a href="docs/HISTORY.md">🗺️ Meilensteine / History</a> ·
   <a href="LICENSE">⚖️ MIT License</a>
 </p>

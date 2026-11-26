@@ -253,6 +253,26 @@ func (a *App) checkComposeMissingAttachment(req backend.ComposeRequest) bool {
 	return false
 }
 
+// composeDraftSavedMsg is the toast after saving the compose draft; it says when the draft holds
+// the decrypted text of an encrypted mail (drafts are stored unencrypted on the server).
+func (a *App) composeDraftSavedMsg() string {
+	if a.composeHasDecrypted {
+		return a.tr("Entwurf gespeichert – Achtung: er enthält den Text der verschlüsselten Mail unverschlüsselt im Entwürfe-Ordner.",
+			"Draft saved – note: it holds the encrypted mail's text unencrypted in the Drafts folder.")
+	}
+	return a.tr("Entwurf im Entwürfe-Ordner gespeichert", "Draft saved to Drafts folder")
+}
+
+// checkComposePlainDecrypted holds back a mail that carries the decrypted text of an encrypted
+// mail but would go out unencrypted, until the user confirms it.
+func (a *App) checkComposePlainDecrypted(req backend.ComposeRequest) bool {
+	if !a.composeHasDecrypted || req.Encrypt || a.composePlainAck {
+		return false
+	}
+	a.composePlainWarn = true
+	return true
+}
+
 // requestComposeSend runs missing-attachment guard and either starts the Undo-Send countdown
 // or sends immediately when UndoSendSeconds == 0. Never blocks the UI thread on WebView JS eval.
 func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest) {
@@ -310,7 +330,7 @@ func (a *App) requestComposeSend(ctx context.Context, req backend.ComposeRequest
 }
 
 func (a *App) finalizeComposeSend(ctx context.Context, sessSeq uint64, req backend.ComposeRequest) {
-	if a.checkComposeMissingAttachment(req) {
+	if a.checkComposeMissingAttachment(req) || a.checkComposePlainDecrypted(req) {
 		a.composeWarnSendAt = req.SendAt // "Send anyway" keeps a chosen later time
 		return
 	}
@@ -347,6 +367,7 @@ func (a *App) finalizeComposeSend(ctx context.Context, sessSeq uint64, req backe
 	a.composeConfirm = false
 	a.composeMissingAttWarn = ""
 	a.composeMissingAttAck = false
+	a.composePlainWarn, a.composePlainAck = false, false
 	a.closeCompose()
 
 	go func(nonce string, deadline time.Time) {
@@ -531,7 +552,9 @@ func (a *App) startComposeAutoSaveTicker(sessSeq uint64) {
 
 // maybeAutoSaveComposeDraft runs from desktop/phone compose rendering and the idle ticker to silently save dirty drafts.
 func (a *App) maybeAutoSaveComposeDraft() {
-	if !a.composeOpen || a.readOnly || a.composeBusy || a.composeAutoSaveBusy {
+	// A draft with the decrypted text of an encrypted mail would lie unencrypted in the server's
+	// Drafts folder: it is saved only when the user asks (composeDraftSavedMsg says so).
+	if !a.composeOpen || a.readOnly || a.composeBusy || a.composeAutoSaveBusy || a.composeHasDecrypted {
 		return
 	}
 	intervalSec := a.cfg.App.EffectiveDraftAutoSaveSeconds()

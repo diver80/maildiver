@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.48 (2026-11-26)
+
+### Antworten auf verschlüsselte Mails
+- **Zitat statt leerer Antwort:** Antworten auf entschlüsselte S/MIME- oder OpenPGP-Mails zitieren den Originaltext jetzt wie gewohnt; bisher fehlte er ganz.
+- **Kein versehentlicher Klartext:** Würde eine Antwort oder Weiterleitung mit dem Text einer verschlüsselten Mail unverschlüsselt gesendet, fragt PostDive vorher: „Verschlüsselt senden“, „Unverschlüsselt senden“ oder abbrechen.
+- **Entwürfe:** Solche Antworten werden nicht automatisch im Entwürfe-Ordner gespeichert (Entwürfe liegen unverschlüsselt beim Anbieter); beim Speichern von Hand weist PostDive darauf hin.
+
+### Konten
+- **Vorlage für 1&1:** `imap.1und1.de` / `smtp.1und1.de` (STARTTLS) stehen jetzt in der Anbieter-Liste.
+
+### Dokumentation
+- **Einrichtung auf einen Blick:** [docs/SETUP.md](docs/SETUP.md) beschreibt Mail-Anbieter (IONOS, 1&1, GMX, WEB.DE, STRATO, Gmail, iCloud, Fastmail, Microsoft 365), Google Kalender & Kontakte, Outlook-Kalender als Abo, Teams, Kalender-Abos und CalDAV/CardDAV.
+
 ## 0.7.47 (2026-11-26)
 
 ### Teams-Besprechungen

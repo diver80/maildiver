@@ -114,3 +114,40 @@ func TestComposeSignAndEncryptedReply(t *testing.T) {
 		t.Errorf("empty security suffix = %q", got)
 	}
 }
+
+// A decrypted encrypted mail is quoted in the reply; sending that reply unencrypted asks first,
+// and the draft is never saved to the server on its own.
+func TestEncryptedReplyQuotesDecryptedTextAndGuardsPlainSend(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	msg := &backend.MessageDetail{MessageHeader: app.messages[0], BodyText: "Geheimer Text", Security: backend.MessageSecurity{Encrypted: true, Decryption: "success"}}
+	app.OpenComposeReply(msg, "")
+	if !strings.Contains(app.composeBody, "> Geheimer Text") || !app.composeHasDecrypted {
+		t.Fatalf("decrypted mail should be quoted: %q", app.composeBody)
+	}
+	req := app.buildComposeReq(false)
+	if req.Encrypt || !app.checkComposePlainDecrypted(req) || !app.composePlainWarn {
+		t.Fatal("unencrypted send of decrypted text must be held back")
+	}
+	app.composePlainAck = true
+	if app.checkComposePlainDecrypted(req) {
+		t.Fatal("confirmed unencrypted send must pass")
+	}
+	app.composePlainAck = false
+	req.Encrypt = true
+	if app.checkComposePlainDecrypted(req) {
+		t.Fatal("encrypted send must pass")
+	}
+	app.composeDirtyAt = time.Now().Add(-time.Minute)
+	app.maybeAutoSaveComposeDraft()
+	if app.composeAutoSaveBusy {
+		t.Fatal("a draft with decrypted text must not be autosaved")
+	}
+
+	// Not decrypted: nothing to quote.
+	undecrypted := *msg
+	undecrypted.Security.Decryption = "skipped"
+	app.OpenComposeReply(&undecrypted, "")
+	if strings.Contains(app.composeBody, "Geheimer Text") || app.composeHasDecrypted {
+		t.Fatalf("undecrypted mail must not be quoted: %q", app.composeBody)
+	}
+}
