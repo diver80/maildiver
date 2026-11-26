@@ -79,6 +79,7 @@ type settingsUI struct {
 	agentModels                             []string
 	agentModelsKey                          string
 	agentModelsLoading                      bool
+	agentModelsSeq                          uint64
 	agentModelsErr                          string
 	agentModelCustom                        bool
 	savedEndpoints                          map[string]string
@@ -88,6 +89,7 @@ type settingsUI struct {
 	clfModels                         []string
 	clfModelsKey                      string
 	clfModelsLoading                  bool
+	clfModelsSeq                      uint64
 	clfModelsErr                      string
 	clfModelCustom                    bool
 	maxCalls           string
@@ -1015,19 +1017,22 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 					delete(s.savedEndpoints, prevAgentBackend)
 				}
 				s.agentEndpoint = s.savedEndpoints[s.agentBackend]
+				s.agentModel = ""
 				s.agentModels = nil
 				s.agentModelsKey = ""
+				s.agentModelsLoading = false
+				s.agentModelsSeq++
 				s.agentModelsErr = ""
 				s.agentModelCustom = false
 			}
 		})
-		a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsErr, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
+		a.renderSettingsModelField(c, field, "set-ag", s.agentBackend, &s.agentModel, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsSeq, &s.agentModelsErr, &s.agentModelCustom, a.tr("leer = Standard des Anbieters", "empty = provider default"))
 		field("set-ag-e", "Endpoint", func() {
 			epIn := ui.TextInput(c.Key("set-ag-ei"), &s.agentEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 			if epIn.Submitted() && !s.agentModelsLoading {
 				wantKey := s.agentBackend + "|" + strings.TrimSpace(s.agentEndpoint)
 				s.agentModelsKey = wantKey
-				a.loadSettingsModels(s.agentBackend, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsErr, wantKey)
+				a.loadSettingsModels(s.agentBackend, s.agentEndpoint, &s.agentModels, &s.agentModelsKey, &s.agentModelsLoading, &s.agentModelsSeq, &s.agentModelsErr, wantKey)
 			}
 		})
 		field("set-ai-inst", a.tr("Persönliche KI-Hinweise", "Custom AI instructions"), func() {
@@ -1066,19 +1071,22 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 						delete(s.savedEndpoints, prevClfBackend)
 					}
 					s.clfEndpoint = s.savedEndpoints[s.clfBackend]
+					s.clfModel = ""
 					s.clfModels = nil
 					s.clfModelsKey = ""
+					s.clfModelsLoading = false
+					s.clfModelsSeq++
 					s.clfModelsErr = ""
 					s.clfModelCustom = false
 				}
 			})
-			a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsErr, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
+			a.renderSettingsModelField(c, field, "set-clf", s.clfBackend, &s.clfModel, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsSeq, &s.clfModelsErr, &s.clfModelCustom, a.tr("leer = günstiges Standardmodell", "empty = cheap default model"))
 			field("set-clf-e", "Endpoint", func() {
 				epIn := ui.TextInput(c.Key("set-clf-ei"), &s.clfEndpoint).Placeholder(a.tr("leer = offizielle Adresse", "empty = official URL")).Grow(1)
 				if epIn.Submitted() && !s.clfModelsLoading {
 					wantKey := s.clfBackend + "|" + strings.TrimSpace(s.clfEndpoint)
 					s.clfModelsKey = wantKey
-					a.loadSettingsModels(s.clfBackend, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsErr, wantKey)
+					a.loadSettingsModels(s.clfBackend, s.clfEndpoint, &s.clfModels, &s.clfModelsKey, &s.clfModelsLoading, &s.clfModelsSeq, &s.clfModelsErr, wantKey)
 				}
 			})
 			field("set-max", a.tr("KI-Aufrufe pro Scan", "AI calls per scan"), func() { ui.TextInput(c.Key("set-max-i"), &s.maxCalls).Width(90) })
@@ -1188,6 +1196,7 @@ func (a *App) renderSettingsModelField(
 	models *[]string,
 	loadedKey *string,
 	loading *bool,
+	seqPtr *uint64,
 	modelsErr *string,
 	customMode *bool,
 	fallbackPH string,
@@ -1198,7 +1207,7 @@ func (a *App) renderSettingsModelField(
 	// never on every keystroke while the user types an endpoint URL.
 	if !isCLI && *loadedKey == "" && !*loading {
 		*loadedKey = wantKey
-		a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, modelsErr, wantKey)
+		a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, seqPtr, modelsErr, wantKey)
 	}
 	field(keyPrefix+"-m", a.tr("Modell", "Model"), func() {
 		if !isCLI && len(*models) > 0 && !*customMode {
@@ -1249,7 +1258,7 @@ func (a *App) renderSettingsModelField(
 			}
 			if refBtn.Clicked() && !*loading {
 				*loadedKey = wantKey
-				a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, modelsErr, wantKey)
+				a.loadSettingsModels(backendName, endpointVal, models, loadedKey, loading, seqPtr, modelsErr, wantKey)
 			}
 		}
 	})
@@ -1260,15 +1269,20 @@ func (a *App) renderSettingsModelField(
 	}
 }
 
-func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, loadedKey *string, loading *bool, dstErr *string, wantKey string) {
+func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, loadedKey *string, loading *bool, seqPtr *uint64, dstErr *string, wantKey string) {
 	*loading = true
 	*dstErr = ""
+	*seqPtr++
+	seq := *seqPtr
+	baseCfg := a.cfg
+	configLoader := a.opts.ConfigLoader
+	anyLLMOpts := a.opts.AnyLLMOpts
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		cfg := a.cfg
-		if a.opts.ConfigLoader != nil {
-			if loaded, err := a.opts.ConfigLoader(); err == nil {
+		cfg := baseCfg
+		if configLoader != nil {
+			if loaded, err := configLoader(); err == nil {
 				cfg = loaded
 			}
 		}
@@ -1277,11 +1291,11 @@ func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, lo
 		var list []anyllm.Model
 		var err error
 		if ep == "" || ep == strings.TrimSpace(savedProv.Endpoint) {
-			list, err = ai.ListModelsFor(ctx, cfg.AI, backendName, a.opts.AnyLLMOpts...)
+			list, err = ai.ListModelsFor(ctx, cfg.AI, backendName, anyLLMOpts...)
 		} else {
 			prov := savedProv
 			prov.Endpoint = ep
-			list, err = ai.ListModels(ctx, prov, a.opts.AnyLLMOpts...)
+			list, err = ai.ListModels(ctx, prov, anyLLMOpts...)
 		}
 		names := make([]string, 0, len(list))
 		for _, m := range list {
@@ -1290,6 +1304,9 @@ func (a *App) loadSettingsModels(backendName, endpoint string, dst *[]string, lo
 			}
 		}
 		a.emitUpdate(func() {
+			if seq != *seqPtr {
+				return
+			}
 			*loading = false
 			if *loadedKey == wantKey {
 				*dst = names

@@ -198,7 +198,9 @@ func (e *Engine) TakeDueEventReminders(ctx context.Context, now time.Time, withi
 	}
 	defaultMin := e.loadConfig().App.EffectiveEventReminderMinutes()
 	var due []backend.CalendarEvent
-	for _, ev := range ExpandEventsInWindow(raw, now, now.Add(reminderHorizon), 0) {
+	expanded := ExpandEventsInWindow(raw, now, now.Add(reminderHorizon), 0)
+	e.fillOwnResponseStatus(expanded)
+	for _, ev := range expanded {
 		if ev.AllDay || ev.ID == "" || skip[ev.CalendarID] {
 			continue
 		}
@@ -209,7 +211,7 @@ func (e *Engine) TakeDueEventReminders(ctx context.Context, now time.Time, withi
 		start := parseFlexibleEventTime(ev.Start, 0)
 		until := start.Sub(now)
 		key := EventReminderKey(ev)
-		if until <= 0 || until > max(lead, within) || set[key] != 0 {
+		if until <= 0 || until > lead+within || set[key] != 0 {
 			continue
 		}
 		set[key] = start.Unix()

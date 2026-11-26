@@ -382,9 +382,14 @@ type gcalEventPayload struct {
 			Label          string `json:"label,omitempty"`
 		} `json:"entryPoints,omitempty"`
 	} `json:"conferenceData,omitempty"`
-	ETag             string   `json:"etag,omitempty"`
-	RecurringEventID string   `json:"recurringEventId,omitempty"`
-	Recurrence       []string `json:"recurrence,omitempty"`
+	ETag              string   `json:"etag,omitempty"`
+	RecurringEventID  string   `json:"recurringEventId,omitempty"`
+	OriginalStartTime *struct {
+		DateTime string `json:"dateTime,omitempty"`
+		Date     string `json:"date,omitempty"`
+		TimeZone string `json:"timeZone,omitempty"`
+	} `json:"originalStartTime,omitempty"`
+	Recurrence []string `json:"recurrence,omitempty"`
 	Start            struct {
 		DateTime string `json:"dateTime,omitempty"`
 		Date     string `json:"date,omitempty"`
@@ -582,6 +587,16 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 		}
 	}
 	org, atts := gcalParticipants(it)
+	recID := ""
+	if it.OriginalStartTime != nil {
+		if it.OriginalStartTime.Date != "" {
+			recID = strings.TrimSpace(it.OriginalStartTime.Date)
+		} else if it.OriginalStartTime.DateTime != "" {
+			if rt, ok := parseStrictEventTime(it.OriginalStartTime.DateTime); ok {
+				recID = rt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
 
 	return StoredEvent{
 		ID:           calID + "::" + it.ID,
@@ -598,6 +613,7 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 		Location:     it.Location,
 		Description:  desc,
 		RRule:        rruleStr,
+		RecurrenceID: recID,
 		IsRecurring:  rruleStr != "" || it.RecurringEventID != "",
 		ReadOnly:     readOnly,
 		ETag:         it.ETag,
@@ -749,8 +765,8 @@ func (e *Engine) deleteGoogleEvent(ctx context.Context, cal StoredCalendar, exis
 // without deleting the master series.
 // googleInstanceID finds the Google instance of the series existing that starts at recurrenceID.
 func (e *Engine) googleInstanceID(ctx context.Context, hc *http.Client, cal StoredCalendar, existing StoredEvent, recurrenceID string) (string, error) {
-	occTime := parseFlexibleEventTime(recurrenceID, 0)
-	if occTime.IsZero() {
+	occTime, ok := parseStrictEventTime(recurrenceID)
+	if !ok {
 		return "", fmt.Errorf("ungültige Termininstanz %q – ganze Serie wird geschützt", recurrenceID)
 	}
 	vals := url.Values{}

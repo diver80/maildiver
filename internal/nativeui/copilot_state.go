@@ -162,6 +162,10 @@ func (a *App) startModelLoad(ctx context.Context) {
 // SendCopilotPrompt starts an assistant run (UI thread). A second prompt is ignored while a
 // run is active.
 func (a *App) SendCopilotPrompt(ctx context.Context, prompt string) {
+	a.sendCopilotPrompt(ctx, prompt, a.selectedID)
+}
+
+func (a *App) sendCopilotPrompt(ctx context.Context, prompt, selectedID string) {
 	text := strings.TrimSpace(prompt)
 	if text == "" || a.chatStreaming || !a.chatBusy.CompareAndSwap(false, true) {
 		return
@@ -195,7 +199,7 @@ func (a *App) SendCopilotPrompt(ctx context.Context, prompt string) {
 		Model:             a.agentModel,
 		Language:          lang,
 		AccountID:         a.selectedAccount,
-		SelectedMessageID: a.selectedID,
+		SelectedMessageID: selectedID,
 		Messages:          history,
 	}
 	runner := a.copilotRunner
@@ -387,7 +391,8 @@ func (a *App) OpenDayBriefing(ctx context.Context) {
 			"Gib mir mein strukturiertes Tages-Briefing: (1) Wichtige ungelesene Mails & offene Action-Items, (2) Heutige & morgige Kalendereinträge mit Zeitkonflikten/Vorbereitungsbedarf, (3) Konkrete Empfehlung für meine nächsten 3 Schritte.",
 			"Give me my structured daily briefing: (1) Important unread emails & open action items, (2) Today's & tomorrow's calendar events including schedule conflicts or prep needs, (3) Concrete recommendation for my next 3 steps.",
 		)
-		a.SendCopilotPrompt(ctx, prompt)
+		// Daily briefing is mailbox-wide; don't attach whichever email happens to be selected.
+		a.sendCopilotPrompt(ctx, prompt, "")
 	})
 }
 

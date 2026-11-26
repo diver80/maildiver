@@ -21,10 +21,10 @@ import (
 const (
 	// DefaultRequestTimeout applies to an engine call whose context carries no deadline.
 	DefaultRequestTimeout = 35 * time.Second
-	// AIRequestTimeout applies to AI calls (analyze/chat) whose context carries no deadline.
-	AIRequestTimeout = 125 * time.Second
-	// analyzeTimeout bounds one mail analysis.
-	analyzeTimeout = 110 * time.Second
+	// AIRequestTimeout bounds UI AI calls above per-backend timeouts (300 s for local/CLI models).
+	AIRequestTimeout = 330 * time.Second
+	// analyzeTimeout bounds one mail analysis when callers supply no deadline.
+	analyzeTimeout = 320 * time.Second
 )
 
 // Engine is the mail engine (mailengine.Engine): calls by method name with JSON-shaped params.

@@ -22,13 +22,13 @@ var agyDeniedTools = []string{
 	"browser_move_mouse", "browser_press_key", "browser_refresh_page", "browser_resize_window",
 	"browser_scroll", "browser_scroll_dom", "browser_select_option", "browser_subagent",
 	"call_mcp_tool", "capture_browser_console_logs", "capture_browser_screenshot", "click_browser_pixel",
-	"command_status", "define_subagent", "delete_knowledge", "execute_browser_javascript", "find_by_name",
+	"command_status", "define_subagent", "delete_knowledge", "edit_file", "execute_browser_javascript", "find_by_name",
 	"generate_image", "grep_search", "invoke_subagent", "list_browser_pages", "list_dir",
 	"list_permissions", "list_plugin_accounts", "list_resources", "manage_inbox", "manage_subagents",
 	"manage_task", "multi_replace_file_content", "notebook_edit", "notebook_execution", "open_browser_url",
 	"read_browser_page", "read_file", "read_resource", "read_url_content", "replace_file_content",
 	"run_command", "run_workflow", "schedule", "search_marketplace", "search_web", "sed_file",
-	"send_command_input", "send_message", "view_file", "write_to_file",
+	"send_command_input", "send_message", "swarm", "view_file", "write_file", "write_to_file",
 }
 
 // agySettings is the session-only settings JSON (never saved by agy).
@@ -65,6 +65,7 @@ func (c *AgyCLI) ModelName() string {
 // agyArgs are the process arguments: constant flags, the constant settings and the model only.
 func (c *AgyCLI) agyArgs() []string {
 	args := []string{
+		"--sandbox",
 		"--settings", agySettings(),
 		"--disable-slash-commands",
 		"--input-format", "stream-json",
@@ -97,10 +98,12 @@ func (c *AgyCLI) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, c.agyArgs()...)
 	cmd.Dir = cliWorkDir()
+	cmd.Env = sanitizedCLIEnv()
 	cmd.Stdin = bytes.NewReader(append(msg, '\n'))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedBuffer{max: cliMaxStdoutBytes}
+	stderr := &limitedBuffer{max: cliMaxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	runErr := cmd.Run()
 	out, parseErr := parseAgyResult(stdout.Bytes())
 	if parseErr == nil {
@@ -136,6 +139,9 @@ func parseAgyResult(stream []byte) (string, error) {
 			return "", fmt.Errorf("agy CLI error: %s", truncateForError(msg))
 		}
 		return strings.TrimSpace(ev.Result.Response), nil
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("agy CLI: stream read error: %w", err)
 	}
 	return "", errors.New("agy CLI: no result in output")
 }

@@ -38,11 +38,21 @@ func (s *Store) DeleteContact(ctx context.Context, id string) error {
 	return err
 }
 
-// cleanContactName drops the quotes Outlook puts around display names ('Becker, Thomas').
+// cleanContactName drops the outer quotes Outlook puts around display names ('Becker, Thomas'),
+// while leaving multi-quoted strings ("Acme" & "Beta") and internal apostrophes (O'Brien) intact.
 func cleanContactName(name string) string {
 	name = strings.TrimSpace(name)
 	for len(name) >= 2 && (name[0] == '\'' || name[0] == '"') && name[len(name)-1] == name[0] {
-		name = strings.TrimSpace(name[1 : len(name)-1])
+		q := name[0]
+		inner := strings.TrimSpace(name[1 : len(name)-1])
+		if inner == "" {
+			break
+		}
+		// Do not unwrap when the same quote appears paired around spaces inside (e.g. `"A" & "B"`).
+		if strings.Contains(inner, string(q)+" ") || strings.Contains(inner, " "+string(q)) {
+			break
+		}
+		name = inner
 	}
 	return name
 }
@@ -67,7 +77,7 @@ func (s *Store) SaveContactFull(ctx context.Context, c backend.ContactRecord) (b
 		return c, fmt.Errorf("Name oder E-Mail-Adresse erforderlich")
 	}
 	if c.ID == "" {
-		c.ID = fmt.Sprintf("ct-%d", time.Now().UnixNano())
+		c.ID = "ct-" + randomHex(8)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `

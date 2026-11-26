@@ -124,6 +124,13 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 		return
 	}
 	a.composeAIOpen = true
+	if a.composeHasDecrypted || (a.composeSourceMsg != nil && a.composeSourceMsg.Security.Encrypted) {
+		a.composeAIError = a.tr(
+			"Verschlüsselte Mail-Inhalte werden aus Datenschutzgründen nicht an die KI gesendet.",
+			"Encrypted email content is not sent to AI for privacy.",
+		)
+		return
+	}
 	a.composeAISeq++
 	seq := a.composeAISeq
 	a.composeAILoading = true
@@ -282,8 +289,12 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 		}
 
 		// Only a draft_reply proposal is mail text; other kinds (move_folder, …) have no place
-		// in the compose window and are left out.
-		draftBody := strings.TrimSpace(res.Answer)
+		// in the compose window and are left out. In review_draft, only use an explicit draft
+		// proposal so review commentary is never inserted as email body text.
+		draftBody := ""
+		if effMode != "review_draft" {
+			draftBody = strings.TrimSpace(res.Answer)
+		}
 		draftSubj := ""
 		if p, ok := res.DraftProposal(); ok {
 			draftBody = strings.TrimSpace(p.Body)
@@ -307,41 +318,58 @@ func (a *App) applyComposeAIResult(replace bool) {
 	if text == "" {
 		return
 	}
-	prevUser := extractComposeUserTextOnly(a.composeBody)
-	if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
-		// Snapshot current plain text synchronously if possible so Undo can restore it.
-		rctx, rcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		_, edPlain, ok := a.composeEditor.ReadContent(rctx)
-		rcancel()
-		if ok {
-			prevUser = extractComposeUserTextOnly(edPlain)
-		}
-	}
-	a.composeAIBeforeUndo = prevUser
-	a.composeAIUndoReady = true
-
-	if replace {
-		a.composeBody = replaceComposeUserText(a.composeBody, text)
-		if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
-			a.composeEditor.SetUserHTML(plainBlockToEditableHTML(text))
-			a.NotifyComposeDirty()
-		}
-	} else {
-		if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
-			a.composeEditor.InsertHTML(plainBlockToEditableHTML(text))
-			a.NotifyComposeDirty()
+	subj := a.composeAISubject
+	mode := a.composeAIMode
+	apply := func(prevUser string) {
+		a.composeAIBeforeUndo = prevUser
+		a.composeAIUndoReady = true
+		if replace {
+			a.composeBody = replaceComposeUserText(a.composeBody, text)
+			if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
+				a.composeEditor.SetUserHTML(plainBlockToEditableHTML(text))
+				a.NotifyComposeDirty()
+			}
 		} else {
-			a.insertComposeText(text)
+			if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
+				a.composeEditor.InsertHTML(plainBlockToEditableHTML(text))
+				a.NotifyComposeDirty()
+			} else {
+				a.insertComposeText(text)
+			}
 		}
+		if subj != "" && (strings.TrimSpace(a.composeSubject) == "" || mode == "translate_draft") {
+			a.composeSubject = subj
+		}
+		a.composeDirtyAt = time.Now()
+		a.composeAIResult = ""
+		a.composeAISubject = ""
+		a.composeAIReview = nil
+		a.composeAIError = ""
 	}
-	if a.composeAISubject != "" && (strings.TrimSpace(a.composeSubject) == "" || a.composeAIMode == "translate_draft") {
-		a.composeSubject = a.composeAISubject
+	if a.composeUsingWYSIWYG() && a.composeEditor != nil && a.composeEditor.Widget() != nil {
+		// Read current editor plain text off the UI thread so WebView JS eval never stalls the main loop.
+		ed := a.composeEditor
+		sessSeq := a.composeSessionSeq
+		aiSeq := a.composeAISeq
+		fallback := extractComposeUserTextOnly(a.composeBody)
+		go func() {
+			rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, edPlain, ok := ed.ReadContent(rctx)
+			rcancel()
+			prevUser := fallback
+			if ok {
+				prevUser = extractComposeUserTextOnly(edPlain)
+			}
+			a.emitUpdate(func() {
+				if !a.composeOpen || a.composeSessionSeq != sessSeq || a.composeAISeq != aiSeq {
+					return
+				}
+				apply(prevUser)
+			})
+		}()
+		return
 	}
-	a.composeDirtyAt = time.Now()
-	a.composeAIResult = ""
-	a.composeAISubject = ""
-	a.composeAIReview = nil
-	a.composeAIError = ""
+	apply(extractComposeUserTextOnly(a.composeBody))
 }
 
 func (a *App) undoComposeAIApply() {

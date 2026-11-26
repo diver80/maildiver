@@ -158,4 +158,12 @@ func TestDueRemindersFollowDefaultAndSkipDeclined(t *testing.T) {
 	if len(due) != 1 || due[0].Title != def.Title {
 		t.Fatalf("default 30 min: the default event is due, got %v", due)
 	}
+
+	// Lead + within window: an event starting in 22 min with a 15-min lead becomes due in 7 min,
+	// which falls inside a 10-min wake-up window (lead+within = 25m), even though 22 > max(15,10).
+	leadPlus := createTestEvent(t, eng, "LeadPlusWithin", now.Add(22*time.Minute), 15)
+	due, err := eng.TakeDueEventReminders(ctx, now, 10*time.Minute, nil)
+	if err != nil || len(due) != 1 || due[0].Title != leadPlus.Title {
+		t.Fatalf("lead+within window missed event: due=%v err=%v", due, err)
+	}
 }

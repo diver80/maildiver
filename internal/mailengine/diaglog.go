@@ -27,7 +27,7 @@ var (
 	diagMu       sync.Mutex
 	diagRing     []string
 	diagPathOvr  string // optional override for tests
-	diagSecretRe = regexp.MustCompile(`(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}|(password|passwd|secret|access_token|refresh_token)=[^\s&;]+`)
+	diagSecretRe = regexp.MustCompile(`(?i)(bearer|basic|xoauth2|auth\s+plain)\s+[A-Za-z0-9._~+/=-]{8,}|"(password|passwd|secret|client_secret|access_token|refresh_token)"\s*:\s*"[^"]*"|(password|passwd|secret|client_secret|access_token|refresh_token)=[^\s&;]+`)
 )
 
 // DiagLogPath returns the on-disk path of the password-free account diagnostic log.
@@ -84,8 +84,8 @@ func SanitizeDiagErr(err error) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
 	s = diagSecretRe.ReplaceAllString(s, "[REDACTED]")
-	if len(s) > 500 {
-		s = s[:500] + "…"
+	if r := []rune(s); len(r) > 500 {
+		s = string(r[:500]) + "…"
 	}
 	return s
 }

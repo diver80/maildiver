@@ -436,6 +436,7 @@ type App struct {
 
 	// Server-side IMAP search state
 	serverSearchBusy      bool
+	serverSearchSeq       uint64
 	serverSearchDoneQuery string
 	serverSearchDoneKey   string
 	serverSearchCount     int
@@ -1506,6 +1507,9 @@ func isOutboundFolderName(name string) bool {
 // isCurrentViewOutbound reports whether the active folder is Sent or Drafts,
 // where the message list should display recipients ("An: …") instead of the user's own From address.
 func (a *App) isCurrentViewOutbound() bool {
+	if a.searchActive() && a.effectiveSearchScope() != searchFolder {
+		return false
+	}
 	if !strings.HasPrefix(a.navID, "folder:") {
 		return false
 	}
@@ -1639,6 +1643,13 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	msg := a.selectedMsg
 	if msg == nil || a.inspectorLoading {
+		return
+	}
+	if msg.Security.Encrypted {
+		a.inspectorError = a.tr(
+			"Verschlüsselte Mails werden aus Datenschutzgründen nicht an die KI gesendet.",
+			"Encrypted emails are not sent to AI for privacy.",
+		)
 		return
 	}
 	lang := a.uiLang()
@@ -2159,6 +2170,9 @@ func (a *App) sendPreparedCompose(ctx context.Context, req backend.ComposeReques
 					if !a.composeOpen {
 						a.restoreComposeFromBackup(*restoreOnErr)
 						a.toast(a.tr("Senden fehlgeschlagen — E-Mail wieder im Editor: ", "Send failed — email restored in compose: ")+a.errText(err), "error")
+					} else if req.Encrypt || restoreOnErr.HasDecrypted {
+						// Never upload an encrypted mail or decrypted reply as an unencrypted IMAP draft.
+						a.toast(a.tr("Verschlüsseltes Senden fehlgeschlagen (nicht unverschlüsselt als Entwurf gespeichert): ", "Encrypted send failed (not saved unencrypted as draft): ")+a.errText(err), "error")
 					} else {
 						// Another compose window is currently open; save failed email as Draft so nothing is lost.
 						draftReq := req
@@ -2589,9 +2603,11 @@ func (a *App) SearchMessagesOnServer(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	a.lastSearchQuery = q
 	accID, folderID := a.searchScopeIDs()
 	scopeKey := a.serverSearchScopeKey(q)
-	seq := a.msgLoadSeq
+	a.serverSearchSeq++
+	seq := a.serverSearchSeq
 	a.serverSearchBusy = true
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -2603,8 +2619,11 @@ func (a *App) SearchMessagesOnServer(ctx context.Context) {
 			Limit:     100,
 		})
 		a.emitUpdate(func() {
+			if seq != a.serverSearchSeq {
+				return
+			}
 			a.serverSearchBusy = false
-			if seq != a.msgLoadSeq || a.serverSearchScopeKey(a.searchQuery) != scopeKey {
+			if a.serverSearchScopeKey(a.searchQuery) != scopeKey {
 				return
 			}
 			if err != nil {
@@ -3106,6 +3125,8 @@ func (a *App) initComposeCommon(accountID string) {
 	a.composeWarnSendAt = 0
 	a.composeTplOpen = false
 	a.composeTplName = ""
+	a.composeSourceMsg = nil
+	a.resetComposeAIState()
 	a.composeCaret, a.composeCaretBody, a.composeCaretOK, a.composeCaretApply = 0, "", false, false
 	a.composeEditorGen++
 	a.composeSessionSeq++
@@ -3256,6 +3277,16 @@ func (a *App) OpenComposeFromDraft(msg *backend.MessageDetail) {
 	a.composeDraftID = msg.ID
 	a.composeReplyTo = ""
 	a.composeReplyType = "draft"
+	if msg.Security.Encrypted && msg.Security.Decryption == "success" {
+		a.composeHasDecrypted = true
+		a.composeReplyEncrypted = true
+		a.composeEncrypt = true
+		if msg.Security.PGP {
+			a.composeCryptoTech = 2
+		} else if msg.Security.SMIME {
+			a.composeCryptoTech = 1
+		}
+	}
 	if msg.Headers != nil {
 		a.composeInReplyTo = strings.TrimSpace(msg.Headers["in-reply-to"])
 		a.composeReferences = strings.TrimSpace(msg.Headers["references"])
@@ -3552,7 +3583,11 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		md, _ := htmlMailMarkdown(msg.BodyHtml)
 		fwdBodyText = strings.TrimSpace(md)
 	}
-	a.composeHasDecrypted = msg.Security.Encrypted && fwdBodyText != ""
+	decryptedOK := !msg.Security.Encrypted || msg.Security.Decryption == "success"
+	if !decryptedOK {
+		fwdBodyText = ""
+	}
+	a.composeHasDecrypted = msg.Security.Encrypted && decryptedOK && (fwdBodyText != "" || len(msg.Attachments) > 0)
 	header := fmt.Sprintf("\n\n%s\n%s %s%s\n%s %s\n%s %s\n\n%s",
 		sep,
 		a.tr("Von:", "From:"), msg.From,
@@ -3570,12 +3605,14 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 	}
 	sigBlock := composeSignatureBlockHTMLFromParts(sigPlain, sigCustomHTML)
 	// Preserve original attachments when forwarding (user can remove individual ones in the compose modal).
-	for _, att := range msg.Attachments {
-		a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
-			MessageID: msg.ID,
-			PartName:  att.PartName,
-			Name:      att.Name,
-		})
+	if decryptedOK {
+		for _, att := range msg.Attachments {
+			a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
+				MessageID: msg.ID,
+				PartName:  att.PartName,
+				Name:      att.Name,
+			})
+		}
 	}
 	// Preserve original HTML formatting as multipart/alternative unless the source mail was encrypted.
 	if strings.TrimSpace(msg.BodyHtml) != "" && !msg.Security.Encrypted {
@@ -4342,20 +4379,13 @@ func (a *App) unreadCount() int {
 }
 
 func (a *App) todayEvents() []backend.CalendarEvent {
-	now := time.Now()
-	y, m, d := now.Date()
+	todayKey := time.Now().Format("2006-01-02")
 	var out []backend.CalendarEvent
 	for _, ev := range a.events {
 		if a.isCalendarHidden(ev.CalendarID) {
 			continue
 		}
-		t, err := parseEventTime(ev.Start)
-		if err != nil {
-			continue
-		}
-		lt := t.Local()
-		ey, em, ed := lt.Date()
-		if ey == y && em == m && ed == d {
+		if slices.Contains(eventDayKeys(ev), todayKey) {
 			out = append(out, ev)
 		}
 	}
@@ -4395,10 +4425,10 @@ func parseEventTime(raw string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t, nil
 	}
-	if t, err := time.Parse("2006-01-02T15:04", raw); err == nil {
+	if t, err := time.ParseInLocation("2006-01-02T15:04", raw, time.Local); err == nil {
 		return t, nil
 	}
-	return time.Parse("2006-01-02", raw)
+	return time.ParseInLocation("2006-01-02", raw, time.Local)
 }
 
 func isLoopbackEndpointURL(raw string) bool {

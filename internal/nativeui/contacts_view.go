@@ -49,7 +49,8 @@ type contactsUI struct {
 	listState ui.ListState
 
 	// AI completion from mail signatures: the fields it filled are marked until saved.
-	aiBusy   bool
+	aiBusyID string
+	aiSeq    uint64
 	aiFilled map[string]bool
 
 	// Merging contacts with the same name.
@@ -549,15 +550,16 @@ func (a *App) renderContactDetail(c *ui.Context) {
 					}
 				}
 				if !ct.editingNew && ct.selectedID != "" && strings.TrimSpace(ct.editEmail+ct.editEmail2) != "" {
+					aiBusy := ct.aiBusyID == ct.selectedID
 					lbl := a.tr("Mit KI vervollständigen", "Complete with AI")
-					if ct.aiBusy {
+					if aiBusy {
 						lbl = a.tr("KI liest…", "AI reading…")
 					}
 					aiBtn := iconLabelBtn(c.Key("ct-ai"), iconSparkles, lbl, false, a.tr("Leere Felder aus den Signaturen der letzten Mails dieser Person ergänzen (verschlüsselte Mails werden nicht gelesen). Danach prüfen und speichern.", "Fill empty fields from the signatures of this person's latest mails (encrypted mails are not read). Then check and save."))
-					if ct.aiBusy {
+					if aiBusy {
 						aiBtn.Disabled(true)
 					}
-					if aiBtn.Clicked() && !ct.aiBusy {
+					if aiBtn.Clicked() && !aiBusy {
 						a.enrichContactWithAI(context.Background())
 					}
 				}

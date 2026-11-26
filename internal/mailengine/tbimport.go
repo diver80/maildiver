@@ -370,11 +370,17 @@ func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, 
 
 	// 4. Contacts
 	if opts.ImportContacts && len(prev.Contacts) > 0 {
-		existing, _ := e.store.ListAllContacts(ctx)
+		existing, lerr := e.store.ListAllContacts(ctx)
+		if lerr != nil {
+			return rep, fmt.Errorf("bestehende Kontakte lesen: %w", lerr)
+		}
 		existingEmails := map[string]bool{}
 		for _, c := range existing {
-			if c.Email != "" {
-				existingEmails[strings.ToLower(strings.TrimSpace(c.Email))] = true
+			if em := strings.ToLower(strings.TrimSpace(c.Email)); em != "" {
+				existingEmails[em] = true
+			}
+			if em2 := strings.ToLower(strings.TrimSpace(c.SecondEmail)); em2 != "" {
+				existingEmails[em2] = true
 			}
 		}
 		for _, c := range prev.Contacts {
@@ -389,6 +395,9 @@ func (e *Engine) ApplyThunderbirdImport(ctx context.Context, profileDir string, 
 				rep.ContactsAdded++
 				if emailKey != "" {
 					existingEmails[emailKey] = true
+				}
+				if em2 := strings.ToLower(strings.TrimSpace(c.SecondEmail)); em2 != "" {
+					existingEmails[em2] = true
 				}
 			}
 		}

@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -15,6 +16,7 @@ import (
 	"github.com/diver80/postdive/internal/ai"
 	"github.com/diver80/postdive/internal/backend"
 	"github.com/diver80/postdive/internal/config"
+	"github.com/diver80/postdive/internal/mailengine"
 )
 
 // Two tools for the address book, both of which only propose: the AI fills empty fields of the
@@ -29,7 +31,7 @@ const contactMailsForAI = 3
 func (a *App) enrichContactWithAI(ctx context.Context) {
 	dc := a.opts.Direct
 	ct := &a.contacts
-	if dc == nil || ct.aiBusy || ct.editingNew || ct.selectedID == "" {
+	if dc == nil || ct.editingNew || ct.selectedID == "" || ct.aiBusyID == ct.selectedID {
 		return
 	}
 	emails := nonEmpty(ct.editEmail, ct.editEmail2)
@@ -41,7 +43,9 @@ func (a *App) enrichContactWithAI(ctx context.Context) {
 	lang := a.uiLang()
 	aiBackend, model := a.agentBackend, a.agentModel
 	bc, _ := a.client()
-	ct.aiBusy = true
+	ct.aiSeq++
+	seq := ct.aiSeq
+	ct.aiBusyID = id
 	ct.statusMsg, ct.statusErr = a.tr("KI liest die Signaturen der letzten Mails…", "AI is reading the signatures of the latest mails…"), false
 	go func() {
 		c, cancel := context.WithTimeout(ctx, backend.AIRequestTimeout)
@@ -59,12 +63,15 @@ func (a *App) enrichContactWithAI(ctx context.Context) {
 				Language:       lang,
 				Question:       question,
 				PrimaryMessage: mails[0],
-				ThreadMessages: mails[1:],
+				ThreadMessages: mails,
 			})
 		}
 		a.emitUpdate(func() {
 			ct := &a.contacts
-			ct.aiBusy = false
+			if seq != ct.aiSeq {
+				return
+			}
+			ct.aiBusyID = ""
 			if ct.selectedID != id || ct.editingNew {
 				return // another contact was opened meanwhile
 			}
@@ -113,6 +120,52 @@ func matchExtractedContact(list []ai.ExtractedContact, emails []string, name str
 	return nil
 }
 
+// sanitizeContactField strips control characters, caps length, and validates website URLs
+// before AI-extracted values are written into the contact editor.
+func sanitizeContactField(key, val string) string {
+	allowNewline := key == "address"
+	val = strings.Map(func(r rune) rune {
+		if r == '\n' && allowNewline {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, val)
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return ""
+	}
+	maxLen := 120
+	switch key {
+	case "website":
+		maxLen = 256
+	case "address":
+		maxLen = 300
+	}
+	if rs := []rune(val); len(rs) > maxLen {
+		val = strings.TrimSpace(string(rs[:maxLen]))
+	}
+	if key == "website" {
+		if strings.ContainsAny(val, " \t\r\n") {
+			return ""
+		}
+		raw := val
+		if !strings.Contains(raw, "://") {
+			if strings.Contains(raw, ":") {
+				return "" // reject javascript:, data:, mailto:, etc.
+			}
+			raw = "https://" + raw
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || !strings.Contains(u.Hostname(), ".") {
+			return ""
+		}
+	}
+	return val
+}
+
 // fillContactForm writes ex into the empty fields of the open contact form and returns the keys
 // of the fields it filled. Nothing is saved.
 func (a *App) fillContactForm(ex *ai.ExtractedContact) []string {
@@ -122,7 +175,7 @@ func (a *App) fillContactForm(ex *ai.ExtractedContact) []string {
 	ct := &a.contacts
 	var filled []string
 	set := func(key string, dst *string, val string) {
-		if val = strings.TrimSpace(val); val != "" && strings.TrimSpace(*dst) == "" {
+		if val = sanitizeContactField(key, val); val != "" && strings.TrimSpace(*dst) == "" {
 			*dst = val
 			filled = append(filled, key)
 		}
@@ -214,12 +267,16 @@ func contactName(r backend.ContactRecord) string {
 	return strings.TrimSpace(r.FirstName + " " + r.LastName)
 }
 
-// duplicateContactGroups returns the entries that share a name within one address book, in
-// list order; merging across address books would let a sync bring the other entry back.
+// duplicateContactGroups returns the entries that share a name within one writable address book,
+// in list order; read-only synced books (such as Google Contacts) and cross-book pairs are
+// skipped because merging them locally would be reverted on the next sync.
 func duplicateContactGroups(list []backend.ContactRecord) [][]backend.ContactRecord {
 	idx := map[string]int{}
 	var groups [][]backend.ContactRecord
 	for _, r := range list {
+		if r.AddressBookID == mailengine.GoogleAddressBookID {
+			continue
+		}
 		k := contactNameKey(contactName(r))
 		if k == "" {
 			continue
@@ -429,7 +486,7 @@ func (a *App) showDuplicateGroup(i int) {
 func (a *App) applyContactMerge(ctx context.Context) {
 	dc := a.opts.Direct
 	ct := &a.contacts
-	if dc == nil || ct.dupMerge == nil || ct.busy {
+	if dc == nil || ct.dupMerge == nil || ct.busy || a.blockedReadOnly() {
 		return
 	}
 	merged, del := ct.dupMerge.result()
@@ -438,6 +495,7 @@ func (a *App) applyContactMerge(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		saved, err := dc.SaveContact(c, merged)
+		savedOK := err == nil
 		// Delete the others only once the merged entry is stored.
 		for _, id := range del {
 			if err != nil {
@@ -448,8 +506,17 @@ func (a *App) applyContactMerge(ctx context.Context) {
 		a.emitUpdate(func() {
 			ct := &a.contacts
 			ct.busy = false
+			if savedOK && !ct.editingNew && ct.selectedID == saved.ID {
+				dupOpen := ct.dupOpen
+				a.selectContact(saved)
+				ct.dupOpen = dupOpen
+			}
 			if err != nil {
 				ct.statusMsg, ct.statusErr = a.tr("Zusammenführen fehlgeschlagen: ", "Merge failed: ")+err.Error(), true
+				if savedOK {
+					a.LoadContacts(context.Background())
+					a.openContactDuplicates(context.Background())
+				}
 				return
 			}
 			a.toast(a.trf("„%s“ zusammengeführt (%d Einträge → 1)", "Merged “%s” (%d entries → 1)", saved.DisplayName, len(del)+1), "success")

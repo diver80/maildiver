@@ -30,6 +30,8 @@ func TestDuplicateContactGroupsStayWithinAnAddressBook(t *testing.T) {
 		{ID: "4", AddressBookID: "google", DisplayName: "Thomas Becker"},
 		{ID: "5", AddressBookID: "local", DisplayName: "Benjamin"},
 		{ID: "6", AddressBookID: "local", DisplayName: "Benjamin"},
+		{ID: "7", AddressBookID: "google-contacts", DisplayName: "Thomas Becker"},
+		{ID: "8", AddressBookID: "google-contacts", DisplayName: "Becker, Thomas"},
 	}
 	g := duplicateContactGroups(list)
 	if len(g) != 1 || len(g[0]) != 2 || g[0][0].ID != "1" || g[0][1].ID != "3" {
@@ -93,11 +95,14 @@ func TestMatchExtractedContactIgnoresPeopleFromQuotedMails(t *testing.T) {
 func TestFillContactFormOnlyFillsEmptyFields(t *testing.T) {
 	a := &App{}
 	a.contacts.editPhone = "+49 existing"
-	filled := a.fillContactForm(&ai.ExtractedContact{Phone: "+49 new", Company: "ACME", Website: " "})
-	if a.contacts.editPhone != "+49 existing" || a.contacts.editCompany != "ACME" {
+	filled := a.fillContactForm(&ai.ExtractedContact{Phone: "+49 new", Company: "ACME\x00GmbH", Website: "javascript:alert(1)"})
+	if a.contacts.editPhone != "+49 existing" || a.contacts.editCompany != "ACME GmbH" || a.contacts.editWebsite != "" {
 		t.Fatalf("form = %+v", a.contacts)
 	}
 	if strings.Join(filled, ",") != "company" || !a.contacts.aiFilled["company"] {
 		t.Fatalf("filled = %v", filled)
+	}
+	if got := sanitizeContactField("website", "https://acme.de/team"); got != "https://acme.de/team" {
+		t.Fatalf("valid website rejected: %q", got)
 	}
 }

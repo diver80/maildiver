@@ -50,5 +50,8 @@ func openMacNotifySettings(focus bool) {
 	if focus {
 		url = "x-apple.systempreferences:com.apple.Focus-Settings.extension"
 	}
-	_ = exec.Command("open", url).Start()
+	cmd := exec.Command("open", url)
+	if err := cmd.Start(); err == nil {
+		go func() { _ = cmd.Wait() }()
+	}
 }

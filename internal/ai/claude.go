@@ -8,8 +8,39 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/diver80/postdive/internal/config"
 )
+
+const (
+	cliMaxStdoutBytes = 8 << 20 // 8 MiB cap on CLI stdout
+	cliMaxStderrBytes = 1 << 20 // 1 MiB cap on CLI stderr
+)
+
+// limitedBuffer captures up to max bytes without failing Write (so the child process never gets
+// SIGPIPE while memory stays bounded).
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if rem := b.max - b.buf.Len(); rem > 0 {
+		if len(p) <= rem {
+			_, _ = b.buf.Write(p)
+		} else {
+			_, _ = b.buf.Write(p[:rem])
+		}
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte  { return b.buf.Bytes() }
+func (b *limitedBuffer) String() string { return b.buf.String() }
+
+var cliCloseTagRE = regexp.MustCompile(`(?i)</\s*postdive_instructions\b`)
 
 // cliSystemPrompt is the only prompt text that ever appears in a CLI process's arguments. It is
 // constant and content-free; the application's instructions and all mail data go in via stdin,
@@ -24,15 +55,18 @@ const cliArgPrompt = "Follow the PostDive instructions provided on stdin and ans
 
 // cliInput builds the stdin payload: instructions block plus the user prompt.
 func cliInput(systemPrompt, userPrompt string) string {
-	esc := strings.NewReplacer("</postdive_instructions>", "<\\/postdive_instructions>",
-		"</POSTDIVE_INSTRUCTIONS>", "<\\/POSTDIVE_INSTRUCTIONS>")
+	esc := func(s string) string {
+		return cliCloseTagRE.ReplaceAllStringFunc(s, func(m string) string {
+			return "<\\/" + m[2:]
+		})
+	}
 	var b strings.Builder
 	if s := strings.TrimSpace(systemPrompt); s != "" {
 		b.WriteString("<postdive_instructions>\n")
-		b.WriteString(esc.Replace(s))
+		b.WriteString(esc(s))
 		b.WriteString("\n</postdive_instructions>\n\n")
 	}
-	b.WriteString(esc.Replace(userPrompt))
+	b.WriteString(esc(userPrompt))
 	return b.String()
 }
 
@@ -66,10 +100,12 @@ func (c *CLICompleter) Complete(ctx context.Context, systemPrompt, userPrompt st
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, c.buildArg(cliArgPrompt, c.model)...)
 	cmd.Dir = cliWorkDir()
+	cmd.Env = sanitizedCLIEnv()
 	cmd.Stdin = strings.NewReader(cliInput(systemPrompt, userPrompt))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedBuffer{max: cliMaxStdoutBytes}
+	stderr := &limitedBuffer{max: cliMaxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("%s failed: %w (%s)", c.binary, err, truncateForError(stderr.String()))
 	}
@@ -127,10 +163,12 @@ func (c *ClaudeCLI) Complete(ctx context.Context, systemPrompt, userPrompt strin
 	// Instructions and mail text go in via stdin so they never show up in the process list.
 	cmd := exec.CommandContext(ctx, bin, c.claudeArgs()...)
 	cmd.Dir = cliWorkDir()
+	cmd.Env = sanitizedCLIEnv()
 	cmd.Stdin = strings.NewReader(cliInput(systemPrompt, userPrompt))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedBuffer{max: cliMaxStdoutBytes}
+	stderr := &limitedBuffer{max: cliMaxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("claude CLI failed: %w (%s)", err, truncateForError(stderr.String()))
 	}
@@ -162,8 +200,11 @@ func findCLI(name string) (string, error) {
 	if p, err := exec.LookPath(name); err == nil {
 		return p, nil
 	}
-	home, _ := os.UserHomeDir()
-	for _, d := range []string{"/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local")} {
+	dirs := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local"))
+	}
+	for _, d := range dirs {
 		p := filepath.Join(d, name)
 		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
 			return p, nil
@@ -172,17 +213,47 @@ func findCLI(name string) (string, error) {
 	return "", exec.ErrNotFound
 }
 
-// cliWorkDir is where a CLI agent runs: the temp directory, unless it is gone. An app started
-// from another tool's session can inherit a TMPDIR that tool has since deleted, and starting a
-// process in a missing directory fails ("chdir …: no such file or directory").
+// cliWorkDir is an empty, dedicated 0700 directory so CLI agents (such as agy with
+// allowNonWorkspaceAccess=false) cannot inspect shared /tmp files or $HOME.
 func cliWorkDir() string {
-	for _, dir := range []string{os.TempDir(), "/tmp"} {
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			return dir
+	if dir, err := config.StateDir(); err == nil && dir != "" {
+		sb := filepath.Join(dir, "cli-sandbox")
+		if err := os.MkdirAll(sb, 0o700); err == nil {
+			return sb
 		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
+	for _, base := range []string{os.TempDir(), "/tmp"} {
+		if fi, err := os.Stat(base); err == nil && fi.IsDir() {
+			sb := filepath.Join(base, "postdive-cli-sandbox")
+			if err := os.MkdirAll(sb, 0o700); err == nil {
+				return sb
+			}
+			return base
+		}
 	}
 	return ""
+}
+
+// sanitizedCLIEnv returns os.Environ() with any deleted TMPDIR replaced by an existing temp dir
+// so child CLIs never fail when a parent session deletes its temporary folder mid-run.
+func sanitizedCLIEnv() []string {
+	tmp := os.Getenv("TMPDIR")
+	if tmp == "" {
+		return nil // inherit os.Environ()
+	}
+	if fi, err := os.Stat(tmp); err == nil && fi.IsDir() {
+		return nil
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMPDIR=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if fi, err := os.Stat("/tmp"); err == nil && fi.IsDir() {
+		out = append(out, "TMPDIR=/tmp")
+	}
+	return out
 }

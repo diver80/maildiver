@@ -57,6 +57,7 @@ type composeDraftBackup struct {
 	Encrypt           bool
 	CryptoTech        int
 	ReplyEncrypted    bool
+	HasDecrypted      bool
 }
 
 // composeSignatureParts returns the effective plain signature, optional custom HTML signature,
@@ -178,6 +179,7 @@ func (a *App) captureComposeBackup() composeDraftBackup {
 		Encrypt:           a.composeEncrypt,
 		CryptoTech:        a.composeCryptoTech,
 		ReplyEncrypted:    a.composeReplyEncrypted,
+		HasDecrypted:      a.composeHasDecrypted,
 	}
 }
 
@@ -232,6 +234,7 @@ func (a *App) restoreComposeFromBackup(b composeDraftBackup) {
 	a.composeEncrypt = b.Encrypt
 	a.composeCryptoTech = b.CryptoTech
 	a.composeReplyEncrypted = b.ReplyEncrypted
+	a.composeHasDecrypted = b.HasDecrypted
 	a.composeEditorDirty = true
 	a.composeDirtyAt = time.Now()
 	// Mark baseline distinct from current snapshot so closing asks before discarding unsent mail.
@@ -517,6 +520,10 @@ func flushPendingSend(bc *backend.Client, ps *pendingComposeSend) bool {
 	_, err := bc.ComposeSend(c, req)
 	cancel()
 	if err != nil {
+		// Never silently upload an encrypted mail or decrypted reply as an unencrypted IMAP draft.
+		if req.Encrypt || ps.Restore.HasDecrypted {
+			return false
+		}
 		// A fresh deadline: a send that timed out must not leave the draft no time.
 		dc, dcancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer dcancel()

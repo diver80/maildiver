@@ -489,11 +489,10 @@ func (a *App) renderCalendarWorkspace(c *ui.Context) {
 			})
 		}
 
-		// Group filtered events by local day key YYYY-MM-DD
+		// Group filtered events by every local day YYYY-MM-DD they overlap.
 		byDay := make(map[string][]backend.CalendarEvent)
 		for _, ev := range filteredEvents {
-			dk := eventDayKey(ev.Start)
-			if dk != "" {
+			for _, dk := range eventDayKeys(ev) {
 				byDay[dk] = append(byDay[dk], ev)
 			}
 		}
@@ -949,11 +948,50 @@ type dayEventBlock struct {
 	numCols  int
 }
 
+// eventDayKeys returns every local YYYY-MM-DD day overlapped by ev (including multi-day
+// all-day and overnight timed events). All-day End is exclusive per RFC 5545.
+func eventDayKeys(ev backend.CalendarEvent) []string {
+	st, err := parseEventTime(ev.Start)
+	if err != nil {
+		if dk := eventDayKey(ev.Start); dk != "" {
+			return []string{dk}
+		}
+		return nil
+	}
+	startLoc := st.Local()
+	firstDay := time.Date(startLoc.Year(), startLoc.Month(), startLoc.Day(), 0, 0, 0, 0, time.Local)
+	lastDay := firstDay
+	if strings.TrimSpace(ev.End) != "" {
+		if et, err := parseEventTime(ev.End); err == nil {
+			endLoc := et.Local()
+			if ev.AllDay {
+				endDay := time.Date(endLoc.Year(), endLoc.Month(), endLoc.Day(), 0, 0, 0, 0, time.Local)
+				if endDay.After(firstDay) {
+					lastDay = endDay.AddDate(0, 0, -1)
+				}
+			} else if endLoc.After(startLoc) {
+				inc := endLoc.Add(-time.Nanosecond)
+				endDay := time.Date(inc.Year(), inc.Month(), inc.Day(), 0, 0, 0, 0, time.Local)
+				if endDay.After(firstDay) {
+					lastDay = endDay
+				}
+			}
+		}
+	}
+	const maxSpanDays = 62
+	var keys []string
+	for d, n := firstDay, 0; !d.After(lastDay) && n < maxSpanDays; d, n = d.AddDate(0, 0, 1), n+1 {
+		keys = append(keys, d.Format("2006-01-02"))
+	}
+	return keys
+}
+
 // layoutDayEvents converts timed events for a single day into minute-positioned blocks
 // and assigns side-by-side columns within each overlapping cluster.
 func layoutDayEvents(evs []backend.CalendarEvent, day time.Time) []dayEventBlock {
 	loc := day.Location()
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
 	var blocks []dayEventBlock
 	for _, ev := range evs {
 		if ev.AllDay {
@@ -965,20 +1003,31 @@ func layoutDayEvents(evs []backend.CalendarEvent, day time.Time) []dayEventBlock
 		if parsed, err := parseEventTime(ev.Start); err == nil {
 			st = parsed.In(loc)
 			hasStart = true
-			startMin = float32(st.Sub(dayStart).Minutes())
+			if st.Before(dayStart) {
+				startMin = 0
+			} else if !st.Before(dayEnd) {
+				continue
+			} else {
+				// Use wall-clock hour/minute so DST transition days stay aligned with the 00..24 grid.
+				startMin = float32(st.Hour()*60+st.Minute()) + float32(st.Second())/60
+			}
 		}
 		if startMin < 0 {
 			startMin = 0
 		}
-		if startMin > 23*60+30 {
-			startMin = 23*60 + 30
+		if startMin > 24*60-1 {
+			startMin = 24*60 - 1
 		}
 		endMin := startMin + 60
 		if hasStart && strings.TrimSpace(ev.End) != "" {
 			if parsedEnd, err := parseEventTime(ev.End); err == nil {
 				et := parsedEnd.In(loc)
 				if et.After(st) {
-					endMin = float32(et.Sub(dayStart).Minutes())
+					if !et.Before(dayEnd) {
+						endMin = 24 * 60
+					} else if et.After(dayStart) {
+						endMin = float32(et.Hour()*60+et.Minute()) + float32(et.Second())/60
+					}
 				}
 			}
 		}
@@ -986,7 +1035,7 @@ func layoutDayEvents(evs []backend.CalendarEvent, day time.Time) []dayEventBlock
 			endMin = 24 * 60
 		}
 		if endMin < startMin+15 {
-			endMin = startMin + 15
+			endMin = min(startMin+15, float32(24*60))
 		}
 		visEnd := endMin
 		if visEnd < startMin+28 {

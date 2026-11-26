@@ -36,6 +36,9 @@ func teamsMeetingURL(subject string, start, end time.Time, content string, atten
 		parts = append(parts, "endTime="+teamsQueryEscape(end.Format(time.RFC3339)))
 	}
 	if c := strings.TrimSpace(content); c != "" {
+		if r := []rune(c); len(r) > 1500 {
+			c = string(r[:1499]) + "…"
+		}
 		parts = append(parts, "content="+teamsQueryEscape(c))
 	}
 	var emails []string
@@ -108,6 +111,10 @@ func (a *App) OpenTeamsScheduling() {
 	}
 	if msg := a.eventTimeError(); msg != "" {
 		a.toast(msg, "error")
+		return
+	}
+	if bad := invalidAttendees(a.eventAttendees); len(bad) > 0 {
+		a.toast(a.tr("Ungültige Teilnehmer-Adresse: ", "Invalid attendee address: ")+strings.Join(bad, ", "), "error")
 		return
 	}
 	atts := parseAttendeeList(a.eventAttendees)

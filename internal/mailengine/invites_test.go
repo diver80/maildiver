@@ -192,6 +192,7 @@ func newInviteTestEngine(t *testing.T, smtpAddr string) *Engine {
 		p = p*10 + int(c-'0')
 	}
 	cfg := config.Default()
+	cfg.Mailbox.ReadOnly = false
 	cfg.Direct.Accounts = []config.DirectAccount{{
 		ID: "acc-1", Name: "Ich", DisplayName: "Ich Selbst", Email: "ich@example.org", Enabled: true,
 		IMAPHost: "127.0.0.1", IMAPPort: 1, IMAPTLS: "tls",
@@ -265,7 +266,7 @@ func TestLocalEventInvitationsUpdatesAndCancellation(t *testing.T) {
 	if strings.Join(mails[1].rcpts, ",") != "anna@example.org,carl@example.org" || !strings.Contains(upd, "SEQUENCE:1") || !strings.Contains(upd, "SUMMARY:Planung (neu)") {
 		t.Fatalf("unexpected update %v:\n%s", mails[1].rcpts, upd)
 	}
-	if strings.Join(mails[2].rcpts, ",") != "ben@example.org" || !strings.Contains(canc, "METHOD:CANCEL") {
+	if strings.Join(mails[2].rcpts, ",") != "ben@example.org" || !strings.Contains(canc, "METHOD:CANCEL") || !strings.Contains(canc, "ben@example.org") || strings.Contains(canc, "anna@example.org") {
 		t.Fatalf("unexpected cancellation %v:\n%s", mails[2].rcpts, canc)
 	}
 
@@ -275,14 +276,18 @@ func TestLocalEventInvitationsUpdatesAndCancellation(t *testing.T) {
 			"\r\nDTSTAMP:" + stamp + "\r\nDTSTART:20261201T100000Z\r\nSUMMARY:Planung (neu)\r\nATTENDEE;CN=Anna;PARTSTAT=" + partstat +
 			":mailto:anna@example.org\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	}
-	inv := eng.icsInviteOf(ctx, backend.MessageDetail{}, reply("20261126T120000Z", "ACCEPTED"))
+	annaMail := backend.MessageDetail{MessageHeader: backend.MessageHeader{From: "Anna <anna@example.org>"}}
+	inv := eng.icsInviteOf(ctx, annaMail, reply("20261126T120000Z", "ACCEPTED"))
 	if inv == nil || inv.Method != "REPLY" || inv.ResponseStatus != "accepted" || inv.Attendees[0].Email != "anna@example.org" {
 		t.Fatalf("unexpected reply card: %+v", inv)
 	}
-	_ = eng.icsInviteOf(ctx, backend.MessageDetail{}, reply("20261126T080000Z", "DECLINED"))
+	_ = eng.icsInviteOf(ctx, annaMail, reply("20261126T080000Z", "DECLINED"))
+	// A forged reply from another sender must never change Anna's status.
+	eveMail := backend.MessageDetail{MessageHeader: backend.MessageHeader{From: "Eve <eve@evil.org>"}}
+	_ = eng.icsInviteOf(ctx, eveMail, reply("20991231T235959Z", "DECLINED"))
 	stored, err := eng.store.GetEvent(ctx, LocalCalendarID, ev.ID)
 	if err != nil || stored.Attendees[0].Status != "accepted" || stored.Attendees[1].Status != "needsAction" {
-		t.Fatalf("answer not recorded or overwritten by an older one: %+v err=%v", stored.Attendees, err)
+		t.Fatalf("answer not recorded or overwritten by an older/spoofed one: %+v err=%v", stored.Attendees, err)
 	}
 
 	// Deleting with notify tells everybody still invited.
@@ -414,5 +419,45 @@ func TestDeclineGoogleInvitationPatchesOnlyAttendees(t *testing.T) {
 	}
 	if !strings.Contains(deleteQuery, "sendUpdates=none") {
 		t.Fatalf("removing the declined event must not notify again: ?%s", deleteQuery)
+	}
+}
+
+func TestCommaDisplayNameAndEXDATEAndFTSQuery(t *testing.T) {
+	// RFC-5322 quoting for display names containing commas, unquoted for plain names.
+	if got := formatDisplayAttendee("Ich Selbst", "ich@example.org"); got != "Ich Selbst <ich@example.org>" {
+		t.Fatalf("plain formatDisplayAttendee = %q", got)
+	}
+	got := formatDisplayAttendee("Doe, Jane", "jane@example.org")
+	if got != `"Doe, Jane" <jane@example.org>` {
+		t.Fatalf("comma formatDisplayAttendee = %q", got)
+	}
+	if att := parseAttendeeAddress(got); att.Email != "jane@example.org" || att.Name != "Doe, Jane" {
+		t.Fatalf("parseAttendeeAddress(%q) = %+v", got, att)
+	}
+	// Legacy unquoted comma name still parses cleanly.
+	if att := parseAttendeeAddress("Doe, Jane <jane@example.org>"); att.Email != "jane@example.org" || att.Name != "Doe, Jane" {
+		t.Fatalf("legacy unquoted parseAttendeeAddress = %+v", att)
+	}
+
+	// EXDATE survives ICS export -> parse round-trip.
+	start := time.Date(2026, 12, 1, 9, 0, 0, 0, time.UTC)
+	exICS := ExportEventsICS("Team", []StoredEvent{{
+		UID: "ex-1@example.org", Title: "Daily",
+		StartISO: start.Format(time.RFC3339), EndISO: start.Add(time.Hour).Format(time.RFC3339),
+		StartUnix: start.Unix(), EndUnix: start.Add(time.Hour).Unix(),
+		RRule:   "FREQ=DAILY;COUNT=5",
+		ExDates: []string{"2026-12-02T09:00:00Z"},
+	}})
+	if !strings.Contains(exICS, "EXDATE:20261202T090000Z") {
+		t.Fatalf("EXDATE missing from exported ICS:\n%s", exICS)
+	}
+	parsed, err := ParseICS("cal", "Team", false, strings.NewReader(exICS))
+	if err != nil || len(parsed) != 1 || len(parsed[0].ExDates) != 1 || parsed[0].ExDates[0] != "2026-12-02T09:00:00Z" {
+		t.Fatalf("EXDATE round-trip failed: %+v err=%v", parsed, err)
+	}
+
+	// FTS query splits punctuation like slashes and maps field prefixes.
+	if q := buildFTSQuery("from:alice@acme.de 123/456 subject:Rechnung"); q != `from_addr:"alice@acme.de"* "123"* "456"* subject:"Rechnung"*` {
+		t.Fatalf("buildFTSQuery = %q", q)
 	}
 }

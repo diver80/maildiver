@@ -41,7 +41,7 @@ func TestDirectModeUIEndToEnd(t *testing.T) {
 	defer func() { _ = eng.Close() }()
 
 	// Import a local .ics event so Calendar view has real data.
-	tomorrow := time.Now().Add(24 * time.Hour).UTC().Format("20060102")
+	tomorrow := time.Now().Add(24 * time.Hour).Format("20060102")
 	icsPath := filepath.Join(dir, "test.ics")
 	icsContent := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//PostDive//Test//EN\r\nBEGIN:VEVENT\r\nUID:ui-test-1@postdive\r\nSUMMARY:Direkt-Test-Termin\r\nDTSTART:" + tomorrow + "T100000Z\r\nDTEND:" + tomorrow + "T110000Z\r\nLOCATION:Berlin\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	if err := os.WriteFile(icsPath, []byte(icsContent), 0o600); err != nil {

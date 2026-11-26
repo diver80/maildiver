@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.54 (2026-11-27)
+
+### Security & Privacy
+- **S/MIME certificate store hardening:** contact certificates are only auto-cached from trusted, valid signatures matching the `From` address and never silently overwrite an existing certificate with a different fingerprint; expired certificates are skipped when encrypting, and signing chains exclude non-CA certificates.
+- **Encrypted mail protection:** decrypted message state (`HasDecrypted`) is preserved across compose backups, undo-send restores, and draft re-opens; failed encrypted/decrypted sends are never silently saved as unencrypted IMAP drafts; encrypted/decrypted content is blocked from AI Inspector, Compose AI Assist, and Copilot context snapshots; Day Briefing no longer attaches an unrelated open mail.
+- **iTIP `REPLY` hardening:** attendee status updates now require a sender matching `From`, skip writes in read-only/MCP/Trash/Junk/read-only-calendar contexts, scope `RECURRENCE-ID` replies so single-occurrence replies never overwrite a recurring series, and guard `DTSTAMP` monotonicity.
+- **AI CLI & diagnostics hardening:** `agy` runs with `--sandbox` and denied write/swarm tools; CLI backends use a dedicated `0700` sandbox directory instead of `$HOME`, sanitized `TMPDIR`, bounded stdout/stderr buffers, and case-insensitive prompt-fence escaping; AI client timeouts raised to cover 300s local backends; account diagnostic logs redact JSON tokens/passwords and SASL `AUTH` blobs with rune-safe truncation.
+
+### Calendar & Contacts
+- **Invitations, `EXDATE` & multi-day/DST layout:** RFC-5322 quoting for display names containing commas, `EXDATE` export & CalDAV single-occurrence delete push, scoped `CANCEL` attendee lists, `ORGANIZER` emission even without attendees, Google `OriginalStartTime` mapping, multi-day/overnight event bucketing across all overlapped local days (`todayEvents` & calendar grids), and DST-safe wall-clock positioning in `layoutDayEvents`.
+- **Event reminders:** fixed `lead + within` reminder window and `fillOwnResponseStatus` so declined CalDAV/iCal events no longer fire reminders.
+- **Contacts & duplicate merge:** AI contact enrichment now sends all fetched mails including the latest (`mails[0]`), tracks busy state per contact, sanitizes/validates AI-filled fields (rejecting unsafe URL schemes), excludes read-only Google Contacts from local duplicate merges, guards merges against read-only mode, reloads the open editor on merge, extends contact search to second email/phone/mobile, uses random contact IDs, and keeps Outlook quote cleanup safe for multi-quoted names.
+
+### Search, Activity & UI Polish
+- **IMAP & FTS5 search:** context cancellation (`watchIMAPCtx`), surfaced timeout errors, `UIDVALIDITY` safety without stale upserts, multi-word IMAP `TEXT` search, skipping `\All` folders with `Message-ID` deduplication; FTS5 splits punctuation tokens (e.g. `123/456`) and supports `from:`, `to:`, `subject:` prefixes.
+- **Search, Activity, Phone & Settings:** fixed sidebar `setNav` state cleanup, dedicated `serverSearchSeq`, `isCurrentViewOutbound` during cross-folder search, account-switcher folder reset, phone search parity, `openActivityMail` across desktop/phone/search/account filters, Activity undo tracking & indexed `Message-ID` lookups, `loadSettingsModels` data-race & provider-switch fixes, async `ReadContent` in Compose AI, Teams attendee validation & URL cap, and macOS `open` process reaping.
+
 ## 0.7.53 (2026-11-26)
 
 ### Search

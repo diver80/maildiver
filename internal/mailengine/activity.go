@@ -221,17 +221,20 @@ type ActivityMessage struct {
 // there, else the mail with its Message-ID in the same account (moved, in the trash). ok is
 // false when the mail is gone.
 func (e *Engine) LocateActivityMessage(ctx context.Context, a ActivityEntry) (ActivityMessage, bool) {
+	mid := strings.Trim(a.MessageID, "<> ")
 	if a.LocalID != "" {
 		if m, err := e.store.GetMessage(ctx, a.LocalID); err == nil {
-			return ActivityMessage{m.ID, m.AccountID, m.FolderID, m.FolderPath}, true
+			if mid == "" || strings.EqualFold(strings.Trim(m.MessageID, "<> "), mid) {
+				return ActivityMessage{m.ID, m.AccountID, m.FolderID, m.FolderPath}, true
+			}
 		}
 	}
-	mid := strings.Trim(a.MessageID, "<> ")
 	if mid == "" {
 		return ActivityMessage{}, false
 	}
 	row := e.store.db.QueryRowContext(ctx, `SELECT id, account_id, folder_id, folder_path FROM messages
-		WHERE trim(message_id, '<> ') = ? AND (? = '' OR account_id = ?) ORDER BY date_unix DESC LIMIT 1`, mid, a.AccountID, a.AccountID)
+		WHERE message_id IN (?, ?) AND (? = '' OR account_id = ?) ORDER BY date_unix DESC LIMIT 1`,
+		mid, "<"+mid+">", a.AccountID, a.AccountID)
 	var m ActivityMessage
 	if err := row.Scan(&m.ID, &m.AccountID, &m.FolderID, &m.FolderPath); err != nil {
 		return ActivityMessage{}, false
@@ -259,6 +262,9 @@ func (s *Store) migrateActivity() error {
 		return err
 	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_activity_kind ON activity(kind, id DESC)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_activity_at ON activity(at)`); err != nil {
 		return err
 	}
 	_, err := s.db.Exec(`DELETE FROM activity WHERE at < ?`, time.Now().Add(-activityRetention).UnixMilli())

@@ -48,6 +48,7 @@ type activityUI struct {
 	lastQuery string
 	expanded  map[string]bool // batches shown entry by entry
 	busyID    int64
+	undoneIDs map[int64]bool
 }
 
 func (a *App) activityKinds() []string {
@@ -73,6 +74,9 @@ func (a *App) LoadActivity(ctx context.Context, more bool) {
 	}
 	kinds := a.activityKinds()
 	if len(kinds) == 0 {
+		ac.seq++
+		ac.loading = false
+		ac.lastQuery = strings.TrimSpace(ac.search)
 		ac.list, ac.more, ac.loaded = nil, false, true
 		return
 	}
@@ -124,9 +128,17 @@ func (a *App) openActivityMail(ctx context.Context, e mailengine.ActivityEntry) 
 				a.toast(a.tr("Die Mail ist nicht mehr vorhanden (endgültig gelöscht oder noch nicht synchronisiert).", "The mail is no longer there (deleted for good or not synced yet)."), "info")
 				return
 			}
+			a.clearSearch()
+			a.phone.search = false
+			if a.selectedAccount != "" && m.AccountID != "" && a.selectedAccount != m.AccountID {
+				a.selectedAccount = ""
+			}
 			a.setNav("folder:" + m.FolderID)
 			a.startMessageLoad(context.Background())
 			a.SelectMessage(context.Background(), m.ID)
+			if a.isPhone() {
+				a.phoneShowRoutes(phoneRouteList, phoneRouteMail)
+			}
 		})
 	}()
 }
@@ -161,6 +173,10 @@ func (a *App) undoActivity(ctx context.Context, e mailengine.ActivityEntry) {
 			case res.Restored == 0:
 				a.toast(a.trf("Die Mail liegt nicht mehr in „%s“.", "The mail is no longer in “%s”.", e.Target), "info")
 			default:
+				if a.activity.undoneIDs == nil {
+					a.activity.undoneIDs = map[int64]bool{}
+				}
+				a.activity.undoneIDs[e.ID] = true
 				a.toast(a.trf("Zurück nach „%s“ verschoben", "Moved back to “%s”", e.Folder), "success")
 			}
 			a.LoadActivity(context.Background(), false)
@@ -419,12 +435,13 @@ func (a *App) renderActivityRow(c *ui.Context, i int, row []mailengine.ActivityE
 			return
 		}
 		if activityUndoable(e) && !a.readOnly {
+			undone := ac.undoneIDs[e.ID]
 			b := iconLabelBtn(c.Key(fmt.Sprintf("act-undo-%d", e.ID)), iconUndo, a.tr("Rückgängig", "Undo"), false,
 				a.trf("Zurück nach „%s“ verschieben", "Move back to “%s”", cleanFolderPath(e.Folder)))
-			if ac.busyID != 0 {
+			if ac.busyID != 0 || undone {
 				b.Disabled(true)
 			}
-			if b.Clicked() && ac.busyID == 0 {
+			if b.Clicked() && ac.busyID == 0 && !undone {
 				a.undoActivity(context.Background(), e)
 			}
 		}

@@ -371,8 +371,11 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("rethread messages: %w", err)
 	}
 	// Names taken from Outlook headers kept their quotes ('Becker, Thomas'); added in 0.7.43.
+	// Guard with instr(...) = 0 so multi-quoted values like `"Acme" & "Beta"` are never corrupted.
 	if _, err := s.db.Exec(`UPDATE contacts SET display_name = trim(substr(display_name, 2, length(display_name) - 2))
-		WHERE length(display_name) >= 2 AND (display_name LIKE '''%''' OR display_name LIKE '"%"')`); err != nil {
+		WHERE length(display_name) > 2
+		  AND (display_name LIKE '''%''' OR display_name LIKE '"%"')
+		  AND instr(substr(display_name, 2, length(display_name) - 2), substr(display_name, 1, 1)) = 0`); err != nil {
 		return fmt.Errorf("unquote contact names: %w", err)
 	}
 	if err := s.migrateActivity(); err != nil {
@@ -586,7 +589,7 @@ func (s *Store) DeleteAccountData(ctx context.Context, accountID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM messages_fts WHERE id IN (SELECT id FROM messages WHERE account_id=?)`, accountID); err != nil {
 		return err
 	}
-	for _, tbl := range []string{"messages", "folders", "filters"} {
+	for _, tbl := range []string{"messages", "folders", "filters", "activity"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+tbl+` WHERE account_id=?`, accountID); err != nil {
 			return err
 		}
@@ -1027,17 +1030,31 @@ func buildFTSQuery(raw string) string {
 	fields := strings.Fields(raw)
 	var parts []string
 	for _, tok := range fields {
-		clean := strings.Map(func(r rune) rune {
+		colPrefix := ""
+		lower := strings.ToLower(tok)
+		switch {
+		case strings.HasPrefix(lower, "from:"):
+			colPrefix = "from_addr:"
+			tok = tok[len("from:"):]
+		case strings.HasPrefix(lower, "to:"):
+			colPrefix = "to_text:"
+			tok = tok[len("to:"):]
+		case strings.HasPrefix(lower, "subject:"):
+			colPrefix = "subject:"
+			tok = tok[len("subject:"):]
+		}
+		// Replace stripped ASCII punctuation with spaces so slash/bracket tokens like "123/456" split
+		// into separate searchable terms instead of gluing into "123456".
+		cleaned := strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '@' || r == '.' || r == '_' || r == '-' || r > 127 {
 				return r
 			}
-			return -1
+			return ' '
 		}, tok)
-		if clean == "" {
-			continue
+		for _, sub := range strings.Fields(cleaned) {
+			// Quote token with prefix wildcard so partial email/domain/word queries match smoothly.
+			parts = append(parts, colPrefix+`"`+strings.ReplaceAll(sub, `"`, `""`)+`"*`)
 		}
-		// Quote token with prefix wildcard so partial email/domain/word queries match smoothly.
-		parts = append(parts, `"`+strings.ReplaceAll(clean, `"`, `""`)+`"*`)
 	}
 	return strings.Join(parts, " ")
 }
@@ -1630,8 +1647,8 @@ func (s *Store) listContacts(ctx context.Context, query string, limit int) ([]ba
 	var args []any
 	if t := strings.TrimSpace(query); t != "" {
 		like := "%" + t + "%"
-		q += ` WHERE display_name LIKE ? OR email LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ?`
-		args = append(args, like, like, like, like, like)
+		q += ` WHERE display_name LIKE ? OR email LIKE ? OR second_email LIKE ? OR phone LIKE ? OR mobile LIKE ? OR company LIKE ? OR first_name LIKE ? OR last_name LIKE ?`
+		args = append(args, like, like, like, like, like, like, like, like)
 	}
 	q += ` ORDER BY lower(display_name), lower(email)`
 	if limit > 0 {
@@ -1696,7 +1713,7 @@ func (s *Store) UpsertContact(ctx context.Context, req backend.ContactUpsertRequ
 		c.Address = keepOrFill(existing.Address, c.Address)
 		c.Notes = keepOrFill(existing.Notes, c.Notes)
 	} else if c.ID == "" {
-		c.ID = fmt.Sprintf("ct-%d", time.Now().UnixNano())
+		c.ID = "ct-" + randomHex(8)
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO contacts(

@@ -92,8 +92,12 @@ func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.E
 				continue
 			}
 			tmp := ical.Prop{Name: p.Name, Params: p.Params, Value: raw}
-			if t, _, terr := parseICalPropTime(&tmp); terr == nil {
-				exdates = append(exdates, t.UTC().Format(time.RFC3339))
+			if t, isDate, terr := parseICalPropTime(&tmp); terr == nil {
+				if isDate || allDay {
+					exdates = append(exdates, t.Format("2006-01-02"))
+				} else {
+					exdates = append(exdates, t.UTC().Format(time.RFC3339))
+				}
 			}
 		}
 	}
@@ -104,8 +108,12 @@ func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.E
 	}
 	recID := ""
 	if recIDProp != nil {
-		if t, _, terr := parseICalPropTime(recIDProp); terr == nil {
-			recID = t.UTC().Format(time.RFC3339)
+		if t, isDate, terr := parseICalPropTime(recIDProp); terr == nil {
+			if isDate || allDay {
+				recID = t.Format("2006-01-02")
+			} else {
+				recID = t.UTC().Format(time.RFC3339)
+			}
 		} else {
 			recID = strings.TrimSpace(recIDProp.Value)
 		}
@@ -466,7 +474,7 @@ func ExpandEventsInWindow(events []StoredEvent, start, end time.Time, limit int)
 		var set rrule.Set
 		set.RRule(rule)
 		for _, ex := range ev.ExDates {
-			if t := parseFlexibleEventTime(ex, 0); !t.IsZero() {
+			if t, ok := parseStrictEventTime(ex); ok {
 				set.ExDate(t.In(dtStart.Location()))
 			}
 		}
@@ -505,11 +513,12 @@ func ExpandEventsInWindow(events []StoredEvent, start, end time.Time, limit int)
 			}
 			ce := storedEventToBridge(ev)
 			ce.IsRecurring = true
-			ce.RecurrenceID = o.UTC().Format(time.RFC3339)
 			if ev.AllDay {
+				ce.RecurrenceID = o.Format("2006-01-02")
 				ce.Start = o.Format("2006-01-02")
 				ce.End = occEnd.Format("2006-01-02")
 			} else {
+				ce.RecurrenceID = o.UTC().Format(time.RFC3339)
 				ce.Start = o.Format(time.RFC3339)
 				ce.End = occEnd.Format(time.RFC3339)
 			}
@@ -575,8 +584,15 @@ func cleanMailto(val string) string {
 
 func formatDisplayAttendee(cn, email string) string {
 	cn = strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(cn))
+	email = strings.TrimSpace(email)
 	if cn != "" && !strings.EqualFold(cn, email) {
-		return cn + " <" + email + ">"
+		if email != "" {
+			if strings.ContainsAny(cn, `,;"<>()@:\[]`) {
+				return (&mail.Address{Name: cn, Address: email}).String()
+			}
+			return cn + " <" + email + ">"
+		}
+		return cn
 	}
 	return email
 }
@@ -732,12 +748,22 @@ func BuildICSRSVP(rawICS, attendeeEmail, attendeeName, status string) (replyICS,
 	return buf.String(), organizerEmail, summary, nil
 }
 
-func parseFlexibleEventTime(iso string, fallbackUnix int64) time.Time {
+func parseStrictEventTime(iso string) (time.Time, bool) {
 	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return time.Time{}, false
+	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02"} {
 		if t, err := time.ParseInLocation(layout, iso, time.Local); err == nil {
-			return t
+			return t, true
 		}
+	}
+	return time.Time{}, false
+}
+
+func parseFlexibleEventTime(iso string, fallbackUnix int64) time.Time {
+	if t, ok := parseStrictEventTime(iso); ok {
+		return t
 	}
 	if fallbackUnix > 0 {
 		return time.Unix(fallbackUnix, 0)
@@ -792,10 +818,21 @@ func buildEventsICS(calName string, events []StoredEvent, method string) string 
 		if e.RRule != "" {
 			ev.Props.Set(&ical.Prop{Name: ical.PropRecurrenceRule, Value: e.RRule})
 		}
-		if e.RecurrenceID != "" {
-			if rt := parseFlexibleEventTime(e.RecurrenceID, 0); !rt.IsZero() {
+		for _, ex := range e.ExDates {
+			if et, ok := parseStrictEventTime(ex); ok {
+				p := ical.NewProp("EXDATE")
 				if e.AllDay {
-					ev.Props.SetDate(ical.PropRecurrenceID, rt)
+					p.SetDate(et.Local())
+				} else {
+					p.SetDateTime(et.UTC())
+				}
+				ev.Props.Add(p)
+			}
+		}
+		if e.RecurrenceID != "" {
+			if rt, ok := parseStrictEventTime(e.RecurrenceID); ok {
+				if e.AllDay {
+					ev.Props.SetDate(ical.PropRecurrenceID, rt.Local())
 				} else {
 					ev.Props.SetDateTime(ical.PropRecurrenceID, rt.UTC())
 				}
@@ -820,7 +857,7 @@ func buildEventsICS(calName string, events []StoredEvent, method string) string 
 
 // addICalParticipants writes e's ORGANIZER and ATTENDEEs; stored marks the calendar's own copy.
 func addICalParticipants(ev *ical.Event, e StoredEvent, stored bool) {
-	if len(e.Attendees) == 0 {
+	if e.Organizer == "" && len(e.Attendees) == 0 {
 		return
 	}
 	if org := parseAttendeeAddress(e.Organizer); org.Email != "" {
@@ -855,7 +892,7 @@ func addICalParticipants(ev *ical.Event, e StoredEvent, stored bool) {
 	}
 }
 
-// parseAttendeeAddress reads "Name <email>" or a bare address.
+// parseAttendeeAddress reads "Name <email>" or a bare address, including unquoted names with commas.
 func parseAttendeeAddress(raw string) backend.EventAttendee {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -867,6 +904,19 @@ func parseAttendeeAddress(raw string) backend.EventAttendee {
 			name = ""
 		}
 		return backend.EventAttendee{Email: strings.TrimSpace(a.Address), Name: name}
+	}
+	// Fallback for legacy unquoted display names containing commas/colons: "Becker, Thomas <t@x.de>".
+	if lt := strings.LastIndexByte(raw, '<'); lt >= 0 {
+		if gt := strings.IndexByte(raw[lt:], '>'); gt > 1 {
+			addrPart := strings.TrimSpace(raw[lt+1 : lt+gt])
+			if a, err := mail.ParseAddress(addrPart); err == nil && a.Address != "" {
+				name := strings.Trim(strings.TrimSpace(raw[:lt]), `"' `)
+				if strings.EqualFold(name, a.Address) {
+					name = ""
+				}
+				return backend.EventAttendee{Email: strings.TrimSpace(a.Address), Name: name}
+			}
+		}
 	}
 	return backend.EventAttendee{}
 }

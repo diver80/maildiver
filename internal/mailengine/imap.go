@@ -599,6 +599,10 @@ func (e *Engine) syncSingleFolderIMAP(ctx context.Context, c *imapclient.Client,
 // fetchEnvelopesIMAP fetches envelopes and threading headers for uids (in chunks) and stores
 // them; stored is called for each stored mail.
 func (e *Engine) fetchEnvelopesIMAP(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, uids []imap.UID, chunk int, stored func(StoredMessage)) error {
+	return e.fetchEnvelopesIMAPMode(ctx, c, acc, f, uids, chunk, true, stored)
+}
+
+func (e *Engine) fetchEnvelopesIMAPMode(ctx context.Context, c *imapclient.Client, acc config.DirectAccount, f StoredFolder, uids []imap.UID, chunk int, persist bool, stored func(StoredMessage)) error {
 	hdrSection := &imap.FetchItemBodySection{
 		Specifier:    imap.PartSpecifierHeader,
 		HeaderFields: []string{"Message-ID", "In-Reply-To", "References", "List-Id", "List-Unsubscribe"},
@@ -626,8 +630,10 @@ func (e *Engine) fetchEnvelopesIMAP(ctx context.Context, c *imapclient.Client, a
 		}
 		for _, fm := range fetched {
 			sm := fetchBufferToStoredMessage(acc.ID, f, fm, hdrSection)
-			if err := e.store.UpsertMessage(ctx, sm); err != nil {
-				continue
+			if persist {
+				if err := e.store.UpsertMessage(ctx, sm); err != nil {
+					continue
+				}
 			}
 			if stored != nil {
 				stored(sm)
@@ -1136,11 +1142,19 @@ func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount,
 	if err != nil {
 		return nil, err
 	}
+	stopWatch := watchIMAPCtx(ctx, c)
 	defer func() {
-		_ = c.Logout().Wait()
+		stopWatch()
+		if ctx.Err() == nil {
+			_ = c.Logout().Wait()
+		}
 		_ = c.Close()
 	}()
 
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
 	var results []StoredMessage
 	var firstErr error
 	for _, f := range folders {
@@ -1158,8 +1172,8 @@ func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount,
 			continue
 		}
 		validityChanged := f.UIDValidity > 0 && sel.UIDValidity > 0 && sel.UIDValidity != f.UIDValidity
-		// IMAP TEXT searches headers + full body on the server.
-		data, err := c.UIDSearch(&imap.SearchCriteria{Text: []string{query}}, nil).Wait()
+		// IMAP TEXT searches headers + full body on the server; splitting words matches all terms in any order.
+		data, err := c.UIDSearch(&imap.SearchCriteria{Text: terms}, nil).Wait()
 		if err != nil {
 			// Some IMAP servers reject UTF-8/TEXT with BADCHARSET; retry with Subject OR From, then ASCII fallback.
 			data, err = c.UIDSearch(&imap.SearchCriteria{
@@ -1170,12 +1184,15 @@ func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount,
 			}, nil).Wait()
 			if err != nil {
 				if asciiQ := toASCIIQuery(query); asciiQ != "" {
-					data, err = c.UIDSearch(&imap.SearchCriteria{
-						Or: [][2]imap.SearchCriteria{{
-							{Text: []string{asciiQ}},
-							{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: asciiQ}}},
-						}},
-					}, nil).Wait()
+					asciiTerms := strings.Fields(asciiQ)
+					if len(asciiTerms) > 0 {
+						data, err = c.UIDSearch(&imap.SearchCriteria{
+							Or: [][2]imap.SearchCriteria{{
+								{Text: asciiTerms},
+								{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: asciiQ}}},
+							}},
+						}, nil).Wait()
+					}
 				}
 			}
 			if err != nil {
@@ -1209,15 +1226,21 @@ func (e *Engine) searchServerIMAP(ctx context.Context, acc config.DirectAccount,
 			}
 		}
 		if len(missing) > 0 {
-			if ferr := e.fetchEnvelopesIMAP(ctx, c, acc, f, missing, 50, func(sm StoredMessage) {
+			// Never upsert onto stale cached rows if UIDVALIDITY changed since the last sync.
+			if ferr := e.fetchEnvelopesIMAPMode(ctx, c, acc, f, missing, 50, !validityChanged, func(sm StoredMessage) {
 				results = append(results, sm)
 			}); ferr != nil && firstErr == nil {
 				firstErr = ferr
 			}
 		}
 	}
-	if len(results) == 0 && firstErr != nil {
-		return nil, firstErr
+	if len(results) == 0 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
 	}
 	return results, nil
 }

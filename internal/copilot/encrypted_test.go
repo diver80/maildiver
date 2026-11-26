@@ -35,8 +35,7 @@ func (e *encryptedRPC) Call(_ context.Context, method string, params any) (json.
 	return json.RawMessage(`{"id":"7","subject":"Vertrag","bodyText":"","security":{"encrypted":true,"decryption":"skipped"}}`), nil
 }
 
-// The model's own get_message never decrypts; only the mail the user has open is decrypted for
-// the context snapshot.
+// Neither the model's get_message tool nor the context snapshot decrypts encrypted emails.
 func TestCopilotDecryptsOnlyTheOpenMail(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := config.Default()
@@ -57,12 +56,12 @@ func TestCopilotDecryptsOnlyTheOpenMail(t *testing.T) {
 	}
 
 	snap := r.collectContextSnapshot(ctx, bc, "de", "", "7")
-	if !strings.Contains(snap, "GEHEIMER INHALT") {
-		t.Fatalf("the open mail should be in the snapshot: %s", snap)
+	if strings.Contains(snap, "GEHEIMER INHALT") || !strings.Contains(snap, "encrypted email: content not available") {
+		t.Fatalf("context snapshot must not leak decrypted content: %s", snap)
 	}
 	rpc.mu.Lock()
 	defer rpc.mu.Unlock()
-	if len(rpc.decrypts) != 2 || rpc.decrypts[0] || !rpc.decrypts[1] {
-		t.Fatalf("decrypt flags = %v, want [false true]", rpc.decrypts)
+	if len(rpc.decrypts) != 2 || rpc.decrypts[0] || rpc.decrypts[1] {
+		t.Fatalf("decrypt flags = %v, want [false false]", rpc.decrypts)
 	}
 }

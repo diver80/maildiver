@@ -208,6 +208,8 @@ func phoneIconButton(c *ui.Context, svg *ui.SVG, label string, fg ui.Color) ui.E
 
 // phoneOpenView shows the mails of a view or folder.
 func (a *App) phoneOpenView(nav string) {
+	a.clearSearch()
+	a.phone.search = false
 	a.selectedID, a.selectedMsg = "", nil
 	a.ClearMailSelection()
 	a.phone.swipes.closeAll()
@@ -704,12 +706,12 @@ func (a *App) renderPhoneList(c *ui.Context) {
 		} else {
 			a.phoneBar(c, a.currentViewTitle(), true, func() {
 				if isMailNav(a.navID) {
-					if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
+					if !a.readOnly && !a.searchActive() && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
 						if phoneIconButton(c.Key("ph-mark-all-read"), iconMailOpen, a.tr("Alle gelesen", "Mark all read"), ui.Color{}).Clicked() {
 							a.MarkCurrentViewAllRead(context.Background())
 						}
 					}
-					if trashAcc := a.currentTrashAccountID(); trashAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+					if trashAcc := a.currentTrashAccountID(); trashAcc != "" && !a.searchActive() && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
 						if phoneIconButton(c.Key("ph-empty-trash"), iconTrash, a.tr("Papierkorb leeren", "Empty Trash"), t.Danger).Clicked() {
 							if a.direct.emptyTrashArmID == trashAcc && time.Since(a.direct.emptyTrashArmAt) < 5*time.Second {
 								a.EmptyAccountTrash(context.Background(), trashAcc)
@@ -720,7 +722,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 							}
 						}
 					}
-					if spamAcc := a.currentSpamAccountID(); spamAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+					if spamAcc := a.currentSpamAccountID(); spamAcc != "" && !a.searchActive() && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
 						if phoneIconButton(c.Key("ph-empty-spam"), iconTrash, a.tr("Spam leeren", "Empty Spam"), t.Danger).Clicked() {
 							if a.direct.emptySpamArmID == spamAcc && time.Since(a.direct.emptySpamArmAt) < 5*time.Second {
 								a.EmptyAccountSpam(context.Background(), spamAcc)
@@ -761,9 +763,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 						a.lastSearchQuery = strings.TrimSpace(a.searchQuery)
 						a.LoadMessages(context.Background())
 					} else if strings.TrimSpace(a.searchQuery) == "" && a.lastSearchQuery != "" {
-						a.lastSearchQuery = ""
-						a.serverSearchDoneQuery = ""
-						a.serverSearchDoneKey = ""
+						a.clearSearch()
 						a.LoadMessages(context.Background())
 					}
 				})
@@ -796,7 +796,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 			return
 		}
 		ls := a.phoneListState()
-		crossFolder := !strings.HasPrefix(a.navID, "folder:")
+		crossFolder := !strings.HasPrefix(a.navID, "folder:") || (a.searchActive() && a.effectiveSearchScope() != searchFolder)
 		outbound := a.isCurrentViewOutbound()
 		list := ui.List(c, ls, len(a.messages), func(i int) {
 			if i < 0 || i >= len(a.messages) {

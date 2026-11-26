@@ -114,8 +114,11 @@ func accountDisplayName(acc config.DirectAccount) string {
 // isOwnOrganizer says whether one of the own addresses organizes an event with this organizer
 // ("" counts: an event of the own calendar that nobody else organizes).
 func (e *Engine) isOwnOrganizer(organizer string, own map[string]bool) bool {
+	if strings.TrimSpace(organizer) == "" {
+		return true
+	}
 	org := parseAttendeeAddress(organizer).Email
-	return org == "" || own[strings.ToLower(org)]
+	return org != "" && own[strings.ToLower(org)]
 }
 
 func (e *Engine) ownEmailSet() map[string]bool {
@@ -215,8 +218,13 @@ func (e *Engine) mailEventToAttendees(ctx context.Context, ev StoredEvent, metho
 	case update:
 		subject = "Geändert: " + ev.Title
 	}
-	payload := buildEventsICS("", []StoredEvent{ev}, method)
-	return e.sendCalendarMail(ctx, acc, org.Email, name, to, subject, inviteText(ev, method, update), payload, method)
+	evPayload := ev
+	if method == "CANCEL" {
+		// RFC 5546 §3.2.5: a cancellation lists only the attendee(s) being cancelled.
+		evPayload.Attendees = to
+	}
+	payload := buildEventsICS("", []StoredEvent{evPayload}, method)
+	return e.sendCalendarMail(ctx, acc, org.Email, name, to, subject, inviteText(evPayload, method, update), payload, method)
 }
 
 // sendCalendarMail sends an iTIP mail (method REQUEST, CANCEL or REPLY) from fromEmail of acc
@@ -325,17 +333,33 @@ func (e *Engine) declineEvent(ctx context.Context, cal StoredCalendar, ev Stored
 // occurrenceOf is the single occurrence recurrenceID of the series ev, for cancelling it.
 func occurrenceOf(ev StoredEvent, recurrenceID string) StoredEvent {
 	occ := ev
-	st := parseFlexibleEventTime(recurrenceID, 0)
-	dur := time.Duration(ev.EndUnix-ev.StartUnix) * time.Second
+	st, ok := parseStrictEventTime(recurrenceID)
+	if !ok {
+		st = parseFlexibleEventTime(recurrenceID, ev.StartUnix)
+	}
 	occ.RecurrenceID = recurrenceID
 	occ.RRule = ""
 	occ.ExDates = nil
-	occ.StartUnix, occ.EndUnix = st.Unix(), st.Add(dur).Unix()
 	if ev.AllDay {
-		occ.StartISO, occ.EndISO = st.Format("2006-01-02"), st.Add(dur).Format("2006-01-02")
-	} else {
-		occ.StartISO, occ.EndISO = st.Format(time.RFC3339), st.Add(dur).Format(time.RFC3339)
+		localStart := time.Date(st.Local().Year(), st.Local().Month(), st.Local().Day(), 0, 0, 0, 0, time.Local)
+		origStart := parseFlexibleEventTime(ev.StartISO, ev.StartUnix).Local()
+		origEnd := parseFlexibleEventTime(ev.EndISO, ev.EndUnix).Local()
+		spanDays := int(origEnd.Sub(origStart).Hours()+12) / 24
+		if spanDays < 1 {
+			spanDays = 1
+		}
+		localEnd := localStart.AddDate(0, 0, spanDays)
+		occ.RecurrenceID = localStart.Format("2006-01-02")
+		occ.StartUnix, occ.EndUnix = localStart.Unix(), localEnd.Unix()
+		occ.StartISO, occ.EndISO = localStart.Format("2006-01-02"), localEnd.Format("2006-01-02")
+		return occ
 	}
+	dur := time.Duration(ev.EndUnix-ev.StartUnix) * time.Second
+	if dur <= 0 {
+		dur = time.Hour
+	}
+	occ.StartUnix, occ.EndUnix = st.Unix(), st.Add(dur).Unix()
+	occ.StartISO, occ.EndISO = st.Format(time.RFC3339), st.Add(dur).Format(time.RFC3339)
 	return occ
 }
 
@@ -348,8 +372,10 @@ type ICSReplyResult struct {
 }
 
 // applyICSReply records the answer of an iTIP REPLY in the own event it answers (local or
-// CalDAV; Google tracks answers itself).
-func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResult, bool) {
+// CalDAV; Google tracks answers itself). It verifies the mail sender matches the replying
+// ATTENDEE, respects read-only/MCP modes, and avoids overwriting master recurring series when
+// a REPLY targets only a single RECURRENCE-ID.
+func (e *Engine) applyICSReply(ctx context.Context, detail backend.MessageDetail, rawICS string, allowWrite bool) (ICSReplyResult, bool) {
 	cal, err := ical.NewDecoder(strings.NewReader(rawICS)).Decode()
 	if err != nil {
 		return ICSReplyResult{}, false
@@ -364,13 +390,54 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 	uid, _ := evs[0].Props.Text(ical.PropUID)
 	title, _ := evs[0].Props.Text(ical.PropSummary)
 	_, atts := icalParticipants(evs[0])
-	if len(atts) == 0 || atts[0].Status == "" {
+	if len(atts) == 0 {
 		return ICSReplyResult{}, false
 	}
-	who := atts[0]
-	res := ICSReplyResult{Attendee: who.Display(), Status: who.Status, Title: strings.TrimSpace(title)}
-	if strings.TrimSpace(uid) == "" {
+	// Match the replying attendee against detail.From when present so a third-party sender cannot
+	// forge another attendee's RSVP status.
+	senderEmail := ""
+	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
+		senderEmail = strings.ToLower(strings.TrimSpace(addrs[0]))
+	}
+	var who backend.EventAttendee
+	matchedSender := false
+	if senderEmail != "" {
+		for _, a := range atts {
+			if strings.EqualFold(a.Email, senderEmail) && a.Status != "" {
+				who = a
+				matchedSender = true
+				break
+			}
+		}
+	}
+	if !matchedSender {
+		// Fall back to atts[0] for display only (never mutate calendar without verified sender).
+		if atts[0].Status == "" {
+			return ICSReplyResult{}, false
+		}
+		who = atts[0]
+	}
+	res := ICSReplyResult{Attendee: formatDisplayAttendee(who.Name, who.Email), Status: who.Status, Title: strings.TrimSpace(title)}
+	if strings.TrimSpace(uid) == "" || !allowWrite || !matchedSender {
 		return res, true
+	}
+	// Never apply calendar writes from Trash or Junk folders.
+	if f, ok := e.store.FindFolderByIDOrPath(ctx, detail.AccountID, detail.FolderID); ok {
+		if f.Type == "trash" || f.Type == "junk" {
+			return res, true
+		}
+	}
+	replyRecID := ""
+	if rp := evs[0].Props.Get(ical.PropRecurrenceID); rp != nil {
+		if rt, allDay, terr := parseICalPropTime(rp); terr == nil {
+			if allDay {
+				replyRecID = rt.Format("2006-01-02")
+			} else {
+				replyRecID = rt.UTC().Format(time.RFC3339)
+			}
+		} else {
+			replyRecID = strings.TrimSpace(rp.Value)
+		}
 	}
 	// Answers can be opened in any order: only one newer than the last recorded counts.
 	var stamp int64
@@ -378,16 +445,26 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 		stamp = t.Unix()
 	}
 	stampKey := "ics_reply:" + strings.ToLower(strings.TrimSpace(uid)) + ":" + strings.ToLower(who.Email)
+	if replyRecID != "" {
+		stampKey += ":" + replyRecID
+	}
 	var last int64
 	_ = e.store.db.QueryRowContext(ctx, `SELECT CAST(v AS INTEGER) FROM kv_meta WHERE k=?`, stampKey).Scan(&last)
-	if stamp > 0 && last >= stamp {
+	if last > 0 && (stamp == 0 || last >= stamp) {
 		return res, true
 	}
-	_, _ = e.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv_meta(k, v) VALUES(?, ?)`, stampKey, fmt.Sprint(stamp))
 	matches, _ := e.store.FindEventsByUIDOrMatch(ctx, uid, "", 0)
 	own := e.ownEmailSet()
+	matchedEvent := false
 	for _, ev := range matches {
-		if !strings.EqualFold(ev.UID, uid) || !e.isOwnOrganizer(ev.Organizer, own) {
+		if !strings.EqualFold(ev.UID, uid) || !e.isOwnOrganizer(ev.Organizer, own) || ev.ReadOnly {
+			continue
+		}
+		// A single-occurrence REPLY must never overwrite the attendee status on the whole series.
+		if replyRecID != "" && ev.RecurrenceID == "" && ev.RRule != "" {
+			continue
+		}
+		if replyRecID != "" && ev.RecurrenceID != "" && ev.RecurrenceID != replyRecID {
 			continue
 		}
 		if res.Title == "" {
@@ -396,6 +473,7 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 		changed := false
 		for i, a := range ev.Attendees {
 			if strings.EqualFold(a.Email, who.Email) {
+				matchedEvent = true
 				if a.Status != who.Status {
 					ev.Attendees[i].Status = who.Status
 					changed = true
@@ -407,7 +485,7 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 			continue
 		}
 		cal, cerr := e.store.GetCalendar(ctx, ev.CalendarID)
-		if cerr != nil {
+		if cerr != nil || cal.ReadOnly {
 			continue
 		}
 		switch cal.Source {
@@ -421,6 +499,9 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 			_ = e.store.UpsertEvent(ctx, ev)
 		}
 		e.emitCalendarChanged()
+	}
+	if matchedEvent && stamp > 0 {
+		_, _ = e.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv_meta(k, v) VALUES(?, ?)`, stampKey, fmt.Sprint(stamp))
 	}
 	return res, true
 }
@@ -444,6 +525,26 @@ func (e *Engine) markNotifiable(events []backend.CalendarEvent) {
 				own = e.ownEmailSet()
 			}
 			events[i].CanDecline = !e.isOwnOrganizer(events[i].Organizer, own)
+		}
+	}
+}
+
+// fillOwnResponseStatus fills ResponseStatus from the user's own ATTENDEE entry whenever
+// SelfResponse was not set explicitly (e.g. CalDAV and iCal feeds where PARTSTAT lives on ATTENDEE).
+func (e *Engine) fillOwnResponseStatus(events []backend.CalendarEvent) {
+	var own map[string]bool
+	for i := range events {
+		if events[i].ResponseStatus != "" || len(events[i].Attendees) == 0 {
+			continue
+		}
+		if own == nil {
+			own = e.ownEmailSet()
+		}
+		for _, a := range events[i].Attendees {
+			if a.Status != "" && own[strings.ToLower(a.Email)] {
+				events[i].ResponseStatus = a.Status
+				break
+			}
 		}
 	}
 }
@@ -481,7 +582,8 @@ func (e *Engine) icsInviteOf(ctx context.Context, detail backend.MessageDetail, 
 	ev := storedEventToBridge(evs[0])
 	ev.Method = ICSMethod(rawICS)
 	if ev.Method == "REPLY" {
-		if r, ok := e.applyICSReply(ctx, rawICS); ok {
+		allowWrite := !e.loadConfig().Mailbox.ReadOnly && e.activitySource != ActivityByMCP
+		if r, ok := e.applyICSReply(ctx, detail, rawICS, allowWrite); ok {
 			ev.Attendees = []backend.EventAttendee{parseAttendeeAddress(r.Attendee)}
 			ev.Attendees[0].Status = r.Status
 			ev.ResponseStatus = r.Status

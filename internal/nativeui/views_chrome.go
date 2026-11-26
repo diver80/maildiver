@@ -72,6 +72,15 @@ func (a *App) renderToolbar(c *ui.Context) {
 					}
 					if ui.Select(c.Key("tb-acc"), &accLabel, a.accountLabels).Width(150).Changed() {
 						a.selectedAccount = a.accountIDByLabel[accLabel]
+						if a.selectedAccount != "" && strings.HasPrefix(a.navID, "folder:") {
+							fid := strings.TrimPrefix(a.navID, "folder:")
+							for _, f := range a.folders {
+								if f.ID == fid && f.AccountID != "" && f.AccountID != a.selectedAccount {
+									a.setNav("focus")
+									break
+								}
+							}
+						}
 						a.lastCheckedIndex = -1
 						a.RefreshAll(context.Background())
 					}

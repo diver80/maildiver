@@ -443,9 +443,9 @@ func (r *Runner) collectContextSnapshot(ctx context.Context, bc *backend.Client,
 		parts = append(parts, trLang(lang, "Kalender nächste 7 Tage:\n", "Calendar next 7 days:\n")+ai.WrapUntrusted("calendar", compactEvents(evs.Events)))
 	}
 	if selectedID != "" {
-		// The mail the user has open is decrypted: asking the copilot about it is an explicit
-		// action, and the reading pane says that AI actions send its decrypted text.
-		if detail, err := bc.MessageWithOptions(ctx, selectedID, backend.MessageOptions{Format: "text", Decrypt: true}); err == nil {
+		// Never decrypt encrypted emails automatically for the Copilot context snapshot:
+		// encrypted mails only reach the AI with sender and subject, never plaintext body.
+		if detail, err := bc.MessageWithOptions(ctx, selectedID, backend.MessageOptions{Format: "text", Decrypt: false}); err == nil {
 			detail.BodyHtml = ""
 			detail.BodyText = TruncateRunes(bodyForModel(detail), maxSnapshotBodyRunes)
 			parts = append(parts, trLang(lang, "Ausgewählte Mail:\n", "Selected email:\n")+ai.WrapUntrusted("email", detail))

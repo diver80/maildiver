@@ -367,7 +367,7 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 
 	// OpenPGP & S/MIME decryption & signature verification on raw RFC 5322 bytes (plaintext never persisted to SQLite).
 	if len(m.RawEML) > 0 && (e.smime != nil || e.pgp != nil) {
-		e.applySMIMERead(m.RawEML, p.Decrypt, p.Format, &detail)
+		e.applySMIMERead(ctx, m.RawEML, p.Decrypt, p.Format, &detail)
 	}
 
 	if detail.HasICS && detail.ICSInvite == nil && strings.TrimSpace(m.ICSBody) != "" {
@@ -376,7 +376,7 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 	return marshalJSON(detail)
 }
 
-func (e *Engine) applyDecryptedPayload(dp ParsedMessage, format string, detail *backend.MessageDetail) {
+func (e *Engine) applyDecryptedPayload(ctx context.Context, dp ParsedMessage, format string, detail *backend.MessageDetail) {
 	detail.BodyText = dp.BodyText
 	if format == "html" || format == "both" {
 		detail.BodyHtml = dp.BodyHTML
@@ -384,11 +384,11 @@ func (e *Engine) applyDecryptedPayload(dp ParsedMessage, format string, detail *
 	detail.Attachments = dp.Attachments
 	if strings.TrimSpace(dp.ICSBody) != "" {
 		detail.HasICS = true
-		detail.ICSInvite = e.icsInviteOf(context.Background(), *detail, dp.ICSBody)
+		detail.ICSInvite = e.icsInviteOf(ctx, *detail, dp.ICSBody)
 	}
 }
 
-func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string, detail *backend.MessageDetail) {
+func (e *Engine) applySMIMERead(ctx context.Context, rawEML []byte, allowDecrypt bool, format string, detail *backend.MessageDetail) {
 	parsed, _ := ParseRawMessage(rawEML)
 	fromAddr := ""
 	if addrs := ExtractAddresses([]string{detail.From}); len(addrs) > 0 {
@@ -424,7 +424,7 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 					detail.BodyHtml = ""
 					detail.Attachments = nil
 				} else if dp, perr := ParseRawMessage(decrypted); perr == nil {
-					e.applyDecryptedPayload(dp, format, detail)
+					e.applyDecryptedPayload(ctx, dp, format, detail)
 				} else {
 					detail.BodyText = string(decrypted)
 					detail.BodyHtml = ""
@@ -487,12 +487,12 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 			detail.Security.SMIME = true
 			detail.Security.Decryption = "success"
 			if dp, perr := ParseRawMessage(decrypted); perr == nil {
-				e.applyDecryptedPayload(dp, format, detail)
+				e.applyDecryptedPayload(ctx, dp, format, detail)
 			}
 			if vr != nil {
 				applySMIMEVerifyToSecurity(vr, fromAddr, &detail.Security)
-				if vr.Valid && vr.SignerCert != nil {
-					e.smime.CacheContactCert(vr.SignerCert)
+				if vr.Valid && vr.Trusted && !detail.Security.SignerAddressMismatch && vr.SignerCert != nil {
+					e.smime.CacheContactCertFor(vr.SignerCert, fromAddr)
 				}
 			}
 			return
@@ -505,8 +505,8 @@ func (e *Engine) applySMIMERead(rawEML []byte, allowDecrypt bool, format string,
 		vr, opaqueInner, _ := smime.VerifyMIME(rawEML, nil)
 		if vr != nil {
 			applySMIMEVerifyToSecurity(vr, fromAddr, &detail.Security)
-			if vr.Valid && vr.SignerCert != nil {
-				e.smime.CacheContactCert(vr.SignerCert)
+			if vr.Valid && vr.Trusted && !detail.Security.SignerAddressMismatch && vr.SignerCert != nil {
+				e.smime.CacheContactCertFor(vr.SignerCert, fromAddr)
 			}
 			if len(opaqueInner) > 0 && strings.TrimSpace(detail.BodyText) == "" {
 				if dp, perr := ParseRawMessage(opaqueInner); perr == nil {
@@ -1075,6 +1075,7 @@ func (e *Engine) rpcMessagesSearchServer(ctx context.Context, params any) (json.
 
 	var matched []StoredMessage
 	seen := map[string]bool{}
+	seenMsgID := map[string]bool{}
 	var firstErr error
 	for _, acc := range accs {
 		if ctx.Err() != nil || len(matched) >= limit {
@@ -1094,7 +1095,10 @@ func (e *Engine) rpcMessagesSearchServer(ctx context.Context, params any) (json.
 			}
 		} else {
 			for _, f := range allFolders {
-				if f.Type == "trash" || f.Type == "junk" {
+				if f.Type == "trash" || f.Type == "junk" ||
+					slices.Contains(f.SpecialUse, "trash") ||
+					slices.Contains(f.SpecialUse, "junk") ||
+					slices.Contains(f.SpecialUse, "all") {
 					continue
 				}
 				targetFolders = append(targetFolders, f)
@@ -1114,10 +1118,18 @@ func (e *Engine) rpcMessagesSearchServer(ctx context.Context, params any) (json.
 			continue
 		}
 		for _, sm := range found {
-			if !seen[sm.ID] {
-				seen[sm.ID] = true
-				matched = append(matched, sm)
+			if seen[sm.ID] {
+				continue
 			}
+			if mid := strings.Trim(sm.MessageID, "<> "); mid != "" {
+				key := sm.AccountID + "\x00" + strings.ToLower(mid)
+				if seenMsgID[key] {
+					continue
+				}
+				seenMsgID[key] = true
+			}
+			seen[sm.ID] = true
+			matched = append(matched, sm)
 		}
 	}
 	if len(matched) == 0 && firstErr != nil {
@@ -1184,8 +1196,9 @@ func (e *Engine) rpcMessagesUndoMove(ctx context.Context, params any) (json.RawM
 			var acts []ActivityEntry
 			for _, it := range byAcc[accID] {
 				a := ActivityEntry{Kind: ActivityRestore, AccountID: accID, MessageID: it.MessageID, Folder: it.ToFolderPath, Target: it.FromFolderPath}
-				_ = e.store.db.QueryRowContext(ctx, `SELECT id, subject, from_addr FROM messages WHERE trim(message_id, '<> ') = ? AND account_id = ? ORDER BY date_unix DESC LIMIT 1`,
-					strings.Trim(it.MessageID, "<> "), accID).Scan(&a.LocalID, &a.Subject, &a.Peer)
+				mid := strings.Trim(it.MessageID, "<> ")
+				_ = e.store.db.QueryRowContext(ctx, `SELECT id, subject, from_addr FROM messages WHERE message_id IN (?, ?) AND account_id = ? ORDER BY date_unix DESC LIMIT 1`,
+					mid, "<"+mid+">", accID).Scan(&a.LocalID, &a.Subject, &a.Peer)
 				acts = append(acts, a)
 			}
 			e.logActivity(ctx, acts...)
@@ -1893,6 +1906,7 @@ func (e *Engine) rpcCalendarEvents(ctx context.Context, params any) (json.RawMes
 		expanded = []backend.CalendarEvent{}
 	}
 	e.markNotifiable(expanded)
+	e.fillOwnResponseStatus(expanded)
 	return marshalJSON(backend.CalendarEventsResponse{
 		Supported: true,
 		Events:    expanded,
@@ -2206,7 +2220,11 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		if !slices.Contains(ev.ExDates, p.RecurrenceID) {
 			ev.ExDates = append(ev.ExDates, p.RecurrenceID)
 		}
-		if err := e.store.UpsertEvent(ctx, ev); err != nil {
+		if cal.Source == "caldav" {
+			if _, err := e.pushCalDAVEvent(ctx, cal, ev); err != nil {
+				return nil, err
+			}
+		} else if err := e.store.UpsertEvent(ctx, ev); err != nil {
 			return nil, err
 		}
 		e.emitCalendarChanged()
@@ -2788,12 +2806,13 @@ func (e *Engine) rpcHostArchiveFinish(ctx context.Context, params any) (json.Raw
 		return nil, fmt.Errorf("not_found: account %q", m.AccountID)
 	}
 	if p.Action == "delete" {
+		var trash string
 		if p.SkipTrash {
 			if err := e.applyMessageActionIMAP(ctx, acc, m, nil, nil, "", true); err != nil {
 				return nil, err
 			}
 		} else {
-			trash := e.resolveTargetFolderPath(ctx, acc.ID, "trash")
+			trash = e.resolveTargetFolderPath(ctx, acc.ID, "trash")
 			readTrue := true
 			if err := e.applyMessageActionIMAP(ctx, acc, m, &readTrue, nil, trash, false); err != nil {
 				return nil, err
@@ -2803,6 +2822,8 @@ func (e *Engine) rpcHostArchiveFinish(ctx context.Context, params any) (json.Raw
 		a := activityFor(ActivityTrash, m)
 		if p.SkipTrash {
 			a.Kind = ActivityDelete
+		} else {
+			a.Target = trash
 		}
 		a.Source = ActivityByAuto
 		e.logActivity(ctx, a)

@@ -102,6 +102,8 @@ const searchNavID = "search"
 func (a *App) clearSearch() {
 	a.searchQuery = ""
 	a.lastSearchQuery = ""
+	a.serverSearchSeq++
+	a.serverSearchBusy = false
 	a.serverSearchDoneQuery = ""
 	a.serverSearchDoneKey = ""
 	a.lastCheckedIndex = -1

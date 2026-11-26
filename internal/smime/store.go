@@ -365,8 +365,17 @@ func (m *Manager) saveContactCert(cert *x509.Certificate) (CertInfo, error) {
 	return info, nil
 }
 
-// CacheContactCert stores a verified sender's non-expired public certificate automatically.
+// CacheContactCert stores a verified sender's non-expired public certificate automatically,
+// without overwriting an already-stored certificate that has a different fingerprint.
 func (m *Manager) CacheContactCert(cert *x509.Certificate) {
+	m.CacheContactCertFor(cert, "")
+}
+
+// CacheContactCertFor stores a verified, trusted sender's non-expired public certificate for
+// fromAddr (or all matching cert emails when fromAddr is empty). It refuses to silently
+// overwrite an existing stored contact certificate whose fingerprint differs, preventing
+// certificate-replacement attacks on contact entries.
+func (m *Manager) CacheContactCertFor(cert *x509.Certificate, fromAddr string) {
 	if m == nil || cert == nil {
 		return
 	}
@@ -374,10 +383,46 @@ func (m *Manager) CacheContactCert(cert *x509.Certificate) {
 	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
 		return
 	}
-	if len(certEmails(cert)) == 0 {
+	emails := certEmails(cert)
+	if len(emails) == 0 {
 		return
 	}
-	_, _ = m.saveContactCert(cert)
+	var targets []string
+	if want := strings.ToLower(strings.TrimSpace(fromAddr)); want != "" {
+		for _, em := range emails {
+			if em == want {
+				targets = append(targets, em)
+				break
+			}
+		}
+		if len(targets) == 0 {
+			return
+		}
+	} else {
+		targets = emails
+	}
+	info := buildCertInfo(cert, false)
+	certPEM := encodeCertPEM(cert)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed := false
+	for _, em := range targets {
+		if existing, ok := m.state.Contacts[em]; ok && existing.Info.Fingerprint != "" && existing.Info.Fingerprint != info.Fingerprint {
+			// Never silently replace an existing contact cert with a different key.
+			continue
+		}
+		recInfo := info
+		recInfo.Email = em
+		m.state.Contacts[em] = storedCertRecord{
+			Info:    recInfo,
+			CertPEM: certPEM,
+		}
+		changed = true
+	}
+	if changed {
+		_ = m.saveDiskLocked()
+	}
 }
 
 // ListIdentities returns all imported personal S/MIME identities sorted by email.
@@ -572,8 +617,11 @@ func (m *Manager) LookupRecipientCerts(emails []string) ([]*x509.Certificate, []
 		}
 		if b, _ := pem.Decode([]byte(certPEM)); b != nil {
 			if c, err := x509.ParseCertificate(b.Bytes); err == nil {
-				certs = append(certs, c)
-				continue
+				now := time.Now()
+				if !now.Before(c.NotBefore) && !now.After(c.NotAfter) {
+					certs = append(certs, c)
+					continue
+				}
 			}
 		}
 		missing = append(missing, em)
@@ -584,12 +632,11 @@ func (m *Manager) LookupRecipientCerts(emails []string) ([]*x509.Certificate, []
 // signingChain puts the certificates of a .p12 in the order a signature needs them: the issuer of
 // leaf first, then its issuer, up to the root. Some exports (SwissSign, for one) also list the
 // leaf itself among the CA certificates; signing then fails with "parent certificate cannot sign
-// this kind of certificate", so the leaf and its duplicates are dropped. Certificates that are no
-// part of the path come last, in their original order.
+// this kind of certificate", so the leaf, duplicates, and non-CA certificates are dropped.
 func signingChain(leaf *x509.Certificate, certs []*x509.Certificate) []*x509.Certificate {
 	var pool []*x509.Certificate
 	for _, c := range certs {
-		if c == nil || (leaf != nil && c.Equal(leaf)) || slices.ContainsFunc(pool, c.Equal) {
+		if c == nil || !c.IsCA || (leaf != nil && c.Equal(leaf)) || slices.ContainsFunc(pool, c.Equal) {
 			continue
 		}
 		pool = append(pool, c)
@@ -597,14 +644,23 @@ func signingChain(leaf *x509.Certificate, certs []*x509.Certificate) []*x509.Cer
 	if leaf == nil {
 		return pool
 	}
+	now := time.Now()
+	isValidNow := func(c *x509.Certificate) bool {
+		return !now.Before(c.NotBefore) && !now.After(c.NotAfter)
+	}
 	out := make([]*x509.Certificate, 0, len(pool))
 	used := make([]bool, len(pool))
 	for cur := leaf; ; {
 		next := -1
 		for i, c := range pool {
-			if !used[i] && c.IsCA && cur.CheckSignatureFrom(c) == nil {
-				next = i
-				break
+			if !used[i] && cur.CheckSignatureFrom(c) == nil {
+				if isValidNow(c) {
+					next = i
+					break
+				}
+				if next < 0 {
+					next = i
+				}
 			}
 		}
 		if next < 0 {

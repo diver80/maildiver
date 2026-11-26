@@ -877,6 +877,13 @@ func TestWorkspaceModeSwitcherSeparatesMailAndCalendar(t *testing.T) {
 func TestCalendarMonthShowsISOWeeksAndJumpsToWeek(t *testing.T) {
 	box := newCfgBox(config.Default())
 	app := NewApp(Options{ConfigLoader: box.load, ConfigSaver: box.save})
+	updates := make(chan func(), 16)
+	app.SetHooks(func(fn func()) {
+		select {
+		case updates <- fn:
+		default:
+		}
+	}, nil, nil, nil, nil)
 	app.storeLang("de")
 	app.engineReady = true
 	app.navID = "calendar"

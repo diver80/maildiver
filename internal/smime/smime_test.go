@@ -175,3 +175,61 @@ func TestSMIMEImportSignVerifyEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatalf("expected error from AllIdentitiesWithErr when keychain entry missing, got ids=%d err=%v", len(ids), err)
 	}
 }
+
+func TestCacheContactCertForSecurityGuards(t *testing.T) {
+	caCert, caKey := generateTestCert(t, "", "PostDive Guard CA", nil, nil)
+	alice1, _ := generateTestCert(t, "alice@example.com", "Alice 1", caCert, caKey)
+	alice2, _ := generateTestCert(t, "alice@example.com", "Alice 2", caCert, caKey)
+
+	mgr := NewManager(t.TempDir(), secretstore.NewMemoryStore())
+
+	// 1. Mismatched sender must not be cached.
+	mgr.CacheContactCertFor(alice1, "mallory@evil.example")
+	if certs, missing := mgr.LookupRecipientCerts([]string{"alice@example.com"}); len(certs) != 0 || len(missing) != 1 {
+		t.Fatalf("mismatched sender cached cert unexpectedly: certs=%d missing=%v", len(certs), missing)
+	}
+
+	// 2. Valid matching sender caches the first cert.
+	mgr.CacheContactCertFor(alice1, "alice@example.com")
+	certs, missing := mgr.LookupRecipientCerts([]string{"alice@example.com"})
+	if len(certs) != 1 || len(missing) != 0 || CertFingerprint(certs[0]) != CertFingerprint(alice1) {
+		t.Fatalf("expected alice1 cached, got certs=%d missing=%v", len(certs), missing)
+	}
+
+	// 3. A different cert for the same address must NOT silently overwrite the existing one.
+	mgr.CacheContactCertFor(alice2, "alice@example.com")
+	certs, _ = mgr.LookupRecipientCerts([]string{"alice@example.com"})
+	if len(certs) != 1 || CertFingerprint(certs[0]) != CertFingerprint(alice1) {
+		t.Fatalf("existing contact cert was overwritten by different fingerprint")
+	}
+
+	// 4. Expired cert must be ignored by LookupRecipientCerts.
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano() + 99),
+		Subject:               pkix.Name{CommonName: "Expired Bob"},
+		EmailAddresses:        []string{"expired@example.com"},
+		NotBefore:             time.Now().Add(-48 * time.Hour),
+		NotAfter:              time.Now().Add(-2 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, expiredTmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredCert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.ImportPublicCert(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: expiredCert.Raw})); err != nil {
+		t.Fatal(err)
+	}
+	if got, miss := mgr.LookupRecipientCerts([]string{"expired@example.com"}); len(got) != 0 || len(miss) != 1 {
+		t.Fatalf("expired cert should not be returned for encryption: got=%d miss=%v", len(got), miss)
+	}
+}

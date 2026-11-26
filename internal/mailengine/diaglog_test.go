@@ -60,4 +60,16 @@ func TestDiagLogWriteReadAndRedaction(t *testing.T) {
 	if strings.Contains(after, "lars@example.de") {
 		t.Fatalf("expected cleared diag log, still got:\n%s", after)
 	}
+
+	// JSON secret fields, SASL AUTH blobs, and multi-byte truncation must stay redacted & valid UTF-8.
+	s := SanitizeDiagErr(errors.New(`{"access_token":"tok123","refresh_token":"ref456"} AUTH PLAIN dXNlcjEAc2VjcmV0`))
+	for _, leaked := range []string{"tok123", "ref456", "dXNlcjEAc2VjcmV0"} {
+		if strings.Contains(s, leaked) {
+			t.Fatalf("SanitizeDiagErr leaked %q in %q", leaked, s)
+		}
+	}
+	longUTF8 := SanitizeDiagErr(errors.New(strings.Repeat("ä", 600)))
+	if !strings.HasSuffix(longUTF8, "…") || len([]rune(longUTF8)) != 501 {
+		t.Fatalf("expected rune-safe truncation to 501 runes, got len=%d %q", len([]rune(longUTF8)), longUTF8)
+	}
 }

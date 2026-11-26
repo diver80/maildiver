@@ -201,3 +201,45 @@ func TestComposeTemplatesSaveInsertAndDelete(t *testing.T) {
 		t.Fatalf("expected template deleted, got %+v", app.cfg.App.ComposeTemplates)
 	}
 }
+
+func TestComposeDecryptedBackupAndMultiDayCalendarLayout(t *testing.T) {
+	app := NewApp(Options{ConfigLoader: func() (config.Config, error) { return config.Default(), nil }})
+	app.OpenComposeNew()
+	app.composeHasDecrypted = true
+	b := app.captureComposeBackup()
+	if !b.HasDecrypted {
+		t.Fatal("captureComposeBackup must preserve HasDecrypted")
+	}
+	app.composeHasDecrypted = false
+	app.restoreComposeFromBackup(b)
+	if !app.composeHasDecrypted {
+		t.Fatal("restoreComposeFromBackup must restore HasDecrypted")
+	}
+
+	// RunComposeAI must refuse when composeHasDecrypted is set.
+	app.engineReady = true
+	app.RunComposeAI(context.Background(), "polish", "")
+	if app.composeAIError == "" {
+		t.Fatal("RunComposeAI must block decrypted content from being sent to AI")
+	}
+
+	// Multi-day all-day event (exclusive end) and overnight timed event span all overlapped days.
+	allDay := backend.CalendarEvent{AllDay: true, Start: "2026-05-01", End: "2026-05-04"}
+	if got := strings.Join(eventDayKeys(allDay), ","); got != "2026-05-01,2026-05-02,2026-05-03" {
+		t.Fatalf("all-day keys = %q", got)
+	}
+	overnight := backend.CalendarEvent{Start: "2026-05-01T23:45", End: "2026-05-02T01:30"}
+	if got := strings.Join(eventDayKeys(overnight), ","); got != "2026-05-01,2026-05-02" {
+		t.Fatalf("overnight keys = %q", got)
+	}
+	d1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.Local)
+	blocks := layoutDayEvents([]backend.CalendarEvent{overnight}, d1)
+	if len(blocks) != 1 || blocks[0].startMin != 23*60+45 || blocks[0].endMin != 24*60 {
+		t.Fatalf("late-night startMin/endMin shifted unexpectedly: %+v", blocks)
+	}
+	d2 := time.Date(2026, 5, 2, 0, 0, 0, 0, time.Local)
+	blocks2 := layoutDayEvents([]backend.CalendarEvent{overnight}, d2)
+	if len(blocks2) != 1 || blocks2[0].startMin != 0 || blocks2[0].endMin != 90 {
+		t.Fatalf("overnight continuation on day 2 wrong: %+v", blocks2)
+	}
+}

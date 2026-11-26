@@ -219,11 +219,10 @@ func (a *App) renderSidebar(c *ui.Context) {
 			if searching {
 				a.clearSearch()
 			}
-			a.navID = sel
 			a.selectedID = ""
 			a.selectedMsg = nil
 			a.syncPreviewForMessage(nil)
-			a.setNav(a.navID)
+			a.setNav(sel)
 			switch a.navID {
 			case "calendar":
 				// Calendar events are loaded via RefreshAll.
