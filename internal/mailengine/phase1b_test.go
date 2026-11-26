@@ -278,7 +278,7 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	invite := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nPRODID:-//Test//Test//EN\r\nBEGIN:VEVENT\r\nUID:invite-42@acme.de\r\nDTSTART:20261125T140000Z\r\nDTEND:20261125T150000Z\r\nSUMMARY:Architektur-Review\r\nORGANIZER;CN=Alice:mailto:alice@acme.de\r\nATTENDEE;CN=Frank:mailto:frank@firma.de\r\nLOCATION:Raum 2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 
 	org, atts := ParseICSInviteMeta(invite)
-	if org != "Alice <alice@acme.de>" || len(atts) != 1 || atts[0] != "Frank <frank@firma.de>" {
+	if org != "Alice <alice@acme.de>" || len(atts) != 1 || atts[0].Display() != "Frank <frank@firma.de>" {
 		t.Fatalf("unexpected invite meta: org=%q atts=%v", org, atts)
 	}
 

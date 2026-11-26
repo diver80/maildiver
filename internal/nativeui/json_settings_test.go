@@ -178,7 +178,7 @@ func TestFormatCalendarHintBusySlotsOnly(t *testing.T) {
 	now := time.Date(2026, 11, 23, 9, 0, 0, 0, loc)
 	end := now.AddDate(0, 0, 14)
 	events := []backend.CalendarEvent{
-		{CalendarID: "c1", Title: "Planung   mit Team", Start: "2026-11-24T10:00:00+01:00", End: "2026-11-24T11:30:00+01:00", Attendees: []string{"a@example.org"}, Location: "Raum 1"},
+		{CalendarID: "c1", Title: "Planung   mit Team", Start: "2026-11-24T10:00:00+01:00", End: "2026-11-24T11:30:00+01:00", Attendees: []backend.EventAttendee{{Email: "a@example.org"}}, Location: "Raum 1"},
 		{CalendarID: "c1", Title: "Urlaub", Start: "2026-11-26", End: "2026-11-28", AllDay: true},
 		{CalendarID: "c1", Title: "Gestern", Start: "2026-11-22T10:00:00+01:00", End: "2026-11-22T11:00:00+01:00"},
 		{CalendarID: "c1", Title: "Abgesagt", Start: "2026-11-25T10:00:00+01:00", End: "2026-11-25T11:00:00+01:00", ResponseStatus: "declined"},

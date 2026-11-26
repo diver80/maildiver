@@ -395,11 +395,68 @@ type gcalEventPayload struct {
 		Date     string `json:"date,omitempty"`
 		TimeZone string `json:"timeZone,omitempty"`
 	} `json:"end"`
-	Attendees []struct {
-		Email          string `json:"email,omitempty"`
-		Self           bool   `json:"self,omitempty"`
-		ResponseStatus string `json:"responseStatus,omitempty"`
-	} `json:"attendees,omitempty"`
+	Attendees []gcalPerson `json:"attendees,omitempty"`
+	Organizer *gcalPerson  `json:"organizer,omitempty"`
+}
+
+// gcalPerson is an attendee or the organizer of a Google event.
+type gcalPerson struct {
+	Email          string `json:"email,omitempty"`
+	DisplayName    string `json:"displayName,omitempty"`
+	Self           bool   `json:"self,omitempty"`
+	ResponseStatus string `json:"responseStatus,omitempty"`
+	Resource       bool   `json:"resource,omitempty"`
+}
+
+// gcalStatus maps Google's responseStatus to the app's answer names.
+func gcalStatus(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "accepted":
+		return "accepted"
+	case "tentative":
+		return "tentative"
+	case "declined":
+		return "declined"
+	case "needsaction":
+		return "needsAction"
+	}
+	return ""
+}
+
+// gcalParticipants are the organizer ("Name <email>") and the attendees (rooms left out) of a
+// Google event.
+func gcalParticipants(it gcalEventPayload) (string, []backend.EventAttendee) {
+	org := ""
+	if it.Organizer != nil && it.Organizer.Email != "" && !strings.HasSuffix(it.Organizer.Email, "calendar.google.com") {
+		org = formatDisplayAttendee(it.Organizer.DisplayName, it.Organizer.Email)
+	}
+	var atts []backend.EventAttendee
+	for _, p := range it.Attendees {
+		if p.Email == "" || p.Resource {
+			continue
+		}
+		atts = append(atts, backend.EventAttendee{Email: p.Email, Name: strings.TrimSpace(p.DisplayName), Status: gcalStatus(p.ResponseStatus)})
+	}
+	return org, atts
+}
+
+// gcalAttendeesPayload is the attendees list of a Google write.
+func gcalAttendeesPayload(atts []backend.EventAttendee) []map[string]any {
+	out := make([]map[string]any, 0, len(atts))
+	for _, a := range atts {
+		if a.Email == "" {
+			continue
+		}
+		m := map[string]any{"email": a.Email}
+		if a.Name != "" {
+			m["displayName"] = a.Name
+		}
+		if a.Status != "" {
+			m["responseStatus"] = a.Status
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func (e *Engine) syncSingleGoogleCalendar(ctx context.Context, hc *http.Client, calID, calName, googleCalID string, readOnly bool, syncToken string) error {
@@ -520,19 +577,11 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 	selfResp := ""
 	for _, att := range it.Attendees {
 		if att.Self {
-			switch strings.ToLower(strings.TrimSpace(att.ResponseStatus)) {
-			case "accepted":
-				selfResp = "accepted"
-			case "tentative":
-				selfResp = "tentative"
-			case "declined":
-				selfResp = "declined"
-			case "needsaction":
-				selfResp = "needsAction"
-			}
+			selfResp = gcalStatus(att.ResponseStatus)
 			break
 		}
 	}
+	org, atts := gcalParticipants(it)
 
 	return StoredEvent{
 		ID:           calID + "::" + it.ID,
@@ -554,6 +603,8 @@ func gcalPayloadToStored(calID, calName string, readOnly bool, it gcalEventPaylo
 		ETag:         it.ETag,
 		Status:       it.Status,
 		SelfResponse: selfResp,
+		Organizer:    org,
+		Attendees:    atts,
 	}
 }
 
@@ -563,8 +614,20 @@ func (e *Engine) createGoogleEvent(ctx context.Context, cal StoredCalendar, req 
 		return StoredEvent{}, err
 	}
 	payload := buildGCalWritePayload(req.Title, req.Start, req.End, req.AllDay, req.Location, req.Description, req.RecurrenceRule)
+	q := url.Values{}
+	if len(req.Attendees) > 0 {
+		payload["attendees"] = gcalAttendeesPayload(req.Attendees)
+	}
+	q.Set("sendUpdates", gcalSendUpdates(req.SendInvites && len(req.Attendees) > 0))
+	if req.AddMeet {
+		payload["conferenceData"] = map[string]any{"createRequest": map[string]any{
+			"requestId":             randomHex(12),
+			"conferenceSolutionKey": map[string]string{"type": "hangoutsMeet"},
+		}}
+		q.Set("conferenceDataVersion", "1")
+	}
 	var created gcalEventPayload
-	endpoint := fmt.Sprintf("%s/calendars/%s/events", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
+	endpoint := fmt.Sprintf("%s/calendars/%s/events?%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), q.Encode())
 	if err := doGCalJSON(ctx, hc, http.MethodPost, endpoint, payload, &created); err != nil {
 		return StoredEvent{}, err
 	}
@@ -584,6 +647,14 @@ func (e *Engine) importGoogleEvent(ctx context.Context, cal StoredCalendar, ev S
 		return StoredEvent{}, err
 	}
 	payload := buildGCalWritePayload(ev.Title, ev.StartISO, ev.EndISO, ev.AllDay, ev.Location, ev.Description, ev.RRule)
+	if len(ev.Attendees) > 0 {
+		// An accepted invitation keeps who else is invited; inserting without sendUpdates
+		// mails nobody.
+		payload["attendees"] = gcalAttendeesPayload(ev.Attendees)
+		if org := parseAttendeeAddress(ev.Organizer); org.Email != "" {
+			payload["organizer"] = map[string]any{"email": org.Email, "displayName": org.Name}
+		}
+	}
 	var created gcalEventPayload
 	uid := strings.TrimSpace(ev.UID)
 	if uid != "" {
@@ -613,14 +684,19 @@ func (e *Engine) importGoogleEvent(ctx context.Context, cal StoredCalendar, ev S
 	return se, nil
 }
 
-func (e *Engine) updateGoogleEvent(ctx context.Context, cal StoredCalendar, existing StoredEvent) (StoredEvent, error) {
+// updateGoogleEvent writes existing back. attendees replaces the attendee list when not nil;
+// notify has Google mail them the change.
+func (e *Engine) updateGoogleEvent(ctx context.Context, cal StoredCalendar, existing StoredEvent, attendees *[]backend.EventAttendee, notify bool) (StoredEvent, error) {
 	hc, err := e.loadGCalHTTPClient(ctx)
 	if err != nil {
 		return StoredEvent{}, err
 	}
 	payload := buildGCalWritePayload(existing.Title, existing.StartISO, existing.EndISO, existing.AllDay, existing.Location, existing.Description, existing.RRule)
+	if attendees != nil {
+		payload["attendees"] = gcalAttendeesPayload(*attendees)
+	}
 	var updated gcalEventPayload
-	endpoint := fmt.Sprintf("%s/calendars/%s/events/%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(existing.ExternalID))
+	endpoint := fmt.Sprintf("%s/calendars/%s/events/%s?sendUpdates=%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(existing.ExternalID), gcalSendUpdates(notify))
 	if err := doGCalJSON(ctx, hc, http.MethodPatch, endpoint, payload, &updated); err != nil {
 		return StoredEvent{}, err
 	}
@@ -631,12 +707,21 @@ func (e *Engine) updateGoogleEvent(ctx context.Context, cal StoredCalendar, exis
 	return se, nil
 }
 
-func (e *Engine) deleteGoogleEvent(ctx context.Context, cal StoredCalendar, existing StoredEvent) error {
+// gcalSendUpdates is Google's sendUpdates parameter: mail the attendees, or nobody.
+func gcalSendUpdates(notify bool) string {
+	if notify {
+		return "all"
+	}
+	return "none"
+}
+
+// deleteGoogleEvent deletes existing; notify has Google mail the attendees a cancellation.
+func (e *Engine) deleteGoogleEvent(ctx context.Context, cal StoredCalendar, existing StoredEvent, notify bool) error {
 	hc, err := e.loadGCalHTTPClient(ctx)
 	if err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("%s/calendars/%s/events/%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(existing.ExternalID))
+	endpoint := fmt.Sprintf("%s/calendars/%s/events/%s?sendUpdates=%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(existing.ExternalID), gcalSendUpdates(notify))
 	if err := doGCalJSON(ctx, hc, http.MethodDelete, endpoint, nil, nil); err != nil {
 		return err
 	}
@@ -645,7 +730,7 @@ func (e *Engine) deleteGoogleEvent(ctx context.Context, cal StoredCalendar, exis
 
 // deleteGoogleEventOccurrence cancels a single instance of a recurring Google Calendar event
 // without deleting the master series.
-func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCalendar, existing StoredEvent, recurrenceID string) error {
+func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCalendar, existing StoredEvent, recurrenceID string, notify bool) error {
 	occTime := parseFlexibleEventTime(recurrenceID, 0)
 	if occTime.IsZero() {
 		return fmt.Errorf("ungültige Termininstanz %q – ganze Serie wird geschützt", recurrenceID)
@@ -712,7 +797,7 @@ func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCale
 	if instanceID == "" {
 		return fmt.Errorf("einzelne Google-Termininstanz (%s) nicht gefunden – bitte in Google Kalender prüfen oder ganze Serie löschen", recurrenceID)
 	}
-	delURL := fmt.Sprintf("%s/calendars/%s/events/%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(instanceID))
+	delURL := fmt.Sprintf("%s/calendars/%s/events/%s?sendUpdates=%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(instanceID), gcalSendUpdates(notify))
 	if err := doGCalJSON(ctx, hc, http.MethodDelete, delURL, nil, nil); err != nil {
 		return err
 	}

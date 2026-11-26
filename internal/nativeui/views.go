@@ -1049,6 +1049,10 @@ func (a *App) defaultICSTargetCalendar(msg *backend.MessageDetail) string {
 func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 	t := c.Theme()
 	// .ics Calendar Invitation Banner (RSVP Accept/Tentative/Decline + 1-click import, 0 AI tokens)
+	if msg.HasICS && msg.ICSInvite != nil && (msg.ICSInvite.Method == "REPLY" || msg.ICSInvite.Method == "CANCEL") {
+		a.renderICSNoticeBanner(c, msg.ICSInvite)
+		return
+	}
 	if msg.HasICS {
 		status := ""
 		inCal := ""
@@ -1117,6 +1121,12 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 						}
 						if len(parts) > 0 {
 							ui.Text(c, strings.Join(parts, " · ")).FontSize(11.5).TextColor(t.TextMuted).Selectable()
+						}
+						if inv := msg.ICSInvite; len(inv.Attendees) > 0 {
+							a.renderAttendees(c, "ics-att-"+msg.ID, inv.Attendees, status, !inv.AttendeesFromMail)
+							if inv.AttendeesFromMail {
+								ui.Text(c, a.tr("Die Einladung nennt keine Teilnehmer – das sind die Empfänger der Mail.", "The invitation names no attendees – these are the mail's recipients.")).FontSize(11).TextColor(t.TextMuted)
+							}
 						}
 					}
 				})
@@ -1251,6 +1261,10 @@ func (a *App) renderInspectorAIResult(c *ui.Context, msg *backend.MessageDetail)
 				ui.Row(c).Gap(8).Children(func() {
 					if iconLabelBtn(c.Key("ev-adopt"), iconCalPlus, a.tr("Termin übernehmen: ", "Add Event: ")+a.inspectorEvent.Title, true, "").Clicked() {
 						a.OpenNewEventModal(a.inspectorEvent)
+						// The people of the mail are the likely attendees; inviting them stays a
+						// choice of its own.
+						a.resetEventAttendees(a.mailParticipants(msg))
+						a.eventSendInvites = false
 					}
 				})
 			}
@@ -2383,6 +2397,9 @@ func (a *App) renderCalDeleteModal(c *ui.Context) {
 					"Dieser Termin gehört zu einer Serie. Soll nur dieses Vorkommen oder die ganze Serie gelöscht werden?",
 					"This event is part of a series. Delete only this occurrence or the whole series?",
 				)).FontSize(12)
+			}
+			if ev.CanNotify {
+				ui.Checkbox(c.Key("cd-notify"), &a.calDelNotify, a.trf("Absage an %d Teilnehmer senden", "Send a cancellation to %d attendees", len(ev.Attendees)))
 			}
 			if a.calDelError != "" {
 				ui.Text(c, a.calDelError).FontSize(12).TextColor(t.Danger)

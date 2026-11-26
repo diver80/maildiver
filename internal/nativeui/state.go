@@ -275,14 +275,24 @@ type eventState struct {
 	eventRecUntil   string // optional UNTIL (YYYY-MM-DD)
 	eventReminder   int    // minutes before the start, backend.ReminderNone for none
 	eventBusy       bool
+	// Attendees as typed ("Name <a@b>, c@d"), their autocomplete, and what to do with them.
+	eventAttendees     string
+	eventAttSuggest    []mailengine.RecipientSuggestion
+	eventAttLastQuery  string
+	eventSendInvites   bool   // mail the invitation / the change
+	eventAddMeet       bool   // Google calendars: ask for a Meet link
+	eventInviteAccount string // account ID the invitation goes out from (local, CalDAV)
+	// attExpanded: attendee lists shown in full, keyed by where they are shown.
+	attExpanded map[string]bool
 }
 
 // calDeleteState is the delete-confirmation dialog for calendar events.
 type calDeleteState struct {
-	calDelOpen  bool
-	calDelEvent backend.CalendarEvent
-	calDelBusy  bool
-	calDelError string
+	calDelOpen   bool
+	calDelNotify bool // send the attendees a cancellation
+	calDelEvent  backend.CalendarEvent
+	calDelBusy   bool
+	calDelError  string
 }
 
 type App struct {
@@ -2673,7 +2683,13 @@ func (a *App) CreateCalendarEvent(ctx context.Context, req backend.CreateCalenda
 			}
 			a.eventOpen = false
 			a.syncAuxWindows()
-			a.toast(a.trf("Termin „%s“ angelegt", "Created event \"%s\"", ev.Title), "success")
+			if ev.InviteError != "" {
+				a.toast(a.trf("Termin „%s“ angelegt, Einladung nicht gesendet: %s", "Created event \"%s\", invitation not sent: %s", ev.Title, ev.InviteError), "error")
+			} else if req.SendInvites && len(ev.Attendees) > 0 {
+				a.toast(a.trf("Termin „%s“ angelegt, %d Teilnehmer eingeladen", "Created event \"%s\", invited %d attendees", ev.Title, len(ev.Attendees)), "success")
+			} else {
+				a.toast(a.trf("Termin „%s“ angelegt", "Created event \"%s\"", ev.Title), "success")
+			}
 			a.startRefresh(ctx)
 		})
 	}()
@@ -2703,7 +2719,11 @@ func (a *App) UpdateCalendarEvent(ctx context.Context, calendarID, eventID strin
 			a.eventOpen = false
 			a.eventEditingID = ""
 			a.syncAuxWindows()
-			a.toast(a.trf("Termin „%s“ aktualisiert", "Updated event \"%s\"", ev.Title), "success")
+			if ev.InviteError != "" {
+				a.toast(a.trf("Termin „%s“ aktualisiert, Teilnehmer nicht informiert: %s", "Updated event \"%s\", attendees not told: %s", ev.Title, ev.InviteError), "error")
+			} else {
+				a.toast(a.trf("Termin „%s“ aktualisiert", "Updated event \"%s\"", ev.Title), "success")
+			}
 			a.startRefresh(ctx)
 		})
 	}()
@@ -2716,6 +2736,7 @@ func (a *App) RequestDeleteCalendarEvent(ev backend.CalendarEvent) {
 	}
 	a.calDelEvent = ev
 	a.calDelError = ""
+	a.calDelNotify = ev.CanNotify
 	a.calDelOpen = true
 }
 
@@ -2739,12 +2760,13 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 	} else {
 		scope = ""
 	}
+	notify := a.calDelNotify && ev.CanNotify
 	a.calDelBusy = true
 	a.calDelError = ""
 	go func() {
 		c, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		err := bc.DeleteCalendarEvent(c, ev.CalendarID, ev.ID, recurrenceID, scope)
+		inviteErr, err := bc.DeleteCalendarEvent(c, ev.CalendarID, ev.ID, recurrenceID, scope, notify)
 		a.emitUpdate(func() {
 			a.calDelBusy = false
 			if err != nil {
@@ -2752,7 +2774,14 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 				return
 			}
 			a.calDelOpen = false
-			a.toast(a.trf("Termin „%s“ gelöscht", "Deleted event \"%s\"", ev.Title), "success")
+			switch {
+			case inviteErr != "":
+				a.toast(a.trf("Termin „%s“ gelöscht, Absage nicht gesendet: %s", "Deleted event \"%s\", cancellation not sent: %s", ev.Title, inviteErr), "error")
+			case notify:
+				a.toast(a.trf("Termin „%s“ gelöscht, Teilnehmer informiert", "Deleted event \"%s\", attendees told", ev.Title), "success")
+			default:
+				a.toast(a.trf("Termin „%s“ gelöscht", "Deleted event \"%s\"", ev.Title), "success")
+			}
 			a.startRefresh(ctx)
 		})
 	}()
@@ -3625,29 +3654,7 @@ func (a *App) refreshComposeSuggestions(field, raw string) {
 
 func (a *App) applyComposeSuggestion(field string, s mailengine.RecipientSuggestion) {
 	formatted := formatEmailAddress(s.DisplayName, s.Email)
-	replaceLast := func(cur string) string {
-		inQuotes := false
-		lastComma := -1
-		for i := 0; i < len(cur); i++ {
-			switch cur[i] {
-			case '"':
-				inQuotes = !inQuotes
-			case '\\':
-				i++
-			case ',':
-				if !inQuotes {
-					lastComma = i
-				}
-			}
-		}
-		if lastComma >= 0 {
-			prefix := strings.TrimSpace(cur[:lastComma])
-			if prefix != "" {
-				return prefix + ", " + formatted + ", "
-			}
-		}
-		return formatted + ", "
-	}
+	replaceLast := func(cur string) string { return replaceLastRecipient(cur, formatted) }
 	switch field {
 	case "to":
 		a.composeTo = replaceLast(a.composeTo)
@@ -3726,6 +3733,7 @@ func (a *App) OpenNewEventModal(prefill *ExtractedEvent) {
 	a.eventRecCount = ""
 	a.eventRecUntil = ""
 	a.eventReminder = backend.DefaultReminderMinutes
+	a.resetEventAttendees(nil)
 	if prefill != nil {
 		a.eventTitle = prefill.Title
 		if prefill.Start != "" {
@@ -3791,6 +3799,7 @@ func (a *App) OpenEditEventModal(ev backend.CalendarEvent) {
 	if a.eventReminder == 0 {
 		a.eventReminder = backend.DefaultReminderMinutes
 	}
+	a.resetEventAttendees(ev.Attendees)
 	// Match calendar label
 	for lbl, id := range a.eventCalByLabel {
 		if id == ev.CalendarID {
@@ -3891,6 +3900,12 @@ func (a *App) SaveCalendarEvent(ctx context.Context) {
 		a.toast(msg, "error")
 		return
 	}
+	attendeesEditable := a.eventAttendeesEditable()
+	attendees := parseAttendeeList(a.eventAttendees)
+	if bad := invalidAttendees(a.eventAttendees); attendeesEditable && len(bad) > 0 {
+		a.toast(a.tr("Keine gültige E-Mail-Adresse: ", "Not a valid email address: ")+strings.Join(bad, ", "), "error")
+		return
+	}
 	start := normalizeDateTimeInput(a.eventStart)
 	end := normalizeDateTimeInput(a.eventEnd)
 	rrule := buildEventRRule(a.eventRecurrence, a.eventRecCount, a.eventRecUntil)
@@ -3917,6 +3932,13 @@ func (a *App) SaveCalendarEvent(ctx context.Context) {
 		if reminder != 0 {
 			patch["reminderMinutes"] = reminder
 		}
+		if attendeesEditable && (len(attendees) > 0 || len(a.eventEditingEv.Attendees) > 0) {
+			patch["attendees"] = attendees
+			patch["notify"] = a.eventSendInvites
+			if a.eventInviteAccount != "" {
+				patch["accountId"] = a.eventInviteAccount
+			}
+		}
 		a.UpdateCalendarEvent(ctx, calID, a.eventEditingID, patch)
 		return
 	}
@@ -3931,7 +3953,25 @@ func (a *App) SaveCalendarEvent(ctx context.Context) {
 		Description:     strings.TrimSpace(a.eventDesc),
 		RecurrenceRule:  rrule,
 		ReminderMinutes: reminder,
+		Attendees:       attendees,
+		SendInvites:     a.eventSendInvites && len(attendees) > 0,
+		AccountID:       a.eventInviteAccount,
+		AddMeet:         a.eventAddMeet && a.eventCalendarType() == "google",
 	})
+}
+
+// resetEventAttendees fills the event form's attendee part for an event with atts (none for a
+// new event): invitations and updates are sent unless turned off.
+func (a *App) resetEventAttendees(atts []backend.EventAttendee) {
+	a.eventAttendees = formatAttendeeList(atts)
+	if a.eventAttendees != "" {
+		a.eventAttendees += ", "
+	}
+	a.eventAttSuggest = nil
+	a.eventAttLastQuery = ""
+	a.eventSendInvites = true
+	a.eventAddMeet = false
+	a.eventInviteAccount = a.defaultComposeAccountID("")
 }
 
 // StartEventLoop starts the bridge event stream (live refresh + notifications), the meeting

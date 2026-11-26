@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.46 (2026-11-26)
+
+### Termine mit Teilnehmern
+- **Einladungen zeigen, wer eingeladen ist:** Die Einladungskarte in der Mail listet die Teilnehmer (ab sieben mit „+N weitere“). Nennt die Einladung niemanden, stehen dort die Empfänger der Mail – als solche gekennzeichnet.
+- **Teilnehmer bleiben im Kalender:** Beim Annehmen werden Organisator und Teilnehmer mitgespeichert, auch im lokalen und in CalDAV-Kalendern. Die Termindetails zeigen jede Person mit ihrer Antwort (zugesagt, vielleicht, abgesagt, offen). Google-Kalender werden nach dem Update einmal neu synchronisiert, damit auch dort die Teilnehmer erscheinen.
+- **Selbst einladen:** Im Termin-Editor gibt es ein Teilnehmerfeld mit Vorschlägen aus den Kontakten und „Einladung an die Teilnehmer senden“. Google-Kalender verschicken die Einladung selbst (auf Wunsch mit Google-Meet-Link); bei lokalen und CalDAV-Kalendern geht eine Kalender-Einladung (iTIP) über das gewählte Mailkonto raus – mit Kopie in „Gesendet“, im Aktivitäts-Protokoll und offline über den Postausgang.
+- **Termin aus Mail:** „Termin übernehmen“ füllt Absender, An und Cc als Teilnehmer vor (ohne die eigenen Adressen); eingeladen wird nur, wenn man es anhakt.
+- **Ändern und Löschen:** Änderungen an eigenen Terminen gehen auf Wunsch an alle Teilnehmer, Entfernte bekommen eine Absage; beim Löschen (auch eines einzelnen Serientermins) lässt sich eine Absage senden.
+- **Antworten werden eingetragen:** Öffnet man die Antwort eines Teilnehmers, zeigt die Mail „Anna hat zugesagt“ und der Termin übernimmt die Antwort. Abgesagte Termine zeigen einen Hinweis statt der Zusage-Knöpfe.
+
 ## 0.7.45 (2026-11-25)
 
 ### Aktivität

@@ -371,12 +371,7 @@ func (e *Engine) rpcMessagesGet(ctx context.Context, params any) (json.RawMessag
 	}
 
 	if detail.HasICS && detail.ICSInvite == nil && strings.TrimSpace(m.ICSBody) != "" {
-		if evs, perr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(m.ICSBody)); perr == nil && len(evs) > 0 {
-			ev := storedEventToBridge(evs[0])
-			ev.Organizer, ev.Attendees = ParseICSInviteMeta(m.ICSBody)
-			ev.ResponseStatus, ev.InCalendarName = e.resolveICSInviteStatus(ctx, detail.ID, m.ICSBody, evs[0])
-			detail.ICSInvite = &ev
-		}
+		detail.ICSInvite = e.icsInviteOf(ctx, detail, m.ICSBody)
 	}
 	return marshalJSON(detail)
 }
@@ -389,12 +384,7 @@ func (e *Engine) applyDecryptedPayload(dp ParsedMessage, format string, detail *
 	detail.Attachments = dp.Attachments
 	if strings.TrimSpace(dp.ICSBody) != "" {
 		detail.HasICS = true
-		if evs, ierr := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(dp.ICSBody)); ierr == nil && len(evs) > 0 {
-			ev := storedEventToBridge(evs[0])
-			ev.Organizer, ev.Attendees = ParseICSInviteMeta(dp.ICSBody)
-			ev.ResponseStatus, ev.InCalendarName = e.resolveICSInviteStatus(context.Background(), detail.ID, dp.ICSBody, evs[0])
-			detail.ICSInvite = &ev
-		}
+		detail.ICSInvite = e.icsInviteOf(context.Background(), *detail, dp.ICSBody)
 	}
 }
 
@@ -1902,6 +1892,7 @@ func (e *Engine) rpcCalendarEvents(ctx context.Context, params any) (json.RawMes
 	if expanded == nil {
 		expanded = []backend.CalendarEvent{}
 	}
+	e.markNotifiable(expanded)
 	return marshalJSON(backend.CalendarEventsResponse{
 		Supported: true,
 		Events:    expanded,
@@ -1929,7 +1920,9 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 	}
 
 	var se StoredEvent
+	inviteErr := ""
 	if cal.Source == "google" {
+		req.Attendees = cleanAttendees(req.Attendees, "")
 		se, err = e.createGoogleEvent(ctx, cal, req)
 		if err != nil {
 			return nil, err
@@ -1969,6 +1962,18 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 			Status:       "confirmed",
 			ReminderMin:  cleanReminderMinutes(req.ReminderMinutes),
 		}
+		if len(req.Attendees) > 0 {
+			// Without an account to send from, the attendees are only noted (no invitation).
+			org, oerr := e.organizerFor(req.AccountID)
+			if oerr != nil && req.SendInvites {
+				return nil, oerr
+			}
+			se.Organizer = org
+			se.Attendees = cleanAttendees(req.Attendees, parseAttendeeAddress(org).Email)
+			for i := range se.Attendees {
+				se.Attendees[i].Status = "needsAction"
+			}
+		}
 		if cal.Source == "caldav" {
 			se, err = e.pushCalDAVEvent(ctx, cal, se)
 			if err != nil {
@@ -1977,9 +1982,18 @@ func (e *Engine) rpcCalendarCreate(ctx context.Context, params any) (json.RawMes
 		} else if err := e.store.UpsertEvent(ctx, se); err != nil {
 			return nil, err
 		}
+		if req.SendInvites {
+			if err := e.mailEventToAttendees(ctx, se, "REQUEST", se.Attendees, false); err != nil {
+				inviteErr = err.Error()
+			}
+		}
 	}
 	e.emitCalendarChanged()
-	return marshalJSON(map[string]any{"event": storedEventToBridge(se)})
+	out := storedEventToBridge(se)
+	evs := []backend.CalendarEvent{out}
+	e.markNotifiable(evs)
+	evs[0].InviteError = inviteErr
+	return marshalJSON(map[string]any{"event": evs[0]})
 }
 
 // cleanReminderMinutes keeps a reminder to none, the default or up to a week before the start.
@@ -2038,6 +2052,11 @@ func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMes
 	if v, ok := p["reminderMinutes"].(float64); ok {
 		ev.ReminderMin = cleanReminderMinutes(int(v))
 	}
+	notify, _ := p["notify"].(bool)
+	accountID, _ := p["accountId"].(string)
+	oldAttendees := ev.Attendees
+	newAttendees, attendeesSet := attendeesFromParam(p["attendees"])
+	canNotify := e.isOwnOrganizer(ev.Organizer, e.ownEmailSet())
 	if v, ok := p["start"].(string); ok && v != "" {
 		st := parseFlexibleEventTime(v, ev.StartUnix)
 		ev.StartUnix = st.Unix()
@@ -2057,9 +2076,37 @@ func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMes
 		}
 	}
 
+	var removed []backend.EventAttendee
+	if cal.Source != "google" {
+		if attendeesSet && canNotify {
+			if ev.Organizer == "" && len(newAttendees) > 0 {
+				org, oerr := e.organizerFor(accountID)
+				if oerr != nil && notify {
+					return nil, oerr
+				}
+				ev.Organizer = org
+			}
+			ev.Attendees = keepAttendeeAnswers(oldAttendees, cleanAttendees(newAttendees, parseAttendeeAddress(ev.Organizer).Email))
+			removed = removedAttendees(oldAttendees, ev.Attendees)
+			if len(ev.Attendees) == 0 && len(removed) == 0 {
+				ev.Organizer = ""
+			}
+		}
+		notify = notify && canNotify && (len(ev.Attendees) > 0 || len(removed) > 0)
+		if notify {
+			ev.Sequence++
+		}
+	}
+
+	inviteErr := ""
 	switch cal.Source {
 	case "google":
-		ev, err = e.updateGoogleEvent(ctx, cal, ev)
+		var atts *[]backend.EventAttendee
+		if attendeesSet {
+			clean := keepAttendeeAnswers(oldAttendees, cleanAttendees(newAttendees, ""))
+			atts = &clean
+		}
+		ev, err = e.updateGoogleEvent(ctx, cal, ev, atts, notify)
 		if err != nil {
 			return nil, err
 		}
@@ -2073,8 +2120,26 @@ func (e *Engine) rpcCalendarUpdate(ctx context.Context, params any) (json.RawMes
 			return nil, err
 		}
 	}
+	if notify && cal.Source != "google" {
+		// Everybody still invited gets the new version; whoever was taken off a cancellation.
+		var errs []string
+		if len(ev.Attendees) > 0 {
+			if err := e.mailEventToAttendees(ctx, ev, "REQUEST", ev.Attendees, true); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+		if len(removed) > 0 {
+			if err := e.mailEventToAttendees(ctx, ev, "CANCEL", removed, false); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+		inviteErr = strings.Join(errs, "; ")
+	}
 	e.emitCalendarChanged()
-	return marshalJSON(map[string]any{"event": storedEventToBridge(ev)})
+	evs := []backend.CalendarEvent{storedEventToBridge(ev)}
+	e.markNotifiable(evs)
+	evs[0].InviteError = inviteErr
+	return marshalJSON(map[string]any{"event": evs[0]})
 }
 
 func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMessage, error) {
@@ -2084,6 +2149,7 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		ID           string `json:"id"`
 		RecurrenceID string `json:"recurrenceId"`
 		Scope        string `json:"scope"`
+		Notify       bool   `json:"notify"`
 	}
 	_ = decodeParams(params, &p)
 	if p.EventID == "" {
@@ -2101,10 +2167,24 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		return nil, fmt.Errorf("not_found: event %q", p.EventID)
 	}
 
+	notify := p.Notify && len(ev.Attendees) > 0 && e.isOwnOrganizer(ev.Organizer, e.ownEmailSet())
+	// cancel mails the attendees of a local or CalDAV event that it is off (Google does it).
+	cancel := func(what StoredEvent) map[string]any {
+		res := map[string]any{"ok": true}
+		if !notify || cal.Source == "google" {
+			return res
+		}
+		what.Sequence++
+		if err := e.mailEventToAttendees(ctx, what, "CANCEL", what.Attendees, false); err != nil {
+			res["inviteError"] = err.Error()
+		}
+		return res
+	}
+
 	// Deleting a single occurrence of a recurring event never deletes the whole series.
 	if ev.RRule != "" && p.RecurrenceID != "" && p.Scope != backend.ScopeSeries {
 		if cal.Source == "google" {
-			if err := e.deleteGoogleEventOccurrence(ctx, cal, ev, p.RecurrenceID); err != nil {
+			if err := e.deleteGoogleEventOccurrence(ctx, cal, ev, p.RecurrenceID, notify); err != nil {
 				return nil, err
 			}
 			e.emitCalendarChanged()
@@ -2117,12 +2197,12 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 			return nil, err
 		}
 		e.emitCalendarChanged()
-		return marshalJSON(map[string]any{"ok": true})
+		return marshalJSON(cancel(occurrenceOf(ev, p.RecurrenceID)))
 	}
 
 	switch cal.Source {
 	case "google":
-		if err := e.deleteGoogleEvent(ctx, cal, ev); err != nil {
+		if err := e.deleteGoogleEvent(ctx, cal, ev, notify); err != nil {
 			return nil, err
 		}
 	case "caldav":
@@ -2135,7 +2215,7 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		}
 	}
 	e.emitCalendarChanged()
-	return marshalJSON(map[string]any{"ok": true})
+	return marshalJSON(cancel(ev))
 }
 
 // --- Contacts RPCs ---

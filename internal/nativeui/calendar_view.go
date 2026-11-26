@@ -1494,6 +1494,7 @@ func (a *App) renderEventFormContent(c *ui.Context, inWindow bool) {
 	}
 
 	ui.TextInput(c.Key("ev-loc"), &a.eventLocation).Placeholder(a.tr("Ort / Meeting-Link…", "Location / Meeting link…")).FillWidth()
+	a.renderEventAttendeeFields(c)
 	descArea := ui.TextArea(c.Key("ev-desc"), &a.eventDesc).Placeholder(a.tr("Notizen…", "Notes…")).FillWidth()
 	if inWindow {
 		descArea.Grow(1).MinHeight(120)

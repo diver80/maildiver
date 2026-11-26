@@ -401,16 +401,42 @@ type CalendarEvent struct {
 	ReadOnly    bool   `json:"readOnly,omitempty"`
 	// RecurrenceID identifies one occurrence of a recurring series ("" for single events and
 	// series masters); IsRecurring marks events that belong to a series (contract §7).
-	RecurrenceID   string   `json:"recurrenceId,omitempty"`
-	RecurrenceRule string   `json:"rrule,omitempty"`
-	IsRecurring    bool     `json:"isRecurring,omitempty"`
-	Organizer      string   `json:"organizer,omitempty"`
-	Attendees      []string `json:"attendees,omitempty"`
-	ResponseStatus string   `json:"responseStatus,omitempty"` // "", "accepted", "tentative", "declined", "needsAction", "imported"
-	InCalendarName string   `json:"inCalendarName,omitempty"`
+	RecurrenceID   string          `json:"recurrenceId,omitempty"`
+	RecurrenceRule string          `json:"rrule,omitempty"`
+	IsRecurring    bool            `json:"isRecurring,omitempty"`
+	Organizer      string          `json:"organizer,omitempty"` // "Name <email>" or the address
+	Attendees      []EventAttendee `json:"attendees,omitempty"`
+	ResponseStatus string          `json:"responseStatus,omitempty"` // "", "accepted", "tentative", "declined", "needsAction", "imported"
+	InCalendarName string          `json:"inCalendarName,omitempty"`
+	// Method is the iTIP method of an invitation mail: REQUEST, REPLY (Attendees[0] answered
+	// ResponseStatus), CANCEL.
+	Method string `json:"method,omitempty"`
+	// AttendeesFromMail: the invitation listed nobody, Attendees are the mail's recipients.
+	AttendeesFromMail bool `json:"attendeesFromMail,omitempty"`
+	// CanNotify: the event has attendees and one of the own addresses organizes it, so changes
+	// and a deletion can be sent to them.
+	CanNotify bool `json:"canNotify,omitempty"`
+	// InviteError (create and update answers only): the event is saved, but mailing the
+	// attendees failed.
+	InviteError string `json:"inviteError,omitempty"`
 	// ReminderMinutes is the reminder before the start: 0 the app's default
 	// (DefaultReminderMinutes), ReminderNone none, else minutes.
 	ReminderMinutes int `json:"reminderMinutes,omitempty"`
+}
+
+// EventAttendee is one invited person of an event.
+type EventAttendee struct {
+	Email  string `json:"email"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status,omitempty"` // "accepted", "tentative", "declined", "needsAction", ""
+}
+
+// Display is "Name <email>", or the address alone.
+func (a EventAttendee) Display() string {
+	if n := strings.TrimSpace(a.Name); n != "" && !strings.EqualFold(n, a.Email) {
+		return n + " <" + a.Email + ">"
+	}
+	return a.Email
 }
 
 // ReminderNone (CalendarEvent.ReminderMinutes) turns an event's reminder off;
@@ -447,6 +473,13 @@ type CreateCalendarEventRequest struct {
 	RecurrenceRule string `json:"rrule,omitempty"`
 	// ReminderMinutes as in CalendarEvent (kept for local and CalDAV calendars).
 	ReminderMinutes int `json:"reminderMinutes,omitempty"`
+	// Attendees are invited; SendInvites mails them the invitation (Google sends it itself,
+	// for local and CalDAV calendars it goes out from AccountID, or the default account).
+	Attendees   []EventAttendee `json:"attendees,omitempty"`
+	SendInvites bool            `json:"sendInvites,omitempty"`
+	AccountID   string          `json:"accountId,omitempty"`
+	// AddMeet asks Google for a Meet link (Google calendars only).
+	AddMeet bool `json:"addMeet,omitempty"`
 }
 
 // Calendar delete/update scopes (contract §7).

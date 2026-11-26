@@ -472,9 +472,11 @@ func (c *Client) UpdateCalendarEvent(ctx context.Context, calendarID, eventID st
 	return res.Event, err
 }
 
-func (c *Client) DeleteCalendarEvent(ctx context.Context, calendarID, eventID, recurrenceID, scope string) error {
+// DeleteCalendarEvent deletes an event; notify sends its attendees a cancellation. inviteErr
+// says why that cancellation could not be sent (the event is deleted regardless).
+func (c *Client) DeleteCalendarEvent(ctx context.Context, calendarID, eventID, recurrenceID, scope string, notify bool) (inviteErr string, err error) {
 	if scope != "" && scope != ScopeOccurrence && scope != ScopeSeries {
-		return &APIError{Code: "invalid_argument", Detail: "scope must be occurrence or series", Message: "invalid_argument: scope must be occurrence or series"}
+		return "", &APIError{Code: "invalid_argument", Detail: "scope must be occurrence or series", Message: "invalid_argument: scope must be occurrence or series"}
 	}
 	params := map[string]any{"calendarId": calendarID, "id": eventID}
 	if recurrenceID != "" {
@@ -483,7 +485,14 @@ func (c *Client) DeleteCalendarEvent(ctx context.Context, calendarID, eventID, r
 	if scope != "" {
 		params["scope"] = scope
 	}
-	return c.call(ctx, DefaultRequestTimeout, "calendar.delete", params, nil)
+	if notify {
+		params["notify"] = true
+	}
+	var res struct {
+		InviteError string `json:"inviteError"`
+	}
+	err = c.call(ctx, DefaultRequestTimeout, "calendar.delete", params, &res)
+	return res.InviteError, err
 }
 
 func (c *Client) ContactsSearch(ctx context.Context, query string) (ContactsSearchResponse, error) {

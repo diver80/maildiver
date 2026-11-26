@@ -391,6 +391,8 @@ func TestGoogleCalendarOAuthAndBidirectionalSync(t *testing.T) {
 	syncStep := 0
 	createdCount := 0
 	deletedID := ""
+	var createQuery, deleteQuery url.Values
+	var createBody map[string]any
 
 	gcalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -451,16 +453,22 @@ func TestGoogleCalendarOAuthAndBidirectionalSync(t *testing.T) {
 			mu.Unlock()
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			createQuery, createBody = r.URL.Query(), body
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":      "gev-created",
-				"status":  "confirmed",
-				"summary": body["summary"],
-				"start":   body["start"],
-				"end":     body["end"],
+				"id":        "gev-created",
+				"status":    "confirmed",
+				"summary":   body["summary"],
+				"start":     body["start"],
+				"end":       body["end"],
+				"attendees": body["attendees"],
+				"organizer": map[string]any{"email": "frank@gmail.com", "self": true},
 			})
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/events/"):
 			mu.Lock()
 			deletedID = filepath.Base(r.URL.Path)
+			deleteQuery = r.URL.Query()
 			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -546,17 +554,36 @@ func TestGoogleCalendarOAuthAndBidirectionalSync(t *testing.T) {
 
 	// 3. Bidirectional Create + Delete on Google Calendar via RPC.
 	createRaw, err := eng.Call(ctx, "calendar.create", backend.CreateCalendarEventRequest{
-		CalendarID: "gcal:frank@gmail.com",
-		Title:      "Neu aus OmaThunder",
-		Start:      "2026-11-22T15:00:00Z",
-		End:        "2026-11-22T16:00:00Z",
+		CalendarID:  "gcal:frank@gmail.com",
+		Title:       "Neu aus OmaThunder",
+		Start:       "2026-11-22T15:00:00Z",
+		End:         "2026-11-22T16:00:00Z",
+		Attendees:   []backend.EventAttendee{{Email: "anna@example.org", Name: "Anna"}, {Email: "anna@example.org"}, {Email: "kein-mail"}},
+		SendInvites: true,
+		AddMeet:     true,
 	})
 	if err != nil || !strings.Contains(string(createRaw), "Neu aus OmaThunder") {
 		t.Fatalf("google calendar.create failed: %s err=%v", createRaw, err)
 	}
+	mu.Lock()
+	cq, cb := createQuery, createBody
+	mu.Unlock()
+	// Google mails the invitation itself (sendUpdates=all) and makes the Meet link.
+	if cq.Get("sendUpdates") != "all" || cq.Get("conferenceDataVersion") != "1" || cb["conferenceData"] == nil {
+		t.Fatalf("create should ask Google to invite and add Meet: query=%v body=%v", cq, cb)
+	}
+	if atts, _ := cb["attendees"].([]any); len(atts) != 1 {
+		t.Fatalf("attendees should be cleaned to one: %v", cb["attendees"])
+	}
+	var created struct{ Event backend.CalendarEvent }
+	_ = json.Unmarshal(createRaw, &created)
+	if len(created.Event.Attendees) != 1 || !created.Event.CanNotify {
+		t.Fatalf("created Google event should carry its attendee and be notifiable: %+v", created.Event)
+	}
 	if _, err := eng.Call(ctx, "calendar.delete", map[string]any{
 		"calendarId": "gcal:frank@gmail.com",
 		"eventId":    "gcal:frank@gmail.com::gev-created",
+		"notify":     true,
 	}); err != nil {
 		t.Fatalf("google calendar.delete failed: %v", err)
 	}
@@ -565,6 +592,9 @@ func TestGoogleCalendarOAuthAndBidirectionalSync(t *testing.T) {
 	mu.Unlock()
 	if gotCreated != 1 || gotDeleted != "gev-created" {
 		t.Fatalf("expected Google API create=1 delete=gev-created, got %d / %q", gotCreated, gotDeleted)
+	}
+	if deleteQuery.Get("sendUpdates") != "all" {
+		t.Fatalf("delete with notify should have Google send the cancellation: %v", deleteQuery)
 	}
 }
 

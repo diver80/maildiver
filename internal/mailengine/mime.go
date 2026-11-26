@@ -1030,6 +1030,12 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 // BuildCalendarReplyMIME builds an RFC 5322 + RFC 5546 multipart/alternative message carrying
 // both a human-readable summary and a text/calendar; method=REPLY part for iTIP RSVP replies.
 func BuildCalendarReplyMIME(from, to, subject, textBody, replyICS, inReplyTo string) (msgID string, raw []byte) {
+	return BuildCalendarMIME(from, to, subject, textBody, replyICS, "REPLY", inReplyTo)
+}
+
+// BuildCalendarMIME builds an iTIP mail (RFC 6047): a text part and the calendar part with
+// method (REQUEST, REPLY, CANCEL) as alternatives. to is a ready To header.
+func BuildCalendarMIME(from, to, subject, textBody, icsPayload, method, inReplyTo string) (msgID string, raw []byte) {
 	var rnd [12]byte
 	_, _ = rand.Read(rnd[:])
 	msgID = fmt.Sprintf("mdv-rsvp-%d-%s@postdive.local", time.Now().UnixNano(), hex.EncodeToString(rnd[:]))
@@ -1066,14 +1072,14 @@ func BuildCalendarReplyMIME(from, to, subject, textBody, replyICS, inReplyTo str
 		b.WriteString("\r\n")
 	}
 
-	icsNorm := strings.ReplaceAll(replyICS, "\r\n", "\n")
+	icsNorm := strings.ReplaceAll(icsPayload, "\r\n", "\n")
 	icsNorm = strings.ReplaceAll(icsNorm, "\r", "\n")
 	icsNorm = strings.ReplaceAll(icsNorm, "\n", "\r\n")
 	if !strings.HasSuffix(icsNorm, "\r\n") {
 		icsNorm += "\r\n"
 	}
 	fmt.Fprintf(&b, "--%s\r\n", boundary)
-	b.WriteString("Content-Type: text/calendar; charset=utf-8; method=REPLY\r\n")
+	fmt.Fprintf(&b, "Content-Type: text/calendar; charset=utf-8; method=%s\r\n", method)
 	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
 	encodedICS := base64.StdEncoding.EncodeToString([]byte(icsNorm))
 	for i := 0; i < len(encodedICS); i += 76 {

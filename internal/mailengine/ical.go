@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +122,13 @@ func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.E
 	if strings.EqualFold(status, "CANCELLED") {
 		st = "cancelled"
 	}
+	org, atts := icalParticipants(ev)
+	seq := 0
+	if p := ev.Props.Get(ical.PropSequence); p != nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(p.Value)); err == nil && n > 0 {
+			seq = n
+		}
+	}
 
 	startISO := startTime.Format(time.RFC3339)
 	endISO := endTime.Format(time.RFC3339)
@@ -150,7 +158,63 @@ func icalEventToStored(calendarID, calendarName string, readOnly bool, ev ical.E
 		ReadOnly:     readOnly,
 		Status:       st,
 		ReminderMin:  icalReminder(ev.Component),
+		Organizer:    org,
+		Attendees:    atts,
+		Sequence:     seq,
 	}, true
+}
+
+// icalParticipants reads an event's ORGANIZER ("Name <email>") and ATTENDEEs with their answers.
+func icalParticipants(ev ical.Event) (organizer string, attendees []backend.EventAttendee) {
+	if p := ev.Props.Get(ical.PropOrganizer); p != nil {
+		if email := cleanMailto(p.Value); email != "" {
+			organizer = formatDisplayAttendee(strings.TrimSpace(p.Params.Get(ical.ParamCommonName)), email)
+		}
+	}
+	seen := map[string]bool{}
+	for _, p := range ev.Props.Values(ical.PropAttendee) {
+		email := cleanMailto(p.Value)
+		if email == "" || seen[strings.ToLower(email)] {
+			continue
+		}
+		seen[strings.ToLower(email)] = true
+		name := strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(p.Params.Get(ical.ParamCommonName)))
+		if strings.EqualFold(name, email) {
+			name = ""
+		}
+		attendees = append(attendees, backend.EventAttendee{
+			Email: email, Name: name, Status: partstatToStatus(p.Params.Get(ical.ParamParticipationStatus)),
+		})
+	}
+	return organizer, attendees
+}
+
+// partstatToStatus maps an RFC 5545 PARTSTAT to the app's answer names.
+func partstatToStatus(ps string) string {
+	switch strings.ToUpper(strings.TrimSpace(ps)) {
+	case "ACCEPTED":
+		return "accepted"
+	case "TENTATIVE":
+		return "tentative"
+	case "DECLINED":
+		return "declined"
+	case "NEEDS-ACTION":
+		return "needsAction"
+	}
+	return ""
+}
+
+// statusToPartstat is partstatToStatus backwards (NEEDS-ACTION for anything unknown).
+func statusToPartstat(st string) string {
+	switch st {
+	case "accepted":
+		return "ACCEPTED"
+	case "tentative":
+		return "TENTATIVE"
+	case "declined":
+		return "DECLINED"
+	}
+	return "NEEDS-ACTION"
 }
 
 // ReminderNone in StoredEvent.ReminderMin / CalendarEvent.ReminderMinutes: no reminder at all
@@ -487,6 +551,8 @@ func storedEventToBridge(ev StoredEvent) backend.CalendarEvent {
 		IsRecurring:     ev.IsRecurring || ev.RRule != "",
 		ResponseStatus:  ev.SelfResponse,
 		ReminderMinutes: ev.ReminderMin,
+		Organizer:       ev.Organizer,
+		Attendees:       ev.Attendees,
 	}
 }
 
@@ -516,31 +582,25 @@ func formatDisplayAttendee(cn, email string) string {
 }
 
 // ParseICSInviteMeta extracts Organizer and Attendees from an RFC 5545 .ics invite.
-func ParseICSInviteMeta(rawICS string) (organizer string, attendees []string) {
-	dec := ical.NewDecoder(strings.NewReader(rawICS))
-	cal, err := dec.Decode()
+func ParseICSInviteMeta(rawICS string) (organizer string, attendees []backend.EventAttendee) {
+	cal, err := ical.NewDecoder(strings.NewReader(rawICS)).Decode()
 	if err != nil {
 		return "", nil
 	}
 	for _, ev := range cal.Events() {
-		if org := ev.Props.Get(ical.PropOrganizer); org != nil {
-			email := cleanMailto(org.Value)
-			cn := strings.TrimSpace(org.Params.Get(ical.ParamCommonName))
-			if email != "" {
-				organizer = formatDisplayAttendee(cn, email)
-			}
-		}
-		for _, att := range ev.Props.Values(ical.PropAttendee) {
-			email := cleanMailto(att.Value)
-			if email == "" {
-				continue
-			}
-			cn := strings.TrimSpace(att.Params.Get(ical.ParamCommonName))
-			attendees = append(attendees, formatDisplayAttendee(cn, email))
-		}
-		break
+		return icalParticipants(ev)
 	}
-	return organizer, attendees
+	return "", nil
+}
+
+// ICSMethod is the iTIP METHOD of an .ics payload, upper case ("REQUEST", "REPLY", "CANCEL"…).
+func ICSMethod(rawICS string) string {
+	cal, err := ical.NewDecoder(strings.NewReader(rawICS)).Decode()
+	if err != nil {
+		return ""
+	}
+	m, _ := cal.Props.Text(ical.PropMethod)
+	return strings.ToUpper(strings.TrimSpace(m))
 }
 
 // ParseICSSelfPartStat extracts the current user's RFC 5545 PARTSTAT from an .ics VEVENT
@@ -687,9 +747,21 @@ func parseFlexibleEventTime(iso string, fallbackUnix int64) time.Time {
 
 // ExportEventsICS serializes one or more StoredEvents into an RFC 5545 .ics calendar document.
 func ExportEventsICS(calName string, events []StoredEvent) string {
+	return buildEventsICS(calName, events, "")
+}
+
+// buildEventsICS writes events as an .ics document. Without a method it is the calendar's own
+// copy (a CalDAV resource, an export): attendees carry SCHEDULE-AGENT=CLIENT so a scheduling
+// server does not mail them a second time, PostDive does that. With an iTIP method (REQUEST,
+// CANCEL) it is the payload of an invitation mail: no reminder, and a cancellation is marked
+// CANCELLED.
+func buildEventsICS(calName string, events []StoredEvent, method string) string {
 	cal := ical.NewCalendar()
 	cal.Props.SetText(ical.PropVersion, "2.0")
 	cal.Props.SetText(ical.PropProductID, "-//PostDive//Calendar//EN")
+	if method != "" {
+		cal.Props.SetText(ical.PropMethod, method)
+	}
 	if calName != "" {
 		cal.Props.SetText("X-WR-CALNAME", calName)
 	}
@@ -720,12 +792,83 @@ func ExportEventsICS(calName string, events []StoredEvent) string {
 		if e.RRule != "" {
 			ev.Props.Set(&ical.Prop{Name: ical.PropRecurrenceRule, Value: e.RRule})
 		}
-		addICalReminder(ev, e.Title, e.ReminderMin)
+		if e.RecurrenceID != "" {
+			if rt := parseFlexibleEventTime(e.RecurrenceID, 0); !rt.IsZero() {
+				if e.AllDay {
+					ev.Props.SetDate(ical.PropRecurrenceID, rt)
+				} else {
+					ev.Props.SetDateTime(ical.PropRecurrenceID, rt.UTC())
+				}
+			}
+		}
+		if e.Sequence > 0 || method != "" {
+			ev.Props.Set(&ical.Prop{Name: ical.PropSequence, Value: strconv.Itoa(max(e.Sequence, 0))})
+		}
+		addICalParticipants(ev, e, method == "")
+		switch method {
+		case "CANCEL":
+			ev.Props.SetText(ical.PropStatus, "CANCELLED")
+		case "":
+			addICalReminder(ev, e.Title, e.ReminderMin)
+		}
 		cal.Children = append(cal.Children, ev.Component)
 	}
 	var buf bytes.Buffer
 	_ = ical.NewEncoder(&buf).Encode(cal)
 	return buf.String()
+}
+
+// addICalParticipants writes e's ORGANIZER and ATTENDEEs; stored marks the calendar's own copy.
+func addICalParticipants(ev *ical.Event, e StoredEvent, stored bool) {
+	if len(e.Attendees) == 0 {
+		return
+	}
+	if org := parseAttendeeAddress(e.Organizer); org.Email != "" {
+		p := ical.NewProp(ical.PropOrganizer)
+		p.Value = "mailto:" + org.Email
+		if org.Name != "" {
+			p.Params.Set(ical.ParamCommonName, org.Name)
+		}
+		if stored {
+			p.Params.Set("SCHEDULE-AGENT", "CLIENT")
+		}
+		ev.Props.Add(p)
+	}
+	for _, a := range e.Attendees {
+		if a.Email == "" {
+			continue
+		}
+		p := ical.NewProp(ical.PropAttendee)
+		p.Value = "mailto:" + a.Email
+		if a.Name != "" {
+			p.Params.Set(ical.ParamCommonName, a.Name)
+		}
+		p.Params.Set(ical.ParamRole, "REQ-PARTICIPANT")
+		p.Params.Set(ical.ParamParticipationStatus, statusToPartstat(a.Status))
+		if a.Status == "" || a.Status == "needsAction" {
+			p.Params.Set(ical.ParamRSVP, "TRUE")
+		}
+		if stored {
+			p.Params.Set("SCHEDULE-AGENT", "CLIENT")
+		}
+		ev.Props.Add(p)
+	}
+}
+
+// parseAttendeeAddress reads "Name <email>" or a bare address.
+func parseAttendeeAddress(raw string) backend.EventAttendee {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return backend.EventAttendee{}
+	}
+	if a, err := mail.ParseAddress(raw); err == nil && a.Address != "" {
+		name := strings.TrimSpace(a.Name)
+		if strings.EqualFold(name, a.Address) {
+			name = ""
+		}
+		return backend.EventAttendee{Email: strings.TrimSpace(a.Address), Name: name}
+	}
+	return backend.EventAttendee{}
 }
 
 // ImportICSBytes parses an .ics payload and upserts all events into calendarID,

@@ -236,9 +236,7 @@ func (a *App) renderEventDetails(c *ui.Context, ev backend.CalendarEvent, keyPre
 		if org := strings.TrimSpace(ev.Organizer); org != "" {
 			ui.Text(c, a.tr("Organisator: ", "Organizer: ")+org).FontSize(12).TextColor(t.TextMuted)
 		}
-		if len(ev.Attendees) > 0 {
-			ui.Text(c, a.tr("Teilnehmer: ", "Attendees: ")+strings.Join(ev.Attendees, ", ")).FontSize(11.5).TextColor(t.TextMuted)
-		}
+		a.renderAttendees(c, keyPrefix+"-att", ev.Attendees, ev.ResponseStatus, true)
 		if full := cleanEventFullText(ev.Description); full != "" {
 			ui.Column(c).FillWidth().Padding(10, 12).Radius(6).Background(t.Background).Border(1, t.Border).Children(func() {
 				ui.Text(c, full).FontSize(12).LineHeight(1.45).TextColor(t.Text)
