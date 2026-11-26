@@ -183,8 +183,18 @@ func (a *App) renderSidebar(c *ui.Context) {
 				a.OpenComposeNew()
 			}
 		})
-		sb := ui.Sidebar(c, &a.navID, func() {
+		// While a search shows its results, it has its own entry on top and is the selected one:
+		// any other entry ends the search and opens, even the one the search started from.
+		searching := a.searchActive()
+		sel := a.navID
+		if searching {
+			sel = searchNavID
+		}
+		sb := ui.Sidebar(c, &sel, func() {
 			ui.SidebarSection(c, a.tr("Postfach", "Mailbox"), &a.secViewsOpen, func() {
+				if searching {
+					ui.SidebarItem(c, searchNavID, iconSearch, a.trf("Suche: %s", "Search: %s", strings.TrimSpace(a.lastSearchQuery)))
+				}
 				ui.SidebarItem(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)")).Children(func() {
 					if n := a.focusCount(); n > 0 {
 						ui.Badge(c, fmt.Sprintf("%d", n))
@@ -205,7 +215,11 @@ func (a *App) renderSidebar(c *ui.Context) {
 			a.renderFolderSections(c)
 		}).Grow(1).MinHeight(0).FillWidth()
 
-		if sb.Changed() {
+		if sb.Changed() && sel != searchNavID {
+			if searching {
+				a.clearSearch()
+			}
+			a.navID = sel
 			a.selectedID = ""
 			a.selectedMsg = nil
 			a.syncPreviewForMessage(nil)

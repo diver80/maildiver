@@ -95,6 +95,18 @@ func (a *App) searchPlaceholder(withKey bool) string {
 	return s
 }
 
+// searchNavID is the sidebar entry of the search on screen; it never becomes a.navID.
+const searchNavID = "search"
+
+// clearSearch empties the search, as the field's ✕ does; the caller loads the list again.
+func (a *App) clearSearch() {
+	a.searchQuery = ""
+	a.lastSearchQuery = ""
+	a.serverSearchDoneQuery = ""
+	a.serverSearchDoneKey = ""
+	a.lastCheckedIndex = -1
+}
+
 // searchActive: the list shows search results.
 func (a *App) searchActive() bool {
 	return strings.TrimSpace(a.searchQuery) != "" && strings.TrimSpace(a.lastSearchQuery) != ""

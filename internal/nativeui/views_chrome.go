@@ -59,10 +59,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 					a.LoadMessages(context.Background())
 				} else if strings.TrimSpace(a.searchQuery) == "" && a.lastSearchQuery != "" {
 					// Automatically reload full view when the user clears the search box.
-					a.lastSearchQuery = ""
-					a.serverSearchDoneQuery = ""
-					a.serverSearchDoneKey = ""
-					a.lastCheckedIndex = -1
+					a.clearSearch()
 					a.LoadMessages(context.Background())
 				}
 				if len(a.accountLabels) > 1 {

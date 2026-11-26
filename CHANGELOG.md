@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.53 (2026-11-26)
+
+### Search
+- **Search has its own sidebar entry:** while results are shown, “Search: …” sits on top of the Mailbox section and is selected. Any other entry ends the search and opens, including the one the search started from (clicking Focus during a search used to do nothing). The ✕ in the search field ends it too and the entry disappears.
+
 ## 0.7.52 (2026-11-26)
 
 ### AI providers

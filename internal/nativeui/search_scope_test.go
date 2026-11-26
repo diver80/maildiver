@@ -74,3 +74,34 @@ func TestSearchScopeBarRenders(t *testing.T) {
 		t.Fatalf("header should name the folder; texts=%v", tt.Texts())
 	}
 }
+
+func TestSearchHasASidebarEntryAndAnyOtherEntryEndsIt(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.cfg.Language = "de"
+	app.accounts = []backend.Account{{ID: "acc1", Name: "ich@example.org"}}
+	app.navID = "focus"
+	app.searchQuery, app.lastSearchQuery = "barbara", "barbara"
+	tt := ui.NewTester(app.RenderMain, 1380, 900)
+	tt.Frame()
+	if !tt.HasText("Suche: barbara") {
+		t.Fatalf("search entry missing; texts=%v", tt.Texts())
+	}
+	// Focus is where the search started: one click still ends the search and shows Focus.
+	if err := tt.Click("Fokus (Ungelesen & ★)"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.searchQuery != "" || app.lastSearchQuery != "" || app.navID != "focus" || tt.HasText("Suche: barbara") {
+		t.Fatalf("Focus must end the search: query=%q nav=%q texts=%v", app.searchQuery, app.navID, tt.Texts())
+	}
+
+	app.searchQuery, app.lastSearchQuery = "barbara", "barbara"
+	tt.Frame()
+	if err := tt.Click("Aktuelle Mails"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if app.searchActive() || app.navID != "recent" {
+		t.Fatalf("another entry must end the search and open: nav=%q", app.navID)
+	}
+}
