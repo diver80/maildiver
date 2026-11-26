@@ -707,6 +707,23 @@ func (e *Engine) updateGoogleEvent(ctx context.Context, cal StoredCalendar, exis
 	return se, nil
 }
 
+// declineGoogle sends the attendees list with the own answer set to declined for ev – the
+// series, or with RecurrenceID the single occurrence – and Google notifies the organizer.
+func (e *Engine) declineGoogle(ctx context.Context, cal StoredCalendar, ev StoredEvent, attendees []backend.EventAttendee) error {
+	hc, err := e.loadGCalHTTPClient(ctx)
+	if err != nil {
+		return err
+	}
+	id := ev.ExternalID
+	if ev.RecurrenceID != "" {
+		if id, err = e.googleInstanceID(ctx, hc, cal, ev, ev.RecurrenceID); err != nil {
+			return err
+		}
+	}
+	endpoint := fmt.Sprintf("%s/calendars/%s/events/%s?sendUpdates=all", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(id))
+	return doGCalJSON(ctx, hc, http.MethodPatch, endpoint, map[string]any{"attendees": gcalAttendeesPayload(attendees)}, nil)
+}
+
 // gcalSendUpdates is Google's sendUpdates parameter: mail the attendees, or nobody.
 func gcalSendUpdates(notify bool) string {
 	if notify {
@@ -730,14 +747,11 @@ func (e *Engine) deleteGoogleEvent(ctx context.Context, cal StoredCalendar, exis
 
 // deleteGoogleEventOccurrence cancels a single instance of a recurring Google Calendar event
 // without deleting the master series.
-func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCalendar, existing StoredEvent, recurrenceID string, notify bool) error {
+// googleInstanceID finds the Google instance of the series existing that starts at recurrenceID.
+func (e *Engine) googleInstanceID(ctx context.Context, hc *http.Client, cal StoredCalendar, existing StoredEvent, recurrenceID string) (string, error) {
 	occTime := parseFlexibleEventTime(recurrenceID, 0)
 	if occTime.IsZero() {
-		return fmt.Errorf("ungültige Termininstanz %q – ganze Serie wird geschützt", recurrenceID)
-	}
-	hc, err := e.loadGCalHTTPClient(ctx)
-	if err != nil {
-		return err
+		return "", fmt.Errorf("ungültige Termininstanz %q – ganze Serie wird geschützt", recurrenceID)
 	}
 	vals := url.Values{}
 	vals.Set("timeMin", occTime.Add(-2*time.Minute).UTC().Format(time.RFC3339))
@@ -761,7 +775,7 @@ func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCale
 		} `json:"items"`
 	}
 	if err := doGCalJSON(ctx, hc, http.MethodGet, instURL, nil, &instPage); err != nil {
-		return fmt.Errorf("Google Termininstanz nicht abrufbar: %w", err)
+		return "", fmt.Errorf("Google Termininstanz nicht abrufbar: %w", err)
 	}
 
 	targetDay := occTime.UTC().Format("2006-01-02")
@@ -795,7 +809,19 @@ func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCale
 		}
 	}
 	if instanceID == "" {
-		return fmt.Errorf("einzelne Google-Termininstanz (%s) nicht gefunden – bitte in Google Kalender prüfen oder ganze Serie löschen", recurrenceID)
+		return "", fmt.Errorf("einzelne Google-Termininstanz (%s) nicht gefunden – bitte in Google Kalender prüfen oder ganze Serie löschen", recurrenceID)
+	}
+	return instanceID, nil
+}
+
+func (e *Engine) deleteGoogleEventOccurrence(ctx context.Context, cal StoredCalendar, existing StoredEvent, recurrenceID string, notify bool) error {
+	hc, err := e.loadGCalHTTPClient(ctx)
+	if err != nil {
+		return err
+	}
+	instanceID, err := e.googleInstanceID(ctx, hc, cal, existing, recurrenceID)
+	if err != nil {
+		return err
 	}
 	delURL := fmt.Sprintf("%s/calendars/%s/events/%s?sendUpdates=%s", e.gcalBaseURL(), url.PathEscape(cal.ExternalID), url.PathEscape(instanceID), gcalSendUpdates(notify))
 	if err := doGCalJSON(ctx, hc, http.MethodDelete, delURL, nil, nil); err != nil {

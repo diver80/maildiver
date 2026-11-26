@@ -2167,7 +2167,20 @@ func (e *Engine) rpcCalendarDelete(ctx context.Context, params any) (json.RawMes
 		return nil, fmt.Errorf("not_found: event %q", p.EventID)
 	}
 
-	notify := p.Notify && len(ev.Attendees) > 0 && e.isOwnOrganizer(ev.Organizer, e.ownEmailSet())
+	ownOrganizer := e.isOwnOrganizer(ev.Organizer, e.ownEmailSet())
+	notify := p.Notify && len(ev.Attendees) > 0 && ownOrganizer
+	// An invitation from someone else: notify declines it towards the organizer first, so a
+	// failed answer leaves the event in place.
+	decline := p.Notify && !ownOrganizer && ev.Organizer != ""
+	if decline {
+		what := ev
+		if ev.RRule != "" && p.RecurrenceID != "" && p.Scope != backend.ScopeSeries {
+			what = occurrenceOf(ev, p.RecurrenceID)
+		}
+		if err := e.declineEvent(ctx, cal, what); err != nil {
+			return nil, fmt.Errorf("Absage an den Organisator fehlgeschlagen: %w", err)
+		}
+	}
 	// cancel mails the attendees of a local or CalDAV event that it is off (Google does it).
 	cancel := func(what StoredEvent) map[string]any {
 		res := map[string]any{"ok": true}

@@ -416,6 +416,9 @@ type CalendarEvent struct {
 	// CanNotify: the event has attendees and one of the own addresses organizes it, so changes
 	// and a deletion can be sent to them.
 	CanNotify bool `json:"canNotify,omitempty"`
+	// CanDecline: an invitation someone else organizes in a writable calendar; deleting it can
+	// send the organizer a decline.
+	CanDecline bool `json:"canDecline,omitempty"`
 	// InviteError (create and update answers only): the event is saved, but mailing the
 	// attendees failed.
 	InviteError string `json:"inviteError,omitempty"`

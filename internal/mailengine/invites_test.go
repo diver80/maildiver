@@ -6,10 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/diver80/postdive/internal/backend"
 	"github.com/diver80/postdive/internal/config"
@@ -304,5 +307,112 @@ func TestInviteCardFallsBackToRecipients(t *testing.T) {
 	inv := eng.icsInviteOf(context.Background(), detail, invite)
 	if inv == nil || !inv.AttendeesFromMail || len(inv.Attendees) != 2 || inv.Attendees[1].Email != "anna@example.org" || inv.Method != "REQUEST" {
 		t.Fatalf("expected the mail's recipients without the organizer: %+v", inv)
+	}
+}
+
+func TestDeleteInvitationDeclinesToOrganizer(t *testing.T) {
+	smtp := startFakeSMTP(t)
+	eng := newInviteTestEngine(t, smtp.addr)
+	ctx := context.Background()
+	inv := StoredEvent{
+		ID: LocalCalendarID + "::inv-1", CalendarID: LocalCalendarID, UID: "inv-1@acme", ExternalID: "inv-1@acme", Title: "Refinement",
+		StartISO: "2026-12-01T08:30:00Z", EndISO: "2026-12-01T09:30:00Z", StartUnix: 1796113800, EndUnix: 1796117400,
+		RRule: "FREQ=WEEKLY", IsRecurring: true, Status: "confirmed",
+		Organizer: "Olga <olga@example.org>",
+		Attendees: []backend.EventAttendee{{Email: "ich@example.org", Name: "Ich", Status: "accepted"}, {Email: "anna@example.org"}},
+	}
+	if err := eng.store.UpsertEvent(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := eng.Call(ctx, "calendar.events", map[string]any{"start": "2026-11-30T00:00:00Z", "end": "2026-12-02T00:00:00Z"})
+	var evs backend.CalendarEventsResponse
+	_ = json.Unmarshal(raw, &evs)
+	if len(evs.Events) != 1 || !evs.Events[0].CanDecline || evs.Events[0].CanNotify {
+		t.Fatalf("an invitation from someone else can be declined, not notified: %+v", evs.Events)
+	}
+
+	// One occurrence, declined: a REPLY for that occurrence goes to the organizer.
+	if _, err := eng.Call(ctx, "calendar.delete", map[string]any{"calendarId": LocalCalendarID, "id": inv.ID, "recurrenceId": "2026-12-01T08:30:00Z", "scope": "occurrence", "notify": true}); err != nil {
+		t.Fatal(err)
+	}
+	mails := smtp.mails()
+	if len(mails) != 1 || strings.Join(mails[0].rcpts, ",") != "olga@example.org" {
+		t.Fatalf("expected a decline to the organizer, got %+v", mails)
+	}
+	ics := calendarPart(t, mails[0].data)
+	if !strings.Contains(ics, "METHOD:REPLY") || !strings.Contains(ics, "PARTSTAT=DECLINED") || !strings.Contains(ics, "RECURRENCE-ID:20261201T083000Z") ||
+		!strings.Contains(ics, "mailto:ich@example.org") || strings.Contains(ics, "anna@example.org") {
+		t.Fatalf("unexpected decline:\n%s", ics)
+	}
+
+	// The whole series without an answer: nothing is sent.
+	if _, err := eng.Call(ctx, "calendar.delete", map[string]any{"calendarId": LocalCalendarID, "id": inv.ID, "scope": "series"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(smtp.mails()); n != 1 {
+		t.Fatalf("deleting without notify must not mail, got %d mails", n)
+	}
+	if _, err := eng.store.GetEvent(ctx, LocalCalendarID, inv.ID); err == nil {
+		t.Fatal("series should be deleted")
+	}
+}
+
+func TestDeclineGoogleInvitationPatchesOnlyAttendees(t *testing.T) {
+	var mu sync.Mutex
+	var patched map[string]any
+	var patchQuery, deleteQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodPatch:
+			_ = json.NewDecoder(r.Body).Decode(&patched)
+			patchQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodDelete:
+			deleteQuery = r.URL.RawQuery
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	eng := newInviteTestEngine(t, "127.0.0.1:1")
+	ctx := context.Background()
+	cfg := eng.loadConfig()
+	cfg.Direct.GoogleCalendar = config.GoogleCalendarConfig{Enabled: true, ClientID: "cid", AccountEmail: "ich@gmail.example"}
+	_ = eng.saveConfig(cfg)
+	eng.gcalAPIBase = srv.URL
+	tok, _ := json.Marshal(map[string]any{"access_token": "a", "token_type": "Bearer", "expiry": time.Now().Add(time.Hour)})
+	_ = eng.secrets.Set(secretGCalToken, string(tok))
+	cal := StoredCalendar{ID: "gcal:primary", Name: "Google", Source: "google", ExternalID: "primary"}
+	if err := eng.store.UpsertCalendar(ctx, cal); err != nil {
+		t.Fatal(err)
+	}
+	ev := StoredEvent{
+		ID: "gcal:primary::g1", CalendarID: cal.ID, ExternalID: "g1", UID: "g1@google", Title: "Planung",
+		StartISO: "2026-12-01T10:00:00Z", EndISO: "2026-12-01T11:00:00Z", StartUnix: 1796119200, EndUnix: 1796122800,
+		Organizer: "olga@example.org",
+		Attendees: []backend.EventAttendee{{Email: "ich@gmail.example", Status: "accepted"}, {Email: "anna@example.org", Status: "accepted"}},
+	}
+	_ = eng.store.UpsertEvent(ctx, ev)
+	if _, err := eng.Call(ctx, "calendar.delete", map[string]any{"calendarId": cal.ID, "id": ev.ID, "notify": true}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	atts, _ := patched["attendees"].([]any)
+	if len(patched) != 1 || len(atts) != 2 || !strings.Contains(patchQuery, "sendUpdates=all") {
+		t.Fatalf("decline should patch only the attendees with notification: %v ?%s", patched, patchQuery)
+	}
+	if me, _ := atts[0].(map[string]any); me["responseStatus"] != "declined" {
+		t.Fatalf("own answer not declined: %v", atts[0])
+	}
+	if other, _ := atts[1].(map[string]any); other["responseStatus"] != "accepted" {
+		t.Fatalf("other answers must stay: %v", atts[1])
+	}
+	if !strings.Contains(deleteQuery, "sendUpdates=none") {
+		t.Fatalf("removing the declined event must not notify again: ?%s", deleteQuery)
 	}
 }

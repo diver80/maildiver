@@ -245,3 +245,21 @@ func absFloat32(v float32) float32 {
 	}
 	return v
 }
+
+// Outlook writes every link twice – as a link and as "<https://…>" text, the query with &amp; –
+// and the details list each once.
+func TestEventLinksDeduplicated(t *testing.T) {
+	ev := backend.CalendarEvent{Description: `Microsoft Teams Meeting <https://teams.microsoft.com/l/meetup-join/19%3ameeting_X/0?context=%7b%7d>
+Hilfe<https://aka.ms/JoinTeamsMeeting?omkt=de-DE> | Optionen<https://teams.microsoft.com/meetingOptions/?organizerId=1&amp;tenantId=2>
+<a href="https://aka.ms/JoinTeamsMeeting?omkt=de-DE">&lt;https://aka.ms/JoinTeamsMeeting?omkt=de-DE&gt;</a>
+<a href="https://teams.microsoft.com/meetingOptions?tenantId=2&organizerId=1">Optionen</a>`}
+	links := ExtractEventLinks(ev)
+	if len(links) != 3 {
+		t.Fatalf("expected 3 distinct links, got %d: %+v", len(links), links)
+	}
+	for _, lk := range links {
+		if strings.HasPrefix(lk.Label, "<") || strings.Contains(lk.URL, "&amp;") {
+			t.Fatalf("link not cleaned: %+v", lk)
+		}
+	}
+}

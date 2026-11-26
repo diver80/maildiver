@@ -360,6 +360,7 @@ type App struct {
 	folderCollapseSeen map[string]bool  // folder keys whose startup collapse default was applied
 	searchQuery        string
 	lastSearchQuery    string
+	searchScope        int // searchEverywhere (default), searchAccount, searchFolder
 	selectedAccount    string // "" = All Accounts
 	accountLabels      []string
 	accountIDByLabel   map[string]string
@@ -1253,6 +1254,9 @@ func (a *App) newMessageLoad() messageLoad {
 func (a *App) viewLoad() messageLoad {
 	query := strings.TrimSpace(a.searchQuery)
 	key := a.navID + "\x00" + a.selectedAccount + "\x00" + query
+	if query != "" {
+		key += fmt.Sprintf("\x00%d", a.effectiveSearchScope())
+	}
 	limit := messagePage
 	if key == a.listKey {
 		limit = min(max(limit, len(a.messages)), 1000)
@@ -1266,6 +1270,11 @@ func (a *App) viewLoad() messageLoad {
 			Query:     query,
 			Limit:     limit,
 		},
+	}
+	if query != "" {
+		// A search looks where the scope bar says, not only in the view on screen.
+		req.filter.AccountID, req.filter.FolderID = a.searchScopeIDs()
+		return req
 	}
 	switch {
 	case strings.HasPrefix(req.navID, "folder:"):
@@ -1463,7 +1472,8 @@ func (a *App) setNav(nav string) {
 }
 
 func (a *App) serverSearchScopeKey(q string) string {
-	return a.navID + "|" + a.selectedAccount + "|" + strings.TrimSpace(q)
+	accID, folderID := a.searchScopeIDs()
+	return accID + "|" + folderID + "|" + strings.TrimSpace(q)
 }
 
 func isOutboundFolderName(name string) bool {
@@ -2562,11 +2572,7 @@ func (a *App) SearchMessagesOnServer(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	folderID := ""
-	if strings.HasPrefix(a.navID, "folder:") {
-		folderID = strings.TrimPrefix(a.navID, "folder:")
-	}
-	accID := a.selectedAccount
+	accID, folderID := a.searchScopeIDs()
 	scopeKey := a.serverSearchScopeKey(q)
 	seq := a.msgLoadSeq
 	a.serverSearchBusy = true
@@ -2742,7 +2748,7 @@ func (a *App) RequestDeleteCalendarEvent(ev backend.CalendarEvent) {
 	}
 	a.calDelEvent = ev
 	a.calDelError = ""
-	a.calDelNotify = ev.CanNotify
+	a.calDelNotify = ev.CanNotify || ev.CanDecline
 	a.calDelOpen = true
 }
 
@@ -2766,7 +2772,7 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 	} else {
 		scope = ""
 	}
-	notify := a.calDelNotify && ev.CanNotify
+	notify := a.calDelNotify && (ev.CanNotify || ev.CanDecline)
 	a.calDelBusy = true
 	a.calDelError = ""
 	go func() {
@@ -2783,6 +2789,8 @@ func (a *App) ConfirmDeleteCalendarEvent(ctx context.Context, scope string) {
 			switch {
 			case inviteErr != "":
 				a.toast(a.trf("Termin „%s“ gelöscht, Absage nicht gesendet: %s", "Deleted event \"%s\", cancellation not sent: %s", ev.Title, inviteErr), "error")
+			case notify && ev.CanDecline:
+				a.toast(a.trf("Termin „%s“ gelöscht, Absage an den Organisator gesendet", "Deleted event \"%s\", declined to the organizer", ev.Title), "success")
 			case notify:
 				a.toast(a.trf("Termin „%s“ gelöscht, Teilnehmer informiert", "Deleted event \"%s\", attendees told", ev.Title), "success")
 			default:

@@ -752,7 +752,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 		if a.phone.search || strings.TrimSpace(a.searchQuery) != "" {
 			ui.Column(c).FillWidth().Padding(8, 12).Gap(6).Children(func() {
 				ui.Row(c).FillWidth().Children(func() {
-					sf := ui.SearchField(c.Key("ph-search-field"), &a.searchQuery).Placeholder(a.tr("Mails durchsuchen", "Search mail")).Grow(1)
+					sf := ui.SearchField(c.Key("ph-search-field"), &a.searchQuery).Placeholder(a.searchPlaceholder(false)).Grow(1)
 					if a.focusSearch {
 						sf.Focus()
 						a.focusSearch = false
@@ -767,6 +767,7 @@ func (a *App) renderPhoneList(c *ui.Context) {
 						a.LoadMessages(context.Background())
 					}
 				})
+				a.renderSearchScopeBar(c, "ph-search-scope")
 				if q := strings.TrimSpace(a.searchQuery); q != "" && a.engineReady {
 					ui.Row(c.Key("ph-srv-search-bar")).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 						if a.serverSearchBusy {
@@ -775,8 +776,8 @@ func (a *App) renderPhoneList(c *ui.Context) {
 						} else if a.serverSearchDoneKey == a.serverSearchScopeKey(q) {
 							ui.Text(c, a.trf("Server-Suche: %d Treffer", "Server search: %d matches", a.serverSearchCount)).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
 						} else {
-							ui.Text(c, a.tr("Nur lokal gesucht.", "Searched locally.")).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
-							if ui.Button(c.Key("ph-srv-search-go"), a.tr("Auf Server suchen", "Search Server")).Padding(4, 10).Clicked() {
+							ui.Text(c, a.tr("Nur geladene Mails durchsucht.", "Downloaded mail only.")).FontSize(12).TextColor(t.TextMuted).Grow(1).SingleLine()
+							if ui.Button(c.Key("ph-srv-search-go"), a.tr("Auch auf Server", "Search server too")).Padding(4, 10).Clicked() {
 								a.SearchMessagesOnServer(context.Background())
 							}
 						}

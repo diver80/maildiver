@@ -216,20 +216,31 @@ func (e *Engine) mailEventToAttendees(ctx context.Context, ev StoredEvent, metho
 		subject = "Geändert: " + ev.Title
 	}
 	payload := buildEventsICS("", []StoredEvent{ev}, method)
-	from := (&mail.Address{Name: name, Address: org.Email}).String()
-	msgID, raw := BuildCalendarMIME(from, strings.Join(toHdr, ", "), subject, inviteText(ev, method, update), payload, method, "")
+	return e.sendCalendarMail(ctx, acc, org.Email, name, to, subject, inviteText(ev, method, update), payload, method)
+}
+
+// sendCalendarMail sends an iTIP mail (method REQUEST, CANCEL or REPLY) from fromEmail of acc
+// to recipients, keeps a copy in Sent and logs it; offline it waits in the outbox.
+func (e *Engine) sendCalendarMail(ctx context.Context, acc config.DirectAccount, fromEmail, fromName string, to []backend.EventAttendee, subject, text, payload, method string) error {
+	var rcpts, toHdr []string
+	for _, a := range to {
+		rcpts = append(rcpts, a.Email)
+		toHdr = append(toHdr, (&mail.Address{Name: a.Name, Address: a.Email}).String())
+	}
+	from := (&mail.Address{Name: fromName, Address: fromEmail}).String()
+	msgID, raw := BuildCalendarMIME(from, strings.Join(toHdr, ", "), subject, text, payload, method, "")
 	act := ActivityEntry{Kind: ActivitySend, AccountID: acc.ID, MessageID: msgID, Subject: subject, Peer: strings.Join(rcpts, ", "), Target: "invite"}
 
 	pass, err := e.accountPassword(acc.ID)
 	if err != nil || strings.TrimSpace(pass) == "" {
 		return fmt.Errorf("kein Passwort für %s gespeichert", acc.Email)
 	}
-	if err := SendSMTP(ctx, acc, pass, org.Email, rcpts, raw); err != nil {
+	if err := SendSMTP(ctx, acc, pass, fromEmail, rcpts, raw); err != nil {
 		if !isTransientNetworkError(err) {
 			return err
 		}
 		if qerr := e.store.EnqueueOutbox(ctx, OutboxItem{
-			ID: "ob-inv-" + randomHex(6), AccountID: acc.ID, FromEmail: org.Email, Recipients: rcpts,
+			ID: "ob-inv-" + randomHex(6), AccountID: acc.ID, FromEmail: fromEmail, Recipients: rcpts,
 			Subject: subject, Status: "queued", RawEML: raw, LastError: err.Error(),
 		}); qerr != nil {
 			return err
@@ -245,6 +256,70 @@ func (e *Engine) mailEventToAttendees(ctx context.Context, ev StoredEvent, metho
 	e.logActivity(postCtx, act)
 	e.emitMailSync(acc.ID)
 	return nil
+}
+
+// ownAttendee is the own entry among ev's attendees ("" Email when none).
+func (e *Engine) ownAttendee(ev StoredEvent, own map[string]bool) backend.EventAttendee {
+	for _, a := range ev.Attendees {
+		if own[strings.ToLower(a.Email)] {
+			return a
+		}
+	}
+	return backend.EventAttendee{}
+}
+
+// declineEvent tells the organizer of an invitation that the own address does not come: Google
+// records the answer and notifies the organizer itself, otherwise an iTIP REPLY (declined) goes
+// out from the own account. ev may be a single occurrence (occurrenceOf).
+func (e *Engine) declineEvent(ctx context.Context, cal StoredCalendar, ev StoredEvent) error {
+	own := e.ownEmailSet()
+	me := e.ownAttendee(ev, own)
+	// Google answers for invitations that came through Google (the Google account is invited);
+	// an invitation PostDive copied into Google from a mail is answered by mail like any other.
+	gAccount := strings.ToLower(strings.TrimSpace(e.loadConfig().Direct.GoogleCalendar.AccountEmail))
+	if cal.Source == "google" && gAccount != "" && e.ownAttendee(ev, map[string]bool{gAccount: true}).Email != "" {
+		me = e.ownAttendee(ev, map[string]bool{gAccount: true})
+		atts := make([]backend.EventAttendee, len(ev.Attendees))
+		copy(atts, ev.Attendees)
+		for i := range atts {
+			if strings.EqualFold(atts[i].Email, me.Email) {
+				atts[i].Status = "declined"
+			}
+		}
+		// Only the answer changes: a guest may not touch the rest of someone else's event.
+		return e.declineGoogle(ctx, cal, ev, atts)
+	}
+	org := parseAttendeeAddress(ev.Organizer)
+	if org.Email == "" {
+		return fmt.Errorf("der Termin nennt keinen Organisator")
+	}
+	var acc config.DirectAccount
+	name := ""
+	ok := false
+	if me.Email != "" {
+		acc, name, ok = e.accountForAddress(me.Email)
+	}
+	if !ok {
+		var err error
+		if acc, err = e.pickOutgoingAccount(""); err != nil {
+			return err
+		}
+		name = accountDisplayName(acc)
+		me = backend.EventAttendee{Email: acc.Email}
+	}
+	if me.Name != "" {
+		name = me.Name
+	}
+	request := buildEventsICS("", []StoredEvent{ev}, "REQUEST")
+	reply, _, summary, err := BuildICSRSVP(request, me.Email, name, "declined")
+	if err != nil {
+		return err
+	}
+	if summary == "" {
+		summary = ev.Title
+	}
+	return e.sendCalendarMail(ctx, acc, me.Email, name, []backend.EventAttendee{org}, "Abgesagt: "+summary,
+		fmt.Sprintf("Ich habe die Einladung „%s“ (%s) abgelehnt.", summary, inviteWhen(ev)), reply, "REPLY")
 }
 
 // occurrenceOf is the single occurrence recurrenceID of the series ev, for cancelling it.
@@ -350,7 +425,8 @@ func (e *Engine) applyICSReply(ctx context.Context, rawICS string) (ICSReplyResu
 	return res, true
 }
 
-// markNotifiable sets CanNotify on events with attendees that an own address organizes.
+// markNotifiable sets CanNotify on events with attendees that an own address organizes, and
+// CanDecline on writable invitations someone else organizes.
 func (e *Engine) markNotifiable(events []backend.CalendarEvent) {
 	var own map[string]bool
 	for i := range events {
@@ -361,6 +437,14 @@ func (e *Engine) markNotifiable(events []backend.CalendarEvent) {
 			own = e.ownEmailSet()
 		}
 		events[i].CanNotify = e.isOwnOrganizer(events[i].Organizer, own)
+	}
+	for i := range events {
+		if events[i].Organizer != "" && !events[i].ReadOnly {
+			if own == nil {
+				own = e.ownEmailSet()
+			}
+			events[i].CanDecline = !e.isOwnOrganizer(events[i].Organizer, own)
+		}
 	}
 }
 

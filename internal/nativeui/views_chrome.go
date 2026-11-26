@@ -45,7 +45,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 					a.renderCalendarFilterButton(c)
 				}
 			} else {
-				sf := ui.SearchField(c.Key("tb-mail-search"), &a.searchQuery).Placeholder(a.tr("Mails durchsuchen  ( / )", "Search mail  ( / )")).Grow(1).MinWidth(150).MaxWidth(560)
+				sf := ui.SearchField(c.Key("tb-mail-search"), &a.searchQuery).Placeholder(a.searchPlaceholder(true)).Grow(1).MinWidth(150).MaxWidth(560)
 				if a.focusSearch {
 					sf.Focus()
 					a.focusSearch = false

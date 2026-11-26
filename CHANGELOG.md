@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.49 (2026-11-26)
+
+### Suche: klar, wo gesucht wird
+- **Standard „Überall“:** Die Suche oben durchsucht alle Konten und Ordner – nicht mehr nur den Ordner, der links gerade offen ist.
+- **„Suchen in:“** über den Treffern wechselt mit einem Klick zwischen Überall, dem Konto und dem Ordner auf dem Bildschirm; die Wahl bleibt bis zum Neustart.
+- **Beschriftung:** Das Suchfeld sagt, wo es sucht („Alle Postfächer durchsuchen“, „In avono suchen“), die Liste zeigt „„wolfgang“ · überall“ mit der Zahl der Treffer. Trefferzeilen nennen Ordner und – bei mehreren Konten – das Konto.
+- **Server-Suche** folgt dem gewählten Bereich: bei „Überall“ alle Ordner aller Konten (ohne Papierkorb und Spam).
+
+### Kalender
+- **Einladungen anderer löschen mit Absage:** Beim Löschen einer angenommenen Einladung (auch eines einzelnen Serientermins) schickt PostDive auf Wunsch eine Absage an den Organisator – bei Google-Einladungen über Google, sonst als Kalender-Antwort per Mail. Ohne Haken verschwindet der Termin nur aus dem eigenen Kalender.
+- **Aufgeräumte Termindetails:** Doppelte Links (Outlook schreibt jeden Link zweimal) erscheinen nur noch einmal und ohne `<…>`, der Beitrittslink nicht zusätzlich in der Liste, ab fünf Links mit „+N weitere“. Ort, Organisator und Teilnehmer stehen jetzt vor den Links.
+
 ## 0.7.48 (2026-11-26)
 
 ### Antworten auf verschlüsselte Mails

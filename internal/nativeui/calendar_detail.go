@@ -66,6 +66,25 @@ func cleanEventFullText(raw string) string {
 
 // ExtractEventLinks finds unique safe http(s) links in ev.Location and ev.Description
 // (HTML anchors first, then plain-text / angle-bracketed URLs).
+// eventLinksCollapsed is how many links an event's details list before "+N more".
+const eventLinksCollapsed = 4
+
+// linkKey makes two spellings of the same link equal: host case, a trailing slash, the order of
+// the query, HTML entities and a fragment do not matter.
+func linkKey(raw string) string {
+	raw = strings.Trim(html.UnescapeString(strings.TrimSpace(raw)), "<>")
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return strings.ToLower(raw)
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if p, err := url.PathUnescape(path); err == nil {
+		path = p
+	}
+	q := u.Query().Encode()
+	return strings.ToLower(u.Host) + path + "?" + q
+}
+
 func ExtractEventLinks(ev backend.CalendarEvent) []ExtractedLink {
 	seen := make(map[string]bool)
 	var out []ExtractedLink
@@ -73,16 +92,18 @@ func ExtractEventLinks(ev backend.CalendarEvent) []ExtractedLink {
 		if len(out) >= 24 {
 			return
 		}
-		rawURL = strings.TrimSpace(rawURL)
+		rawURL = html.UnescapeString(strings.TrimSpace(rawURL))
 		rawURL = strings.Trim(rawURL, "<>")
 		if stripTrailingPunct {
 			rawURL = strings.TrimRight(rawURL, ".,;:!?)>]\"'")
 		}
-		if !isSafeWebURL(rawURL) || seen[rawURL] {
+		// Outlook writes each link twice (as a link and as "<https://…>" text): one is enough.
+		key := linkKey(rawURL)
+		if !isSafeWebURL(rawURL) || seen[key] {
 			return
 		}
-		seen[rawURL] = true
-		label = strings.Join(strings.Fields(strings.TrimSpace(label)), " ")
+		seen[key] = true
+		label = strings.Trim(strings.Join(strings.Fields(strings.TrimSpace(label)), " "), "<>")
 		if label == "" || strings.HasPrefix(strings.ToLower(label), "http://") || strings.HasPrefix(strings.ToLower(label), "https://") {
 			if prov := meetingProviderLabel(rawURL); prov != "" {
 				label = prov
@@ -214,19 +235,12 @@ func (a *App) renderEventDetails(c *ui.Context, ev backend.CalendarEvent, keyPre
 		})
 	}
 
-	if len(links) > 0 {
-		ui.Column(c).FillWidth().Gap(4).Children(func() {
-			ui.Text(c, a.tr("Links in diesem Termin:", "Links in this event:")).FontSize(11).Bold().TextColor(t.TextMuted)
-			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-				for i, lk := range links {
-					lkCopy := lk
-					primary := lkCopy.URL == joinURL && !showPrimaryJoin
-					if iconLabelBtn(c.Key(fmt.Sprintf("%s-lk-%d", keyPrefix, i)), iconExternal, lkCopy.Label, primary, lkCopy.URL).Clicked() {
-						_ = openExternalURL(lkCopy.URL)
-					}
-				}
-			})
-		})
+	// The join link has its own button: the list holds the others, the first few unless expanded.
+	var others []ExtractedLink
+	for _, lk := range links {
+		if joinURL == "" || linkKey(lk.URL) != linkKey(joinURL) || !showPrimaryJoin {
+			others = append(others, lk)
+		}
 	}
 
 	ui.Column(c.Key(keyPrefix + "-sel")).FillWidth().Gap(6).Selectable().Children(func() {
@@ -237,6 +251,37 @@ func (a *App) renderEventDetails(c *ui.Context, ev backend.CalendarEvent, keyPre
 			ui.Text(c, a.tr("Organisator: ", "Organizer: ")+org).FontSize(12).TextColor(t.TextMuted)
 		}
 		a.renderAttendees(c, keyPrefix+"-att", ev.Attendees, ev.ResponseStatus, true)
+	})
+
+	if len(others) > 0 {
+		if a.attExpanded == nil {
+			a.attExpanded = map[string]bool{}
+		}
+		linksKey := keyPrefix + "-links"
+		shown := others
+		if !a.attExpanded[linksKey] && len(others) > eventLinksCollapsed+1 {
+			shown = others[:eventLinksCollapsed]
+		}
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			ui.Text(c, a.tr("Links in diesem Termin:", "Links in this event:")).FontSize(11).Bold().TextColor(t.TextMuted)
+			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				for i, lk := range shown {
+					lkCopy := lk
+					primary := lkCopy.URL == joinURL && !showPrimaryJoin
+					if iconLabelBtn(c.Key(fmt.Sprintf("%s-lk-%d", keyPrefix, i)), iconExternal, lkCopy.Label, primary, lkCopy.URL).Clicked() {
+						_ = openExternalURL(lkCopy.URL)
+					}
+				}
+				if len(shown) < len(others) {
+					if ui.Button(c.Key(linksKey+"-more"), a.trf("+%d weitere", "+%d more", len(others)-len(shown))).Padding(3, 8).Clicked() {
+						a.attExpanded[linksKey] = true
+					}
+				}
+			})
+		})
+	}
+
+	ui.Column(c.Key(keyPrefix + "-desc")).FillWidth().Gap(6).Selectable().Children(func() {
 		if full := cleanEventFullText(ev.Description); full != "" {
 			ui.Column(c).FillWidth().Padding(10, 12).Radius(6).Background(t.Background).Border(1, t.Border).Children(func() {
 				ui.Text(c, full).FontSize(12).LineHeight(1.45).TextColor(t.Text)

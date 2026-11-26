@@ -159,3 +159,17 @@ func TestTeamsSelfAddressAndAllDayTimes(t *testing.T) {
 		t.Fatalf("all-day times: %v – %v", s, e)
 	}
 }
+
+func TestDeleteDialogOffersDeclineForInvitations(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.cfg.Language = "de"
+	app.RequestDeleteCalendarEvent(backend.CalendarEvent{ID: "e1", CalendarID: "c1", Title: "Refinement", Start: "2026-12-01T08:30:00Z", Organizer: "Olga <olga@example.org>", CanDecline: true})
+	if !app.calDelNotify {
+		t.Fatal("declining should be preselected")
+	}
+	tt := ui.NewTester(app.RenderMain, 1380, 900)
+	tt.Frame()
+	if !tt.HasText("Absage an den Organisator senden (Olga <olga@example.org>)") {
+		t.Fatalf("decline option missing; texts=%v", tt.Texts())
+	}
+}

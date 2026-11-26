@@ -337,9 +337,13 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						checked = a.CheckedMessageIDs()
 					}
 				}
+				searching := a.searchActive()
 				title := a.currentViewTitle()
+				if searching {
+					title = "„" + strings.TrimSpace(a.lastSearchQuery) + "“ · " + a.searchScopeIn()
+				}
 				ui.Text(c, title).FontSize(13).Bold().Grow(1).MinWidth(0).SingleLine()
-				if !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
+				if !searching && !a.readOnly && a.engineReady && (a.navID == "focus" || strings.HasPrefix(a.navID, "folder:")) {
 					hasUnread := a.navID == "focus" && a.unreadCount() > 0
 					if !hasUnread {
 						for _, m := range a.messages {
@@ -364,7 +368,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						}
 					}
 				}
-				if trashAcc := a.currentTrashAccountID(); trashAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+				if trashAcc := a.currentTrashAccountID(); !searching && trashAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
 					armed := a.direct.emptyTrashArmID == trashAcc && time.Since(a.direct.emptyTrashArmAt) < 5*time.Second
 					lbl := a.tr("Papierkorb leeren", "Empty Trash")
 					if armed {
@@ -383,7 +387,7 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						}
 					}
 				}
-				if spamAcc := a.currentSpamAccountID(); spamAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
+				if spamAcc := a.currentSpamAccountID(); !searching && spamAcc != "" && a.isDirectMode() && len(a.messages) > 0 && !a.readOnly {
 					armed := a.direct.emptySpamArmID == spamAcc && time.Since(a.direct.emptySpamArmAt) < 5*time.Second
 					lbl := a.tr("Spam leeren", "Empty Spam")
 					if armed {
@@ -402,8 +406,14 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 						}
 					}
 				}
-				ui.Text(c, a.trf("%d Mails", "%d emails", len(a.messages))).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
+				if searching {
+					ui.Text(c, a.trf("%d Treffer", "%d matches", len(a.messages))).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
+				} else {
+					ui.Text(c, a.trf("%d Mails", "%d emails", len(a.messages))).FontSize(11.5).TextColor(t.TextMuted).Shrink(0)
+				}
 			})
+
+			a.renderSearchScopeBar(c, "search-scope")
 
 			// Server-side IMAP full-text search bar (searches mail bodies not yet downloaded locally).
 			if q := strings.TrimSpace(a.searchQuery); q != "" && a.engineReady {
@@ -418,8 +428,8 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 							a.SearchMessagesOnServer(context.Background())
 						}
 					} else {
-						ui.Text(c, a.tr("Lokal gesucht (geladene Texte).", "Searched locally (downloaded bodies).")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
-						if iconLabelBtn(c.Key("srv-search-go"), iconSearch, a.tr("Auf Server suchen", "Search on Server"), false, a.tr("Gesamtes Postfach inkl. noch nicht geladener Mailtexte auf dem IMAP-Server durchsuchen", "Search entire mailbox including unfetched bodies on IMAP server")).Clicked() {
+						ui.Text(c, a.tr("Nur bereits geladene Mails durchsucht.", "Searched downloaded mail only.")).FontSize(11.5).TextColor(t.TextMuted).Grow(1).SingleLine()
+						if iconLabelBtn(c.Key("srv-search-go"), iconSearch, a.tr("Auch auf dem Server suchen", "Search the server too"), false, a.serverSearchTooltip()).Clicked() {
 							a.SearchMessagesOnServer(context.Background())
 						}
 					}
@@ -537,7 +547,9 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 			}
 
 			ls := a.ensureListState()
-			crossFolder := !strings.HasPrefix(a.navID, "folder:")
+			// Rows say where a mail lies when the list spans folders; across accounts, also which.
+			crossFolder := !strings.HasPrefix(a.navID, "folder:") || (a.searchActive() && a.effectiveSearchScope() != searchFolder)
+			crossAccount := len(a.accounts) > 1 && (a.selectedAccount == "" && !strings.HasPrefix(a.navID, "folder:") || a.searchActive() && a.effectiveSearchScope() == searchEverywhere)
 			outboundView := a.isCurrentViewOutbound()
 			showSnippet := a.cfg.App.EffectiveListSnippets()
 			listEl := ui.List(c, ls, len(a.messages), func(i int) {
@@ -637,7 +649,11 @@ func (a *App) renderMailWorkspace(c *ui.Context) {
 								threadBadge(c, m.ThreadCount)
 							}
 							if crossFolder && m.Folder != "" {
-								miniTag(c, m.Folder, t.TextMuted, t.Surface)
+								tag := m.Folder
+								if crossAccount && m.AccountID != "" {
+									tag += " · " + a.accountShortLabel(m.AccountID)
+								}
+								miniTag(c, tag, t.TextMuted, t.Surface)
 							}
 							if col := a.triageColumnFor(m.ID); col != "" {
 								miniTag(c, strings.ToUpper(col), t.Accent, withAlpha(t.Accent, 0.16))
@@ -2428,8 +2444,14 @@ func (a *App) renderCalDeleteModal(c *ui.Context) {
 					"This event is part of a series. Delete only this occurrence or the whole series?",
 				)).FontSize(12)
 			}
-			if ev.CanNotify {
+			switch {
+			case ev.CanNotify:
 				ui.Checkbox(c.Key("cd-notify"), &a.calDelNotify, a.trf("Absage an %d Teilnehmer senden", "Send a cancellation to %d attendees", len(ev.Attendees)))
+			case ev.CanDecline:
+				ui.Checkbox(c.Key("cd-notify"), &a.calDelNotify, a.trf("Absage an den Organisator senden (%s)", "Decline to the organizer (%s)", ev.Organizer))
+				if !a.calDelNotify {
+					ui.Text(c, a.tr("Der Termin verschwindet nur aus deinem Kalender; der Organisator erfährt nichts.", "The event only leaves your calendar; the organizer is not told.")).FontSize(11.5).TextColor(t.TextMuted)
+				}
 			}
 			if a.calDelError != "" {
 				ui.Text(c, a.calDelError).FontSize(12).TextColor(t.Danger)
