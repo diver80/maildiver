@@ -356,6 +356,9 @@ func composeEditorDocumentHTML(initialBodyHTML string, pal ComposeThemePalette, 
     background: var(--ed-bg); color: var(--ed-fg);
     font-size: 14px; line-height: 1.55; outline: none;
   }
+  /* The caret in the accent color: WebKit's default follows the text and goes nearly unseen on
+     dark themes, also where pasted or quoted HTML carries its own text color. */
+  #editor, #editor * { caret-color: var(--accent); }
   #editor p { margin: 0 0 0.75em 0; }
   #editor p:last-child, #editor [data-mdv-user="1"] > p:last-child { margin-bottom: 0; }
   #editor div:not([data-mdv-user]):not([data-mdv-sig]):not([data-mdv-fwd]) { margin: 0; }

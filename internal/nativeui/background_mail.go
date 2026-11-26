@@ -32,6 +32,12 @@ type backgroundMail interface {
 	MarkInboxSeen(ctx context.Context) error
 }
 
+// backgroundRunRecorder keeps the last background wake-up for the settings.
+type backgroundRunRecorder interface {
+	RecordBackgroundRun(ctx context.Context, at time.Time, runErr error) error
+	LastBackgroundRun(ctx context.Context) (mailengine.BackgroundRun, bool, error)
+}
+
 // backgroundCalendar is what the task needs of the engine for calendar reminders.
 type backgroundCalendar interface {
 	TakeDueEventReminders(ctx context.Context, now time.Time, within time.Duration, skipCalendars []string) ([]backend.CalendarEvent, error)
@@ -51,6 +57,7 @@ type workerPauser interface {
 func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 	pauser, _ := opts.Direct.(workerPauser)
 	mobile := isMobileOS()
+	s.app.bgRunsShown = mobile
 
 	var (
 		stateMu       sync.Mutex
@@ -103,12 +110,7 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		if !shouldRun {
 			stateMu.Unlock()
 			go applyWorkersState()
-			s.app.emitUpdate(func() {
-				s.app.networkOffline = isOffline
-				if isOffline {
-					s.app.clearTransientSyncErrors()
-				}
-			})
+			s.app.emitUpdate(func() { s.app.noteNetworkOffline(isOffline) })
 			return
 		}
 		if settle > 0 {
@@ -126,7 +128,7 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		// Immediately clear stale "no such host" / socket errors from the previous suspend/offline
 		// window and wait briefly for Android's netd / OS routing to unfreeze before dialing IMAP.
 		s.app.emitUpdate(func() {
-			s.app.networkOffline = false
+			s.app.noteNetworkOffline(false)
 			s.app.clearTransientSyncErrors()
 		})
 		if forceRecycle && settle > 0 {
@@ -237,7 +239,7 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		return
 	}
 
-	background.Handle(backgroundMailTask, func(c context.Context) error {
+	runTask := func(c context.Context) error {
 		if ext, ok := opts.Direct.(interface{ SyncBackgroundExtras(context.Context) }); ok {
 			ext.SyncBackgroundExtras(c)
 		}
@@ -265,6 +267,14 @@ func (s *desktopShell) setupBackgroundMail(ctx context.Context, opts Options) {
 		}
 		s.notifyBackgroundMail(c, msgs)
 		return nil
+	}
+	background.Handle(backgroundMailTask, func(c context.Context) error {
+		err := runTask(c)
+		if rec, ok := opts.Direct.(backgroundRunRecorder); ok {
+			// For the settings: shows whether Android still wakes the app, and how it went.
+			_ = rec.RecordBackgroundRun(context.WithoutCancel(c), time.Now(), err)
+		}
+		return err
 	})
 	mygo.App.WhenReady(func() {
 		go func() {

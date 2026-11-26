@@ -196,3 +196,38 @@ func TestRemindersUseDefaultSettingAndSkipDeclined(t *testing.T) {
 		t.Fatal("default off: new events start without a reminder")
 	}
 }
+
+func TestSettingsWarnWhenMacOSHidesNotifications(t *testing.T) {
+	if classifyMacNotifySettings(2, 0) != sysNotifyNoAlerts || classifyMacNotifySettings(1, 2) != sysNotifyDenied ||
+		classifyMacNotifySettings(2, 2) != sysNotifyAlerts || classifyMacNotifySettings(0, 0) != sysNotifyNotAsked {
+		t.Fatal("classifyMacNotifySettings")
+	}
+	app, _, _ := keymapApp(t)
+	app.cfg.Language = "de"
+	app.notifyEnabled = true
+	opened := ""
+	updates := make(chan func(), 4)
+	app.SetHooks(func(fn func()) { updates <- fn }, nil, nil, nil, nil)
+	app.SetSystemNotifyProbe(func() sysNotifyStatus { return sysNotifyNoAlerts },
+		func(focus bool) { opened = map[bool]string{false: "notifications", true: "focus"}[focus] })
+	app.OpenSettings()
+	tt := ui.NewTester(func(c *ui.Context) { app.renderSettingsBody(c) }, 900, 1400)
+	tt.Frame()
+	(<-updates)() // the probe's answer, on the UI thread
+	tt.Frame()
+	if !tt.HasText("macOS zeigt Mitteilungen von PostDive ohne Banner an (Stil „Ohne“): Termin-Erinnerungen gehen so unter. Stil „Hinweise“ wählen.") {
+		t.Fatalf("warning missing; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("Mitteilungseinstellungen öffnen"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if opened != "notifications" {
+		t.Fatalf("button should open the notification settings, got %q", opened)
+	}
+	app.sysNotify = sysNotifyAlerts
+	tt.Frame()
+	if tt.HasText("macOS zeigt Mitteilungen von PostDive ohne Banner an (Stil „Ohne“): Termin-Erinnerungen gehen so unter. Stil „Hinweise“ wählen.") {
+		t.Fatal("no warning once alerts show")
+	}
+}

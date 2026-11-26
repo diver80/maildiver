@@ -387,3 +387,13 @@ func TestComposeAIAssistReplaceUndoAndRender(t *testing.T) {
 		t.Fatalf("undoComposeAIApply did not restore previous draft: %q", app.composeBody)
 	}
 }
+
+func TestComposeEditorCaretUsesAccent(t *testing.T) {
+	doc := composeEditorDocumentHTML("<p>Hallo</p>", ComposeThemePalette{}, "de")
+	if !strings.Contains(doc, "#editor, #editor * { caret-color: var(--accent); }") {
+		t.Fatal("the editor caret should use the accent color")
+	}
+	if strings.Contains(doc, "%!") {
+		t.Fatal("format verbs broken in the editor document")
+	}
+}

@@ -1,122 +1,126 @@
-# Konten, Kalender & Kontakte einbinden
+# Connecting Mail, Calendars & Contacts
 
-Kurzer Überblick, wie du die gängigen Mail-Anbieter, Google und Microsoft/Outlook in PostDive
-einbindest. Alles liegt unter **Einstellungen (`⌘,`) → Konten**. Passwörter und Anmelde-Tokens
-speichert PostDive im Schlüsselbund des Systems.
+A short overview of how to connect common mail providers, Google and Microsoft/Outlook to
+PostDive. Everything lives under **Settings (`⌘,`) → Accounts**. PostDive keeps passwords and
+sign-in tokens in the system keychain.
 
-*A short setup guide (German) for mail providers, Google and Microsoft/Outlook in PostDive.*
+## At a glance
 
-## Auf einen Blick
-
-| Was | Weg in PostDive | Lesen | Schreiben | Aufwand |
+| What | How in PostDive | Read | Write | Effort |
 |---|---|---|---|---|
-| Mail bei IONOS, 1&1, GMX, WEB.DE, STRATO | Konto mit Anbieter-Vorlage, normales Passwort | ✓ | ✓ | gering |
-| Gmail | Konto „Gmail (App-Passwort)“ | ✓ | ✓ | gering |
-| iCloud Mail, Fastmail | Konto mit Vorlage, App-Passwort | ✓ | ✓ | gering |
-| Microsoft 365 / Outlook.com Mail | Konto „Microsoft 365 / Outlook (OAuth2)“ mit eigener App-Registrierung | ✓ | ✓ | hoch – oft nur mit IT |
-| Google Kalender & Kontakte | Einstellungen → Konten → Kalender → „Mit Google verbinden“ | ✓ | ✓ | mittel (einmalig) |
-| Google Kalender ohne Anmeldung | Geheime iCal-Adresse als Kalender-Abo | ✓ | – | gering |
-| Outlook-/Microsoft-365-Kalender | Veröffentlichter Kalender als Kalender-Abo | ✓ | – | gering, falls erlaubt |
-| Teams-Besprechung planen | Termin-Editor → „In Teams planen“ | – | über Teams | keiner |
-| Nextcloud, Fastmail, Radicale … | CalDAV & CardDAV | ✓ | ✓ | gering |
+| Mail at IONOS, 1&1, GMX, WEB.DE, STRATO | Account from a provider preset, regular password | ✓ | ✓ | low |
+| Gmail | Account with preset “Gmail (App-Passwort)” | ✓ | ✓ | low |
+| iCloud Mail, Fastmail | Account from a preset, app password | ✓ | ✓ | low |
+| Microsoft 365 / Outlook.com mail | Account “Microsoft 365 / Outlook (OAuth2)” with your own app registration | ✓ | ✓ | high, often needs IT |
+| Google Calendar & Contacts | Settings → Accounts → Calendar → “Connect Google Calendar” | ✓ | ✓ | medium (once) |
+| Google Calendar without signing in | Secret iCal address as a calendar subscription | ✓ | – | low |
+| Outlook / Microsoft 365 calendar | Published calendar as a calendar subscription | ✓ | – | low, if allowed |
+| Scheduling a Teams meeting | Event editor → “Plan in Teams” | – | in Teams | none |
+| Nextcloud, Fastmail, Radicale … | CalDAV & CardDAV | ✓ | ✓ | low |
 
-## Mail-Konten
+## Mail accounts
 
-**Einstellungen → Konten → E-Mail → „Neues IMAP/SMTP-Konto hinzufügen“**, dann unter *Anbieter* die passende
-Vorlage wählen. Sie füllt Server, Ports und Verschlüsselung aus; du gibst nur Adresse und Passwort
-ein. Benutzername ist immer die vollständige E-Mail-Adresse.
+**Settings → Accounts → Email → “Add New IMAP/SMTP Account”**, then pick the matching preset under
+*Provider*. It fills in servers, ports and encryption; you only enter address and password. The
+username is always the full email address.
 
-| Anbieter | Vorlage | IMAP | SMTP | Passwort |
+| Provider | Preset | IMAP | SMTP | Password |
 |---|---|---|---|---|
-| **IONOS** | IONOS | `imap.ionos.de` 993 (TLS) | `smtp.ionos.de` 465 (TLS) – 587 (STARTTLS) geht auch | Postfach-Passwort |
-| **1&1** | 1&1 | `imap.1und1.de` 993 (TLS) | `smtp.1und1.de` 587 (STARTTLS) | Postfach-Passwort |
-| **GMX** | GMX | `imap.gmx.net` 993 (TLS) | `mail.gmx.net` 587 (STARTTLS) | Konto-Passwort; IMAP-Zugriff vorher im GMX-Webmail freischalten |
-| **WEB.DE** | WEB.DE | `imap.web.de` 993 (TLS) | `smtp.web.de` 587 (STARTTLS) | Konto-Passwort; IMAP-Zugriff vorher im WEB.DE-Webmail freischalten |
-| **STRATO** | STRATO | `imap.strato.de` 993 (TLS) | `smtp.strato.de` 465 (TLS) | Postfach-Passwort |
-| **Gmail** | Gmail (App-Passwort) | `imap.gmail.com` 993 (TLS) | `smtp.gmail.com` 465 (TLS) | App-Passwort (Knopf „App-Passwort erstellen ↗“; braucht die Bestätigung in zwei Schritten) |
-| **iCloud Mail** | iCloud Mail | `imap.mail.me.com` 993 (TLS) | `smtp.mail.me.com` 587 (STARTTLS) | App-spezifisches Passwort aus dem Apple-Account |
-| **Fastmail** | Fastmail | `imap.fastmail.com` 993 (TLS) | `smtp.fastmail.com` 465 (TLS) | App-Passwort aus den Fastmail-Einstellungen |
-| **Microsoft 365 / Outlook.com** | Microsoft 365 / Outlook (OAuth2) | `outlook.office365.com` 993 (TLS) | `smtp.office365.com` 587 (STARTTLS) | kein Passwort – Anmeldung im Browser, siehe unten |
-| Andere | Benutzerdefiniert | laut Anbieter | laut Anbieter | – |
+| **IONOS** | IONOS | `imap.ionos.de` 993 (TLS) | `smtp.ionos.de` 465 (TLS); 587 (STARTTLS) works too | Mailbox password |
+| **1&1** | 1&1 | `imap.1und1.de` 993 (TLS) | `smtp.1und1.de` 587 (STARTTLS) | Mailbox password |
+| **GMX** | GMX | `imap.gmx.net` 993 (TLS) | `mail.gmx.net` 587 (STARTTLS) | Account password; enable IMAP access in GMX webmail first |
+| **WEB.DE** | WEB.DE | `imap.web.de` 993 (TLS) | `smtp.web.de` 587 (STARTTLS) | Account password; enable IMAP access in WEB.DE webmail first |
+| **STRATO** | STRATO | `imap.strato.de` 993 (TLS) | `smtp.strato.de` 465 (TLS) | Mailbox password |
+| **Gmail** | Gmail (App-Passwort) | `imap.gmail.com` 993 (TLS) | `smtp.gmail.com` 465 (TLS) | App password (button “Create App Password ↗”; needs 2-Step Verification) |
+| **iCloud Mail** | iCloud Mail | `imap.mail.me.com` 993 (TLS) | `smtp.mail.me.com` 587 (STARTTLS) | App-specific password from your Apple Account |
+| **Fastmail** | Fastmail | `imap.fastmail.com` 993 (TLS) | `smtp.fastmail.com` 465 (TLS) | App password from the Fastmail settings |
+| **Microsoft 365 / Outlook.com** | Microsoft 365 / Outlook (OAuth2) | `outlook.office365.com` 993 (TLS) | `smtp.office365.com` 587 (STARTTLS) | No password: sign-in in the browser, see below |
+| Others | Benutzerdefiniert / Custom | per provider | per provider | – |
 
-PostDive verbindet sich nur verschlüsselt (TLS oder STARTTLS). Umlaute im Passwort funktionieren.
-Klappt die Anmeldung nicht, schreibt PostDive ein Diagnose-Log ohne Passwörter, das du dem Support
-oder in einem Issue mitschicken kannst.
+PostDive only connects encrypted (TLS or STARTTLS). Passwords with umlauts work. If signing in
+fails, PostDive writes a diagnostic log without passwords that you can attach to a support request
+or an issue.
 
-**Weitere Adressen (Aliase):** Unter „▸ Erweiterte Einstellungen (Server, Signatur, Aliase…)“ eines
-Kontos lassen sich zusätzliche Absenderadressen mit eigenem Namen und eigener Signatur anlegen.
+**More addresses (aliases):** under “▸ Advanced settings (servers, signature, aliases…)” of an
+account you can add further sender addresses with their own name and signature.
 
 ### Microsoft 365 / Outlook.com
 
-Microsoft lässt Mail-Programme nur noch per OAuth-Anmeldung zu. Dafür braucht PostDive eine
-**eigene App-Registrierung** (Client-ID) in Microsoft Entra ID mit den Berechtigungen
-`IMAP.AccessAsUser.All`, `SMTP.Send` und `offline_access`. In Firmen darf das meist nur die IT; ohne
-Registrierung geht Microsoft-Mail in PostDive nicht. Kalender und Teams gehen trotzdem – siehe
-unten.
+Microsoft only lets mail apps in with an OAuth sign-in. For that, PostDive needs **its own app
+registration** (client ID) in Microsoft Entra ID with the permissions `IMAP.AccessAsUser.All`,
+`SMTP.Send` and `offline_access`. In companies usually only IT may create one; without a
+registration, Microsoft mail does not work in PostDive. Calendars and Teams still do, see below.
 
-## Google Kalender & Kontakte
+## Google Calendar & Contacts
 
-**Einstellungen → Konten → Kalender → Google Kalender (Bidirektional).** Einmalig richtest du ein
-eigenes Google-Cloud-Projekt ein; die Knöpfe in PostDive führen direkt zu den Seiten:
+**Settings → Accounts → Calendar → Google Calendar (Bidirectional).** You set up your own Google
+Cloud project once; the buttons in PostDive lead straight to the pages:
 
-1. **Calendar API aktivieren** (und **People API**, wenn du auch Google Kontakte willst).
-2. **OAuth-Client vom Typ „Desktop-App“** anlegen und Client-ID (und Client-Secret) in PostDive
-   eintragen.
-3. **Mit Google verbinden** – der Browser öffnet sich, du bestätigst den Zugriff.
+1. **Enable the Calendar API** (and the **People API** if you also want Google Contacts).
+2. **Create an OAuth client of type “Desktop app”** and enter its client ID (and client secret) in
+   PostDive.
+3. **Connect Google Calendar**: the browser opens and you confirm the access.
 
-Danach synchronisiert PostDive alle Google-Kalender in beide Richtungen; Termine mit Teilnehmern
-verschickt Google selbst, auf Wunsch mit Google-Meet-Link. Google Kontakte laufen über dieselbe
-Anmeldung (Kontakte → „Google Sync“).
+PostDive then syncs all Google calendars both ways; Google itself sends the invitations for events
+with attendees, with a Google Meet link if you like. Google Contacts use the same sign-in
+(Contacts → “Google Sync”).
 
-> **Tipp:** Steht das Projekt bei Google im Status „Testing“, laufen Anmeldungen nach 7 Tagen ab.
-> Für den eigenen Gebrauch das Projekt auf „In Produktion“ stellen (die Warnung „nicht verifiziert“
-> beim Anmelden ist dann normal) oder sich nach Ablauf neu verbinden.
+> **Tip:** while the Google project is in the “Testing” state, sign-ins expire after 7 days. For your
+> own use, switch the project to “In production” (the “unverified app” warning when signing in is
+> then expected), or reconnect when it expires.
 
-**Ohne Google-Cloud-Projekt, nur lesend:** In Google Kalender unter *Einstellungen → Kalender →
-Kalender einbinden* die **„Privatadresse im iCal-Format“** kopieren und in PostDive als
-Kalender-Abo eintragen (siehe unten).
+**Read-only, without a Google Cloud project:** in Google Calendar under *Settings → your calendar →
+Integrate calendar*, copy the **“Secret address in iCal format”** and add it to PostDive as a
+calendar subscription (see below).
 
-## Outlook- / Microsoft-365-Kalender
+## Outlook / Microsoft 365 calendar
 
-Ohne App-Registrierung geht das **nur lesend** über einen veröffentlichten Kalender:
+Without an app registration this works **read-only**, through a published calendar:
 
-1. Outlook im Web → **Einstellungen → Kalender → Freigegebene Kalender → Kalender veröffentlichen**.
-2. Kalender wählen, **„Kann alle Details anzeigen“** einstellen, veröffentlichen.
-3. Den **ICS-Link** kopieren und in PostDive als Kalender-Abo eintragen.
+1. Outlook on the web → **Settings → Calendar → Shared calendars → Publish a calendar**.
+2. Choose the calendar, set **“Can view all details”**, publish.
+3. Copy the **ICS link** and add it to PostDive as a calendar subscription.
 
-Microsoft aktualisiert veröffentlichte Kalender mit Verzögerung (oft einige Stunden). Fehlt der
-Punkt „Kalender veröffentlichen“, hat die Firma ihn abgeschaltet.
+Microsoft refreshes published calendars with a delay (often a few hours). If “Publish a calendar”
+is missing, your organization has switched it off.
 
-**Teams-Besprechungen** planst du im Termin-Editor mit **„In Teams planen“**: Teams öffnet sich mit
-Titel, Zeit, Notizen und Teilnehmern, gesendet wird in Teams. Mit **„Mich selbst einladen“** kommt
-die Einladung auch in dein PostDive-Postfach – „Zusagen“ legt die Besprechung in deinen
-PostDive-Kalender.
+**Teams meetings** are planned in the event editor with **“Plan in Teams”**: Teams opens with
+title, time, notes and attendees filled in, and sends from there. With **“Invite myself”** the
+invitation also reaches your PostDive inbox; “Accept” then puts the meeting into your PostDive
+calendar.
 
-## Kalender-Abos (ICS / webcal)
+## Calendar subscriptions (ICS / webcal)
 
-**Einstellungen → Konten → Kalender → „Kalender-Abo hinzufügen (https:// oder webcal://)“.**
-Geeignet für Google (Privatadresse), Outlook (veröffentlichter Kalender), Feiertage, Schulferien,
-Sport-Spielpläne. Abos sind schreibgeschützt; PostDive holt sie regelmäßig neu.
+**Settings → Accounts → Calendar → “Add Calendar Subscription (https:// or webcal://)”.**
+For Google (secret address), Outlook (published calendar), public holidays, school holidays or
+sports fixtures. Subscriptions are read-only; PostDive fetches them again regularly.
 
 ## CalDAV & CardDAV
 
-Für Kalender und Adressbücher von Nextcloud, Fastmail, Radicale und anderen CalDAV-/CardDAV-
-Servern: **Einstellungen → Konten → Kalender → CalDAV & CardDAV**. Server-Adresse, Benutzername und
-(App-)Passwort eintragen; PostDive findet die Kalender und Adressbücher selbst und schreibt
-Änderungen zurück.
+For calendars and address books on Nextcloud, Fastmail, Radicale and other CalDAV/CardDAV servers:
+**Settings → Accounts → Calendar → CalDAV & CardDAV**. Enter server address, username and (app)
+password; PostDive finds the calendars and address books itself and writes changes back.
 
-## Einladungen verschicken
+## Sending invitations
 
-| Kalender | Wer verschickt die Einladung? |
+| Calendar | Who sends the invitation? |
 |---|---|
-| Google Kalender | Google selbst (auf Wunsch mit Meet-Link) |
-| Lokaler Kalender, CalDAV | PostDive als Kalender-Mail über dein Mail-Konto (z. B. IONOS) |
-| Teams | Teams, nach „In Teams planen“ |
+| Google Calendar | Google itself (with a Meet link if you like) |
+| Local calendar, CalDAV | PostDive, as a calendar mail through your mail account (e.g. IONOS) |
+| Teams | Teams, after “Plan in Teams” |
 
-Antworten der Teilnehmer trägt PostDive beim Termin ein, sobald du die Antwort-Mail öffnest.
+PostDive records the attendees' answers with the event once you open the reply mail.
 
-## Umzug von Thunderbird & auf weitere Geräte
+## Notifications & reminders (macOS)
 
-- **Thunderbird-Import** (Einstellungen → Konten → TB-Import): übernimmt Konten, Signaturen,
-  Kalender, Kontakte und Filterregeln, nur lesend.
-- **Weiteres Gerät / Android:** Konten per verschlüsseltem QR-Code vom Computer übernehmen.
+Event reminders and new mail show as system notifications. macOS decides how they appear: under
+**System Settings → Notifications → PostDive**, choose the style **“Alerts”** so reminders stay on
+screen until dismissed (banners disappear after a few seconds). While a **Focus** is on, macOS only
+shows notifications of the apps that Focus allows. **Settings → General → Notifications** in
+PostDive warns when macOS hides its notifications and opens both settings.
+
+## Moving from Thunderbird & to more devices
+
+- **Thunderbird import** (Settings → Accounts → TB Import): takes over accounts, signatures,
+  calendars, contacts and filter rules, read-only.
+- **Another device / Android:** take over accounts from the computer by encrypted QR code.

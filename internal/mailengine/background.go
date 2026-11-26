@@ -253,3 +253,42 @@ func (s *Store) saveRemindedEvents(ctx context.Context, set map[string]int64, no
 	_, err = s.db.ExecContext(ctx, `INSERT INTO kv_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, remindedEventsKey, string(b))
 	return err
 }
+
+// backgroundRunKey holds the last background wake-up (phones): when it ran and how it ended.
+const backgroundRunKey = "background_run"
+
+// BackgroundRun is the last background wake-up: when it ran and its error ("" when it went fine).
+type BackgroundRun struct {
+	At    time.Time `json:"at"`
+	Error string    `json:"error,omitempty"`
+}
+
+// RecordBackgroundRun remembers a background wake-up, so the settings can show whether the system
+// still runs them.
+func (e *Engine) RecordBackgroundRun(ctx context.Context, at time.Time, runErr error) error {
+	run := BackgroundRun{At: at.UTC()}
+	if runErr != nil {
+		run.Error = runErr.Error()
+	}
+	b, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	_, err = e.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv_meta(k, v) VALUES(?, ?)`, backgroundRunKey, string(b))
+	return err
+}
+
+// LastBackgroundRun returns the last background wake-up; ok is false when there was none yet.
+func (e *Engine) LastBackgroundRun(ctx context.Context) (run BackgroundRun, ok bool, err error) {
+	var v string
+	switch err = e.store.db.QueryRowContext(ctx, `SELECT v FROM kv_meta WHERE k=?`, backgroundRunKey).Scan(&v); {
+	case errors.Is(err, sql.ErrNoRows):
+		return run, false, nil
+	case err != nil:
+		return run, false, err
+	}
+	if err := json.Unmarshal([]byte(v), &run); err != nil {
+		return run, false, err
+	}
+	return run, true, nil
+}

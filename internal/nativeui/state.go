@@ -326,6 +326,15 @@ type App struct {
 	appVersion      string
 	engineReady     bool
 	networkOffline  bool
+
+	netOfflineGen int // noteNetworkOffline: a newer report cancels a pending "offline"
+	// The last background wake-up, for the settings on phones (background_status.go).
+	bgRunsShown bool
+	bgRun       mailengine.BackgroundRun
+	bgRunFound  bool
+	bgRunAt     time.Time
+	bgRunBusy   bool
+
 	readOnly        bool
 	lastSync        time.Time
 	lastError       string
@@ -377,6 +386,14 @@ type App struct {
 	showCopilot        bool
 	hideSidebar        bool
 	notifyEnabled      bool
+
+	// How macOS shows PostDive's notifications, for the settings (notify_settings.go).
+	sysNotify      sysNotifyStatus
+	sysNotifyAt    time.Time
+	sysNotifyBusy  bool
+	sysNotifyProbe func() sysNotifyStatus
+	sysNotifyOpen  func(focus bool)
+
 	sidebarSplit       float32
 	mailSplit          float32
 	copilotSplit       float32

@@ -677,6 +677,7 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 				a.persistLayoutPrefs()
 			}
 		})
+		a.renderSystemNotifyHint(c)
 		field("set-remind", a.tr("Termin-Erinnerung", "Event reminder"), func() {
 			// Applies at once: events without a reminder of their own (Google, subscriptions) and
 			// new events use it.
@@ -708,6 +709,7 @@ func (a *App) renderSettingsBody(c *ui.Context) {
 			}
 		})
 		note(a.tr("Gilt für Termine ohne eigene Erinnerung (z. B. Google und Kalender-Abos) und als Vorgabe für neue Termine. Abgesagte Termine erinnern nicht.", "Applies to events without a reminder of their own (e.g. Google and subscriptions) and as the preset for new events. Declined events do not remind."), t.TextMuted)
+		a.renderBackgroundRunStatus(c, field)
 
 		a.settingsSection(c, a.tr("Lesen", "Reading"))
 		field("set-read", a.tr("Als gelesen markieren", "Mark as read"), func() {

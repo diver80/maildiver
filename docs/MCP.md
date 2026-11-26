@@ -2,11 +2,9 @@
 
 Connect external AI agents (**Claude Code**, **Claude Desktop**, **Antigravity**, **T3 Code**, **Cursor**, **Windsurf**, etc.) directly to your local PostDive mailbox, calendar, contacts, and triage state via the **Model Context Protocol (MCP)** over local **stdio** — zero open network ports, zero separate daemon, and your IMAP passwords / OAuth tokens never leave PostDive's OS Keychain.
 
-*(Deutsche Version weiter unten / German guide below.)*
-
 ---
 
-## Quick Setup (EN)
+## Quick Setup
 
 ### 1. Claude Code (CLI)
 
@@ -69,25 +67,3 @@ You can also copy this snippet directly inside **PostDive → Settings (`⌘,`) 
 - **Respects `mailbox.readOnly`:** If `mailbox.readOnly` is `true` in `config.json`, write tools are blocked even if `--allow-drafts` / `--allow-writes` is passed.
 - **Prompt-injection boundary:** Every mail, calendar, contact, and triage payload is wrapped in `<untrusted_...>` tags and size-capped (UTF-8 safe).
 - **Safe coexistence with the desktop app:** `postdive --mcp` does not start a GUI or duplicate IMAP IDLE loops and shares `postdive.db` cleanly via SQLite WAL + `busy_timeout`.
-
----
-
-## Kurzanleitung (DE)
-
-Mit `postdive --mcp` stellt PostDive einen lokalen **Model-Context-Protocol-(MCP)-Server über stdio** bereit – direkt aus demselben Binary, ohne offenen Port und ohne dass externe Agenten Zugriff auf deine IMAP-Passwörter oder OAuth-Tokens bekommen.
-
-### Einrichtung
-
-1. **In PostDive:** Öffne **Einstellungen (`⌘,`) → KI & Sync → Lokaler MCP-Server**, wähle den gewünschten Modus (**Nur Lesen**, **+ Entwürfe** oder **+ Kalender & Sortieren**) und klicke auf **MCP-Config kopieren** oder **Claude-CLI-Befehl kopieren**.
-2. **Per Claude Code CLI:**
-   ```bash
-   claude mcp add postdive -- postdive --mcp
-   # oder mit Entwurfserlaubnis (sendet niemals):
-   claude mcp add postdive -- postdive --mcp --allow-drafts
-   ```
-
-### Sicherheits-Leitplanken
-- **Standardmäßig strikt Read-Only** (`--mcp`), Schreibfunktionen nur per explizitem Opt-in (`--allow-drafts` / `--allow-writes`).
-- **Niemals Senden oder endgültig Löschen** per MCP.
-- **Verschlüsselte S/MIME- & OpenPGP-Mails werden über MCP niemals entschlüsselt.**
-- Alle Mail-, Kalender- und Kontaktdaten werden zum Schutz vor Prompt-Injection in `<untrusted_...>`-Blöcken gekapselt.

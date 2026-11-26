@@ -213,6 +213,9 @@ func (s *desktopShell) ready(opts Options) {
 		func() { s.hideFlyout() },
 		func(item AlertItem) { s.sendNativeNotification(item) },
 	)
+	if runtime.GOOS == "darwin" && !isMobile && mygo.NotificationsSupported() {
+		s.app.SetSystemNotifyProbe(macNotifyStatus, openMacNotifySettings)
+	}
 	if !isMobile {
 		s.app.SetAuxWindowHook(func() {
 			mygo.RunOnMain(func() { s.syncAuxWindows() })

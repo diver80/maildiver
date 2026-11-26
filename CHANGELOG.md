@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.51 (2026-11-26)
+
+*From this release on, the changelog is written in English.*
+
+### Notifications
+- **Warning when macOS hides PostDive's notifications:** Settings → General → Notifications now says when macOS blocks them or shows them with the style “None” (no banner, so event reminders go unnoticed), and suggests the style “Alerts”. Buttons open PostDive's page in System Settings → Notifications and the Focus settings; a note explains that a Focus only shows notifications of the apps it allows.
+
+### Android
+- **No more “Offline” flash on wake:** Android cuts sleeping apps off the network and reports it as they wake. The offline banner now shows only when the network stays away for more than 3 seconds.
+- **“Background check” in the settings:** Settings → General → Notifications shows when Android last woke PostDive to check for mail and how it went, with a hint to set the battery use to “Unrestricted” when it never or rarely runs.
+
+### Compose
+- **Visible caret:** The caret in the mail editor uses the accent color; on dark themes the default was barely visible, especially in quoted or pasted text.
+
+### Documentation
+- **docs/ in English:** setup guide, milestones and MCP guide are in English now; README and website stay bilingual (DE/EN). The setup guide has a section on macOS notifications and Focus.
+
 ## 0.7.50 (2026-11-26)
 
 ### Termin-Erinnerungen
