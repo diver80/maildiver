@@ -574,6 +574,9 @@ func (a *App) LoadPreviewURL(rawURL, ruleName string) {
 // rather than open/xdg-open.
 func isMobileOS() bool { return runtime.GOOS == "android" || runtime.GOOS == "ios" }
 
+// openExternalURLFn is replaceable in tests to assert link clicks without spawning a browser.
+var openExternalURLFn = openExternalURL
+
 func openExternalURL(rawURL string) error {
 	trimmed := strings.TrimSpace(rawURL)
 	if !isSafeWebURL(trimmed) {

@@ -461,3 +461,124 @@ func TestCommaDisplayNameAndEXDATEAndFTSQuery(t *testing.T) {
 		t.Fatalf("buildFTSQuery = %q", q)
 	}
 }
+
+func TestForwardInlineICSInvitationEndToEnd(t *testing.T) {
+	smtp := startFakeSMTP(t)
+	eng := newInviteTestEngine(t, smtp.addr)
+	ctx := context.Background()
+
+	// Exchange/Teams-style invitation: text/calendar; method=REQUEST inside multipart/alternative
+	// with NO Content-Disposition: attachment and NO filename.
+	ics := strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Microsoft Corporation//Outlook 16.0//EN",
+		"METHOD:REQUEST",
+		"BEGIN:VEVENT",
+		"UID:teams-fwd-1@example.org",
+		"DTSTART:20261127T120000Z",
+		"DTEND:20261127T123000Z",
+		"SUMMARY:RGMH integration",
+		"LOCATION:Microsoft Teams-Besprechung",
+		"ORGANIZER;CN=Dominik:mailto:dominik@example.org",
+		"ATTENDEE;CN=Ich;PARTSTAT=NEEDS-ACTION:mailto:ich@example.org",
+		"END:VEVENT",
+		"END:VCALENDAR",
+	}, "\r\n") + "\r\n"
+
+	origRaw := "From: Dominik <dominik@example.org>\r\n" +
+		"To: ich@example.org\r\n" +
+		"Subject: RGMH integration\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"alt-orig\"\r\n\r\n" +
+		"--alt-orig\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"Microsoft Teams-Besprechung\r\n" +
+		"--alt-orig\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<p>Microsoft Teams-Besprechung</p>\r\n" +
+		"--alt-orig\r\n" +
+		"Content-Type: text/calendar; charset=utf-8; method=REQUEST\r\n\r\n" +
+		ics +
+		"--alt-orig--\r\n"
+
+	parsedOrig, err := ParseRawMessage([]byte(origRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsedOrig.Attachments) != 0 {
+		t.Fatalf("expected inline text/calendar to have 0 regular attachments, got %+v", parsedOrig.Attachments)
+	}
+	if strings.TrimSpace(parsedOrig.ICSBody) == "" {
+		t.Fatal("expected parsedOrig.ICSBody to be populated")
+	}
+
+	// Store the source message in SQLite, then forward it with virtual PartName="ics".
+	if err := eng.store.UpsertMessage(ctx, StoredMessage{
+		ID:          "m-fwd-ics",
+		AccountID:   "acc-1",
+		FolderID:    "acc-1:INBOX",
+		FolderPath:  "INBOX",
+		MessageID:   "m-fwd-ics@example.org",
+		Subject:     "RGMH integration",
+		From:        "Dominik <dominik@example.org>",
+		To:          []string{"ich@example.org"},
+		DateISO:     "2026-11-27T11:31:00Z",
+		DateUnix:    1795692660,
+		BodyText:    parsedOrig.BodyText,
+		BodyHTML:    parsedOrig.BodyHTML,
+		BodyFetched: true,
+		HasICS:      true,
+		ICSBody:     parsedOrig.ICSBody,
+		RawEML:      []byte(origRaw),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = eng.Call(ctx, "compose.send", backend.ComposeRequest{
+		AccountID:        "acc-1",
+		To:               []string{"kollege@example.org"},
+		Subject:          "Fwd: RGMH integration",
+		Body:             "Bitte teilnehmen.\n\nMicrosoft Teams-Besprechung",
+		BodyHTML:         "<p>Bitte teilnehmen.</p><p>Microsoft Teams-Besprechung</p>",
+		ReplyToMessageID: "m-fwd-ics",
+		ReplyType:        "forward",
+		SourceAttachments: []backend.SourceAttachment{
+			{MessageID: "m-fwd-ics", PartName: "ics", Name: "invite.ics"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compose.send forward failed: %v", err)
+	}
+	mails := smtp.mails()
+	if len(mails) != 1 {
+		t.Fatalf("expected 1 forwarded mail, got %d", len(mails))
+	}
+	sentRaw := mails[0].data
+	// Must include inline iTIP part (for Outlook/Exchange/Gmail) AND invite.ics attachment.
+	if !strings.Contains(sentRaw, "Content-Type: text/calendar; charset=utf-8; method=REQUEST\r\n") {
+		t.Fatalf("expected inline iTIP text/calendar alternative in forwarded MIME:\n%s", sentRaw)
+	}
+	if !strings.Contains(sentRaw, `filename=invite.ics`) && !strings.Contains(sentRaw, `filename="invite.ics"`) {
+		t.Fatalf("expected invite.ics attachment in forwarded MIME:\n%s", sentRaw)
+	}
+
+	// Re-parse the forwarded email and verify the recipient gets both text and full invitation.
+	reParsed, err := ParseRawMessage([]byte(sentRaw))
+	if err != nil {
+		t.Fatalf("ParseRawMessage on forwarded mail failed: %v", err)
+	}
+	if !strings.Contains(reParsed.BodyText, "Microsoft Teams-Besprechung") {
+		t.Fatalf("forwarded plain text missing: %q", reParsed.BodyText)
+	}
+	if !strings.Contains(reParsed.ICSBody, "UID:teams-fwd-1@example.org") || ICSMethod(reParsed.ICSBody) != "REQUEST" {
+		t.Fatalf("forwarded ICSBody missing or invalid: %q", reParsed.ICSBody)
+	}
+	evs, err := ParseICS(LocalCalendarID, "Persönlich", false, strings.NewReader(reParsed.ICSBody))
+	if err != nil || len(evs) != 1 || evs[0].Title != "RGMH integration" || evs[0].EndUnix-evs[0].StartUnix != 1800 {
+		t.Fatalf("forwarded ICS event did not round-trip cleanly: %+v err=%v", evs, err)
+	}
+	if len(reParsed.Attachments) != 1 || reParsed.Attachments[0].Name != "invite.ics" {
+		t.Fatalf("expected 1 invite.ics attachment in forwarded mail, got %+v", reParsed.Attachments)
+	}
+}

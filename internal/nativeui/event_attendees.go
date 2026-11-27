@@ -386,8 +386,8 @@ func (a *App) renderICSNoticeBanner(c *ui.Context, inv *backend.CalendarEvent) {
 				ui.Text(c, title).FontSize(12.5).Bold().Selectable()
 			}
 			meta := line
-			if inv.Start != "" {
-				meta += " · " + formatDateTimeLang(inv.Start, a.uiLang())
+			if when := formatInviteWhenLang(inv.AllDay, inv.Start, inv.End, a.uiLang()); when != "" {
+				meta += " · " + when
 			}
 			ui.Text(c, meta).FontSize(11.5).TextColor(t.TextMuted).Selectable()
 		})

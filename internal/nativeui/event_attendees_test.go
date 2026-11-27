@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,5 +230,141 @@ func TestSettingsWarnWhenMacOSHidesNotifications(t *testing.T) {
 	tt.Frame()
 	if tt.HasText("macOS zeigt Mitteilungen von PostDive ohne Banner an (Stil „Ohne“): Termin-Erinnerungen gehen so unter. Stil „Hinweise“ wählen.") {
 		t.Fatal("no warning once alerts show")
+	}
+}
+
+func TestFormatInviteWhenLang(t *testing.T) {
+	loc := time.Local
+	ts := func(y int, m time.Month, d, hh, mm int) string {
+		return time.Date(y, m, d, hh, mm, 0, 0, loc).Format(time.RFC3339)
+	}
+	cases := []struct {
+		name   string
+		allDay bool
+		start  string
+		end    string
+		lang   string
+		want   string
+	}{
+		{"en 30min", false, ts(2026, 11, 27, 13, 0), ts(2026, 11, 27, 13, 30), "en", "2026-11-27 13:00–13:30 (30 min)"},
+		{"de 30min", false, ts(2026, 11, 27, 13, 0), ts(2026, 11, 27, 13, 30), "de", "27.11.2026 13:00–13:30 (30 Min.)"},
+		{"en 1h", false, ts(2026, 11, 27, 14, 0), ts(2026, 11, 27, 15, 0), "en", "2026-11-27 14:00–15:00 (1 h)"},
+		{"de 1h30", false, ts(2026, 11, 27, 14, 0), ts(2026, 11, 27, 15, 30), "de", "27.11.2026 14:00–15:30 (1 Std. 30 Min.)"},
+		{"en cross-day", false, ts(2026, 11, 27, 22, 0), ts(2026, 11, 28, 1, 0), "en", "2026-11-27 22:00 – 2026-11-28 01:00 (3 h)"},
+		{"en missing end", false, ts(2026, 11, 27, 13, 0), "", "en", "2026-11-27 13:00"},
+		{"en all-day single", true, "2026-11-27", "2026-11-28", "en", "2026-11-27 · All day"},
+		{"de all-day single", true, "2026-11-27", "2026-11-28", "de", "27.11.2026 · Ganztägig"},
+		{"en all-day multi", true, "2026-11-27", "2026-11-30", "en", "2026-11-27 – 2026-11-29 (3 days)"},
+		{"de all-day multi", true, "2026-11-27", "2026-11-30", "de", "27.11.2026 – 29.11.2026 (3 Tage)"},
+	}
+	for _, tc := range cases {
+		if got := formatInviteWhenLang(tc.allDay, tc.start, tc.end, tc.lang); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestICSBannerShowsTimeRangeAndDuration(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.storeLang("en")
+	start := time.Date(2026, 11, 27, 13, 0, 0, 0, time.Local).Format(time.RFC3339)
+	end := time.Date(2026, 11, 27, 13, 30, 0, 0, time.Local).Format(time.RFC3339)
+	msg := &backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{ID: "m-inv-dur", Subject: "RGMH integration"},
+		HasICS:        true,
+		ICSInvite: &backend.CalendarEvent{
+			Title:     "RGMH integration",
+			Start:     start,
+			End:       end,
+			Location:  "Microsoft Teams-Besprechung",
+			Organizer: "Dominik <dominik@example.org>",
+		},
+	}
+	tt := ui.NewTester(func(c *ui.Context) { app.renderICSBanner(c, msg) }, 900, 300)
+	tt.Frame()
+	wantMeta := "2026-11-27 13:00–13:30 (30 min) · Microsoft Teams-Besprechung · Organizer: Dominik <dominik@example.org>"
+	if !tt.HasText(wantMeta) {
+		t.Fatalf("expected invitation banner metadata %q; texts=%v", wantMeta, tt.Texts())
+	}
+
+	// REPLY/CANCEL notice banner should also display the end time & duration.
+	cancelMsg := &backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{ID: "m-inv-cancel", Subject: "Cancelled"},
+		HasICS:        true,
+		ICSInvite: &backend.CalendarEvent{
+			Title:  "RGMH integration",
+			Method: "CANCEL",
+			Start:  start,
+			End:    end,
+		},
+	}
+	tt2 := ui.NewTester(func(c *ui.Context) { app.renderICSBanner(c, cancelMsg) }, 900, 300)
+	tt2.Frame()
+	wantCancel := "The organizer cancelled this event. · 2026-11-27 13:00–13:30 (30 min)"
+	if !tt2.HasText(wantCancel) {
+		t.Fatalf("expected cancel notice metadata %q; texts=%v", wantCancel, tt2.Texts())
+	}
+}
+
+func TestForwardPreservesInlineICSInvitation(t *testing.T) {
+	app, _, _ := keymapApp(t)
+	app.storeLang("de")
+	start := time.Date(2026, 11, 27, 13, 0, 0, 0, time.Local).Format(time.RFC3339)
+	end := time.Date(2026, 11, 27, 13, 30, 0, 0, time.Local).Format(time.RFC3339)
+	msg := &backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{
+			ID:      "m-teams-invite",
+			Subject: "RGMH integration",
+			From:    "Dominik <dominik@example.org>",
+			To:      []string{"ich@example.org"},
+			Date:    start,
+		},
+		BodyText: "Microsoft Teams-Besprechung",
+		BodyHtml: "<p>Microsoft Teams-Besprechung</p>",
+		HasICS:   true,
+		ICSInvite: &backend.CalendarEvent{
+			Title:    "RGMH integration",
+			Start:    start,
+			End:      end,
+			Location: "Microsoft Teams-Besprechung",
+		},
+		// Exchange/Teams sends text/calendar as inline multipart/alternative, so Attachments is empty.
+		Attachments: nil,
+	}
+	app.OpenComposeForward(msg)
+	if len(app.composeSourceAttachments) != 1 || app.composeSourceAttachments[0].PartName != "ics" || app.composeSourceAttachments[0].Name != "invite.ics" {
+		t.Fatalf("expected carried-over virtual ics attachment, got %+v", app.composeSourceAttachments)
+	}
+	if !strings.Contains(app.composeBody, "Termin: 27.11.2026 13:00–13:30 (30 Min.)") {
+		t.Fatalf("expected invitation time/duration in forwarded body, got %q", app.composeBody)
+	}
+	if !strings.Contains(app.composeBody, "Ort: Microsoft Teams-Besprechung") {
+		t.Fatalf("expected invitation location in forwarded body, got %q", app.composeBody)
+	}
+
+	// If the mail already has an explicit .ics attachment, do not duplicate it.
+	msgWithAtt := *msg
+	msgWithAtt.Attachments = []backend.Attachment{{Name: "meeting.ics", ContentType: "text/calendar", PartName: "2"}}
+	app.OpenComposeForward(&msgWithAtt)
+	if len(app.composeSourceAttachments) != 1 || app.composeSourceAttachments[0].Name != "meeting.ics" || app.composeSourceAttachments[0].PartName != "2" {
+		t.Fatalf("expected existing .ics attachment without duplication, got %+v", app.composeSourceAttachments)
+	}
+
+	// Encrypted invite whose decryption failed must NOT carry over the invite.
+	encFail := *msg
+	encFail.Security = backend.MessageSecurity{Encrypted: true, Decryption: "failed"}
+	app.OpenComposeForward(&encFail)
+	if len(app.composeSourceAttachments) != 0 {
+		t.Fatalf("failed-decryption encrypted invite must not carry over attachments: %+v", app.composeSourceAttachments)
+	}
+
+	// Successfully decrypted encrypted invite marks composeHasDecrypted = true.
+	encOK := *msg
+	encOK.BodyText = ""
+	encOK.BodyHtml = ""
+	encOK.Security = backend.MessageSecurity{Encrypted: true, Decryption: "success"}
+	app.OpenComposeForward(&encOK)
+	if !app.composeHasDecrypted {
+		t.Fatal("expected composeHasDecrypted=true when forwarding a decrypted encrypted invitation")
 	}
 }

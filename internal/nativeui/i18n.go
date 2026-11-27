@@ -235,6 +235,78 @@ func formatEventRangeLang(evAllDay bool, startRaw, endRaw, lang string) string {
 	return sl + " – " + e.Local().Format("15:04")
 }
 
+func formatDurationLang(d time.Duration, lang string) string {
+	totalMin := int((d + 30*time.Second) / time.Minute)
+	if totalMin < 1 {
+		return trLang(lang, "< 1 Min.", "< 1 min")
+	}
+	if totalMin >= 24*60 && totalMin%(24*60) == 0 {
+		days := totalMin / (24 * 60)
+		if days == 1 {
+			return trLang(lang, "1 Tag", "1 day")
+		}
+		return fmt.Sprintf("%d %s", days, trLang(lang, "Tage", "days"))
+	}
+	hours := totalMin / 60
+	mins := totalMin % 60
+	if hours == 0 {
+		return fmt.Sprintf("%d %s", mins, trLang(lang, "Min.", "min"))
+	}
+	if mins == 0 {
+		return fmt.Sprintf("%d %s", hours, trLang(lang, "Std.", "h"))
+	}
+	return fmt.Sprintf("%d %s %d %s", hours, trLang(lang, "Std.", "h"), mins, trLang(lang, "Min.", "min"))
+}
+
+// formatInviteWhenLang formats an invitation's date, time range, and duration in local time.
+func formatInviteWhenLang(evAllDay bool, startRaw, endRaw, lang string) string {
+	if startRaw == "" {
+		return ""
+	}
+	st, err := parseEventTime(startRaw)
+	if err != nil {
+		return startRaw
+	}
+	st = st.Local()
+	dateFmt := "02.01.2006"
+	if lang == "en" {
+		dateFmt = "2006-01-02"
+	}
+	if evAllDay {
+		sd := time.Date(st.Year(), st.Month(), st.Day(), 0, 0, 0, 0, time.Local)
+		if endRaw != "" {
+			if et, err := parseEventTime(endRaw); err == nil {
+				et = et.Local()
+				sdUTC := time.Date(st.Year(), st.Month(), st.Day(), 0, 0, 0, 0, time.UTC)
+				edUTC := time.Date(et.Year(), et.Month(), et.Day(), 0, 0, 0, 0, time.UTC)
+				if days := int(edUTC.Sub(sdUTC) / (24 * time.Hour)); days > 1 {
+					lastDay := sd.AddDate(0, 0, days-1)
+					return fmt.Sprintf("%s – %s (%d %s)", sd.Format(dateFmt), lastDay.Format(dateFmt), days, trLang(lang, "Tage", "days"))
+				}
+			}
+		}
+		return sd.Format(dateFmt) + " · " + trLang(lang, "Ganztägig", "All day")
+	}
+	startStr := st.Format(dateFmt + " 15:04")
+	if endRaw == "" {
+		return startStr
+	}
+	et, err := parseEventTime(endRaw)
+	if err != nil {
+		return startStr
+	}
+	et = et.Local()
+	dur := et.Sub(st)
+	if dur <= 0 {
+		return startStr
+	}
+	durStr := formatDurationLang(dur, lang)
+	if st.Year() == et.Year() && st.Month() == et.Month() && st.Day() == et.Day() {
+		return fmt.Sprintf("%s–%s (%s)", startStr, et.Format("15:04"), durStr)
+	}
+	return fmt.Sprintf("%s – %s (%s)", startStr, et.Format(dateFmt+" 15:04"), durStr)
+}
+
 func dayHeadingLang(dayKey, lang string) string {
 	t, err := time.Parse("2006-01-02", dayKey)
 	if err != nil {

@@ -1330,11 +1330,13 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 	var totalBytes int64
 	// Carried-over attachments from a reopened draft or forwarded email.
 	rawCache := map[string][]byte{}
+	msgCache := map[string]StoredMessage{}
 	for _, sa := range req.SourceAttachments {
 		if sa.MessageID == "" {
 			continue
 		}
 		srcRaw, ok := rawCache[sa.MessageID]
+		srcMsg := msgCache[sa.MessageID]
 		if !ok {
 			m, gerr := e.store.GetMessage(ctx, sa.MessageID)
 			if gerr != nil {
@@ -1349,8 +1351,31 @@ func (e *Engine) buildComposeRaw(ctx context.Context, acc config.DirectAccount, 
 			}
 			srcRaw = e.decryptedMessageRaw(m)
 			rawCache[sa.MessageID] = srcRaw
+			msgCache[sa.MessageID] = m
+			srcMsg = m
 		}
-		name, ct, data, eerr := ExtractAttachment(srcRaw, sa.PartName, sa.Name)
+		var name, ct string
+		var data []byte
+		var eerr error
+		if strings.EqualFold(sa.PartName, "ics") {
+			if len(srcRaw) > 0 {
+				name, ct, data, eerr = ExtractAttachment(srcRaw, sa.PartName, sa.Name)
+			}
+			if len(data) == 0 {
+				_, icsBody := e.resolveMessageICSBody(ctx, srcMsg)
+				if strings.TrimSpace(icsBody) != "" {
+					name = strings.TrimSpace(sa.Name)
+					if name == "" {
+						name = "invite.ics"
+					}
+					ct = "text/calendar"
+					data = []byte(icsBody)
+					eerr = nil
+				}
+			}
+		} else {
+			name, ct, data, eerr = ExtractAttachment(srcRaw, sa.PartName, sa.Name)
+		}
 		if eerr != nil {
 			return "", "", nil, nil, fmt.Errorf("Anhang %q konnte nicht übernommen werden: %w", sa.Name, eerr)
 		}

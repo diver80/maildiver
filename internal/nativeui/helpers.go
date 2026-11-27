@@ -59,6 +59,7 @@ func (a *App) chatMarkdownOpts(id string, streaming bool) *markdown.Options {
 		}
 		a.widgets.mdChat[id] = opts
 	}
+	opts.ShareSelection = a.isPhone()
 	if streaming {
 		if opts.Reveal == nil {
 			opts.Reveal = &markdown.Reveal{Unit: markdown.ByWord}

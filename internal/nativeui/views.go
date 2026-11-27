@@ -1139,8 +1139,8 @@ func (a *App) renderICSBanner(c *ui.Context, msg *backend.MessageDetail) {
 					})
 					if msg.ICSInvite != nil {
 						var parts []string
-						if msg.ICSInvite.Start != "" {
-							parts = append(parts, formatDateTimeLang(msg.ICSInvite.Start, a.uiLang()))
+						if when := formatInviteWhenLang(msg.ICSInvite.AllDay, msg.ICSInvite.Start, msg.ICSInvite.End, a.uiLang()); when != "" {
+							parts = append(parts, when)
 						}
 						if msg.ICSInvite.Location != "" {
 							parts = append(parts, msg.ICSInvite.Location)
@@ -1255,6 +1255,7 @@ func (a *App) renderInspectorAIResult(c *ui.Context, msg *backend.MessageDetail)
 				ui.Text(c, a.inspectorError).FontSize(12).TextColor(t.Danger)
 			}
 			if a.inspectorResult != "" {
+				a.widgets.mdInspector.ShareSelection = a.isPhone()
 				markdown.View(c, a.inspectorResult, &a.widgets.mdInspector)
 			}
 			if len(a.inspectorContacts) > 0 {
@@ -1718,7 +1719,11 @@ func (a *App) renderComposeContent(c *ui.Context, inWindow bool) {
 							name = "attachment"
 						}
 						ui.Row(c.Key(fmt.Sprintf("cmp-src-att-%d", idx))).Padding(3, 8).Radius(6).Background(t.Background).Border(1, t.Border).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Icon(c, iconPaperclip).Size(12, 12).TextColor(t.Accent)
+							attIcon := iconPaperclip
+							if strings.HasSuffix(strings.ToLower(name), ".ics") {
+								attIcon = iconCal
+							}
+							ui.Icon(c, attIcon).Size(12, 12).TextColor(t.Accent)
 							ui.Text(c, name).FontSize(11.5).SingleLine()
 							if ui.Button(c.Key(fmt.Sprintf("cmp-src-att-rm-%d", idx)), "✕").Padding(1, 4).Clicked() {
 								removeSrcIdx = idx

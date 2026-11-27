@@ -780,8 +780,15 @@ func (s *Server) execCreateDraft(ctx context.Context, bc *backend.Client, rawArg
 				subject = prefixedSubject(orig.Subject, "Fwd: ", "fwd:", "fw:", "wg:")
 			}
 			body += forwardBlock(orig)
+			hasICSAtt := false
 			for _, att := range orig.Attachments {
+				if strings.EqualFold(att.ContentType, "text/calendar") || strings.HasSuffix(strings.ToLower(att.Name), ".ics") {
+					hasICSAtt = true
+				}
 				sources = append(sources, backend.SourceAttachment{MessageID: orig.ID, PartName: att.PartName, Name: att.Name})
+			}
+			if orig.HasICS && !hasICSAtt {
+				sources = append(sources, backend.SourceAttachment{MessageID: orig.ID, PartName: "ics", Name: "invite.ics"})
 			}
 		} else {
 			own := map[string]bool{}

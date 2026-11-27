@@ -3587,13 +3587,23 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 	if !decryptedOK {
 		fwdBodyText = ""
 	}
-	a.composeHasDecrypted = msg.Security.Encrypted && decryptedOK && (fwdBodyText != "" || len(msg.Attachments) > 0)
-	header := fmt.Sprintf("\n\n%s\n%s %s%s\n%s %s\n%s %s\n\n%s",
+	a.composeHasDecrypted = msg.Security.Encrypted && decryptedOK && (fwdBodyText != "" || len(msg.Attachments) > 0 || msg.HasICS)
+	inviteMeta := ""
+	if decryptedOK && msg.HasICS && msg.ICSInvite != nil {
+		if when := formatInviteWhenLang(msg.ICSInvite.AllDay, msg.ICSInvite.Start, msg.ICSInvite.End, a.uiLang()); when != "" {
+			inviteMeta += fmt.Sprintf("\n%s %s", a.tr("Termin:", "When:"), when)
+		}
+		if loc := strings.TrimSpace(msg.ICSInvite.Location); loc != "" {
+			inviteMeta += fmt.Sprintf("\n%s %s", a.tr("Ort:", "Location:"), loc)
+		}
+	}
+	header := fmt.Sprintf("\n\n%s\n%s %s%s\n%s %s\n%s %s%s\n\n%s",
 		sep,
 		a.tr("Von:", "From:"), msg.From,
 		toLine,
 		a.tr("Datum:", "Date:"), dateStr,
 		a.tr("Betreff:", "Subject:"), msg.Subject,
+		inviteMeta,
 		fwdBodyText,
 	)
 	sigPlain, sigCustomHTML, sigBelow := a.composeSignatureParts(a.composeAccountID, a.composeFromEmail)
@@ -3604,13 +3614,24 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeBody = header
 	}
 	sigBlock := composeSignatureBlockHTMLFromParts(sigPlain, sigCustomHTML)
-	// Preserve original attachments when forwarding (user can remove individual ones in the compose modal).
+	// Preserve original attachments (including inline text/calendar invitations) when forwarding.
 	if decryptedOK {
+		hasICSAtt := false
 		for _, att := range msg.Attachments {
+			if strings.EqualFold(att.ContentType, "text/calendar") || strings.HasSuffix(strings.ToLower(att.Name), ".ics") {
+				hasICSAtt = true
+			}
 			a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
 				MessageID: msg.ID,
 				PartName:  att.PartName,
 				Name:      att.Name,
+			})
+		}
+		if msg.HasICS && !hasICSAtt {
+			a.composeSourceAttachments = append(a.composeSourceAttachments, backend.SourceAttachment{
+				MessageID: msg.ID,
+				PartName:  "ics",
+				Name:      "invite.ics",
 			})
 		}
 	}
@@ -3623,7 +3644,7 @@ func (a *App) OpenComposeForward(msg *backend.MessageDetail) {
 		a.composeForwardSubj = msg.Subject
 		a.composeForwardSep = sep
 		a.composeKeepHTML = true
-		fwdMeta := fmt.Sprintf("%s\n%s %s%s\n%s %s\n%s %s", sep, a.tr("Von:", "From:"), msg.From, toLine, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject)
+		fwdMeta := fmt.Sprintf("%s\n%s %s%s\n%s %s\n%s %s%s", sep, a.tr("Von:", "From:"), msg.From, toLine, a.tr("Datum:", "Date:"), dateStr, a.tr("Betreff:", "Subject:"), msg.Subject, inviteMeta)
 		a.composeBodyHTML = buildComposeEditorInitialHTMLWithSig("", sigBlock, sigBelow, fwdMeta, msg.BodyHtml, nil, "")
 		a.composeEditorGen++
 		if strings.Contains(strings.ToLower(msg.BodyHtml), "cid:") {

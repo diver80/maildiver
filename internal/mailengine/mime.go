@@ -885,6 +885,41 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 	qpBody := encodeQPBody(msg.Body)
 	hasHTMLAlt := strings.TrimSpace(msg.BodyHTML) != ""
 
+	var inlineICS []byte
+	var inlineICSMethod string
+	for _, att := range msg.Attachments {
+		attCT := sanitizeMediaType(att.ContentType, att.Filename)
+		if (strings.EqualFold(attCT, "text/calendar") || strings.HasSuffix(strings.ToLower(att.Filename), ".ics")) &&
+			bytes.Contains(att.Data, []byte("BEGIN:VCALENDAR")) {
+			if m := ICSMethod(string(att.Data)); m != "" {
+				inlineICS = att.Data
+				inlineICSMethod = m
+				break
+			}
+		}
+	}
+
+	writeInlineICS := func(w *bytes.Buffer, altBoundary string) {
+		if len(inlineICS) == 0 || inlineICSMethod == "" {
+			return
+		}
+		icsNorm := strings.ReplaceAll(string(inlineICS), "\r\n", "\n")
+		icsNorm = strings.ReplaceAll(icsNorm, "\r", "\n")
+		icsNorm = strings.ReplaceAll(icsNorm, "\n", "\r\n")
+		if !strings.HasSuffix(icsNorm, "\r\n") {
+			icsNorm += "\r\n"
+		}
+		fmt.Fprintf(w, "--%s\r\n", altBoundary)
+		fmt.Fprintf(w, "Content-Type: text/calendar; charset=utf-8; method=%s\r\n", inlineICSMethod)
+		w.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+		encodedICS := base64.StdEncoding.EncodeToString([]byte(icsNorm))
+		for i := 0; i < len(encodedICS); i += 76 {
+			end := min(i+76, len(encodedICS))
+			w.WriteString(encodedICS[i:end])
+			w.WriteString("\r\n")
+		}
+	}
+
 	bodyCT := "text/plain; charset=utf-8"
 	if msg.IsHTML && !hasHTMLAlt {
 		bodyCT = "text/html; charset=utf-8"
@@ -905,54 +940,57 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 		if !strings.HasSuffix(qpPlain, "\r\n") {
 			w.WriteString("\r\n")
 		}
-		fmt.Fprintf(w, "--%s\r\n", altBoundary)
-		if len(msg.InlineImages) == 0 {
-			w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-			w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-			w.WriteString(qpHTML)
-			if !strings.HasSuffix(qpHTML, "\r\n") {
-				w.WriteString("\r\n")
-			}
-		} else {
-			var relRnd [12]byte
-			_, _ = rand.Read(relRnd[:])
-			relBnd := "mdv-rel-" + hex.EncodeToString(relRnd[:])
-			fmt.Fprintf(w, "Content-Type: multipart/related; boundary=%q; type=\"text/html\"\r\n\r\n", relBnd)
-			fmt.Fprintf(w, "--%s\r\n", relBnd)
-			w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-			w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-			w.WriteString(qpHTML)
-			if !strings.HasSuffix(qpHTML, "\r\n") {
-				w.WriteString("\r\n")
-			}
-			for _, img := range msg.InlineImages {
-				ct := sanitizeMediaType(img.ContentType, img.Filename)
-				safeName := strings.Map(func(r rune) rune {
-					if r == '\r' || r == '\n' || r == '"' || r == '\\' || r < 0x20 {
-						return '_'
-					}
-					return r
-				}, filepath.Base(strings.TrimSpace(img.Filename)))
-				if safeName == "" || safeName == "." {
-					safeName = "image.png"
+		if hasHTMLAlt {
+			fmt.Fprintf(w, "--%s\r\n", altBoundary)
+			if len(msg.InlineImages) == 0 {
+				w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+				w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+				w.WriteString(qpHTML)
+				if !strings.HasSuffix(qpHTML, "\r\n") {
+					w.WriteString("\r\n")
 				}
-				cid := strings.Trim(img.ContentID, "<> \r\n\t")
+			} else {
+				var relRnd [12]byte
+				_, _ = rand.Read(relRnd[:])
+				relBnd := "mdv-rel-" + hex.EncodeToString(relRnd[:])
+				fmt.Fprintf(w, "Content-Type: multipart/related; boundary=%q; type=\"text/html\"\r\n\r\n", relBnd)
 				fmt.Fprintf(w, "--%s\r\n", relBnd)
-				fmt.Fprintf(w, "Content-Type: %s; name=%q\r\n", ct, safeName)
-				w.WriteString("Content-Transfer-Encoding: base64\r\n")
-				fmt.Fprintf(w, "Content-ID: <%s>\r\n", cid)
-				fmt.Fprintf(w, "Content-Disposition: inline; filename=%q\r\n\r\n", safeName)
-				b64 := base64.StdEncoding.EncodeToString(img.Data)
-				for i := 0; i < len(b64); i += 76 {
-					end := i + 76
-					if end > len(b64) {
-						end = len(b64)
-					}
-					w.WriteString(b64[i:end] + "\r\n")
+				w.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+				w.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+				w.WriteString(qpHTML)
+				if !strings.HasSuffix(qpHTML, "\r\n") {
+					w.WriteString("\r\n")
 				}
+				for _, img := range msg.InlineImages {
+					ct := sanitizeMediaType(img.ContentType, img.Filename)
+					safeName := strings.Map(func(r rune) rune {
+						if r == '\r' || r == '\n' || r == '"' || r == '\\' || r < 0x20 {
+							return '_'
+						}
+						return r
+					}, filepath.Base(strings.TrimSpace(img.Filename)))
+					if safeName == "" || safeName == "." {
+						safeName = "image.png"
+					}
+					cid := strings.Trim(img.ContentID, "<> \r\n\t")
+					fmt.Fprintf(w, "--%s\r\n", relBnd)
+					fmt.Fprintf(w, "Content-Type: %s; name=%q\r\n", ct, safeName)
+					w.WriteString("Content-Transfer-Encoding: base64\r\n")
+					fmt.Fprintf(w, "Content-ID: <%s>\r\n", cid)
+					fmt.Fprintf(w, "Content-Disposition: inline; filename=%q\r\n\r\n", safeName)
+					b64 := base64.StdEncoding.EncodeToString(img.Data)
+					for i := 0; i < len(b64); i += 76 {
+						end := i + 76
+						if end > len(b64) {
+							end = len(b64)
+						}
+						w.WriteString(b64[i:end] + "\r\n")
+					}
+				}
+				fmt.Fprintf(w, "--%s--\r\n", relBnd)
 			}
-			fmt.Fprintf(w, "--%s--\r\n", relBnd)
 		}
+		writeInlineICS(w, altBoundary)
 		fmt.Fprintf(w, "--%s--\r\n", altBoundary)
 	}
 
@@ -981,7 +1019,7 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 
 	// Body part (single part or nested multipart/alternative)
 	fmt.Fprintf(&b, "--%s\r\n", boundary)
-	if hasHTMLAlt {
+	if hasHTMLAlt || len(inlineICS) > 0 {
 		var altRnd [12]byte
 		_, _ = rand.Read(altRnd[:])
 		altBnd := "mdv-alt-" + hex.EncodeToString(altRnd[:])
@@ -1004,7 +1042,14 @@ func BuildRawMessage(msg OutgoingMessage) (msgID string, raw []byte) {
 		}
 		ct := sanitizeMediaType(att.ContentType, name)
 		safeName := strings.ReplaceAll(strings.ReplaceAll(name, "\r", ""), "\n", "")
-		ctHeader := mime.FormatMediaType(ct, map[string]string{"name": safeName})
+		ctParams := map[string]string{"name": safeName}
+		if strings.EqualFold(ct, "text/calendar") {
+			ctParams["charset"] = "utf-8"
+			if m := ICSMethod(string(att.Data)); m != "" {
+				ctParams["method"] = m
+			}
+		}
+		ctHeader := mime.FormatMediaType(ct, ctParams)
 		if ctHeader == "" {
 			ctHeader = fmt.Sprintf("%s; name=%q", ct, safeName)
 		}
@@ -1134,19 +1179,34 @@ func ExtractAttachment(raw []byte, partName, filename string) (name, contentType
 			return false
 		}
 		disp, fn := parseMIMEDisposition(e.Header, params)
-		isAtt := disp == "attachment" || (fn != "" && ct != "text/plain" && ct != "text/html")
-		if !isAtt {
-			return false
-		}
-		if fn == "" {
-			fn = "attachment"
+		wantICS := strings.EqualFold(partName, "ics")
+		isICS := ct == "text/calendar" || strings.HasSuffix(strings.ToLower(fn), ".ics")
+		if wantICS {
+			if !isICS {
+				return false
+			}
+			if fn == "" {
+				if strings.HasSuffix(strings.ToLower(strings.TrimSpace(filename)), ".ics") {
+					fn = strings.TrimSpace(filename)
+				} else {
+					fn = "invite.ics"
+				}
+			}
+		} else {
+			isAtt := disp == "attachment" || (fn != "" && ct != "text/plain" && ct != "text/html")
+			if !isAtt {
+				return false
+			}
+			if fn == "" {
+				fn = "attachment"
+			}
 		}
 		partID := prefix
 		if partID == "" {
 			partID = "1"
 		}
 		const maxAttachmentExtractBytes = 32 * 1024 * 1024
-		matchPart := partName != "" && partID == partName
+		matchPart := wantICS || (partName != "" && partID == partName)
 		matchName := partName == "" && filename != "" && strings.EqualFold(fn, filename)
 		if matchPart || matchName {
 			buf, rerr := io.ReadAll(io.LimitReader(e.Body, maxAttachmentExtractBytes+1))

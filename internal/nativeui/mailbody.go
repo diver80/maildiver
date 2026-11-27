@@ -1076,10 +1076,21 @@ func (a *App) bodyMarkdownOpts() *markdown.Options {
 				return
 			}
 			if isSafeWebURL(u) {
-				openExternalURL(u)
+				go func(target string) {
+					if err := openExternalURLFn(target); err != nil {
+						a.emitUpdate(func() {
+							a.toast(a.tr("Link konnte nicht geöffnet werden: ", "Could not open link: ")+err.Error(), "error")
+						})
+					}
+				}(u)
 			}
 		}
 	}
+	// Workaround for mygo v0.10.0 touch aimTouch/nearestPressable: inline ui.Link wraps a
+	// non-interactive ui.RichText child, so when markdown.View sets root.Selectable() on touch
+	// screens, nearestPressable steers finger taps off the link onto surrounding selectable text.
+	// Setting ShareSelection=true on phones omits root.Selectable() so finger taps hit links cleanly.
+	a.widgets.mdBody.ShareSelection = a.isPhone()
 	return &a.widgets.mdBody
 }
 
@@ -1174,7 +1185,11 @@ func (a *App) renderMailBody(c *ui.Context, msg *backend.MessageDetail) {
 		ui.Text(c, a.tr("(Kein Textinhalt)", "(No text content)")).FontSize(13).TextColor(t.TextMuted)
 		return
 	}
-	markdown.View(c.Key("mail-body-"+msg.ID), md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
+	mv := markdown.View(c.Key("mail-body-"+msg.ID), md, a.bodyMarkdownOpts()).FillWidth().MaxWidth(900)
+	if a.isPhone() {
+		// Keep the first line clear of the view-mode buttons above (> 14 DIPs touchReach).
+		mv.Padding(8, 0, 0, 0)
+	}
 }
 
 func buildFallbackMessageSource(msg *backend.MessageDetail) mailengine.MessageSource {

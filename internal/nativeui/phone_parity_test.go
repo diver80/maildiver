@@ -583,3 +583,67 @@ func TestPhoneDialogsFitAt380(t *testing.T) {
 	app.eventRecurrence = 4
 	shot("postdive-phone-event-form.png", app.renderEventModal)
 }
+
+func TestPhoneMailLinkTap(t *testing.T) {
+	app := newParityApp(t, nil, nil)
+	var mu sync.Mutex
+	var opened []string
+	prev := openExternalURLFn
+	openExternalURLFn = func(u string) error {
+		mu.Lock()
+		opened = append(opened, u)
+		mu.Unlock()
+		return nil
+	}
+	defer func() { openExternalURLFn = prev }()
+
+	msg := &backend.MessageDetail{
+		MessageHeader: backend.MessageHeader{
+			ID:      "m-link",
+			Subject: "Link-Test",
+			From:    "Alice <alice@example.org>",
+			Date:    time.Now().Format(time.RFC3339),
+		},
+		BodyHtml: `<p>Hallo,</p><p>bitte öffne <a href="https://example.org/ticket/42">diesen Link</a> im Browser.</p>` +
+			strings.Repeat("<p>Mehr Text zum Scrollen auf Android.</p>", 25),
+	}
+	tt := ui.NewTester(func(c *ui.Context) {
+		app.winW, app.winH = 380, 700
+		ui.Scroll(c.Key("ph-mail-scroll-" + msg.ID)).Fill().Children(func() {
+			ui.Column(c).FillWidth().Padding(14, 16, 24, 16).Gap(12).Children(func() {
+				app.renderMailBody(c, msg)
+			})
+		})
+	}, 380, 700)
+	tt.Frame()
+	r, ok := tt.Find("diesen Link")
+	if !ok {
+		t.Fatalf("link not found; texts=%v", tt.Texts())
+	}
+	cx, cy := r.X+r.W/2, r.Y+r.H/2
+
+	// 1. Quick finger tap (< 100ms pressDelay, typical Android tap inside a Scroll container).
+	tt.FingerDown(cx, cy)
+	tt.FingerUp(cx, cy)
+	tt.Frame()
+	app.waitFor(t, "quick tap opens link", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(opened) == 1 && opened[0] == "https://example.org/ticket/42"
+	})
+
+	// 2. Slightly longer finger tap (> 100ms pressDelay, < 500ms longPress).
+	mu.Lock()
+	opened = nil
+	mu.Unlock()
+	tt.Advance(400 * time.Millisecond)
+	tt.FingerDown(cx, cy)
+	tt.Advance(150 * time.Millisecond)
+	tt.FingerUp(cx, cy)
+	tt.Frame()
+	app.waitFor(t, "150ms tap opens link", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(opened) == 1 && opened[0] == "https://example.org/ticket/42"
+	})
+}

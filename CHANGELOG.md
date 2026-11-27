@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.56 (2026-11-27)
+
+### Invitations & Forwarding
+- **Invitation end time & duration:** calendar invitation banners (`renderICSBanner`, desktop and phone) and `REPLY`/`CANCEL` notice banners now display the full local time range and duration (e.g. `2026-11-27 13:00–13:30 (30 min)` / `27.11.2026 13:00–13:30 (30 Min.)`), including cross-day and multi-day all-day ranges.
+- **Forwarding calendar invitations:** forwarding an email with an inline `text/calendar` invitation (such as Microsoft Teams / Exchange invites without `Content-Disposition: attachment`) now carries over `invite.ics` as a removable attachment, adds `When:` and `Location:` to the forwarded header, and sends both an RFC 6047 `multipart/alternative` `text/calendar; method=…` part and the `invite.ics` attachment so Outlook, Gmail, Apple Mail, and PostDive recognize the forwarded invite (desktop, phone, and MCP).
+
+### Android / Phone
+- **Tappable links in emails:** enabled `ShareSelection` on phone markdown views (`mailbody`, `inspector`, `chat`) so touch hit-testing no longer steals finger taps from inline links onto surrounding selectable paragraphs, and opens tapped URLs asynchronously with an error toast on failure.
+
 ## 0.7.55 (2026-11-27)
 
 ### Calendar & Invitations (Hotfix)
