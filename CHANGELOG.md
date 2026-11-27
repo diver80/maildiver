@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.55 (2026-11-27)
+
+### Calendar & Invitations (Hotfix)
+- **Accepting an invitation never sends new invites to other attendees:** fixed a regression introduced in 0.7.46 where saving an accepted `.ics` invitation into a Google Calendar sent foreign `attendees`/`organizer` to Google (`events.import` failed when the calendar owner was not listed, falling back to `events.insert` and making the user the new organizer for every attendee). `importGoogleEvent` now imports only the private event copy without foreign attendees/organizer and always passes `sendUpdates=none` on any `events.insert` fallback.
+- **CalDAV invite import safety:** importing an external invitation into a CalDAV calendar strips foreign `ATTENDEE`/`ORGANIZER` properties before `PUT`, and stored calendar copies no longer emit `RSVP=TRUE`, preventing CalDAV servers from auto-mailing duplicate invitations.
+
+### Repository
+- Added `AGENTS.md` (with `@AGENTS.md` in `CLAUDE.md`) documenting contributor/agent invariants, cross-platform rules, and release/handoff workflows.
+
 ## 0.7.54 (2026-11-27)
 
 ### Security & Privacy

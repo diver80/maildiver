@@ -882,7 +882,7 @@ func addICalParticipants(ev *ical.Event, e StoredEvent, stored bool) {
 		}
 		p.Params.Set(ical.ParamRole, "REQ-PARTICIPANT")
 		p.Params.Set(ical.ParamParticipationStatus, statusToPartstat(a.Status))
-		if a.Status == "" || a.Status == "needsAction" {
+		if !stored && (a.Status == "" || a.Status == "needsAction") {
 			p.Params.Set(ical.ParamRSVP, "TRUE")
 		}
 		if stored {
@@ -945,7 +945,13 @@ func (e *Engine) ImportICSBytes(ctx context.Context, calendarID string, data []b
 				return 0, err
 			}
 		case "caldav":
-			if _, err := e.pushCalDAVEvent(ctx, cal, ev); err != nil {
+			// Strip foreign attendees/organizer when importing an external invite into CalDAV:
+			// many CalDAV servers ignore SCHEDULE-AGENT=CLIENT and would auto-email a brand-new
+			// invitation to every attendee on HTTP PUT.
+			calEv := ev
+			calEv.Attendees = nil
+			calEv.Organizer = ""
+			if _, err := e.pushCalDAVEvent(ctx, cal, calEv); err != nil {
 				return 0, err
 			}
 		default:

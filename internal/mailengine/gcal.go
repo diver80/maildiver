@@ -656,36 +656,35 @@ func (e *Engine) createGoogleEvent(ctx context.Context, cal StoredCalendar, req 
 
 // importGoogleEvent imports an RFC 5545 event into a Google Calendar via events.import
 // (preserving iCalUID for deduplication without sending duplicate invite emails),
-// falling back to events.insert if needed.
+// falling back to events.insert with sendUpdates=none if needed.
+//
+// IMPORTANT: Never send foreign attendees or a foreign organizer when importing an
+// invitation into Google Calendar. Google's events.import rejects payloads where the
+// calendar owner is not listed as organizer/attendee (e.g. a work-email invite saved
+// into a personal or shared Google calendar), and falling back to events.insert with
+// attendees turns the user into the new organizer and triggers brand-new invitations
+// to every attendee! The RSVP reply is already sent to the real organizer via SMTP.
 func (e *Engine) importGoogleEvent(ctx context.Context, cal StoredCalendar, ev StoredEvent) (StoredEvent, error) {
 	hc, err := e.loadGCalHTTPClient(ctx)
 	if err != nil {
 		return StoredEvent{}, err
 	}
 	payload := buildGCalWritePayload(ev.Title, ev.StartISO, ev.EndISO, ev.AllDay, ev.Location, ev.Description, ev.RRule)
-	if len(ev.Attendees) > 0 {
-		// An accepted invitation keeps who else is invited; inserting without sendUpdates
-		// mails nobody.
-		payload["attendees"] = gcalAttendeesPayload(ev.Attendees)
-		if org := parseAttendeeAddress(ev.Organizer); org.Email != "" {
-			payload["organizer"] = map[string]any{"email": org.Email, "displayName": org.Name}
-		}
-	}
 	var created gcalEventPayload
 	uid := strings.TrimSpace(ev.UID)
+	insertEndpoint := fmt.Sprintf("%s/calendars/%s/events?sendUpdates=none", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
 	if uid != "" {
 		payload["iCalUID"] = uid
 		importEndpoint := fmt.Sprintf("%s/calendars/%s/events/import", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
 		if err := doGCalJSON(ctx, hc, http.MethodPost, importEndpoint, payload, &created); err != nil {
-			// Fallback to standard insert if Google rejects an edge-case iCalUID/recurrence payload.
+			// Fallback to standard insert (strictly without attendees/organizer and sendUpdates=none)
+			// if Google rejects an edge-case iCalUID/recurrence payload.
 			delete(payload, "iCalUID")
-			insertEndpoint := fmt.Sprintf("%s/calendars/%s/events", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
 			if err2 := doGCalJSON(ctx, hc, http.MethodPost, insertEndpoint, payload, &created); err2 != nil {
 				return StoredEvent{}, err2
 			}
 		}
 	} else {
-		insertEndpoint := fmt.Sprintf("%s/calendars/%s/events", e.gcalBaseURL(), url.PathEscape(cal.ExternalID))
 		if err := doGCalJSON(ctx, hc, http.MethodPost, insertEndpoint, payload, &created); err != nil {
 			return StoredEvent{}, err
 		}

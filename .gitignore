@@ -18,6 +18,7 @@ Thumbs.db
 
 # Local state / screenshots generated during test runs
 /tmp/
+/HANDOFF.md
 
 # mygo build cache (Android Gradle project)
 /.mygo/

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -418,17 +419,33 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 		t.Fatalf("ParseICSSelfPartStat = %q, want tentative", got)
 	}
 
-	// Test accepting an .ics invite directly into a Google Calendar target (uses POST /events/import with iCalUID).
-	var importedUID, importedPath string
+	// Test accepting a multi-attendee .ics invite directly into a Google Calendar target:
+	// neither /events/import nor an /events insert fallback may ever send attendees/organizer
+	// to Google (otherwise Google makes the user the organizer and invites every attendee).
+	var importedUID, importedPath, fallbackPath, fallbackQuery string
+	var importBody, fallbackBody map[string]any
+	failImportOnce := false
 	gcalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		importedPath = r.URL.Path
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		importedUID, _ = body["iCalUID"].(string)
+		if failImportOnce && strings.HasSuffix(r.URL.Path, "/events/import") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"forbiddenForNonOrganizer"}}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/events/import") {
+			importedPath = r.URL.Path
+			importBody = body
+			importedUID, _ = body["iCalUID"].(string)
+		} else {
+			fallbackPath = r.URL.Path
+			fallbackQuery = r.URL.RawQuery
+			fallbackBody = body
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "gcal-imported-99",
-			"iCalUID": importedUID,
+			"iCalUID": body["iCalUID"],
 			"summary": body["summary"],
 			"start":   body["start"],
 			"end":     body["end"],
@@ -449,7 +466,7 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	invite2 := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:work-sync-77@avono.de\r\nDTSTART:20261126T143000Z\r\nDTEND:20261126T150000Z\r\nSUMMARY:Quick sync external users\r\nORGANIZER:mailto:boss@avono.de\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	invite2 := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:work-sync-77@avono.de\r\nDTSTART:20261126T143000Z\r\nDTEND:20261126T150000Z\r\nSUMMARY:Quick sync external users\r\nORGANIZER:mailto:boss@avono.de\r\nATTENDEE;CN=Frank:mailto:frank@firma.de\r\nATTENDEE;CN=Kunde:mailto:kunde@external.example\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 	if err := eng.store.UpsertMessage(ctx, StoredMessage{
 		ID:          "m-invite-gcal",
 		AccountID:   "acc-1",
@@ -476,6 +493,12 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	if !strings.HasSuffix(importedPath, "/events/import") || importedUID != "work-sync-77@avono.de" {
 		t.Fatalf("expected POST .../events/import with iCalUID=work-sync-77@avono.de, got path=%q uid=%q", importedPath, importedUID)
 	}
+	if _, hasAtt := importBody["attendees"]; hasAtt {
+		t.Fatalf("Google events/import must NOT send foreign attendees: %+v", importBody)
+	}
+	if _, hasOrg := importBody["organizer"]; hasOrg {
+		t.Fatalf("Google events/import must NOT send foreign organizer: %+v", importBody)
+	}
 	// Verify stored in gcal-target with SelfResponse="accepted" and NOT duplicated into LocalCalendarID.
 	gEvs, _ := eng.store.ListRawEvents(ctx, []string{"gcal-target"})
 	if len(gEvs) != 1 || gEvs[0].SelfResponse != "accepted" {
@@ -484,5 +507,55 @@ func TestICSRSVPBuildAndRespond(t *testing.T) {
 	localEvs3, _ := eng.store.ListRawEvents(ctx, []string{LocalCalendarID})
 	if len(localEvs3) != 0 {
 		t.Fatalf("expected 0 local events when accepted directly into Google Calendar, got %d", len(localEvs3))
+	}
+
+	// Verify fallback to /events (when /events/import fails) also strips attendees/organizer and sets sendUpdates=none.
+	failImportOnce = true
+	if _, err := eng.ImportICSBytes(ctx, "gcal-target", []byte(invite2)); err != nil {
+		t.Fatalf("ImportICSBytes fallback to Google insert: %v", err)
+	}
+	if !strings.HasSuffix(fallbackPath, "/events") || fallbackQuery != "sendUpdates=none" {
+		t.Fatalf("expected fallback POST .../events?sendUpdates=none, got path=%q query=%q", fallbackPath, fallbackQuery)
+	}
+	if _, hasAtt := fallbackBody["attendees"]; hasAtt {
+		t.Fatalf("Google events.insert fallback must NOT send attendees: %+v", fallbackBody)
+	}
+	if _, hasOrg := fallbackBody["organizer"]; hasOrg {
+		t.Fatalf("Google events.insert fallback must NOT send organizer: %+v", fallbackBody)
+	}
+
+	// Verify CalDAV import of a foreign invitation also strips ATTENDEE/ORGANIZER/RSVP so the
+	// CalDAV server can never auto-mail invitations to other attendees on PUT.
+	var caldavPutBody string
+	caldavSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			raw, _ := io.ReadAll(r.Body)
+			caldavPutBody = string(raw)
+			w.Header().Set("ETag", `"etag-1"`)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer caldavSrv.Close()
+	eng.allowLoopbackICal = true
+	cfg.Direct.CalDAVAccounts = append(cfg.Direct.CalDAVAccounts, config.DAVAccountConfig{
+		ID:      "dav-1",
+		Name:    "Test CalDAV",
+		URL:     caldavSrv.URL + "/calendars/frank/",
+		Enabled: true,
+	})
+	if err := eng.store.UpsertCalendar(ctx, StoredCalendar{
+		ID:     "dav-1",
+		Name:   "Test CalDAV",
+		Source: "caldav",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.ImportICSBytes(ctx, "dav-1", []byte(invite2)); err != nil {
+		t.Fatalf("ImportICSBytes into CalDAV: %v", err)
+	}
+	if strings.Contains(caldavPutBody, "ATTENDEE") || strings.Contains(caldavPutBody, "RSVP=TRUE") || strings.Contains(caldavPutBody, "ORGANIZER") {
+		t.Fatalf("CalDAV import PUT must not send ATTENDEE/ORGANIZER/RSVP:\n%s", caldavPutBody)
 	}
 }
