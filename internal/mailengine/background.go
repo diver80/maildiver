@@ -103,7 +103,7 @@ func (s *Store) takeNewInboxMail(ctx context.Context, collect bool) ([]StoredMes
 			msgRows, err := s.db.QueryContext(ctx, `
 				SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
 				       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
-				       '', '', body_fetched, '[]', '{}', NULL, has_ics, '', snippet
+				       '', '', body_fetched, '[]', '{}', NULL, has_ics, '', snippet, snoozed_until
 				FROM messages WHERE folder_id=? AND uid>? AND read=0 ORDER BY uid DESC LIMIT ?`,
 				in.id, mark, maxNewInboxMail-len(out))
 			if err != nil {

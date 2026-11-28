@@ -96,6 +96,12 @@ type settingsUI struct {
 	allowCLI           bool
 	customInstructions string
 	mcpMode            int // 0: read-only, 1: +drafts, 2: +writes
+	mcpTargets         []mcpClientTarget
+	mcpCmd             string
+	mcpInstalled       map[string]bool
+	mcpProbing         bool
+	mcpProbed          bool
+	mcpBusyID          string
 
 	scanOnNewMail       bool
 	scanLimit, scanDays string
@@ -275,8 +281,54 @@ func (a *App) OpenSettings() {
 	if len(s.folderAccLabels) > 0 {
 		s.folderAccLabel = s.folderAccLabels[0]
 	}
+	s.mcpInstalled = make(map[string]bool)
 
 	a.settings = s
+}
+
+func (a *App) probeMCPClientsBackground() {
+	if a.settings.mcpProbing || a.updateUI == nil {
+		return
+	}
+	a.settings.mcpProbing = true
+	go func() {
+		targets := mcpCurrentClientTargets()
+		cmd := postdiveMCPCommand()
+		inst := make(map[string]bool, len(targets))
+		for _, tg := range targets {
+			inst[tg.ID] = isMCPServerInstalled(tg.ConfigPath)
+		}
+		a.emitUpdate(func() {
+			a.settings.mcpProbing = false
+			a.settings.mcpTargets = targets
+			a.settings.mcpCmd = cmd
+			a.settings.mcpInstalled = inst
+			a.settings.mcpProbed = true
+		})
+	}()
+}
+
+func (a *App) installMCPClientAsync(tg mcpClientTarget, cmd string, args []string) {
+	if a.settings.mcpBusyID != "" {
+		return
+	}
+	a.settings.mcpBusyID = tg.ID
+	go func() {
+		err := installMCPServerConfig(tg.ConfigPath, cmd, args)
+		installed := isMCPServerInstalled(tg.ConfigPath)
+		a.emitUpdate(func() {
+			a.settings.mcpBusyID = ""
+			if a.settings.mcpInstalled == nil {
+				a.settings.mcpInstalled = make(map[string]bool)
+			}
+			a.settings.mcpInstalled[tg.ID] = installed
+			if err != nil {
+				a.toast(a.tr("MCP-Einrichtung fehlgeschlagen: ", "MCP setup failed: ")+err.Error(), "error")
+			} else {
+				a.toast(a.trf("%s konfiguriert (Client ggf. neu starten)", "%s configured (restart client if open)", tg.Name), "success")
+			}
+		})
+	}()
 }
 
 func parseBounded(raw string, lo, hi int) (int, bool) {
@@ -1152,6 +1204,9 @@ func mcpConfigSnippet(mode int) string {
 func (a *App) renderSettingsMCPSection(c *ui.Context) {
 	t := c.Theme()
 	s := &a.settings
+	if !s.mcpProbed && !s.mcpProbing && a.updateUI != nil {
+		a.probeMCPClientsBackground()
+	}
 	a.settingsSection(c, a.tr("Lokaler MCP-Server (Claude Code, Cursor, Antigravity, Claude Desktop)", "Local MCP Server (Claude Code, Cursor, Antigravity, Claude Desktop)"))
 	ui.Column(c.Key("set-mcp-box")).FillWidth().Padding(10, 12).Radius(8).Background(t.Background).Border(1, t.Border).Gap(8).Children(func() {
 		ui.Text(c, a.tr(
@@ -1183,6 +1238,37 @@ func (a *App) renderSettingsMCPSection(c *ui.Context) {
 				a.toast(a.tr("Claude-CLI-Befehl kopiert", "Claude CLI command copied"), "success")
 			}
 		})
+		targets := s.mcpTargets
+		if len(targets) > 0 {
+			ui.Column(c).FillWidth().Gap(4).Padding(4, 0, 0, 0).Children(func() {
+				ui.Text(c, a.tr("1-Klick einrichten:", "One-click setup:")).FontSize(11.5).Bold().TextColor(t.TextMuted)
+				ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+					cmd := s.mcpCmd
+					if cmd == "" {
+						cmd = "postdive"
+					}
+					args := mcpArgsForMode(s.mcpMode)
+					for _, tgt := range targets {
+						tg := tgt
+						installed := s.mcpInstalled[tg.ID]
+						lbl := tg.Name
+						if installed {
+							lbl += " ✓"
+						}
+						btn := ui.Button(c.Key("set-mcp-inst-"+tg.ID), lbl).Padding(3, 10).Tooltip(tg.ConfigPath)
+						if installed {
+							btn.Border(1, withAlpha(t.Success, 0.55)).TextColor(t.Success)
+						}
+						if s.mcpBusyID != "" {
+							btn.Disabled(true)
+						}
+						if btn.Clicked() && s.mcpBusyID == "" {
+							a.installMCPClientAsync(tg, cmd, args)
+						}
+					}
+				})
+			})
+		}
 	})
 }
 

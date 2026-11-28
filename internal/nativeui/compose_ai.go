@@ -124,7 +124,7 @@ func (a *App) RunComposeAI(ctx context.Context, mode, tone string) {
 		return
 	}
 	a.composeAIOpen = true
-	if a.composeHasDecrypted || (a.composeSourceMsg != nil && a.composeSourceMsg.Security.Encrypted) {
+	if a.composeHasDecrypted || a.composeEncrypt || (a.composeSourceMsg != nil && detailIsEncrypted(*a.composeSourceMsg)) {
 		a.composeAIError = a.tr(
 			"Verschlüsselte Mail-Inhalte werden aus Datenschutzgründen nicht an die KI gesendet.",
 			"Encrypted email content is not sent to AI for privacy.",
@@ -400,29 +400,29 @@ func (a *App) renderComposeAIAssist(c *ui.Context) {
 
 	ui.Column(c.Key("cmp-ai-box")).FillWidth().Padding(8, 10).Radius(8).
 		Background(withAlpha(t.Accent, 0.08)).Border(1, withAlpha(t.Accent, 0.40)).Gap(6).Children(func() {
-		// Header row: title + active model badge + optional Undo + Close
+		// Header row: title + close always stay visible; model badge / Undo wrap cleanly below if needed.
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, iconSparkles).Size(13, 13).TextColor(t.Accent).Shrink(0)
-			ui.Text(c, a.tr("KI-Hilfe beim Schreiben", "AI Writing Assistant")).FontSize(12).Bold().TextColor(t.Accent)
-			if modelHint != "" {
-				pillBadge(c, truncateText(modelHint, 32), withAlpha(t.Accent, 0.14), t.TextMuted)
-			}
-			ui.Spacer(c)
-			if a.composeAIUndoReady && !a.composeAILoading {
-				if ui.Button(c.Key("cmp-ai-undo"), a.tr("↶ KI-Text rückgängig", "↶ Undo AI text")).Padding(2, 7).Clicked() {
-					a.undoComposeAIApply()
-				}
-			}
+			ui.Text(c, a.tr("KI-Hilfe beim Schreiben", "AI Writing Assistant")).FontSize(12).Bold().TextColor(t.Accent).Grow(1).MinWidth(0).SingleLine()
 			if ui.Button(c.Key("cmp-ai-close"), "✕").Padding(2, 6).Clicked() {
 				a.composeAIOpen = false
 			}
 		})
+		if modelHint != "" || (a.composeAIUndoReady && !a.composeAILoading) {
+			ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				if modelHint != "" {
+					pillBadge(c, truncateText(modelHint, 24), withAlpha(t.Accent, 0.14), t.TextMuted)
+				}
+				if a.composeAIUndoReady && !a.composeAILoading {
+					if ui.Button(c.Key("cmp-ai-undo"), a.tr("↶ KI-Text rückgängig", "↶ Undo AI text")).Padding(2, 7).Clicked() {
+						a.undoComposeAIApply()
+					}
+				}
+			})
+		}
 
 		// Prompt input + Generate button
-		ph := a.tr("Worum geht es? Stichworte reichen, ⌘↩ generiert (z. B. „Termin auf Donnerstag 10 Uhr verschieben“)…", "What should this email say? Notes are enough, ⌘↩ generates (e.g. “reschedule to Thursday 10am”)…")
-		if hasReplySource {
-			ph = a.tr("Anweisung oder Stichworte für die KI, ⌘↩ generiert (z. B. „kurz zusagen, ab 15 Uhr passt“)…", "Instruction or notes for the AI, ⌘↩ generates (e.g. “accept briefly, free after 3pm”)…")
-		}
+		ph := a.tr("Anweisung an die KI…", "Prompt for AI…")
 		// Multi-line, growing with the notes: Return breaks the line, ⌘↩ generates.
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.End).Children(func() {
 			in := ui.TextArea(c.Key("cmp-ai-prompt"), &a.composeAIPrompt).Placeholder(ph).Grow(1).MinWidth(0).
@@ -432,7 +432,12 @@ func (a *App) renderComposeAIAssist(c *ui.Context) {
 				goLabel = a.tr("Läuft…", "Working…")
 			}
 			goClicked := ui.PrimaryButton(c.Key("cmp-ai-go"), goLabel).Tooltip(a.tr("Generieren (⌘↩)", "Generate (⌘↩)")).Clicked()
-			if (goClicked || in.Shortcut(ui.Cmd, ui.KeyEnter)) && !a.composeAILoading {
+			if sc := in.Shortcut(ui.Cmd, ui.KeyEnter); sc {
+				a.composeAIHandledEnter = true
+				if !a.composeAILoading {
+					a.RunComposeAI(context.Background(), "", "")
+				}
+			} else if goClicked && !a.composeAILoading {
 				a.RunComposeAI(context.Background(), "", "")
 			}
 		})

@@ -46,13 +46,14 @@ const maxBodyHTMLBytes = 2 << 20
 
 // readerBody is the converted body of the open mail.
 type readerBody struct {
-	MsgID         string
-	Markdown      string // what the pane shows by default
-	Plain         string // the text version as Markdown
-	FromHTML      bool   // Markdown was made from the HTML part
-	BlockedImages int    // remote images currently withheld; tracking pixels and cid: images are not counted
-	RemoteImages  int    // total non-pixel remote http(s) images in this mail
-	ShowRemote    bool   // whether Markdown was built with remote images enabled
+	MsgID          string
+	Markdown       string // what the pane shows by default
+	Plain          string // the text version as Markdown
+	FromHTML       bool   // Markdown was made from the HTML part
+	BlockedImages  int    // remote images currently withheld; tracking pixels and cid: images are not counted
+	RemoteImages   int    // total non-pixel remote http(s) images in this mail
+	TrackingPixels int    // remote 1x1 tracking pixels / spacers stripped from HTML
+	ShowRemote     bool   // whether Markdown was built with remote images enabled
 }
 
 func buildReaderBody(msg *backend.MessageDetail) readerBody {
@@ -63,8 +64,11 @@ func buildReaderBodyWithImages(msg *backend.MessageDetail, showRemote bool) read
 	b := readerBody{MsgID: msg.ID, Plain: plainMailMarkdown(msg.BodyText), ShowRemote: showRemote}
 	b.Markdown = b.Plain
 	if h := msg.BodyHtml; strings.TrimSpace(h) != "" && len(h) <= maxBodyHTMLBytes {
-		if md, blocked, remote := htmlMailMarkdownWithImages(h, showRemote); strings.TrimSpace(md) != "" {
-			b.Markdown, b.FromHTML, b.BlockedImages, b.RemoteImages = md, true, blocked, remote
+		if md, blocked, remote, pixels := htmlMailMarkdownFull(h, showRemote); strings.TrimSpace(md) != "" || pixels > 0 {
+			if strings.TrimSpace(md) != "" {
+				b.Markdown, b.FromHTML = md, true
+			}
+			b.BlockedImages, b.RemoteImages, b.TrackingPixels = blocked, remote, pixels
 		}
 	}
 	return b
@@ -93,11 +97,12 @@ type mdWriter struct {
 	lastRoot   int
 	lastItem   bool
 	lastQuote  int
-	lastRule   bool
-	ruleAt     int // where the last rule's block starts in out
-	blocked    int
-	remoteImgs int
-	showRemote bool
+	lastRule       bool
+	ruleAt         int // where the last rule's block starts in out
+	blocked        int
+	remoteImgs     int
+	trackingPixels int
+	showRemote     bool
 
 	// Where the last link ended: a link right after it (whitespace aside) gets " · " between
 	// them, so that "Manage Notifications Give feedback" stays two links.
@@ -536,14 +541,19 @@ func htmlMailMarkdown(src string) (string, int) {
 }
 
 func htmlMailMarkdownWithImages(src string, showRemote bool) (string, int, int) {
+	md, blocked, remote, _ := htmlMailMarkdownFull(src, showRemote)
+	return md, blocked, remote
+}
+
+func htmlMailMarkdownFull(src string, showRemote bool) (string, int, int, int) {
 	root, err := xhtml.Parse(strings.NewReader(src))
 	if err != nil {
-		return "", 0, 0
+		return "", 0, 0, 0
 	}
 	m := newMDWriter(true)
 	m.showRemote = showRemote
 	m.node(root)
-	return m.result(), m.blocked, m.remoteImgs
+	return m.result(), m.blocked, m.remoteImgs, m.trackingPixels
 }
 
 func (m *mdWriter) children(n *xhtml.Node) {
@@ -698,6 +708,9 @@ func (m *mdWriter) image(n *xhtml.Node) {
 	// An image between words (an arrow in "old → new", an icon) keeps them apart.
 	m.space = true
 	if pixelImage(n) || src == "" {
+		if isRemote && pixelImage(n) {
+			m.trackingPixels++
+		}
 		return
 	}
 	if isRemote {
@@ -1421,14 +1434,14 @@ func (a *App) renderSecurityNote(c *ui.Context, msg *backend.MessageDetail) {
 		switch {
 		case sec.Readable():
 			if sec.PGP {
-				lines = append(lines, a.tr("OpenPGP-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
-					"OpenPGP encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
+				lines = append(lines, a.tr("OpenPGP-verschlüsselt & lokal entschlüsselt. Aus Datenschutzgründen werden verschlüsselte Mails nie an KI-Anbieter gesendet.",
+					"OpenPGP encrypted & decrypted locally. For privacy, encrypted emails are never sent to AI providers."))
 			} else if sec.SMIME {
-				lines = append(lines, a.tr("S/MIME-verschlüsselt & erfolgreich entschlüsselt. KI-Aktionen senden den Klartext an den KI-Anbieter.",
-					"S/MIME encrypted & decrypted. AI actions on this email send decrypted text to the AI provider."))
+				lines = append(lines, a.tr("S/MIME-verschlüsselt & lokal entschlüsselt. Aus Datenschutzgründen werden verschlüsselte Mails nie an KI-Anbieter gesendet.",
+					"S/MIME encrypted & decrypted locally. For privacy, encrypted emails are never sent to AI providers."))
 			} else {
-				lines = append(lines, a.tr("Verschlüsselt. KI-Aktionen auf diese Mail senden den entschlüsselten Text an den KI-Anbieter.",
-					"Encrypted. AI actions on this email send its decrypted text to the AI provider."))
+				lines = append(lines, a.tr("Verschlüsselt & lokal entschlüsselt. Aus Datenschutzgründen werden verschlüsselte Mails nie an KI-Anbieter gesendet.",
+					"Encrypted & decrypted locally. For privacy, encrypted emails are never sent to AI providers."))
 			}
 		case sec.PGP:
 			msgErr := a.tr("OpenPGP-verschlüsselt. PostDive konnte den Inhalt nicht entschlüsseln (Schlüssel unter Einstellungen → Konten → S/MIME & PGP importieren).",

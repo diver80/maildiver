@@ -1080,9 +1080,16 @@ func (r *Runner) executeTool(ctx context.Context, st *runState, name, rawArgs st
 		}
 		for i := range threadMsgs {
 			threadMsgs[i].BodyHTML = ""
-			if utf8.RuneCountInString(threadMsgs[i].BodyText) > 1600 {
-				threadMsgs[i].BodyText = TruncateRunes(threadMsgs[i].BodyText, 1600) + trLang(lang, "\n...[gekürzt]", "\n...[truncated]")
+			if threadMsgs[i].Encrypted || strings.Contains(threadMsgs[i].BodyText, "-----BEGIN PGP MESSAGE-----") {
+				threadMsgs[i].Encrypted = true
+				threadMsgs[i].BodyText = ""
+				continue
 			}
+			body := threadMsgs[i].BodyForAI()
+			if utf8.RuneCountInString(body) > 1600 {
+				body = TruncateRunes(body, 1600) + trLang(lang, "\n...[gekürzt]", "\n...[truncated]")
+			}
+			threadMsgs[i].BodyText = body
 		}
 		return untrusted("thread", threadMsgs, fmt.Sprintf(trLang(lang, "Thread mit %d Mails geladen", "Loaded thread (%d emails)"), len(threadMsgs)))
 

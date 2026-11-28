@@ -320,9 +320,9 @@ func Default() Config {
 		},
 		Theme: ThemeConfig{
 			Mode:          "auto",
-			Preset:        "tokyo-night",
-			LightFallback: "flexoki-light",
-			DarkFallback:  "tokyo-night",
+			Preset:        "diver",
+			LightFallback: "diver-light",
+			DarkFallback:  "diver",
 			// Recoloring mail bodies can make HTML mails with fixed text colors hard to read: opt-in.
 			StyleBody: false,
 		},

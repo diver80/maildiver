@@ -23,10 +23,22 @@ type Palette struct {
 }
 
 var builtInPalettes = map[string]Palette{
+	"diver": {
+		Name: "diver", Label: "Diver", IsLight: false,
+		Background: "#18181b", DarkBackground: "#121215", DarkerBackground: "#0c0c0e", LighterBg: "#27272a",
+		Foreground: "#f4f4f5", DarkForeground: "#a1a1aa", Accent: "#3b82f6", Selection: "#323236",
+		Border: "#3f3f46", Green: "#22c55e", Yellow: "#f59e0b", Red: "#ef4444", Blue: "#3b82f6",
+	},
+	"diver-light": {
+		Name: "diver-light", Label: "Diver Light", IsLight: true,
+		Background: "#ffffff", DarkBackground: "#f4f4f5", DarkerBackground: "#e4e4e7", LighterBg: "#ffffff",
+		Foreground: "#18181b", DarkForeground: "#71717a", Accent: "#2563eb", Selection: "#e9e9ec",
+		Border: "#d9d9de", Green: "#16a34a", Yellow: "#d97706", Red: "#dc2626", Blue: "#2563eb",
+	},
 	"tokyo-night": {
 		Name: "tokyo-night", Label: "Tokyo Night", IsLight: false,
 		Background: "#1a1b26", DarkBackground: "#16161e", DarkerBackground: "#13131a", LighterBg: "#24283b",
-		Foreground: "#c0caf5", DarkForeground: "#7aa2f7", Accent: "#7aa2f7", Selection: "#292e42",
+		Foreground: "#c0caf5", DarkForeground: "#787c99", Accent: "#7aa2f7", Selection: "#292e42",
 		Border: "#292e42", Green: "#9ece6a", Yellow: "#e0af68", Red: "#f7768e", Blue: "#7aa2f7",
 	},
 	"catppuccin": {
@@ -165,10 +177,19 @@ func GetPreset(name string) (Palette, bool) {
 func ListPresets() []Palette {
 	names := make([]string, 0, len(builtInPalettes))
 	for k := range builtInPalettes {
+		if k == "diver" || k == "diver-light" {
+			continue
+		}
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	out := make([]Palette, 0, len(names))
+	out := make([]Palette, 0, len(builtInPalettes))
+	if p, ok := builtInPalettes["diver"]; ok {
+		out = append(out, p)
+	}
+	if p, ok := builtInPalettes["diver-light"]; ok {
+		out = append(out, p)
+	}
 	for _, n := range names {
 		out = append(out, builtInPalettes[n])
 	}

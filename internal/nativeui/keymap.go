@@ -52,7 +52,9 @@ func (a *App) modalOpen() bool {
 	if !a.detachedAuxWindows && (a.composeOpen || a.eventOpen) {
 		return true
 	}
-	return a.evDetailOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen || a.arch.open || a.settings.open || a.direct.open
+	return a.evDetailOpen || a.quickRuleOpen || a.calDelOpen || a.helpOpen || a.moveOpen ||
+		a.arch.open || a.settings.open || a.direct.open || a.subs.open || a.outboxOpen ||
+		a.attPreview.open || a.sendLater.open
 }
 
 func (a *App) currentKeyContext() keyContext {
@@ -272,16 +274,17 @@ func (a *App) toggleHelp(topic string) {
 	a.helpOpen = true
 }
 
-// currentIndex is the list row the keyboard acts on: the open mail, else the list cursor.
+// currentIndex is the visible list row index the keyboard acts on, or -1 if none.
 func (a *App) currentIndex() int {
+	vis := a.visibleMessageIndices()
 	if a.selectedID != "" {
-		for i, m := range a.messages {
-			if m.ID == a.selectedID {
-				return i
+		for vi, origIdx := range vis {
+			if a.messages[origIdx].ID == a.selectedID {
+				return vi
 			}
 		}
 	}
-	if a.mailList.selected >= 0 && a.mailList.selected < len(a.messages) {
+	if a.mailList.selected >= 0 && a.mailList.selected < len(vis) {
 		return a.mailList.selected
 	}
 	return -1
@@ -303,9 +306,10 @@ func (a *App) currentHeader() *backend.MessageHeader {
 	return nil
 }
 
-// moveSelection opens the next (delta>0) or previous mail of the list.
+// moveSelection opens the next (delta>0) or previous visible mail of the list.
 func (a *App) moveSelection(ctx context.Context, delta int) {
-	n := len(a.messages)
+	vis := a.visibleMessageIndices()
+	n := len(vis)
 	if n == 0 {
 		return
 	}
@@ -319,10 +323,11 @@ func (a *App) moveSelection(ctx context.Context, delta int) {
 	default:
 		next = min(max(cur+delta, 0), n-1)
 	}
-	if next == cur && a.selectedID == a.messages[next].ID {
+	id := a.messages[vis[next]].ID
+	if next == cur && a.selectedID == id {
 		return
 	}
-	a.SelectMessage(ctx, a.messages[next].ID)
+	a.SelectMessage(ctx, id)
 	a.mailList.state.ScrollIntoView(next)
 }
 
@@ -482,49 +487,49 @@ func (a *App) confirmKey(action string, ids []string) bool {
 	return false
 }
 
-// neighborAfterRemoval returns the mail to open once id leaves the list: the next one, else the
-// previous one ("" if id is the only or an unlisted mail).
+// neighborAfterRemoval returns the visible mail to open once id leaves the list.
 func (a *App) neighborAfterRemoval(id string) string {
-	for i, m := range a.messages {
-		if m.ID != id {
+	vis := a.visibleMessageIndices()
+	for vi, origIdx := range vis {
+		if a.messages[origIdx].ID != id {
 			continue
 		}
-		if i+1 < len(a.messages) {
-			return a.messages[i+1].ID
+		if vi+1 < len(vis) {
+			return a.messages[vis[vi+1]].ID
 		}
-		if i > 0 {
-			return a.messages[i-1].ID
+		if vi > 0 {
+			return a.messages[vis[vi-1]].ID
 		}
 		return ""
 	}
 	return ""
 }
 
-// neighborOutside is neighborAfterRemoval for several mails leaving at once: the first mail
-// after id that stays, else the last one before it.
+// neighborOutside is neighborAfterRemoval for several mails leaving at once across visible rows.
 func (a *App) neighborOutside(id string, leaving []string) string {
 	gone := make(map[string]bool, len(leaving))
 	for _, l := range leaving {
 		gone[l] = true
 	}
+	vis := a.visibleMessageIndices()
 	at := -1
-	for i, m := range a.messages {
-		if m.ID == id {
-			at = i
+	for vi, origIdx := range vis {
+		if a.messages[origIdx].ID == id {
+			at = vi
 			break
 		}
 	}
 	if at < 0 {
 		return ""
 	}
-	for i := at + 1; i < len(a.messages); i++ {
-		if !gone[a.messages[i].ID] {
-			return a.messages[i].ID
+	for vi := at + 1; vi < len(vis); vi++ {
+		if cid := a.messages[vis[vi]].ID; !gone[cid] {
+			return cid
 		}
 	}
-	for i := at - 1; i >= 0; i-- {
-		if !gone[a.messages[i].ID] {
-			return a.messages[i].ID
+	for vi := at - 1; vi >= 0; vi-- {
+		if cid := a.messages[vis[vi]].ID; !gone[cid] {
+			return cid
 		}
 	}
 	return ""
@@ -562,16 +567,20 @@ func (a *App) shortcutHelpRows() []keyHint {
 		h("e", "Archivieren, öffnet die nächste Mail", "Archive and open the next email"),
 		h("v", "Verschieben nach… (Ordner desselben Kontos)", "Move to… (folders of the same account)"),
 		h("r", "Antworten", "Reply"),
+		h("a  ·  shift+r", "Allen antworten", "Reply All"),
+		h("f", "Weiterleiten", "Forward"),
 		h("q", "Quick-Regel aus Auswahl", "Quick rule from selection"),
 		h("esc", "Auswahl aufheben / Mail schließen", "Clear selection / close email"),
 		h("/  ·  ⌘K", "Suche", "Search"),
 		h("c  ·  ⌘N", "Neue E-Mail", "New email"),
-		h("n", "Neuer Termin (Kalender)", "New event (calendar)"),
+		h("n", "Neuer Termin (Kalender) / Kontakt (Kontakte)", "New event (Calendar) / contact (Contacts)"),
 		h("⌘R", "Aktualisieren", "Refresh"),
 		h("⌘Z", "Letzte Aktion rückgängig machen", "Undo last mail action"),
+		h("⌘S", "Entwurf speichern (Schreiben)", "Save draft (Compose)"),
 		h("⌘P", "Geöffnete Mail drucken", "Print open email"),
+		h("⌘,", "Einstellungen", "Settings"),
 		h("⌘J", "KI-Assistent ein/aus", "Toggle AI Assistant"),
-		h("⌘↩", "E-Mail / Chat-Nachricht senden", "Send email / chat message"),
+		h("⌘↩", "E-Mail / Schnellantwort / Chat senden · KI-Text generieren", "Send email / quick reply / chat · generate AI draft"),
 		h("h  ·  ⌘/", "Hilfe / diese Übersicht", "Help / this overview"),
 		h("⌘/shift-Klick", "Mehrfachauswahl in der Liste", "Multi-select in the list"),
 	}

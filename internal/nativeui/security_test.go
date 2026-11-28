@@ -27,7 +27,7 @@ func TestReaderSecurityNotes(t *testing.T) {
 	tt := ui.NewTester(app.RenderMain, 1380, 1000)
 	tt.Frame()
 	texts := strings.Join(tt.Texts(), "\n")
-	for _, want := range []string{"Geheimer Text", "KI-Aktionen auf diese Mail senden den entschlüsselten Text", "Signiert (PGP/S/MIME)."} {
+	for _, want := range []string{"Geheimer Text", "Aus Datenschutzgründen werden verschlüsselte Mails nie an KI-Anbieter gesendet.", "Signiert (PGP/S/MIME)."} {
 		if !strings.Contains(texts, want) {
 			t.Errorf("reader lacks %q; texts:\n%s", want, texts)
 		}

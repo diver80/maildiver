@@ -19,7 +19,14 @@ claude mcp add postdive -- postdive --mcp --allow-drafts
 claude mcp add postdive -- postdive --mcp --allow-writes
 ```
 
-### 2. Claude Desktop / Cursor / Antigravity / T3 Code (`mcpServers` JSON)
+### 2. One-Click Client Setup (Claude Desktop, Cursor, Antigravity)
+
+Open **PostDive → Settings (`⌘,`) → AI & Sync → Local MCP Server**, pick your permission level (**Read-only**, **+ Drafts**, or **+ Calendar & Triage**), and click your client button:
+
+- Automatically writes the `"postdive"` entry into your client's config file (**Claude Desktop**, **Cursor** `~/.cursor/mcp.json`, or **Antigravity** `~/.gemini/antigravity/mcp_config.json`) using the resolved absolute `PostDive`/`postdive` binary path.
+- Preserves all existing `mcpServers` entries and writes a one-time `.postdive.bak` backup of the original file before modifying it.
+
+### 3. Manual JSON Snippet (`mcpServers`)
 
 You can also copy this snippet directly inside **PostDive → Settings (`⌘,`) → AI & Sync → Local MCP Server**:
 

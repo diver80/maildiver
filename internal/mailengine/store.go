@@ -1,10 +1,12 @@
 package mailengine
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,12 +76,16 @@ type StoredMessage struct {
 	Attachments []backend.Attachment
 	Headers     map[string]string
 	RawEML      []byte
-	HasICS      bool
-	ICSBody     string
+	HasICS       bool
+	ICSBody      string
+	SnoozedUntil int64
 	// Snippet is the list's preview line, made when the body is fetched; "" for encrypted mails
 	// (it is never made from decrypted content) and for mails whose body was not fetched.
 	Snippet string
 }
+
+// SubscriptionSummary aliases backend.SubscriptionSummary for mailengine callers.
+type SubscriptionSummary = backend.SubscriptionSummary
 
 // StoredCalendar represents a local, Google, or iCal calendar.
 type StoredCalendar struct {
@@ -366,6 +372,14 @@ func (s *Store) migrate() error {
 		} else if strings.HasPrefix(col, "attendees_json") {
 			_, _ = s.db.Exec(`UPDATE calendars SET sync_token = '' WHERE source = 'google'`)
 		}
+	}
+	if _, err := s.db.Exec(`ALTER TABLE messages ADD COLUMN snoozed_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("migrate messages.snoozed_until: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_snoozed ON messages(snoozed_until)`); err != nil {
+		return fmt.Errorf("migrate idx_messages_snoozed: %w", err)
 	}
 	if err := s.rethreadOnce(); err != nil {
 		return fmt.Errorf("rethread messages: %w", err)
@@ -688,8 +702,8 @@ func (s *Store) UpsertMessage(ctx context.Context, m StoredMessage) error {
 		INSERT INTO messages(
 			id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
 			subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
-			body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet, snoozed_until
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			read=excluded.read,
 			flagged=excluded.flagged,
@@ -708,11 +722,12 @@ func (s *Store) UpsertMessage(ctx context.Context, m StoredMessage) error {
 			raw_eml=CASE WHEN length(excluded.raw_eml) > 0 THEN excluded.raw_eml ELSE messages.raw_eml END,
 			has_ics=CASE WHEN excluded.body_fetched=1 THEN excluded.has_ics ELSE messages.has_ics END,
 			ics_body=CASE WHEN excluded.body_fetched=1 THEN excluded.ics_body ELSE messages.ics_body END,
-			snippet=CASE WHEN excluded.body_fetched=1 THEN excluded.snippet ELSE messages.snippet END`,
+			snippet=CASE WHEN excluded.body_fetched=1 THEN excluded.snippet ELSE messages.snippet END,
+			snoozed_until=CASE WHEN excluded.snoozed_until > 0 THEN excluded.snoozed_until ELSE messages.snoozed_until END`,
 		m.ID, m.AccountID, m.FolderID, m.FolderPath, m.UID, m.MessageID, m.ThreadID, m.InReplyTo, m.References,
 		m.Subject, m.From, string(toJSON), string(ccJSON), m.DateISO, m.DateUnix, boolInt(m.Read), boolInt(m.Flagged),
 		m.Size, m.BodyText, m.BodyHTML, boolInt(m.BodyFetched), string(attJSON), string(hdrJSON),
-		m.RawEML, boolInt(m.HasICS), m.ICSBody, listSnippet(m),
+		m.RawEML, boolInt(m.HasICS), m.ICSBody, listSnippet(m), m.SnoozedUntil,
 	)
 	if err != nil {
 		return err
@@ -869,7 +884,7 @@ func (s *Store) GetMessage(ctx context.Context, id string) (StoredMessage, error
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
 		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
-		       body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet
+		       body_text, body_html, body_fetched, attachments_json, headers_json, raw_eml, has_ics, ics_body, snippet, snoozed_until
 		FROM messages WHERE id=?`, id)
 	return scanStoredMessage(row)
 }
@@ -881,7 +896,7 @@ func scanStoredMessage(row interface{ Scan(dest ...any) error }) (StoredMessage,
 	err := row.Scan(
 		&m.ID, &m.AccountID, &m.FolderID, &m.FolderPath, &m.UID, &m.MessageID, &m.ThreadID, &m.InReplyTo, &m.References,
 		&m.Subject, &m.From, &toJSON, &ccJSON, &m.DateISO, &m.DateUnix, &rd, &fl, &m.Size,
-		&m.BodyText, &m.BodyHTML, &bf, &attJSON, &hdrJSON, &m.RawEML, &hasICS, &m.ICSBody, &m.Snippet,
+		&m.BodyText, &m.BodyHTML, &bf, &attJSON, &hdrJSON, &m.RawEML, &hasICS, &m.ICSBody, &m.Snippet, &m.SnoozedUntil,
 	)
 	if err != nil {
 		return StoredMessage{}, err
@@ -904,6 +919,9 @@ type MessageQuery struct {
 	Query           string
 	Unread          *bool
 	UnreadOrFlagged bool
+	SnoozedOnly     bool
+	ExcludeSnoozed  bool
+	NowUnix         int64
 	Days            int
 	BeforeUnix      int64 // when > 0, matches date_unix > 0 AND date_unix <= BeforeUnix
 	OnlyRead        bool
@@ -923,6 +941,10 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 	} else if limit > 1000 {
 		limit = 1000
 	}
+	nowUnix := q.NowUnix
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
 	var where []string
 	var args []any
 
@@ -939,26 +961,35 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 			where = append(where, "COALESCE(f.type, '') NOT IN ('trash', 'junk')")
 		}
 	}
-	if q.UnreadOrFlagged {
-		if q.Days > 0 {
-			cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
-			where = append(where, "((m.read = 0 AND m.date_unix >= ?) OR m.flagged = 1)")
-			args = append(args, cutoff)
-		} else {
-			where = append(where, "(m.read = 0 OR m.flagged = 1)")
-		}
+	if q.SnoozedOnly {
+		where = append(where, "m.snoozed_until > ?")
+		args = append(args, nowUnix)
 	} else {
-		if q.Unread != nil {
-			if *q.Unread {
-				where = append(where, "m.read = 0")
-			} else {
-				where = append(where, "m.read = 1")
-			}
+		if q.ExcludeSnoozed {
+			where = append(where, "(m.snoozed_until = 0 OR m.snoozed_until <= ?)")
+			args = append(args, nowUnix)
 		}
-		if q.Days > 0 {
-			cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
-			where = append(where, "m.date_unix >= ?")
-			args = append(args, cutoff)
+		if q.UnreadOrFlagged {
+			if q.Days > 0 {
+				cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
+				where = append(where, "((m.read = 0 AND m.date_unix >= ?) OR m.flagged = 1)")
+				args = append(args, cutoff)
+			} else {
+				where = append(where, "(m.read = 0 OR m.flagged = 1)")
+			}
+		} else {
+			if q.Unread != nil {
+				if *q.Unread {
+					where = append(where, "m.read = 0")
+				} else {
+					where = append(where, "m.read = 1")
+				}
+			}
+			if q.Days > 0 {
+				cutoff := time.Now().AddDate(0, 0, -q.Days).Unix()
+				where = append(where, "m.date_unix >= ?")
+				args = append(args, cutoff)
+			}
 		}
 	}
 	if q.OnlyRead {
@@ -996,19 +1027,21 @@ func (s *Store) ListMessages(ctx context.Context, q MessageQuery) ([]StoredMessa
 		return nil, 0, err
 	}
 
-	bodyCols := `m.body_text, m.body_html, m.body_fetched, m.attachments_json, m.headers_json, NULL, m.has_ics, m.ics_body, m.snippet`
+	bodyCols := `m.body_text, m.body_html, m.body_fetched, m.attachments_json, m.headers_json, NULL, m.has_ics, m.ics_body, m.snippet, m.snoozed_until`
 	if q.HeadersOnly {
-		bodyCols = `'', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, '', m.snippet`
+		bodyCols = `'', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, '', m.snippet, m.snoozed_until`
 	}
-	orderDir := "DESC"
-	if q.OldestFirst {
-		orderDir = "ASC"
+	orderClause := "ORDER BY m.date_unix DESC"
+	if q.SnoozedOnly {
+		orderClause = "ORDER BY m.snoozed_until ASC, m.date_unix DESC"
+	} else if q.OldestFirst {
+		orderClause = "ORDER BY m.date_unix ASC"
 	}
 	selectSQL := `
 		SELECT m.id, m.account_id, m.folder_id, m.folder_path, m.uid, m.message_id, m.thread_id, m.in_reply_to, m.references_hdr,
 		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.size,
 		       ` + bodyCols + `
-		` + fromClause + whereSQL + ` ORDER BY m.date_unix ` + orderDir + ` LIMIT ? OFFSET ?`
+		` + fromClause + whereSQL + ` ` + orderClause + ` LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), limit, q.Offset)
 	rows, err := s.db.QueryContext(ctx, selectSQL, queryArgs...)
 	if err != nil {
@@ -1164,7 +1197,7 @@ func (s *Store) ListThreadMessages(ctx context.Context, threadID string, limit i
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, account_id, folder_id, folder_path, uid, message_id, thread_id, in_reply_to, references_hdr,
 		       subject, from_addr, to_json, cc_json, date_iso, date_unix, read, flagged, size,
-		       body_text, body_html, body_fetched, attachments_json, headers_json, NULL, has_ics, ics_body, snippet
+		       body_text, body_html, body_fetched, attachments_json, headers_json, NULL, has_ics, ics_body, snippet, snoozed_until
 		FROM messages WHERE thread_id=? ORDER BY date_unix DESC LIMIT ?`, threadID, limit)
 	if err != nil {
 		return nil, err
@@ -2004,4 +2037,308 @@ func nonNilStrings(in []string) []string {
 		return []string{}
 	}
 	return in
+}
+
+// SetMessageSnooze stores a snooze wake timestamp (Unix seconds) on a message; 0 unsnoozes.
+func (s *Store) SetMessageSnooze(ctx context.Context, msgID string, untilUnix int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE messages SET snoozed_until=? WHERE id=?`, max(int64(0), untilUnix), msgID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("not_found: message %q", msgID)
+	}
+	return nil
+}
+
+// CountSnoozed returns the number of messages currently snoozed past nowUnix.
+func (s *Store) CountSnoozed(ctx context.Context, accountID string, nowUnix int64) int {
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
+	var count int
+	if strings.TrimSpace(accountID) != "" {
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
+			 WHERE m.account_id=? AND m.snoozed_until > ? AND COALESCE(f.type, '') NOT IN ('trash', 'junk')`,
+			accountID, nowUnix).Scan(&count)
+		return count
+	}
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
+		 WHERE m.snoozed_until > ? AND COALESCE(f.type, '') NOT IN ('trash', 'junk')`,
+		nowUnix).Scan(&count)
+	return count
+}
+
+// WakeExpiredSnoozed finds messages whose snooze timer has expired, resets snoozed_until=0 and
+// marks them unread so previously read snoozed mails resurface reliably in Focus.
+func (s *Store) WakeExpiredSnoozed(ctx context.Context, nowUnix int64) ([]StoredMessage, error) {
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.account_id, m.folder_id, m.folder_path, m.uid, m.message_id, m.thread_id, m.in_reply_to, m.references_hdr,
+		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.size,
+		       '', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, '', m.snippet, m.snoozed_until
+		FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
+		WHERE m.snoozed_until > 0 AND m.snoozed_until <= ? AND COALESCE(f.type, '') NOT IN ('trash', 'junk')`,
+		nowUnix)
+	if err != nil {
+		return nil, err
+	}
+	var woke []StoredMessage
+	for rows.Next() {
+		m, serr := scanStoredMessage(rows)
+		if serr != nil {
+			_ = rows.Close()
+			return nil, serr
+		}
+		woke = append(woke, m)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil || len(woke) == 0 {
+		return woke, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for i := range woke {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET snoozed_until=0, read=0 WHERE id=?`, woke[i].ID); err != nil {
+			return nil, err
+		}
+		woke[i].SnoozedUntil = 0
+		woke[i].Read = false
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return woke, nil
+}
+
+// ListWaitingReplyMessages returns recent Sent messages (aged between minAge and maxAge)
+// whose thread has no newer reply or follow-up (100% local SQLite, zero AI tokens).
+func (s *Store) ListWaitingReplyMessages(ctx context.Context, accountID string, ownEmails []string, minAge, maxAge time.Duration) ([]StoredMessage, error) {
+	now := time.Now()
+	maxDate := now.Add(-minAge).Unix()
+	minDate := now.Add(-maxAge).Unix()
+	if maxDate <= minDate {
+		return nil, nil
+	}
+	var where []string
+	var args []any
+	where = append(where, `(f.type = 'sent' OR lower(m.folder_path) IN ('sent', 'gesendet', 'sent items', 'sent messages', 'sent mail', 'gesendete', 'gesendete objekte', 'gesendete elemente'))`)
+	where = append(where, `m.thread_id != ''`)
+	where = append(where, `m.date_unix >= ? AND m.date_unix <= ?`)
+	args = append(args, minDate, maxDate)
+	if strings.TrimSpace(accountID) != "" {
+		where = append(where, `m.account_id = ?`)
+		args = append(args, accountID)
+	}
+	// No newer message exists in the same thread (excluding trash/drafts) after this sent mail.
+	where = append(where, `NOT EXISTS (
+		SELECT 1 FROM messages r LEFT JOIN folders rf ON rf.id = r.folder_id
+		WHERE r.thread_id = m.thread_id
+		  AND r.date_unix > m.date_unix
+		  AND COALESCE(rf.type, '') NOT IN ('trash', 'drafts')
+	)`)
+
+	query := `
+		SELECT m.id, m.account_id, m.folder_id, m.folder_path, m.uid, m.message_id, m.thread_id, m.in_reply_to, m.references_hdr,
+		       m.subject, m.from_addr, m.to_json, m.cc_json, m.date_iso, m.date_unix, m.read, m.flagged, m.size,
+		       '', '', m.body_fetched, CASE WHEN m.attachments_json IS NOT NULL AND m.attachments_json != '' AND m.attachments_json != '[]' THEN '[{"name":""}]' ELSE '[]' END, '{}', NULL, m.has_ics, '', m.snippet, m.snoozed_until
+		FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY m.date_unix DESC LIMIT 250`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ownSet := make(map[string]bool, len(ownEmails))
+	for _, em := range ownEmails {
+		if k := strings.ToLower(strings.TrimSpace(em)); k != "" {
+			ownSet[k] = true
+		}
+	}
+	seenThreads := map[string]bool{}
+	var out []StoredMessage
+	for rows.Next() {
+		m, serr := scanStoredMessage(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		if seenThreads[m.ThreadID] {
+			continue
+		}
+		// Skip self-only notes or mails without recipients.
+		hasExternal := false
+		for _, r := range m.To {
+			if addr := parseStoreEmail(r); addr != "" && !ownSet[addr] {
+				hasExternal = true
+				break
+			}
+		}
+		if !hasExternal {
+			continue
+		}
+		seenThreads[m.ThreadID] = true
+		out = append(out, m)
+		if len(out) >= 100 {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+// ListSubscriptions groups local non-archived/non-trash emails carrying a List-Unsubscribe header by sender.
+func (s *Store) ListSubscriptions(ctx context.Context, accountID string) ([]SubscriptionSummary, error) {
+	var where []string
+	var args []any
+	where = append(where, `COALESCE(f.type, '') NOT IN ('trash', 'junk', 'sent', 'drafts', 'archive', 'archives')`)
+	where = append(where, `lower(m.folder_path) NOT IN ('archive', 'archives', 'archiv')`)
+	where = append(where, `lower(m.folder_path) NOT LIKE 'archives/%' AND lower(m.folder_path) NOT LIKE 'archive/%' AND lower(m.folder_path) NOT LIKE 'archiv/%'`)
+	where = append(where, `m.headers_json LIKE '%List-Unsubscribe%'`)
+	if strings.TrimSpace(accountID) != "" {
+		where = append(where, `m.account_id = ?`)
+		args = append(args, accountID)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.account_id, m.from_addr, m.date_iso, m.date_unix, m.read, m.headers_json
+		FROM messages m LEFT JOIN folders f ON f.id = m.folder_id
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY m.date_unix DESC LIMIT 2000`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type agg struct {
+		summary    SubscriptionSummary
+		latestUnix int64
+	}
+	bySender := map[string]*agg{}
+	for rows.Next() {
+		var id, accID, from, dateISO, hdrJSON string
+		var dateUnix int64
+		var readInt int
+		if serr := rows.Scan(&id, &accID, &from, &dateISO, &dateUnix, &readInt, &hdrJSON); serr != nil {
+			return nil, serr
+		}
+		var hdrs map[string]string
+		_ = json.Unmarshal([]byte(hdrJSON), &hdrs)
+		httpsURL, mailtoURI, oneClick := parseUnsubscribeFromHeaders(hdrs)
+		if httpsURL == "" && mailtoURI == "" {
+			continue
+		}
+		emailAddr, dispName := parseStoreAddress(from)
+		if emailAddr == "" {
+			continue
+		}
+		a, ok := bySender[emailAddr]
+		if !ok {
+			a = &agg{
+				summary: SubscriptionSummary{
+					AccountID:         accID,
+					SenderEmail:       emailAddr,
+					SenderName:        dispName,
+					LatestDateISO:     dateISO,
+					LatestMsgID:       id,
+					UnsubscribeHTTPS:  httpsURL,
+					UnsubscribeMailto: mailtoURI,
+					OneClick:          httpsURL != "" && oneClick,
+				},
+				latestUnix: dateUnix,
+			}
+			bySender[emailAddr] = a
+		}
+		a.summary.Count++
+		if readInt == 0 {
+			a.summary.UnreadCount++
+		}
+		a.summary.MessageIDs = append(a.summary.MessageIDs, id)
+		if dateUnix > a.latestUnix {
+			a.latestUnix = dateUnix
+			a.summary.LatestDateISO = dateISO
+			a.summary.LatestMsgID = id
+		}
+		if a.summary.SenderName == "" && dispName != "" {
+			a.summary.SenderName = dispName
+		}
+		if (a.summary.UnsubscribeHTTPS == "" && httpsURL != "") || (!a.summary.OneClick && httpsURL != "" && oneClick) {
+			a.summary.UnsubscribeHTTPS = httpsURL
+			a.summary.OneClick = oneClick
+		}
+		if a.summary.UnsubscribeMailto == "" && mailtoURI != "" {
+			a.summary.UnsubscribeMailto = mailtoURI
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SubscriptionSummary, 0, len(bySender))
+	for _, a := range bySender {
+		out = append(out, a.summary)
+	}
+	slices.SortFunc(out, func(a, b SubscriptionSummary) int {
+		if c := cmp.Compare(b.Count, a.Count); c != 0 {
+			return c
+		}
+		return cmp.Compare(b.LatestDateISO, a.LatestDateISO)
+	})
+	return out, nil
+}
+
+func parseStoreEmail(raw string) string {
+	em, _ := parseStoreAddress(raw)
+	return em
+}
+
+func parseStoreAddress(raw string) (emailAddr, name string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if addr, err := mail.ParseAddress(raw); err == nil && strings.TrimSpace(addr.Address) != "" {
+		return strings.ToLower(strings.TrimSpace(addr.Address)), strings.TrimSpace(addr.Name)
+	}
+	return strings.ToLower(raw), ""
+}
+
+func parseUnsubscribeFromHeaders(hdrs map[string]string) (httpsURL, mailtoURI string, oneClick bool) {
+	if len(hdrs) == 0 {
+		return "", "", false
+	}
+	var raw, postHdr string
+	for k, v := range hdrs {
+		switch strings.ToLower(k) {
+		case "list-unsubscribe":
+			raw = strings.TrimSpace(v)
+		case "list-unsubscribe-post":
+			postHdr = strings.ToLower(v)
+		}
+	}
+	if raw == "" {
+		return "", "", false
+	}
+	oneClick = strings.Contains(postHdr, "list-unsubscribe=one-click")
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		s = strings.TrimPrefix(s, "<")
+		s = strings.TrimSuffix(s, ">")
+		s = strings.TrimSpace(s)
+		low := strings.ToLower(s)
+		if strings.HasPrefix(low, "https://") && httpsURL == "" {
+			httpsURL = s
+		} else if strings.HasPrefix(low, "mailto:") && mailtoURI == "" {
+			mailtoURI = s
+		}
+	}
+	return httpsURL, mailtoURI, oneClick
 }

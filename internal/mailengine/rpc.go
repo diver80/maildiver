@@ -122,6 +122,16 @@ func (e *Engine) Call(ctx context.Context, method string, params any) (json.RawM
 		return e.rpcMessagesSearchServer(ctx, params)
 	case "messages.undoMove":
 		return e.rpcMessagesUndoMove(ctx, params)
+	case "messages.snooze":
+		return e.rpcMessagesSnooze(ctx, params)
+	case "messages.wakeSnoozed":
+		return e.rpcMessagesWakeSnoozed(ctx)
+	case "messages.snoozedCount":
+		return e.rpcMessagesSnoozedCount(ctx, params)
+	case "messages.waitingReply":
+		return e.rpcMessagesWaitingReply(ctx, params)
+	case "messages.subscriptions":
+		return e.rpcMessagesSubscriptions(ctx, params)
 	case "compose.draft":
 		return e.rpcComposeDraft(ctx, params)
 	case "compose.send":
@@ -237,6 +247,8 @@ func (e *Engine) rpcMessagesList(ctx context.Context, params any) (json.RawMessa
 		Query           string `json:"q"`
 		Unread          *bool  `json:"unread"`
 		UnreadOrFlagged bool   `json:"unreadOrFlagged"`
+		SnoozedOnly     bool   `json:"snoozedOnly"`
+		ExcludeSnoozed  bool   `json:"excludeSnoozed"`
 		Days            int    `json:"days"`
 		Limit           int    `json:"limit"`
 		Cursor          string `json:"cursor"`
@@ -258,6 +270,8 @@ func (e *Engine) rpcMessagesList(ctx context.Context, params any) (json.RawMessa
 		Query:           p.Query,
 		Unread:          p.Unread,
 		UnreadOrFlagged: p.UnreadOrFlagged,
+		SnoozedOnly:     p.SnoozedOnly,
+		ExcludeSnoozed:  p.ExcludeSnoozed,
 		Days:            p.Days,
 		Limit:           limit,
 		Offset:          offset,
@@ -320,6 +334,7 @@ func storedToHeader(m StoredMessage, inInbox bool) backend.MessageHeader {
 		Flagged:        m.Flagged,
 		Size:           m.Size,
 		HasAttachments: len(m.Attachments) > 0,
+		SnoozedUntil:   m.SnoozedUntil,
 		Snippet:        m.Snippet,
 	}
 }
@@ -590,6 +605,11 @@ func (e *Engine) rpcMessagesThread(ctx context.Context, params any) (json.RawMes
 			}
 			seen[key] = true
 		}
+		enc := isMessageEncrypted(tm)
+		bodyText := tm.BodyText
+		if enc {
+			bodyText = ""
+		}
 		out = append(out, triage.MessageInput{
 			ID:        tm.ID,
 			ThreadID:  tm.ThreadID,
@@ -599,7 +619,8 @@ func (e *Engine) rpcMessagesThread(ctx context.Context, params any) (json.RawMes
 			From:      tm.From,
 			To:        tm.To,
 			Date:      tm.DateISO,
-			BodyText:  tm.BodyText,
+			BodyText:  bodyText,
+			Encrypted: enc,
 			Unread:    !tm.Read,
 		})
 	}
@@ -1205,6 +1226,141 @@ func (e *Engine) rpcMessagesUndoMove(ctx context.Context, params any) (json.RawM
 		}
 	}
 	return marshalJSON(backend.UndoMoveResponse{OK: true, Restored: totalRestored})
+}
+
+func (e *Engine) rpcMessagesSnooze(ctx context.Context, params any) (json.RawMessage, error) {
+	var p struct {
+		ID        string `json:"id"`
+		UntilUnix int64  `json:"untilUnix"`
+	}
+	if err := decodeParams(params, &p); err != nil {
+		return nil, err
+	}
+	if err := e.SnoozeMessage(ctx, p.ID, p.UntilUnix); err != nil {
+		return nil, err
+	}
+	return marshalJSON(map[string]any{"ok": true})
+}
+
+func (e *Engine) rpcMessagesWakeSnoozed(ctx context.Context) (json.RawMessage, error) {
+	msgs, err := e.WakeExpiredSnoozed(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return marshalJSON(map[string]any{"messages": msgs})
+}
+
+func (e *Engine) rpcMessagesSnoozedCount(ctx context.Context, params any) (json.RawMessage, error) {
+	var p struct {
+		AccountID string `json:"accountId"`
+	}
+	_ = decodeParams(params, &p)
+	return marshalJSON(map[string]any{"count": e.CountSnoozed(ctx, p.AccountID)})
+}
+
+func (e *Engine) rpcMessagesWaitingReply(ctx context.Context, params any) (json.RawMessage, error) {
+	var p struct {
+		AccountID string `json:"accountId"`
+	}
+	_ = decodeParams(params, &p)
+	msgs, err := e.ListWaitingReplyMessages(ctx, p.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	return marshalJSON(map[string]any{"messages": msgs})
+}
+
+func (e *Engine) rpcMessagesSubscriptions(ctx context.Context, params any) (json.RawMessage, error) {
+	var p struct {
+		AccountID string `json:"accountId"`
+	}
+	_ = decodeParams(params, &p)
+	subs, err := e.ListSubscriptions(ctx, p.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	return marshalJSON(map[string]any{"subscriptions": subs})
+}
+
+func (e *Engine) ownEmailAddresses(accountID string) []string {
+	cfg := e.loadConfig()
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		addr := strings.ToLower(strings.TrimSpace(raw))
+		if addr != "" && !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
+		}
+	}
+	for _, acc := range cfg.Direct.Accounts {
+		if accountID != "" && acc.ID != accountID {
+			continue
+		}
+		add(acc.Email)
+		for _, al := range acc.Aliases {
+			add(al.Email)
+		}
+	}
+	return out
+}
+
+// SnoozeMessage sets or clears (untilUnix <= 0) a snooze timestamp on msgID and notifies listeners.
+func (e *Engine) SnoozeMessage(ctx context.Context, msgID string, untilUnix int64) error {
+	m, err := e.store.GetMessage(ctx, msgID)
+	if err != nil {
+		return fmt.Errorf("not_found: message %q", msgID)
+	}
+	if untilUnix < 0 {
+		untilUnix = 0
+	}
+	if err := e.store.SetMessageSnooze(ctx, m.ID, untilUnix); err != nil {
+		return err
+	}
+	e.emitMailSync(m.AccountID)
+	return nil
+}
+
+// CountSnoozed returns the number of actively snoozed messages for accountID (or all accounts).
+func (e *Engine) CountSnoozed(ctx context.Context, accountID string) int {
+	return e.store.CountSnoozed(ctx, accountID, time.Now().Unix())
+}
+
+// WakeExpiredSnoozed resets expired snooze timers, marks those mails unread so they return to Focus, and emits sync events.
+func (e *Engine) WakeExpiredSnoozed(ctx context.Context) ([]backend.MessageHeader, error) {
+	woke, err := e.store.WakeExpiredSnoozed(ctx, time.Now().Unix())
+	if err != nil || len(woke) == 0 {
+		return nil, err
+	}
+	accounts := map[string]bool{}
+	out := make([]backend.MessageHeader, 0, len(woke))
+	for _, m := range woke {
+		accounts[m.AccountID] = true
+		out = append(out, storedToHeader(m, strings.EqualFold(m.FolderPath, "INBOX")))
+	}
+	for accID := range accounts {
+		e.emitMailSync(accID)
+	}
+	return out, nil
+}
+
+// ListWaitingReplyMessages returns recent outgoing messages (2–30 days old) with no reply yet.
+func (e *Engine) ListWaitingReplyMessages(ctx context.Context, accountID string) ([]backend.MessageHeader, error) {
+	own := e.ownEmailAddresses(accountID)
+	list, err := e.store.ListWaitingReplyMessages(ctx, accountID, own, 48*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]backend.MessageHeader, 0, len(list))
+	for _, m := range list {
+		out = append(out, storedToHeader(m, false))
+	}
+	return out, nil
+}
+
+// ListSubscriptions aggregates recurring non-archived/non-trash newsletters with List-Unsubscribe metadata.
+func (e *Engine) ListSubscriptions(ctx context.Context, accountID string) ([]SubscriptionSummary, error) {
+	return e.store.ListSubscriptions(ctx, accountID)
 }
 
 func (e *Engine) pickOutgoingAccount(accountID string) (config.DirectAccount, error) {

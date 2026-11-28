@@ -33,6 +33,13 @@ func (a *App) renderCopilotPane(c *ui.Context) {
 			})
 			a.renderCopilotControls(c, false)
 		})
+		if !a.isPhone() && isMailNav(a.navID) && a.selectedMsg != nil && a.hasInspectorAIContent() {
+			ui.Scroll(c.Key("cp-insp-scroll")).FillWidth().MaxHeight(340).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				ui.Column(c).FillWidth().Padding(10, 12).Children(func() {
+					a.renderInspectorAIResult(c, a.selectedMsg)
+				})
+			})
+		}
 		a.renderCopilotChat(c, false)
 	})
 }

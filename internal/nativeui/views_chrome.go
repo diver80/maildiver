@@ -41,7 +41,7 @@ func (a *App) renderToolbar(c *ui.Context) {
 					a.lastCalSearch = curQ
 					a.RefreshAll(context.Background())
 				}
-				if len(a.calendars) > 0 {
+				if len(a.calendars) > 0 && a.hideSidebar {
 					a.renderCalendarFilterButton(c)
 				}
 			} else {
@@ -89,6 +89,9 @@ func (a *App) renderToolbar(c *ui.Context) {
 		})
 
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+			if a.winW == 0 || a.winW >= 960 {
+				a.renderLiveMeetingPill(c)
+			}
 			if iconBtn(c.Key("tb-refresh"), iconRefresh, a.tr("Aktualisieren (⌘R)", "Refresh (⌘R)"), ui.Color{}, false).Clicked() {
 				if a.isDirectMode() {
 					if a.navID == "calendar" {
@@ -255,6 +258,9 @@ func (a *App) renderAppMenuButton(c *ui.Context) {
 		if m.Item(a.tr("Filterregeln verwalten…", "Manage filter rules…")).Disabled(!a.engineReady).Chosen() {
 			a.OpenFilterRules(context.Background())
 		}
+		if m.Item(a.tr("Abos & Newsletter aufräumen…", "Subscriptions & cleanup…")).Disabled(!a.engineReady).Chosen() {
+			a.OpenSubscriptionsModal(context.Background())
+		}
 		m.Separator()
 		if m.Item(a.tr("Einstellungen…", "Settings…")).Shortcut(ui.Cmd, ui.KeyComma).Chosen() {
 			a.OpenSettings()
@@ -413,9 +419,9 @@ func (a *App) renderFooter(c *ui.Context) {
 	})
 }
 
-// sidebarWidth is the width the left mail sidebar takes (0 while hidden or in Calendar/Contacts).
+// sidebarWidth is the width the left sidebar takes (0 while hidden or in Contacts/Activity).
 func (a *App) sidebarWidth() float32 {
-	if a.hideSidebar || !isMailNav(a.navID) {
+	if a.hideSidebar || (!isMailNav(a.navID) && a.navID != "calendar") {
 		return 0
 	}
 	return 230

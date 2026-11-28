@@ -144,11 +144,27 @@ type MessageHeader struct {
 	Size           int64    `json:"size"`
 	HasAttachments bool     `json:"hasAttachments,omitempty"`
 	External       bool     `json:"external,omitempty"`
+	SnoozedUntil   int64    `json:"snoozedUntil,omitempty"`
 	// ThreadCount is the number of mails in this mail's conversation (lists only; 0 = unknown).
 	ThreadCount int `json:"threadCount,omitempty"`
 	// Snippet is the start of the mail's own text for the list's preview line ("" when the body
 	// was not fetched yet or the mail is encrypted).
 	Snippet string `json:"snippet,omitempty"`
+}
+
+// SubscriptionSummary aggregates messages from a recurring newsletter/sender with List-Unsubscribe metadata.
+type SubscriptionSummary struct {
+	AccountID         string   `json:"accountId,omitempty"`
+	SenderEmail       string   `json:"senderEmail"`
+	SenderName        string   `json:"senderName"`
+	Count             int      `json:"count"`
+	UnreadCount       int      `json:"unreadCount"`
+	LatestDateISO     string   `json:"latestDate"`
+	LatestMsgID       string   `json:"latestMsgId"`
+	MessageIDs        []string `json:"messageIds"`
+	UnsubscribeHTTPS  string   `json:"unsubscribeHttps,omitempty"`
+	UnsubscribeMailto string   `json:"unsubscribeMailto,omitempty"`
+	OneClick          bool     `json:"oneClick,omitempty"`
 }
 
 // ConversationMessage is one mail of a conversation: its header and the start of its text.
@@ -213,6 +229,8 @@ type MessagesFilter struct {
 	Query           string
 	Unread          *bool
 	UnreadOrFlagged bool
+	SnoozedOnly     bool
+	ExcludeSnoozed  bool
 	Days            int
 	Limit           int
 	Cursor          string

@@ -449,7 +449,7 @@ func TestRenderScreens(t *testing.T) {
 	cfg.Language = "de"
 	cfg.Mailbox.ReadOnly = false
 	cfg.Theme.Mode = "preset"
-	cfg.Theme.Preset = "tokyo-night"
+	cfg.Theme.Preset = "diver"
 
 	app := NewApp(Options{
 		ConfigLoader: func() (config.Config, error) { return cfg, nil },
@@ -510,6 +510,9 @@ func TestRenderScreens(t *testing.T) {
 	}
 	app.totalMessages = len(app.messages)
 	app.focusUnread = 3
+	app.snoozedCount = 1
+	app.waitingReplyIDs = map[string]bool{"m2": true}
+	app.waitingReplies = []backend.MessageHeader{app.messages[1]}
 	app.selectedID = "m1"
 	app.mailList.selected = 0
 	app.triageState = triage.State{
@@ -523,6 +526,7 @@ func TestRenderScreens(t *testing.T) {
 	app.selectedMsg = &backend.MessageDetail{
 		MessageHeader: app.messages[0],
 		BodyText:      "Hallo Alex,\n\ndie finale Kalkulation f\u00fcr das Q4-Rollout liegt vor:\n- Lizenzen & Infrastruktur: 14.200 EUR\n- Migration & Workshop (2 Tage): 3.600 EUR\n\nK\u00f6nnen wir heute um 14:00 Uhr kurz abstimmen, ob das Budget so freigegeben werden kann?\n\nViele Gr\u00fc\u00dfe\nAlice",
+		BodyHtml: `<p>Hallo Alex,</p><p>die finale Kalkulation f&uuml;r das Q4-Rollout liegt vor:</p><ul><li>Lizenzen &amp; Infrastruktur: <b>14.200 EUR</b></li><li>Migration &amp; Workshop (2 Tage): <b>3.600 EUR</b></li></ul><p>K&ouml;nnen wir heute um 14:00 Uhr kurz abstimmen, ob das Budget so freigegeben werden kann?</p><p>Viele Gr&uuml;&szlig;e<br>Alice</p><img src="https://track.example.com/open.gif" width="1" height="1" alt="">`,
 		Attachments: []backend.Attachment{
 			{Name: "Q4-Kalkulation.pdf", Size: 248000, ContentType: "application/pdf"},
 		},
@@ -531,11 +535,43 @@ func TestRenderScreens(t *testing.T) {
 	app.inspectorResult = "**Kernaussage:** Alice bittet um Budget-Freigabe f\u00fcr das Q4-Rollout (**17.800 EUR** gesamt) und schl\u00e4gt ein kurzes Abstimmungsgespr\u00e4ch heute um **14:00 Uhr** vor.\n\n- **Frist:** Freitag\n- **N\u00e4chster Schritt:** Termin-Slot 14:00 pr\u00fcfen & Freigabe-Antwort entwerfen."
 	app.inspectorDraft = "Hallo Alice,\n\nvielen Dank f\u00fcr die \u00dcbersicht. 14:00 Uhr passt mir heute gut \u2014 lass uns das Q4-Budget dort final freigeben.\n\nViele Gr\u00fc\u00dfe\nAlex"
 
+	app.calendars = []backend.Calendar{
+		{ID: "c1", Name: "Arbeit", Type: "google", Color: "#3b82f6"},
+		{ID: "c2", Name: "Privat", Type: "local", Color: "#10b981"},
+		{ID: "c3", Name: "Feiertage", Type: "ical", Color: "#f59e0b"},
+	}
+	app.calLoadedStart = now.AddDate(0, 0, -7)
+	app.calLoadedEnd = now.AddDate(0, 0, 14)
 	app.events = []backend.CalendarEvent{
+		{ID: "e0", CalendarID: "c1", Calendar: "Arbeit", Title: "Q4 Architecture Review", Start: now.Add(4 * time.Minute).Format(time.RFC3339), End: now.Add(34 * time.Minute).Format(time.RFC3339), Location: "https://zoom.us/j/123456"},
 		{ID: "e1", CalendarID: "c1", Calendar: "Arbeit", Title: "Daily Engineering Sync", Start: today + "T10:00:00+01:00", End: today + "T10:30:00+01:00", Location: "Meet"},
 		{ID: "e2", CalendarID: "c1", Calendar: "Arbeit", Title: "Q4 Rollout Budget-Abstimmung", Start: today + "T14:00:00+01:00", End: today + "T14:30:00+01:00", Location: "Zoom"},
-		{ID: "e3", CalendarID: "c1", Calendar: "Privat", Title: "Zahnarzt Termin", Start: today + "T17:15:00+01:00", End: today + "T18:00:00+01:00", Location: "Innenstadt"},
+		{ID: "e3", CalendarID: "c2", Calendar: "Privat", Title: "Zahnarzt Termin", Start: today + "T17:15:00+01:00", End: today + "T18:00:00+01:00", Location: "Innenstadt"},
 		{ID: "e4", CalendarID: "c1", Calendar: "Arbeit", Title: "Partner Architecture Review", Start: tomorrow + "T11:00:00+01:00", End: tomorrow + "T12:00:00+01:00", Location: "Teams"},
+	}
+	wd := (int(now.Weekday()) + 6) % 7
+	weekMon := now.AddDate(0, 0, -wd)
+	for _, we := range []struct {
+		id, calID, cal, title, loc, sh, eh string
+		offset                             int
+	}{
+		{"mw1", "c1", "Arbeit", "Sprint Planning", "Meet", "09:30:00", "10:30:00", 0},
+		{"mw2", "c1", "Arbeit", "Produkt-Review", "Zoom", "14:00:00", "15:00:00", 0},
+		{"mw3", "c1", "Arbeit", "1:1 mit Sarah", "Teams", "10:00:00", "10:45:00", 1},
+		{"mw4", "c2", "Privat", "Sport & Laufen", "Park", "18:00:00", "19:00:00", 1},
+		{"mw5", "c1", "Arbeit", "Design Critique", "Figma", "11:00:00", "12:00:00", 2},
+		{"mw6", "c1", "Arbeit", "Roadmap Q1", "Zoom", "13:30:00", "14:30:00", 3},
+		{"mw7", "c2", "Privat", "Abendessen Team", "Bistro", "19:00:00", "20:15:00", 3},
+		{"mw8", "c1", "Arbeit", "Release-Check", "Teams", "15:30:00", "16:30:00", 4},
+	} {
+		dayStr := weekMon.AddDate(0, 0, we.offset).Format("2006-01-02")
+		if dayStr == today || dayStr == tomorrow {
+			continue
+		}
+		app.events = append(app.events, backend.CalendarEvent{
+			ID: we.id, CalendarID: we.calID, Calendar: we.cal, Title: we.title, Location: we.loc,
+			Start: dayStr + "T" + we.sh + "+01:00", End: dayStr + "T" + we.eh + "+01:00",
+		})
 	}
 	app.recentAlerts = []AlertItem{
 		{ID: "postdive-mail-m1", Kind: "mail", Title: "Alice Meyer", Subtitle: "Neue E-Mail", Body: "Q4 Rollout & Budget-Freigabe"},
@@ -548,9 +584,9 @@ func TestRenderScreens(t *testing.T) {
 			Role: "assistant",
 			Tools: []ToolTrace{
 				{ID: "t1", Name: "search_messages", Summary: "4 Mails gefunden", Done: true},
-				{ID: "t2", Name: "list_calendar_events", Summary: "4 Kalendereintr\u00e4ge geladen", Done: true},
+				{ID: "t2", Name: "list_calendar_events", Summary: "8 Kalendereintr\u00e4ge geladen", Done: true},
 			},
-			Content: "### Tages-Briefing\n\n**Priorit\u00e4t 1 \u2014 Mails:**\n- **Alice Weber** wartet auf Freigabe f\u00fcr das **Q4-Rollout (17.800 EUR)** bis Freitag.\n- **Markus Klein** hat Workshop-Termine vorgeschlagen.\n\n**Heutiger Kalender:**\n| Zeit | Termin |\n| --- | --- |\n| 10:00 | Daily Engineering Sync |\n| 14:00 | Q4 Rollout Budget-Abstimmung |\n| 17:15 | Zahnarzt Termin |",
+			Content: "### Tages-Briefing\n\n**Priorit\u00e4t 1 \u2014 Mails:**\n- **Alice Meyer** wartet auf Freigabe f\u00fcr das **Q4-Rollout (17.800 EUR)** bis Freitag.\n- **Markus Klein** hat Workshop-Termine vorgeschlagen.\n\n**Heutiger Kalender:**\n| Zeit | Termin |\n| --- | --- |\n| 10:00 | Daily Engineering Sync |\n| 14:00 | Q4 Rollout Budget-Abstimmung |\n| 17:15 | Zahnarzt Termin |",
 		},
 	}
 
@@ -645,9 +681,10 @@ func TestRenderScreens(t *testing.T) {
 	saveShot("postdive-move-dark.png", app.RenderMain, 1380, 860)
 	app.moveOpen = false
 
-	// Screenshot 3c1: the open mail inside its conversation (newest on top)
+	// Screenshot 3c1: the open mail inside its conversation (newest on top) + right-side AI dock
 	prevInspector, prevDraft := app.inspectorResult, app.inspectorDraft
 	app.inspectorResult, app.inspectorDraft, app.inspectorMode = "", "", ""
+	app.showCopilot = true
 	app.conversation = conversationUI{forID: "m1", open: map[string]*convItem{}, conv: &backend.Conversation{ThreadID: "th:q4", Messages: []backend.ConversationMessage{
 		{MessageHeader: backend.MessageHeader{ID: "c3", From: "Alex Muster <alex@example.org>", Date: today + "T09:40:00+01:00", Folder: "Sent"}, Snippet: "Danke Alice, 14:00 passt. Ich bringe die Freigabe gleich mit."},
 		{MessageHeader: app.messages[0]},
@@ -655,6 +692,7 @@ func TestRenderScreens(t *testing.T) {
 		{MessageHeader: backend.MessageHeader{ID: "c0", From: "Alex Muster <alex@example.org>", Date: now.AddDate(0, 0, -3).Format("2006-01-02") + "T11:05:00+01:00", Folder: "Sent"}, Snippet: "Kannst du mir bis Ende der Woche eine Kalkulation für Q4 schicken?"},
 	}}}
 	saveShot("app-conversation.png", app.RenderMain, 1380, 1100)
+	app.showCopilot = false
 	app.conversation = conversationUI{}
 	app.inspectorResult, app.inspectorDraft, app.inspectorMode = prevInspector, prevDraft, "summarize"
 
@@ -668,9 +706,41 @@ func TestRenderScreens(t *testing.T) {
 	saveShot("postdive-compose-ask-dark.png", app.RenderMain, 1380, 900)
 	app.closeCompose()
 
-	// Screenshot 3c2: settings and the archive dialog
+	// Screenshot 3c2: settings (AI & 1-Click MCP tab) and the archive dialog
 	app.OpenSettings()
-	saveShot("app-settings.png", app.RenderMain, 1380, 860)
+	app.settings.tab = settingsTabAI
+	app.settings.mcpProbed = true
+	app.settings.mcpCmd = "/Applications/PostDive.app/Contents/MacOS/PostDive"
+	app.settings.mcpTargets = []mcpClientTarget{
+		{ID: "claude-desktop", Name: "Claude Desktop", ConfigPath: "/Users/you/Library/Application Support/Claude/claude_desktop_config.json"},
+		{ID: "cursor", Name: "Cursor", ConfigPath: "/Users/you/.cursor/mcp.json"},
+		{ID: "antigravity", Name: "Antigravity", ConfigPath: "/Users/you/.gemini/antigravity/mcp_config.json"},
+	}
+	app.settings.mcpInstalled = map[string]bool{"claude-desktop": true}
+	{
+		tt := ui.NewTester(app.RenderMain, 1380, 860)
+		tt.SetScale(2)
+		tt.Frame()
+		// Scroll Settings AI tab down so the 1-Click MCP client setup section is clearly visible.
+		tt.Move(690, 480)
+		for range 12 {
+			if r, ok := tt.Find("Cursor"); ok && r.Y >= 240 && r.Y <= 620 {
+				break
+			}
+			tt.Wheel(690, 480, 0, 90)
+			tt.Advance(300 * time.Millisecond)
+			tt.Frame()
+		}
+		f, err := os.Create(filepath.Join(dir, "app-settings.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(f, tt.Image()); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		_ = f.Close()
+	}
 	app.settings.open = false
 	prevAccounts := app.accounts
 	app.accounts = []backend.Account{{ID: "acc1", Name: "Work"}}
@@ -683,6 +753,14 @@ func TestRenderScreens(t *testing.T) {
 	saveShot("app-archive.png", app.RenderMain, 1380, 860)
 	app.arch = archiveUI{}
 	app.accounts = prevAccounts
+
+	// Screenshot 3c3: Reply window with consistent Right-Side AI Assist dock
+	app.OpenComposeReply(app.selectedMsg, "Hallo Alice,\n\n14:00 Uhr passt mir gut.")
+	app.composeAIOpen = true
+	app.composeAIResult = "Hallo Alice,\n\nvielen Dank f\u00fcr die finale Q4-Kalkulation! Die 17.800 EUR sind hiermit freigegeben \u2014 lass uns die Details um 14:00 Uhr im Zoom-Call kurz abstimmen.\n\nViele Gr\u00fc\u00dfe\nAlex"
+	app.composeAIReview = []string{"Tonfall freundlich & klar \u00b7 R\u00fcckfrage zu 14:00 Uhr beantwortet."}
+	saveShot("app-compose-ai.png", app.RenderComposeWindow, 1040, 680)
+	app.closeCompose()
 
 	// Screenshot 3d: an HTML mail, formatted (links by title, remote images blocked)
 	prevDetail, prevMode, prevResult, prevDraft := app.selectedMsg, app.inspectorMode, app.inspectorResult, app.inspectorDraft
@@ -740,8 +818,11 @@ func TestRenderScreens(t *testing.T) {
 	saveShot("postdive-main-en.png", app.RenderMain, 1380, 860)
 
 	app.SetLanguage("de")
-	app.applyThemeChoice("Catppuccin Latte (catppuccin-latte)")
+	app.applyThemeChoice("Diver Light (diver-light)")
 	app.navID = "calendar"
+	app.calViewMode = 1
+	app.calCursor = now
+	app.calMiniCursor = time.Date(now.Year(), now.Month(), 1, 12, 0, 0, 0, time.Local)
 	saveShot("app-calendar-light.png", app.RenderMain, 1380, 860)
 }
 
@@ -861,12 +942,19 @@ func TestWorkspaceModeSwitcherSeparatesMailAndCalendar(t *testing.T) {
 	}
 
 	tt.Click("Calendar")
+	tt.Frame()
 	if app.navID != "calendar" {
 		t.Fatalf("expected navID=calendar after clicking Calendar tab, got %q", app.navID)
 	}
-	if app.sidebarWidth() != 0 {
-		t.Fatalf("expected mail sidebar hidden in calendar mode, got width %.0f", app.sidebarWidth())
+	if tt.HasText("Mailbox") || !tt.HasText("Calendars") || app.sidebarWidth() == 0 {
+		t.Fatalf("expected calendar sidebar (not mail sidebar) in calendar mode, width=%.0f texts=%v", app.sidebarWidth(), tt.Texts())
 	}
+	app.setNav("contacts")
+	if app.sidebarWidth() != 0 {
+		t.Fatalf("expected sidebar hidden in contacts mode, got width %.0f", app.sidebarWidth())
+	}
+	app.setNav("calendar")
+	tt.Frame()
 
 	tt.Click("Mail")
 	if app.navID != "recent" {

@@ -147,20 +147,20 @@ func ResolveActive(cfg config.ThemeConfig) (Palette, string) {
 			if p, ok := GetPreset(cfg.LightFallback); ok {
 				return p, "system-light:" + p.Name
 			}
-			if p, ok := GetPreset("flexoki-light"); ok {
-				return p, "system-light:flexoki-light"
+			if p, ok := GetPreset("diver-light"); ok {
+				return p, "system-light:diver-light"
 			}
 		} else {
 			if p, ok := GetPreset(cfg.DarkFallback); ok {
 				return p, "system-dark:" + p.Name
 			}
-			if p, ok := GetPreset("tokyo-night"); ok {
-				return p, "system-dark:tokyo-night"
+			if p, ok := GetPreset("diver"); ok {
+				return p, "system-dark:diver"
 			}
 		}
 	}
-	p, _ := GetPreset("tokyo-night")
-	return p, "default:tokyo-night"
+	p, _ := GetPreset("diver")
+	return p, "default:diver"
 }
 
 func loadOmarchyLive() (Palette, string, bool) {

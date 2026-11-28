@@ -123,4 +123,5 @@ PostDive warns when macOS hides its notifications and opens both settings.
 
 - **Thunderbird import** (Settings → Accounts → TB Import): takes over accounts, signatures,
   calendars, contacts and filter rules, read-only.
-- **Another device / Android:** take over accounts from the computer by encrypted QR code.
+- **Another device / Android:** open **Settings → AI & Sync → Transfer to another device (LAN QR)**
+  to copy accounts and settings from the computer over a one-shot encrypted AES-256-GCM QR code.

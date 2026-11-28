@@ -98,8 +98,10 @@ func (a *App) CheckedMessageIDs() []string {
 	if len(a.checkedIDs) == 0 {
 		return nil
 	}
+	vis := a.visibleMessageIndices()
 	out := make([]string, 0, len(a.checkedIDs))
-	for _, m := range a.messages {
+	for _, origIdx := range vis {
+		m := a.messages[origIdx]
 		if a.checkedIDs[m.ID] {
 			out = append(out, m.ID)
 		}
@@ -111,8 +113,10 @@ func (a *App) CheckedMessages() []backend.MessageHeader {
 	if len(a.checkedIDs) == 0 {
 		return nil
 	}
+	vis := a.visibleMessageIndices()
 	out := make([]backend.MessageHeader, 0, len(a.checkedIDs))
-	for _, m := range a.messages {
+	for _, origIdx := range vis {
+		m := a.messages[origIdx]
 		if a.checkedIDs[m.ID] {
 			out = append(out, m)
 		}
@@ -120,8 +124,8 @@ func (a *App) CheckedMessages() []backend.MessageHeader {
 	return out
 }
 
-// SetMailChecked (un)checks row idx; with shiftRange it extends from the anchor. The anchor is
-// only valid for the list it was set on (setMessages resets it).
+// SetMailChecked (un)checks row idx (index in a.messages); with shiftRange it extends across
+// currently visible rows only (never checking filtered-out hidden rows).
 func (a *App) SetMailChecked(idx int, checked bool, shiftRange bool) {
 	if idx < 0 || idx >= len(a.messages) {
 		return
@@ -129,13 +133,23 @@ func (a *App) SetMailChecked(idx int, checked bool, shiftRange bool) {
 	if a.checkedIDs == nil {
 		a.checkedIDs = make(map[string]bool)
 	}
-	if shiftRange && a.lastCheckedIndex >= 0 && a.lastCheckedIndex < len(a.messages) {
-		lo, hi := a.lastCheckedIndex, idx
+	vis := a.visibleMessageIndices()
+	visAnchor, visCur := -1, -1
+	for vi, orig := range vis {
+		if orig == a.lastCheckedIndex {
+			visAnchor = vi
+		}
+		if orig == idx {
+			visCur = vi
+		}
+	}
+	if shiftRange && visAnchor >= 0 && visCur >= 0 {
+		lo, hi := visAnchor, visCur
 		if lo > hi {
 			lo, hi = hi, lo
 		}
-		for i := lo; i <= hi; i++ {
-			id := a.messages[i].ID
+		for vi := lo; vi <= hi; vi++ {
+			id := a.messages[vis[vi]].ID
 			if checked {
 				a.checkedIDs[id] = true
 			} else {
@@ -165,17 +179,18 @@ func (a *App) SelectAllVisibleMails() {
 	if a.checkedIDs == nil {
 		a.checkedIDs = make(map[string]bool)
 	}
-	for _, m := range a.messages {
-		a.checkedIDs[m.ID] = true
+	for _, origIdx := range a.visibleMessageIndices() {
+		a.checkedIDs[a.messages[origIdx].ID] = true
 	}
 }
 
 func (a *App) AllVisibleMailsChecked() bool {
-	if len(a.messages) == 0 || len(a.checkedIDs) == 0 {
+	vis := a.visibleMessageIndices()
+	if len(vis) == 0 || len(a.checkedIDs) == 0 {
 		return false
 	}
-	for _, m := range a.messages {
-		if !a.checkedIDs[m.ID] {
+	for _, origIdx := range vis {
+		if !a.checkedIDs[a.messages[origIdx].ID] {
 			return false
 		}
 	}
@@ -183,7 +198,7 @@ func (a *App) AllVisibleMailsChecked() bool {
 }
 
 func (a *App) ToggleSelectAllVisibleMails() {
-	if len(a.messages) == 0 {
+	if len(a.visibleMessageIndices()) == 0 {
 		return
 	}
 	if a.AllVisibleMailsChecked() {

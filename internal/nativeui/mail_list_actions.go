@@ -3,6 +3,7 @@ package nativeui
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -159,6 +160,17 @@ func (a *App) buildMailRowMenu(menu *ui.Menu, m backend.MessageHeader) {
 			account, ok := a.accountOfMails(ids)
 			a.openMovePickerFor(ids, batch, account, ok)
 		}
+		anySnoozed := false
+		nowUnix := time.Now().Unix()
+		for _, h := range hdrs {
+			if h.SnoozedUntil > nowUnix {
+				anySnoozed = true
+				break
+			}
+		}
+		menu.Submenu(a.tr("Zurückstellen", "Snooze"), func(sm *ui.Menu) {
+			a.appendSnoozeMenuItems(sm, ids, anySnoozed)
+		})
 		if a.isDirectMode() {
 			if !batch && a.isJunkFolderID(m.FolderID) {
 				if menu.Item(a.tr("Kein Spam", "Not spam")).ID("not-spam").Chosen() {

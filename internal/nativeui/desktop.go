@@ -343,9 +343,9 @@ func (s *desktopShell) syncComposeWindow() {
 		if s.composeWin == nil || s.composeWin.IsDestroyed() {
 			win := mygo.NewWindow(mygo.WindowOptions{
 				Title:           s.app.ComposeWindowTitle(),
-				Width:           720,
-				Height:          640,
-				MinWidth:        540,
+				Width:           920,
+				Height:          660,
+				MinWidth:        600,
 				MinHeight:       460,
 				AutoHideMenuBar: runtime.GOOS == "linux",
 				StateKey:        "postdive-compose",

@@ -25,19 +25,20 @@ cmd/postdive [--mcp]
 | `backend` | The API the UI, copilot and jobs use. `Engine.Call` takes JSON-shaped parameters, so the method set stays the same one the engine tests exercise. Engine errors arrive as `code: detail` and become `*backend.APIError`; a mutating call that times out becomes `outcome_unknown`; compose carries an idempotency key and returns outbox/security status. |
 | `events` | In-process fan-out of engine events. Subscribers get a buffered channel; a slow subscriber drops events instead of blocking the engine. |
 | `jobs`, `triage`, `archive` | Triage classification (local rules first, then the model within `ai.maxAiCallsPerScan`), result in `triage-state.json`; archive runs write `.eml` files, maintain `.postdive-index.json`, check SHA-256 and only then delete. |
-| `ai`, `copilot`, `mcp` | Provider registry (API, local servers such as Ollama/llama.cpp/MTPLX, CLIs), personal custom instructions (`ai.customInstructions`), the in-app copilot agent (`search_messages`, `get_message`, `get_thread`, `search_contacts`, `list_folders`, `list_calendar_events` + proposal-only write tools), and the built-in local stdio MCP server (`postdive --mcp`, see [MCP.md](MCP.md)). |
-| `nativeui` | The app. It touches UI state only on its UI thread (`emitUpdate`); network and disk work run in goroutines; HTML WYSIWYG compose & optional Web Preview embed platform `mygo.WebView`. The sidebar (desktop & mobile) defaults to a **compact folder view** (`app.compactFolders`, optional per-account `app.pinnedFolders`) that shows only `INBOX` and active incoming filter-rule target folders directly and tucks secondary folders (Archives, Drafts, Sent, Trash, Spam, etc.) into a collapsible *More folders* block so all accounts stay visible at a glance. |
-| `config`, `secretstore`, `theme` | `config.json`, the API-key env file (`0600`), encrypted secrets (macOS Keychain, Android Keystore, Windows DPAPI, Linux libsecret/AES-256-GCM sealed store), Omarchy/bundled themes. |
+| `ai`, `copilot`, `mcp` | Provider registry (API, local servers such as Ollama/llama.cpp/MTPLX, CLIs `claude-cli`/`agy`/`opencode-cli` sandboxed in `<StateDir>/cli-sandbox`), personal custom instructions (`ai.customInstructions`), encrypted/decrypted mail AI hard-block, the in-app copilot agent (`search_messages`, `get_message`, `get_thread`, `search_contacts`, `list_folders`, `list_calendar_events` + proposal-only write tools), and the built-in local stdio MCP server (`postdive --mcp`, see [MCP.md](MCP.md)). |
+| `nativeui` | The app. It touches UI state only on its UI thread (`emitUpdate`); network and disk work run in goroutines; HTML WYSIWYG compose with consistent right-side AI Assist dock, inline Quick-Reply with AI chips, Snooze & Waiting-for-Reply, Subscriptions cleanup (`List-Unsubscribe` + SSRF-guarded One-Click POST), tracker-pixel counting, Cron-style calendar with mini-month/calendar sidebar + Live-Meeting toolbar pill + `.ics` Free/Busy conflict badge, 1-click MCP client installer, optional Web Preview embed platform `mygo.WebView`, and full Phone UI parity (`phone.go`). The sidebar defaults to a **compact folder view** (`app.compactFolders`, optional per-account `app.pinnedFolders`). |
+| `config`, `secretstore`, `theme` | `config.json`, the API-key env file (`0600`), encrypted secrets (macOS Keychain, Android Keystore, Windows DPAPI, Linux libsecret/AES-256-GCM sealed store), Omarchy live sync and 24 bundled themes (default **Diver** / **Diver Light**). |
 
 ## Where data lives
 
 | | macOS | Linux |
 |---|---|---|
-| `config.json`, `env` (API keys) | `~/Library/Application Support/postdive/` | `~/.config/postdive/` |
-| `postdive.db` (mail, calendars, contacts), `triage-state.json` | `~/Library/Application Support/postdive/` | `~/.local/share/postdive/` |
-| Passwords, OAuth tokens, S/MIME keys | Keychain | `~/.config/postdive/secrets.seal` (libsecret / AES-256-GCM) |
+| `config.json`, `env` (API keys) | `~/Library/Application Support/postdive/` | `~/.config/postdive/` (`XDG_CONFIG_HOME`) |
+| `postdive.db` (mail, calendars, contacts) | `~/Library/Application Support/postdive/` | `~/.local/share/postdive/` (`XDG_DATA_HOME`) |
+| `triage-state.json`, `bar-summary.json`, `cli-sandbox/` | `~/Library/Application Support/postdive/` | `~/.local/state/postdive/` (`XDG_STATE_HOME`) |
+| Passwords, OAuth tokens, S/MIME & OpenPGP keys | Keychain | `~/.config/postdive/secrets.seal` (libsecret / AES-256-GCM) |
 
-`XDG_CONFIG_HOME` / `XDG_STATE_HOME` override the directories. Config files never hold secrets.
+Config files never hold secrets.
 
 ## Sync and the local store
 
@@ -57,13 +58,13 @@ cmd/postdive [--mcp]
 - **Transport:** IMAP and SMTP only over TLS or a required STARTTLS upgrade; plain text only to `localhost`. Login with SASL PLAIN (UTF-8 passwords), falling back to LOGIN.
 - **Remote content:** remote images are blocked by default for privacy and counted, not fetched; users can allow images once per email or per trusted sender (`app.allowedImageSenders`), and inline CID images are loaded strictly from local MIME parts.
 - **Read-only:** with `mailbox.readOnly` on, `backend` refuses mail actions, drafts, sending and filter rules; the UI hides them and also respects the per-account write list. Adding an account switches read-only off; `"mailbox": {"readOnly": true}` in `config.json` switches it back on.
-- **AI & MCP:** mail content is wrapped as untrusted data. The in-app copilot only proposes drafts, events, mark-read, move/archive, and star actions; they run only after the user clicks *Execute*. The built-in local stdio MCP server (`postdive --mcp`) is read-only by default, never sends email or permanently deletes messages, and never decrypts S/MIME or OpenPGP messages. Endpoints come only from `config.json`; a key is sent only to its provider. `claude-cli` runs without tools and gets the prompt on stdin.
-- **Encrypted mails:** Full **S/MIME** (`.p12`/`.pfx` in OS secure store) AND native **OpenPGP** (`internal/pgp`, RFC 3156 PGP/MIME + MIME-decoded Inline PGP, passphrase-protected secret keys in OS secure store, SSRF-/key-binding-guarded WKD & `keys.openpgp.org` lookup) verify signatures, check signer-address mismatches, decrypt on open, and fail closed when signing/encrypting outgoing mail; scans, archive exports, and copilot lookups never decrypt.
+- **AI & MCP:** mail content is wrapped as untrusted data, and encrypted or locally decrypted S/MIME and OpenPGP emails are never sent to any AI backend (Inspector, Quick-Reply, Compose AI Assist, Copilot context snapshots, or Contact Enrichment). The in-app copilot only proposes drafts, events, mark-read, move/archive, and star actions; they run only after the user clicks *Execute*. The built-in local stdio MCP server (`postdive --mcp`) is read-only by default, never sends email or permanently deletes messages, and never decrypts S/MIME or OpenPGP messages. Endpoints come only from `config.json`; a key is sent only to its provider. CLI backends (`claude-cli`, `agy`, `opencode-cli`) run in a dedicated `0700` `<StateDir>/cli-sandbox` directory without unrestricted tool access.
+- **Encrypted mails:** Full **S/MIME** (`.p12`/`.pfx` in OS secure store) AND native **OpenPGP** (`internal/pgp`, RFC 3156 PGP/MIME + MIME-decoded Inline PGP, passphrase-protected secret keys in OS secure store, SSRF-/key-binding-guarded WKD & `keys.openpgp.org` lookup) verify signatures, check signer-address mismatches, decrypt on open, and fail closed when signing/encrypting outgoing mail; scans, archive exports, AI backends, and copilot lookups never decrypt.
 - **Attachments:** executables, scripts, installers and active HTML/SVG are only saved to `~/Downloads`, never opened.
 
 ## Theme
 
-On Omarchy the app follows `~/.local/state/omarchy/current/theme/colors.toml` live; elsewhere one of 22 bundled palettes or the system's light/dark mode.
+On Omarchy the app follows `~/.local/state/omarchy/current/theme/colors.toml` live; elsewhere one of 24 bundled palettes (default **Diver** / **Diver Light**) or the system's light/dark mode.
 
 ## Bar widget
 

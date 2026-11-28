@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -227,6 +228,7 @@ type composeState struct {
 	composeAIError           string
 	composeAIBeforeUndo      string
 	composeAIUndoReady       bool
+	composeAIHandledEnter    bool
 	// scanRunning: a triage scan runs in the host; arch: the "Archive & cleanup" dialog.
 	scanRunning bool
 	arch        archiveUI
@@ -377,6 +379,9 @@ type App struct {
 	calViewMode        int             // 0 = Month Grid, 1 = Week Grid, 2 = Day Timeline, 3 = Agenda
 	calViewLoaded      bool            // whether calViewMode was restored from config.json
 	calCursor          time.Time       // reference date for Month/Week/Day navigation
+	calMiniCursor      time.Time       // displayed month in the calendar sidebar's mini-month
+	calLoadedStart     time.Time       // start of loaded calendar window (zero in test stubs)
+	calLoadedEnd       time.Time       // end of loaded calendar window
 	calDayScrolledKey  string          // last day key auto-scrolled in Day view
 	calSearchQuery     string          // top-bar search query when viewing Calendar
 	lastCalSearch      string          // tracks empty <-> non-empty widened fetch transitions
@@ -401,14 +406,21 @@ type App struct {
 	lastLayoutSaveAt   time.Time
 
 	// Mailbox & Calendar data
-	accounts      []backend.Account
-	folders       []backend.Folder
-	messages      []backend.MessageHeader
-	outboxItems   []backend.OutboxEntry
-	outboxOpen    bool
-	outboxBusy    bool
-	msgLoadSeq    uint64 // incremented per message-list load; stale responses are dropped
-	totalMessages int
+	accounts        []backend.Account
+	folders         []backend.Folder
+	messages        []backend.MessageHeader
+	outboxItems     []backend.OutboxEntry
+	outboxOpen      bool
+	outboxBusy      bool
+	msgLoadSeq      uint64 // incremented per message-list load; stale responses are dropped
+	totalMessages   int
+	mailListFilter  int // 0=All, 1=Unread, 2=Starred, 3=Attachments
+	snoozedCount    int
+	snoozeSeq       uint64
+	waitingReplies  []backend.MessageHeader
+	waitingReplyIDs map[string]bool
+	actSnoozeOpen   bool
+	bulkSnoozeOpen  bool
 	// Paging: nextCursor continues the list (empty at its end); listKey names the view the list
 	// shows, so a reload of the same view keeps the pages already loaded.
 	nextCursor  string
@@ -469,10 +481,12 @@ type App struct {
 	eventState
 	calDeleteState
 	movePickerState
-	direct   directUI
-	contacts contactsUI
-	activity activityUI
-	preview  webPreviewState
+	direct     directUI
+	contacts   contactsUI
+	activity   activityUI
+	preview    webPreviewState
+	quickReply quickReplyState
+	subs       subsState
 
 	// Keyboard: "press again to confirm" for key actions on several mails (keymap.go).
 	keyArmSig string
@@ -974,6 +988,7 @@ func (a *App) runThemeWatcher(ctx context.Context, every time.Duration) {
 // refreshSnapshot is the UI state a refresh needs, captured on the UI thread.
 type refreshSnapshot struct {
 	account  string
+	readOnly bool
 	calStart time.Time
 	calEnd   time.Time
 	msgLoad  messageLoad
@@ -1023,6 +1038,19 @@ func (a *App) calendarFetchWindow() (time.Time, time.Time) {
 	if viewEnd.After(end) {
 		end = viewEnd
 	}
+	// Cover mini-month grid so event dots stay visible when browsing other months.
+	if !a.calMiniCursor.IsZero() {
+		mFirst := time.Date(a.calMiniCursor.Year(), a.calMiniCursor.Month(), 1, 0, 0, 0, 0, loc)
+		mOffset := (int(mFirst.Weekday()) + 6) % 7
+		mStart := mFirst.AddDate(0, 0, -mOffset)
+		mEnd := mStart.AddDate(0, 0, 42).Add(-time.Second)
+		if mStart.Before(start) {
+			start = mStart
+		}
+		if mEnd.After(end) {
+			end = mEnd
+		}
+	}
 	// When searching calendar events, widen the fetch range so past and upcoming matches are included.
 	if strings.TrimSpace(a.calSearchQuery) != "" {
 		searchStart := time.Date(now.Year(), now.Month(), now.Day()-60, 0, 0, 0, 0, loc)
@@ -1052,7 +1080,7 @@ func (a *App) startRefresh(ctx context.Context) {
 	a.refreshing = true
 	a.loading = true
 	calStart, calEnd := a.calendarFetchWindow()
-	snap := refreshSnapshot{account: a.selectedAccount, calStart: calStart, calEnd: calEnd, msgLoad: a.newMessageLoad()}
+	snap := refreshSnapshot{account: a.selectedAccount, readOnly: a.readOnly, calStart: calStart, calEnd: calEnd, msgLoad: a.newMessageLoad()}
 	go a.refreshBackground(ctx, snap)
 }
 
@@ -1128,10 +1156,15 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		focusUnread    int
 		focusTotal     int
 		hasFocusCounts bool
-		errs           [6]error
+		snoozedCount   int
+		hasSnoozedCnt  bool
+		waitingReplies []backend.MessageHeader
+		hasWaiting     bool
+		wokenCount     int
+		errs           [7]error
 	}
 	var res result
-	done := make(chan struct{}, 6)
+	done := make(chan struct{}, 7)
 	load := func(i int, fn func(c context.Context) error) {
 		go func() {
 			c, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -1169,6 +1202,7 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		page, err := bc.Messages(c, backend.MessagesFilter{
 			AccountID:       snap.account,
 			UnreadOrFlagged: true,
+			ExcludeSnoozed:  true,
 			Days:            14,
 			Limit:           100,
 		})
@@ -1185,11 +1219,43 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		return err
 	})
-	for i := 0; i < 6; i++ {
+	load(6, func(c context.Context) error {
+		if !snap.readOnly {
+			if woken, werr := bc.WakeExpiredSnoozed(c); werr == nil {
+				res.wokenCount = len(woken)
+			}
+		}
+		if cnt, cerr := bc.CountSnoozed(c, snap.account); cerr == nil {
+			res.snoozedCount = cnt
+			res.hasSnoozedCnt = true
+		}
+		if wList, werr := bc.ListWaitingReplyMessages(c, snap.account); werr == nil {
+			res.waitingReplies = wList
+			res.hasWaiting = true
+		}
+		return nil
+	})
+	for i := 0; i < 7; i++ {
 		<-done
 	}
 
 	a.emitUpdate(func() {
+		if a.selectedAccount == snap.account {
+			if res.hasSnoozedCnt {
+				a.snoozedCount = res.snoozedCount
+			}
+			if res.hasWaiting {
+				a.waitingReplies = res.waitingReplies
+				wm := make(map[string]bool, len(res.waitingReplies))
+				for _, w := range res.waitingReplies {
+					wm[w.ID] = true
+				}
+				a.waitingReplyIDs = wm
+			}
+		}
+		if res.wokenCount > 0 {
+			a.toast(a.trf("%d zurückgestellte Mail(s) wieder im Fokus", "%d snoozed email(s) back in Focus", res.wokenCount), "info")
+		}
 		if res.errs[0] == nil && len(res.accounts) > 0 {
 			a.accounts = res.accounts
 			a.rebuildAccountLabels()
@@ -1226,6 +1292,8 @@ func (a *App) refreshBackground(ctx context.Context, snap refreshSnapshot) {
 		}
 		if res.errs[3] == nil && res.events != nil {
 			a.events = res.events
+			a.calLoadedStart = snap.calStart
+			a.calLoadedEnd = snap.calEnd
 		}
 		var warn []string
 		for i, label := range [][2]string{{"Konten", "Accounts"}, {"Ordner", "Folders"}, {"Kalender", "Calendars"}, {"Termine", "Events"}} {
@@ -1302,7 +1370,10 @@ func (a *App) viewLoad() messageLoad {
 		req.filter.Days = 30
 	case req.navID == "focus":
 		req.filter.UnreadOrFlagged = true
+		req.filter.ExcludeSnoozed = true
 		req.filter.Days = 14
+	case req.navID == "snoozed":
+		req.filter.SnoozedOnly = true
 	case req.navID == "action":
 		req.actionIDs = make(map[string]bool)
 		for id, rec := range a.triageState.Classifications {
@@ -1335,6 +1406,14 @@ func (a *App) startMessageLoad(ctx context.Context) {
 func (a *App) loadMessagesBackground(ctx context.Context, bc *backend.Client, req messageLoad) {
 	c, cancel := context.WithTimeout(ctx, 12*time.Second)
 	page, err := bc.Messages(c, req.filter)
+	var waiting []backend.MessageHeader
+	var hasWaiting bool
+	if req.navID == "action" {
+		if wList, werr := bc.ListWaitingReplyMessages(c, req.filter.AccountID); werr == nil {
+			waiting = wList
+			hasWaiting = true
+		}
+	}
 	cancel()
 	if err != nil {
 		a.emitUpdate(func() {
@@ -1346,7 +1425,34 @@ func (a *App) loadMessagesBackground(ctx context.Context, bc *backend.Client, re
 	}
 	msgs := req.keep(page.Messages)
 	total, next := page.Total, page.NextCursor
+	if req.navID == "action" && len(waiting) > 0 {
+		seen := make(map[string]bool, len(msgs))
+		for _, m := range msgs {
+			seen[m.ID] = true
+		}
+		for _, w := range waiting {
+			if !seen[w.ID] {
+				seen[w.ID] = true
+				msgs = append(msgs, w)
+			}
+		}
+		sort.SliceStable(msgs, func(i, j int) bool {
+			return msgs[i].Date > msgs[j].Date
+		})
+		total = max(total, len(msgs))
+	}
 	a.emitUpdate(func() {
+		if hasWaiting && req.seq == a.msgLoadSeq {
+			a.waitingReplies = waiting
+			wm := make(map[string]bool, len(waiting))
+			for _, w := range waiting {
+				wm[w.ID] = true
+			}
+			a.waitingReplyIDs = wm
+		}
+		if req.navID == "snoozed" && req.seq == a.msgLoadSeq {
+			a.snoozedCount = total
+		}
 		if a.applyMessageLoad(req, msgs, total) {
 			a.nextCursor, a.listKey, a.loadingMore = next, req.key, false
 		}
@@ -1466,9 +1572,9 @@ func (a *App) setMessages(msgs []backend.MessageHeader) {
 	}
 	a.mailList.selected = -1
 	if a.selectedID != "" {
-		for i, m := range msgs {
-			if m.ID == a.selectedID {
-				a.mailList.selected = i
+		for vi, origIdx := range a.visibleMessageIndices() {
+			if a.messages[origIdx].ID == a.selectedID {
+				a.mailList.selected = vi
 				break
 			}
 		}
@@ -1482,6 +1588,7 @@ func (a *App) setNav(nav string) {
 	}
 	if a.navID != nav {
 		a.navID = nav
+		a.mailListFilter = 0
 		a.focusReadIDs = nil
 		a.serverSearchDoneKey = ""
 		a.serverSearchDoneQuery = ""
@@ -1587,6 +1694,7 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 		a.pruneFocusGhost(prevID)
 	}
 	if !sameMsgReload {
+		a.resetQuickReply(id)
 		a.widgets.inspectorScroll.Y = 0
 		a.inspectorSeq++
 		a.inspectorResult = ""
@@ -1598,9 +1706,10 @@ func (a *App) selectMessage(ctx context.Context, id string, userOpened bool) {
 		a.inspectorMode = ""
 		a.inspectorLoading = false
 	}
-	for i, m := range a.messages {
-		if m.ID == id {
-			a.mailList.selected = i
+	a.mailList.selected = -1
+	for vi, origIdx := range a.visibleMessageIndices() {
+		if a.messages[origIdx].ID == id {
+			a.mailList.selected = vi
 			break
 		}
 	}
@@ -1645,7 +1754,18 @@ func (a *App) RunInspectorAI(ctx context.Context, mode string) {
 	if msg == nil || a.inspectorLoading {
 		return
 	}
-	if msg.Security.Encrypted {
+	if !a.isPhone() {
+		a.showCopilot = true
+	}
+	if detailIsEncrypted(*msg) {
+		a.inspectorSeq++
+		a.inspectorMode = mode
+		a.inspectorLoading = false
+		a.inspectorResult = ""
+		a.inspectorDraft = ""
+		a.inspectorMove, a.inspectorMoveMsgID = nil, ""
+		a.inspectorEvent = nil
+		a.inspectorContacts = nil
 		a.inspectorError = a.tr(
 			"Verschlüsselte Mails werden aus Datenschutzgründen nicht an die KI gesendet.",
 			"Encrypted emails are not sent to AI for privacy.",
@@ -1995,6 +2115,7 @@ func (a *App) refreshFoldersBackground(ctx context.Context) {
 			if page, ferr := bc.Messages(c, backend.MessagesFilter{
 				AccountID:       acc,
 				UnreadOrFlagged: true,
+				ExcludeSnoozed:  true,
 				Days:            14,
 				Limit:           100,
 			}); ferr == nil {
@@ -4084,6 +4205,7 @@ func (a *App) StartEventLoop(ctx context.Context) {
 				return
 			case <-reminderTicker.C:
 				a.tickMeetingReminders(ctx)
+				a.wakeExpiredSnoozedTicker(ctx)
 			}
 		}
 	}()
@@ -4095,6 +4217,33 @@ func (a *App) StartEventLoop(ctx context.Context) {
 type eventReminders interface {
 	RemindedEvents(ctx context.Context) (map[string]bool, error)
 	MarkEventsReminded(ctx context.Context, evs []backend.CalendarEvent) error
+}
+
+func (a *App) wakeExpiredSnoozedTicker(ctx context.Context) {
+	if a.readOnly || !a.engineReady {
+		return
+	}
+	bc, err := a.client()
+	if err != nil {
+		return
+	}
+	accID := a.selectedAccount
+	go func() {
+		c, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		woken, werr := bc.WakeExpiredSnoozed(c)
+		if werr != nil || len(woken) == 0 {
+			return
+		}
+		cnt, cerr := bc.CountSnoozed(c, accID)
+		a.emitUpdate(func() {
+			if cerr == nil && a.selectedAccount == accID {
+				a.snoozedCount = cnt
+			}
+			a.toast(a.trf("%d zurückgestellte Mail(s) wieder im Fokus", "%d snoozed email(s) back in Focus", len(woken)), "info")
+			a.startMessageLoad(context.Background())
+		})
+	}()
 }
 
 // tickMeetingReminders reads what the engine reminded of already (off the UI thread), then
@@ -4233,14 +4382,72 @@ func parseUnsubscribeTargets(msg *backend.MessageDetail) (httpsURL, mailtoURI st
 // the system browser, or opens a prefilled mailto unsubscribe compose draft.
 func (a *App) PerformUnsubscribe(ctx context.Context, msg *backend.MessageDetail) {
 	httpsURL, mailtoURI, oneClick := parseUnsubscribeTargets(msg)
-	if httpsURL != "" && oneClick {
+	a.executeUnsubscribeTarget(ctx, msg.AccountID, httpsURL, mailtoURI, oneClick)
+}
+
+func isPublicNonLocalIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
+}
+
+func isSafePublicHTTPSURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPublicNonLocalIP(ip)
+	}
+	return true
+}
+
+func safePublicHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 8 * time.Second}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil || len(ips) == 0 {
+				return nil, fmt.Errorf("lookup %s failed", host)
+			}
+			for _, ipAddr := range ips {
+				if isPublicNonLocalIP(ipAddr.IP) {
+					return dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+				}
+			}
+			return nil, fmt.Errorf("blocked non-public host %s", host)
+		},
+	}
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 || !isSafePublicHTTPSURL(req.URL.String()) {
+				return fmt.Errorf("blocked unsafe unsubscribe redirect")
+			}
+			return nil
+		},
+	}
+}
+
+func (a *App) executeUnsubscribeTarget(ctx context.Context, accountID, httpsURL, mailtoURI string, oneClick bool) {
+	if httpsURL != "" && oneClick && isSafePublicHTTPSURL(httpsURL) {
 		go func(u string) {
 			c, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			req, err := http.NewRequestWithContext(c, http.MethodPost, u, strings.NewReader("List-Unsubscribe=One-Click"))
 			if err == nil {
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				resp, rerr := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+				resp, rerr := safePublicHTTPClient().Do(req)
 				if rerr == nil {
 					_ = resp.Body.Close()
 					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -4264,8 +4471,7 @@ func (a *App) PerformUnsubscribe(ctx context.Context, msg *backend.MessageDetail
 		if err != nil {
 			return
 		}
-		accID := msg.AccountID
-		a.initComposeCommon(accID)
+		a.initComposeCommon(accountID)
 		a.composeTo = u.Opaque
 		if subj := strings.TrimSpace(u.Query().Get("subject")); subj != "" {
 			a.composeSubject = subj
@@ -4364,6 +4570,17 @@ func (a *App) isTrashOrJunkPath(accountID, folderPath string) bool {
 		return true
 	}
 	return false
+}
+
+// actionWaitingCount combines AI Action/Waiting classifications with local Sent threads awaiting reply.
+func (a *App) actionWaitingCount() int {
+	n := a.barSummary.ActionCount + a.barSummary.WaitingCount
+	for _, w := range a.waitingReplies {
+		if rec, ok := a.triageState.Classifications[w.ID]; !ok || (rec.KanbanColumn != "action" && rec.KanbanColumn != "waiting") {
+			n++
+		}
+	}
+	return n
 }
 
 // focusCount returns the exact number of items in Focus (Unread & ★): unread mails from the

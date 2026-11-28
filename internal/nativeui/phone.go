@@ -133,6 +133,7 @@ func (a *App) renderPhone(c *ui.Context) {
 	r := a.phoneRouter()
 	a.phoneSyncDetailRoute()
 	ui.Column(c.Key("ph-root")).Fill().Children(func() {
+		a.renderPhoneLiveMeetingBar(c)
 		r.View(c, func(rt *ui.Route) {
 			switch {
 			case rt.Match(phoneRouteAssistant):
@@ -386,7 +387,8 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 				mobile.Section(c, a.tr("Arbeitsbereich", "Workspace"), func() {
 					a.phoneBoxRow(c, "focus", iconFocus, a.tr("Fokus (Ungelesen & ★)", "Focus (Unread & ★)"), a.focusCount(), 0)
 					a.phoneBoxRow(c, "recent", iconMail, a.tr("Aktuelle Mails", "Recent Mail"), 0, 0)
-					a.phoneBoxRow(c, "action", iconBolt, a.tr("Action / Warten", "Action / Waiting"), a.barSummary.ActionCount+a.barSummary.WaitingCount, 0)
+					a.phoneBoxRow(c, "action", iconBolt, a.tr("Action / Warten", "Action / Waiting"), a.actionWaitingCount(), 0)
+					a.phoneBoxRow(c, "snoozed", iconClock, a.tr("Zurückgestellt", "Snoozed"), a.snoozedCount, 0)
 					a.phoneBoxRow(c, "calendar", iconCal, a.tr("Kalender & Termine", "Calendar & Events"), len(a.todayEvents()), 0)
 					if a.isDirectMode() {
 						a.phoneBoxRow(c, "contacts", iconUsers, a.tr("Kontakte", "Contacts"), 0, 0)
@@ -528,6 +530,11 @@ func (a *App) renderPhoneMailboxes(c *ui.Context) {
 					if bRules.Clicked() && a.engineReady {
 						a.OpenFilterRules(context.Background())
 					}
+					a.phoneToolRow(c, "ph-tool-subs", iconMailOpen, t.TextMuted, a.tr("Abos aufräumen…", "Subscriptions…"), func() {
+						if a.engineReady {
+							a.OpenSubscriptionsModal(context.Background())
+						}
+					})
 				})
 			})
 		})
@@ -785,10 +792,36 @@ func (a *App) renderPhoneList(c *ui.Context) {
 				}
 			})
 		}
-		if len(a.messages) == 0 {
+		if !a.phone.search && strings.TrimSpace(a.searchQuery) == "" && len(a.messages) > 0 {
+			ui.Row(c.Key("ph-list-filters")).FillWidth().Padding(6, 12).Gap(6).Wrap().AlignItems(ui.Center).
+				BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				phFilterPill := func(key, label string, mode int) {
+					active := a.mailListFilter == mode
+					b := ui.Button(c.Key(key), label).MinHeight(40).Padding(8, 12).Radius(999)
+					if active {
+						b.Background(withAlpha(t.Accent, 0.16)).Border(1, withAlpha(t.Accent, 0.55)).TextColor(t.Accent).Bold()
+					}
+					if b.Clicked() {
+						a.setMailListFilter(mode)
+					}
+				}
+				phFilterPill("ph-lf-all", a.tr("Alle", "All"), 0)
+				phFilterPill("ph-lf-unread", a.tr("Ungelesen", "Unread"), 1)
+				phFilterPill("ph-lf-star", "★", 2)
+				phFilterPill("ph-lf-att", a.tr("Anhang", "Attachments"), 3)
+			})
+		}
+		visibleIdx := a.visibleMessageIndices()
+		if len(visibleIdx) == 0 {
 			ui.Column(c).Fill().Center().Padding(24).Gap(8).Children(func() {
 				ui.Text(c, a.tr("Keine Nachrichten in dieser Ansicht", "No messages in this view")).FontSize(15).Bold()
-				ui.Text(c, a.tr("Zum Aktualisieren nach unten ziehen.", "Pull down to refresh.")).FontSize(13).TextColor(t.TextMuted)
+				if a.mailListFilter != 0 && len(a.messages) > 0 {
+					if ui.Button(c.Key("ph-lf-reset"), a.tr("Filter zurücksetzen", "Reset filter")).MinHeight(44).Padding(10, 16).Clicked() {
+						a.setMailListFilter(0)
+					}
+				} else {
+					ui.Text(c, a.tr("Zum Aktualisieren nach unten ziehen.", "Pull down to refresh.")).FontSize(13).TextColor(t.TextMuted)
+				}
 			})
 			if !selecting {
 				a.phoneComposeButton(c)
@@ -798,11 +831,12 @@ func (a *App) renderPhoneList(c *ui.Context) {
 		ls := a.phoneListState()
 		crossFolder := !strings.HasPrefix(a.navID, "folder:") || (a.searchActive() && a.effectiveSearchScope() != searchFolder)
 		outbound := a.isCurrentViewOutbound()
-		list := ui.List(c, ls, len(a.messages), func(i int) {
-			if i < 0 || i >= len(a.messages) {
+		list := ui.List(c, ls, len(visibleIdx), func(i int) {
+			if i < 0 || i >= len(visibleIdx) {
 				return
 			}
-			a.renderPhoneMailRow(c, i, a.messages[i], crossFolder, outbound, selecting)
+			origIdx := visibleIdx[i]
+			a.renderPhoneMailRow(c, origIdx, a.messages[origIdx], crossFolder, outbound, selecting)
 		}).Grow(1).MinHeight(0).FillWidth()
 		if list.PullToRefresh(&a.phone.refresh) {
 			a.phoneSync()
@@ -892,6 +926,16 @@ func (a *App) renderPhoneBulkBar(c *ui.Context, checked []backend.MessageHeader)
 	})
 	// Less frequent actions in a sheet, so the bar keeps fitting a phone's width.
 	var more []mobile.Action
+	for _, p := range nextSnoozePresets(time.Now(), a.uiLang()) {
+		pr := p
+		more = append(more, mobile.Action{
+			Label: a.tr("Zurückstellen: ", "Snooze: ") + pr.Label,
+			OnTap: func() {
+				a.snoozeMailsBatch(context.Background(), ids, pr.Until)
+				a.ClearMailSelection()
+			},
+		})
+	}
 	if a.isDirectMode() {
 		more = append(more, mobile.Action{Label: a.tr("Als Spam markieren", "Mark as spam"), OnTap: func() {
 			a.MarkMailsSpam(context.Background(), ids)
@@ -949,6 +993,12 @@ func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader
 				} else {
 					ring.Border(1.5, t.TextMuted)
 				}
+			} else {
+				peerForAvatar := m.From
+				if outbound && len(m.To) > 0 {
+					peerForAvatar = m.To[0]
+				}
+				a.renderSenderAvatar(c, peerForAvatar, 32)
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 				ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
@@ -982,6 +1032,12 @@ func (a *App) renderPhoneMailRow(c *ui.Context, idx int, m backend.MessageHeader
 					}
 					if m.ThreadCount > 1 {
 						threadBadge(c, m.ThreadCount)
+					}
+					if m.SnoozedUntil > time.Now().Unix() {
+						miniTag(c, formatSnoozeWake(m.SnoozedUntil, a.uiLang()), t.Accent, withAlpha(t.Accent, 0.14))
+					}
+					if a.waitingReplyIDs[m.ID] {
+						miniTag(c, a.tr("Wartet", "Waiting"), t.Warning, withAlpha(t.Warning, 0.16))
 					}
 					if crossFolder && m.Folder != "" {
 						miniTag(c, m.Folder, t.TextMuted, t.Surface)
@@ -1074,16 +1130,26 @@ func (a *App) renderPhoneMail(c *ui.Context) {
 					subj = a.tr("(Kein Betreff)", "(No Subject)")
 				}
 				ui.Text(c, subj).FontSize(20).Bold().Selectable()
-				ui.Column(c).FillWidth().Gap(3).Children(func() {
-					ui.Text(c, msg.From).FontSize(14).Bold().Selectable()
-					ui.Text(c, formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12.5).TextColor(t.TextMuted)
-					if len(msg.To) > 0 {
-						ui.Text(c, a.tr("An: ", "To: ")+strings.Join(msg.To, ", ")).FontSize(12.5).TextColor(t.TextMuted).MaxLines(3).Selectable()
-					}
-					if len(msg.CC) > 0 {
-						ui.Text(c, "CC: "+strings.Join(msg.CC, ", ")).FontSize(12.5).TextColor(t.TextMuted).MaxLines(3).Selectable()
-					}
+				ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+					a.renderSenderAvatar(c, msg.From, 34)
+					ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+						ui.Text(c, msg.From).FontSize(14).Bold().Selectable()
+						ui.Row(c).FillWidth().Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, formatDateTimeLang(msg.Date, a.uiLang())).FontSize(12.5).TextColor(t.TextMuted)
+							if msg.SnoozedUntil > time.Now().Unix() {
+								pillBadge(c, a.tr("Bis ", "Until ")+formatSnoozeWake(msg.SnoozedUntil, a.uiLang()), withAlpha(t.Accent, 0.14), t.Accent)
+							}
+							a.renderReaderPrivacyPill(c, msg)
+						})
+						if len(msg.To) > 0 {
+							ui.Text(c, a.tr("An: ", "To: ")+strings.Join(msg.To, ", ")).FontSize(12.5).TextColor(t.TextMuted).MaxLines(3).Selectable()
+						}
+						if len(msg.CC) > 0 {
+							ui.Text(c, "CC: "+strings.Join(msg.CC, ", ")).FontSize(12.5).TextColor(t.TextMuted).MaxLines(3).Selectable()
+						}
+					})
 				})
+				a.renderWaitingFollowUpBanner(c, msg)
 				if a.isDraftsMessage(msg) {
 					if iconLabelBtn(c.Key("ph-edit-draft"), iconPen, a.tr("Entwurf weiterbearbeiten", "Edit Draft"), true, "").Clicked() {
 						a.OpenComposeFromDraft(msg)
@@ -1096,6 +1162,7 @@ func (a *App) renderPhoneMail(c *ui.Context) {
 				ui.Divider(c)
 				a.renderAttachments(c, msg)
 				a.renderMailBody(c, msg)
+				a.renderInlineQuickReplyCard(c, msg)
 				a.renderConversationGroup(c, "older", a.trf("Frühere Mails (%d)", "Earlier emails (%d)", len(older)), older)
 			})
 		})
@@ -1123,9 +1190,10 @@ func (a *App) afterOpenMailRemoved(ctx context.Context, openNext string) {
 	a.phonePopMailIfOpen()
 }
 
-// phoneStepMail opens the mail delta rows away in the list's order. At the end of what is
-// loaded the next page is loaded first, and the step taken as it arrives (phoneStepAfterLoad).
+// phoneStepMail opens the mail delta rows away in the visible list's order. At the end of what
+// is loaded the next page is loaded first, and the step taken as it arrives (phoneStepAfterLoad).
 func (a *App) phoneStepMail(delta int) {
+	vis := a.visibleMessageIndices()
 	idx := a.currentIndex()
 	if idx < 0 {
 		return
@@ -1134,7 +1202,7 @@ func (a *App) phoneStepMail(delta int) {
 	if to < 0 {
 		return
 	}
-	if to >= len(a.messages) {
+	if to >= len(vis) {
 		if delta > 0 && a.nextCursor != "" {
 			a.phone.stepAfter = a.selectedID
 			a.loadMoreMessages(context.Background())
@@ -1142,9 +1210,9 @@ func (a *App) phoneStepMail(delta int) {
 		return
 	}
 	a.phone.more = false
-	a.SelectMessage(context.Background(), a.messages[to].ID)
+	a.SelectMessage(context.Background(), a.messages[vis[to]].ID)
 	a.phone.list.ScrollIntoView(to)
-	if to >= len(a.messages)-3 {
+	if to >= len(vis)-3 {
 		a.loadMoreMessages(context.Background()) // the next page before the end is reached
 	}
 }
@@ -1160,7 +1228,8 @@ func (a *App) phoneStepAfterLoad() {
 	if waited != a.selectedID {
 		return // another mail was opened meanwhile
 	}
-	if idx := a.currentIndex(); idx >= 0 && idx+1 < len(a.messages) {
+	vis := a.visibleMessageIndices()
+	if idx := a.currentIndex(); idx >= 0 && idx+1 < len(vis) {
 		a.phoneStepMail(1)
 	}
 }
@@ -1265,6 +1334,21 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 			a.SaveSelectedMessageEML(context.Background())
 		}})
 	}
+	if !a.readOnly {
+		for _, p := range nextSnoozePresets(time.Now(), a.uiLang()) {
+			pr := p
+			actions = append(actions, mobile.Action{
+				Label: a.tr("Zurückstellen: ", "Snooze: ") + pr.Label,
+				OnTap: func() { a.snoozeMail(context.Background(), id, pr.Until) },
+			})
+		}
+		if msg.SnoozedUntil > time.Now().Unix() {
+			actions = append(actions, mobile.Action{
+				Label: a.tr("Zurückstellung aufheben", "Unsnooze"),
+				OnTap: func() { a.snoozeMail(context.Background(), id, time.Time{}) },
+			})
+		}
+	}
 	actions = append(actions,
 		mobile.Action{Label: a.tr("Filterregel erstellen…", "Create filter rule…"), OnTap: func() {
 			a.OpenQuickRuleWizard()
@@ -1273,6 +1357,7 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 			a.OpenConversationIn(context.Background(), msg, handoffShare)
 		}},
 		mobile.Action{Label: a.tr("KI: Zusammenfassen", "AI: Summarize"), OnTap: func() { a.RunInspectorAI(context.Background(), "summarize") }},
+		mobile.Action{Label: a.tr("KI: Übersetzen", "AI: Translate"), OnTap: func() { a.RunInspectorAI(context.Background(), "translate") }},
 		mobile.Action{Label: a.tr("KI: Antwort entwerfen", "AI: Draft reply"), OnTap: func() { a.RunInspectorAI(context.Background(), "draft_reply") }},
 		mobile.Action{Label: a.tr("KI: Termin erkennen", "AI: Find event"), OnTap: func() { a.RunInspectorAI(context.Background(), "extract_events") }},
 		mobile.Action{Label: a.tr("KI: Kontakte extrahieren", "AI: Extract contacts"), OnTap: func() { a.RunInspectorAI(context.Background(), "extract_contacts") }},
@@ -1284,8 +1369,9 @@ func (a *App) renderPhoneMoreSheet(c *ui.Context, msg *backend.MessageDetail) {
 func (a *App) phoneListState() *ui.ListState {
 	ls := &a.phone.list
 	ls.Key = func(row int) any {
-		if row >= 0 && row < len(a.messages) {
-			return a.messages[row].ID
+		vis := a.visibleMessageIndices()
+		if row >= 0 && row < len(vis) {
+			return a.messages[vis[row]].ID
 		}
 		return row
 	}

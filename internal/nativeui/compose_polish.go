@@ -358,20 +358,28 @@ func (a *App) finalizeComposeSend(ctx context.Context, sessSeq uint64, req backe
 	if req.BodyHTML != "" {
 		backup.BodyHTML = req.BodyHTML
 	}
+	a.composeConfirm = false
+	a.composeMissingAttWarn = ""
+	a.composeMissingAttAck = false
+	a.composePlainWarn, a.composePlainAck = false, false
+	nonce := a.composeNonce
+	a.closeCompose()
+	a.enqueuePendingSend(req, nonce, backup, delaySec)
+}
+
+func (a *App) enqueuePendingSend(req backend.ComposeRequest, nonce string, backup composeDraftBackup, delaySec int) {
+	if nonce == "" {
+		nonce = backend.NewIdempotencyKey()
+	}
 	now := time.Now()
 	ps := &pendingComposeSend{
 		Req:       req,
-		Nonce:     a.composeNonce,
+		Nonce:     nonce,
 		Restore:   backup,
 		CreatedAt: now,
 		Deadline:  now.Add(time.Duration(delaySec) * time.Second),
 	}
 	a.pendingSends = append(a.pendingSends, ps)
-	a.composeConfirm = false
-	a.composeMissingAttWarn = ""
-	a.composeMissingAttAck = false
-	a.composePlainWarn, a.composePlainAck = false, false
-	a.closeCompose()
 
 	go func(nonce string, deadline time.Time) {
 		ticker := time.NewTicker(500 * time.Millisecond)

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0 (2026-11-28)
+
+### Theme & Calm Mail Redesign
+- **Diver & Diver Light default themes:** introduced warm dark **Diver** and clean **Diver Light** palettes (expanding bundled palettes from 22 to 24 and updating the cross-platform default from `tokyo-night` to `diver`).
+- **Calmer Focus inbox & Quick-Reply:** added circular deterministic sender avatars, filter pills (**All / Unread / ★ / Attachments**) with consistent visible-row selection/Shift-range/keyboard navigation, an inline **Quick-Reply** bar below the reading pane (with on-demand AI reply chips, Undo-Send protection, draft restore on send error, and forgotten-attachment guard), and a **tracking-pixel counter pill** (`blocked N trackers`) alongside per-sender remote-image allowlisting.
+- **Snooze, Waiting-for-Reply & Subscriptions cleanup:**
+  - **Snooze (`Later Today`, `Tomorrow 08:00`, `Next Week Mon 08:00`):** hides snoozed mail from Focus until due, supports single and bulk snooze (`readOnly`-guarded), and automatically wakes expired snoozed mail back into Focus as unread every minute (`messages.wakeSnoozed`).
+  - **Action / Waiting-for-Reply (`Action` view):** zero-token SQLite query listing sent emails awaiting a reply (2–30 days old, excluding self-notes and answered threads) with 1-click Follow-up reply templates.
+  - **Subscriptions & Newsletter Cleanup:** scans active inbox headers for `List-Unsubscribe` (excluding Trash/Spam/Sent/Drafts/Archives), supports async bulk archive and RFC 8058 One-Click HTTPS unsubscribe with strict SSRF IP/host/redirect guards.
+
+### Cron-Style Calendar & Consistent Right-Side AI Dock
+- **Consistent right-side AI dock:** unified the AI assistant panel on the right edge across both the main workspace (hidden on Calendar view) and detached Compose/Reply windows (`✨ AI Assist`), with responsive width capping, clean header controls (`✕` / Undo / working spinner), and proper `⌘↩` shortcut isolation inside the AI prompt box.
+- **Cron-style Calendar redesign:** refreshed 24h Day & Week grids with clean now-line markers, collapsible **mini-month + multi-account calendar sidebar** with color visibility toggles and week navigation synced to the main cursor, **Live-Meeting toolbar pill** (`now` / `in Xm`) with 1-click Teams/Meet/Zoom join (including a slim bar on Android/phone), and `.ics` invitation **Free/Busy conflict badges** (only shown when the invite falls within the loaded calendar window).
+
+### MCP 1-Click Installer, Mobile Parity & Hardening
+- **1-Click MCP client setup:** added asynchronous 1-click installer buttons in **Settings (`⌘,`) → AI & Sync** for **Claude Desktop**, **Cursor**, and **Antigravity**, validating JSON syntax before creating one-time `.postdive.bak` backups and preserving unrelated MCP servers cleanly off the UI thread.
+- **Security & privacy enforcement:** hardened `messages.thread` and copilot `get_thread` to redact encrypted and inline-PGP message bodies, updated decrypted-mail security notices to reflect that encrypted emails are never sent to AI providers, prevented One-Click flag mismatches across mixed newsletter issues, and added 40–44pt touch parity + Snooze / Subscriptions / Quick-Reply / bulk-snooze / Live-Meeting bar support on phone layouts.
+
 ## 0.7.56 (2026-11-27)
 
 ### Invitations & Forwarding

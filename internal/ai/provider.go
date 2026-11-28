@@ -77,6 +77,7 @@ type AnalyzeResponse struct {
 	Mode              string                 `json:"mode,omitempty"`
 	Answer            string                 `json:"answer"`
 	ReviewIssues      []string               `json:"reviewIssues,omitempty"`
+	QuickReplies      []string               `json:"quickReplies,omitempty"`
 	Proposals         []triage.Proposal      `json:"proposals,omitempty"`
 	Events            []ExtractedEvent       `json:"events,omitempty"`
 	Contacts          []ExtractedContact     `json:"contacts,omitempty"`
@@ -203,6 +204,8 @@ When mode is "improve_draft": rewrite the owner's draft inside <owner_draft> so 
 When mode is "translate_draft": translate the owner's draft inside <owner_draft> (and translate/adapt the "subject" if present) into the requested target language (or flip German <-> English when auto) in the requested tone, keeping every fact, name, date, and number; emit the translated email as a "draft_reply" proposal with both "subject" and "body".
 When mode is "compose_new": write a new email from the owner's notes (there may be no thread); emit it as a "draft_reply" proposal including a concise, fitting "subject" and full "body".
 When mode is "review_draft": compare the owner's draft inside <owner_draft> against all questions, commitments, tone, and "draftAttachments" in the context; list any missed points or tone/clarity improvements in "reviewIssues" and emit an improved "draft_reply" proposal.
+When mode is "translate": translate the primary email in "thread" cleanly and accurately into the requested response language (or the target language named in Owner request), preserving facts, names, dates, numbers, and paragraph breaks; put the complete translated subject + body in "answer" and leave "proposals" empty.
+When mode is "quick_replies": propose 3 distinct, ultra-short 1–2 sentence quick replies in the primary email's language (e.g. accept/confirm, decline/reschedule, clarifying question) in "quickReplies" (max 3 entries, ready to send, no placeholder brackets unless essential), and summarize briefly in "answer".
 
 For draft_reply, improve_draft, translate_draft, compose_new and review_draft, the complete email text goes ONLY into
 proposals[0].body (kind "draft_reply"), with greeting, paragraphs and closing separated by "\n" line
@@ -211,8 +214,9 @@ breaks and a blank line ("\n\n") between paragraphs. Do not repeat the email tex
 
 Return ONLY valid JSON matching this schema:
 {
-  "answer": "Clear, concise response in the requested response language (summary, reasoning, or review verdict)",
+  "answer": "Clear, concise response in the requested response language (summary, translation, reasoning, or review verdict)",
   "reviewIssues": ["optional bullet point for review_draft mode"],
+  "quickReplies": ["optional short 1-2 sentence reply for quick_replies mode"],
   "events": [
     {
       "title": "Event title",
@@ -479,6 +483,10 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Translate the owner's draft into natural, idiomatic English in the requested tone. Keep all facts, names, dates, and numbers."
 			case "compose_new":
 				question = "Write the email from my notes."
+			case "translate":
+				question = "Translate this email accurately into English, keeping facts, names, dates, and numbers intact."
+			case "quick_replies":
+				question = "Suggest 3 short, distinct 1-2 sentence replies in the email's language."
 			default:
 				question = "Draft a fitting reply as a draft_reply proposal."
 			}
@@ -502,6 +510,10 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 				question = "Übersetze den Entwurf des Nutzers in natürliches, idiomatisches Deutsch im gewünschten Tonfall. Behalte alle Fakten, Namen, Daten und Zahlen bei."
 			case "compose_new":
 				question = "Schreibe die E-Mail aus meinen Stichpunkten."
+			case "translate":
+				question = "Übersetze diese E-Mail sauber und vollständig ins Deutsche; behalte Fakten, Namen, Daten und Zahlen bei."
+			case "quick_replies":
+				question = "Schlage 3 kurze, unterschiedliche 1–2-Satz-Antworten in der Sprache der E-Mail vor."
 			default:
 				question = "Formuliere eine passende Antwort als draft_reply Proposal."
 			}
@@ -547,6 +559,7 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 	var parsed struct {
 		Answer            string                 `json:"answer"`
 		ReviewIssues      []string               `json:"reviewIssues"`
+		QuickReplies      []string               `json:"quickReplies"`
 		Events            []ExtractedEvent       `json:"events"`
 		Contacts          []ExtractedContact     `json:"contacts"`
 		FilterSuggestions []FilterRuleSuggestion `json:"filterSuggestions"`
@@ -571,6 +584,9 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		}
 		if mode == "review_draft" && detectMissingAttachment(req.UserDraft, req.DraftAttachments) {
 			resp.ReviewIssues = append([]string{missingAttachmentWarning(lang)}, resp.ReviewIssues...)
+		}
+		if mode == "quick_replies" {
+			resp.QuickReplies = extractQuickRepliesFallback(resp.Answer)
 		}
 		return ensureDraftProposal(resp, req, now), nil
 	}
@@ -603,10 +619,16 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		ics = BuildICS(parsed.Events, now)
 	}
 
+	quickReplies := cleanQuickReplies(parsed.QuickReplies)
+	if mode == "quick_replies" && len(quickReplies) == 0 {
+		quickReplies = extractQuickRepliesFallback(parsed.Answer)
+	}
+
 	return ensureDraftProposal(AnalyzeResponse{
 		Mode:              mode,
 		Answer:            parsed.Answer,
 		ReviewIssues:      reviewIssues,
+		QuickReplies:      quickReplies,
 		Proposals:         proposals,
 		Events:            parsed.Events,
 		Contacts:          sanitizeContacts(parsed.Contacts),
@@ -615,6 +637,40 @@ func Analyze(ctx context.Context, cfg config.AIConfig, req AnalyzeRequest) (Anal
 		Provider:          completer.Name(),
 		Model:             completer.ModelName(),
 	}, req, now), nil
+}
+
+func cleanQuickReplies(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range in {
+		s := strings.TrimSpace(r)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func extractQuickRepliesFallback(answer string) []string {
+	var out []string
+	for _, line := range strings.Split(answer, "\n") {
+		s := strings.TrimSpace(line)
+		s = strings.TrimLeft(s, "-*•0123456789.) ")
+		s = strings.TrimSpace(strings.Trim(s, `"`))
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return cleanQuickReplies(out)
 }
 
 var (

@@ -97,6 +97,7 @@ func withDefaultDeadline(ctx context.Context, d time.Duration) (context.Context,
 // mutatingMethods may already have changed the mailbox when they time out.
 var mutatingMethods = map[string]bool{
 	"messages.actions": true, "messages.batchActions": true, "messages.markAllRead": true, "messages.undoMove": true,
+	"messages.snooze": true, "messages.wakeSnoozed": true,
 	"compose.draft": true, "compose.send": true, "compose.discardDraft": true,
 	"calendar.create": true, "calendar.update": true, "calendar.delete": true,
 	"contacts.upsert": true, "filters.upsert": true, "filters.run": true,
@@ -185,6 +186,12 @@ func (c *Client) Messages(ctx context.Context, f MessagesFilter) (MessagesPage, 
 	}
 	if f.UnreadOrFlagged {
 		params["unreadOrFlagged"] = true
+	}
+	if f.SnoozedOnly {
+		params["snoozedOnly"] = true
+	}
+	if f.ExcludeSnoozed {
+		params["excludeSnoozed"] = true
 	}
 	if f.Days > 0 {
 		params["days"] = f.Days
@@ -631,4 +638,59 @@ func (c *Client) AIAnalyze(ctx context.Context, req ai.AnalyzeRequest) (ai.Analy
 	ctx, cancel := withDefaultDeadline(ctx, analyzeTimeout)
 	defer cancel()
 	return ai.Analyze(ctx, cfg.AI, req)
+}
+
+func (c *Client) SnoozeMessage(ctx context.Context, msgID string, until time.Time) error {
+	if err := c.errReadOnly(); err != nil {
+		return err
+	}
+	var untilUnix int64
+	if !until.IsZero() {
+		untilUnix = until.Unix()
+	}
+	return c.call(ctx, DefaultRequestTimeout, "messages.snooze", map[string]any{
+		"id":        strings.TrimSpace(msgID),
+		"untilUnix": untilUnix,
+	}, nil)
+}
+
+func (c *Client) WakeExpiredSnoozed(ctx context.Context) ([]MessageHeader, error) {
+	if err := c.errReadOnly(); err != nil {
+		return nil, err
+	}
+	var res struct {
+		Messages []MessageHeader `json:"messages"`
+	}
+	err := c.call(ctx, DefaultRequestTimeout, "messages.wakeSnoozed", nil, &res)
+	return res.Messages, err
+}
+
+func (c *Client) CountSnoozed(ctx context.Context, accountID string) (int, error) {
+	var res struct {
+		Count int `json:"count"`
+	}
+	err := c.call(ctx, DefaultRequestTimeout, "messages.snoozedCount", map[string]any{
+		"accountId": strings.TrimSpace(accountID),
+	}, &res)
+	return res.Count, err
+}
+
+func (c *Client) ListWaitingReplyMessages(ctx context.Context, accountID string) ([]MessageHeader, error) {
+	var res struct {
+		Messages []MessageHeader `json:"messages"`
+	}
+	err := c.call(ctx, DefaultRequestTimeout, "messages.waitingReply", map[string]any{
+		"accountId": strings.TrimSpace(accountID),
+	}, &res)
+	return res.Messages, err
+}
+
+func (c *Client) ListSubscriptions(ctx context.Context, accountID string) ([]SubscriptionSummary, error) {
+	var res struct {
+		Subscriptions []SubscriptionSummary `json:"subscriptions"`
+	}
+	err := c.call(ctx, DefaultRequestTimeout, "messages.subscriptions", map[string]any{
+		"accountId": strings.TrimSpace(accountID),
+	}, &res)
+	return res.Subscriptions, err
 }

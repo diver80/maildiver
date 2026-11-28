@@ -11,8 +11,14 @@ import (
 
 func TestPresetsCountAndValidity(t *testing.T) {
 	presets := ListPresets()
-	if len(presets) != 22 {
-		t.Fatalf("expected 22 omarchy presets, got %d", len(presets))
+	if len(presets) != 24 {
+		t.Fatalf("expected 24 presets (diver, diver-light + 22 omarchy), got %d", len(presets))
+	}
+	if presets[0].Name != "diver" || presets[1].Name != "diver-light" {
+		t.Fatalf("expected diver & diver-light first in presets, got %s, %s", presets[0].Name, presets[1].Name)
+	}
+	if def, src := ResolveActive(config.ThemeConfig{Mode: "preset"}); def.Name != "diver" || src != "default:diver" {
+		t.Fatalf("expected default preset diver, got %s (%s)", def.Name, src)
 	}
 	for _, p := range presets {
 		if !strings.HasPrefix(p.Background, "#") || !strings.HasPrefix(p.Foreground, "#") || !strings.HasPrefix(p.Accent, "#") {

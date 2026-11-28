@@ -1,6 +1,6 @@
 # Local AI Setup for PostDive (100% Private, 0 Cloud Tokens)
 
-PostDive's AI features (email summaries, reply drafts, daily briefings, event & contact extraction, optional triage) work completely locally on Apple Silicon, Linux, and Windows — no email content ever leaves your machine.
+PostDive's AI features (email summaries, Quick-Reply chips, Compose/Reply AI Assist in the right-side dock, in-app translation, daily briefings, event & contact extraction, optional triage) work completely locally on Apple Silicon, Linux, and Windows — no email content ever leaves your machine. Encrypted or decrypted S/MIME and OpenPGP emails are strictly excluded from all AI requests.
 
 ---
 

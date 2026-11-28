@@ -74,8 +74,9 @@ func (a *App) ensureListState() *ui.ListState {
 	ls := &a.mailList.state
 	ls.Selected = &a.mailList.selected
 	ls.Key = func(row int) any {
-		if row >= 0 && row < len(a.messages) {
-			return a.messages[row].ID
+		vis := a.visibleMessageIndices()
+		if row >= 0 && row < len(vis) {
+			return a.messages[vis[row]].ID
 		}
 		return row
 	}
