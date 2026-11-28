@@ -325,9 +325,33 @@
     .tl-item.minor .tl-body p { font-size: 13px; }
     .tl-more { margin: 22px 0 0; font-size: 14px; }
     .tl-more a { color: var(--accent); text-decoration: none; }
+
     @media (max-width: 720px) {
       .tl-item { grid-template-columns: 1fr; gap: 4px; }
       .tl-meta { flex-direction: row; gap: 10px; align-items: baseline; }
+    }
+
+    .tour-box {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      background: #0f1117;
+    }
+    .tour-box video {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+    }
+    .tour-foot {
+      margin: 12px 0 0;
+      font-size: 13.5px;
+      color: var(--muted);
+    }
+    .tour-foot a {
+      color: var(--accent);
+      text-decoration: none;
     }
 
     @media (max-width: 720px) {
@@ -345,6 +369,7 @@
       </a>
       <div class="nav-links">
         <a class="hide-sm" href="#features" data-i18n="nav.features">Features</a>
+        <a class="hide-sm" href="#tour" data-i18n="nav.tour">Video</a>
         <a class="hide-sm" href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
         <a class="hide-sm" href="#milestones" data-i18n="nav.milestones">Milestones</a>
         <a class="hide-sm" href="#platforms" data-i18n="nav.platforms">Platforms</a>
@@ -370,8 +395,9 @@
         </p>
         <div class="cta-row">
           <a class="btn primary" href="https://github.com/diver80/postdive/releases/latest" target="_blank" rel="noopener" data-i18n="hero.download">Download Latest Release</a>
-          <a class="btn" href="https://github.com/diver80/postdive" target="_blank" rel="noopener" data-i18n="hero.source">View on GitHub</a>
+          <a class="btn" href="#tour" data-i18n="hero.tour">▶ Watch Feature Tour</a>
           <a class="btn" href="#screenshots" data-i18n="hero.screens">Explore Screenshots</a>
+          <a class="btn" href="https://github.com/diver80/postdive" target="_blank" rel="noopener" data-i18n="hero.source">View on GitHub</a>
         </div>
         <div class="hero-shot">
           <img src="screenshots/app-main.png" alt="PostDive main desktop workspace" />
@@ -457,6 +483,23 @@
             </div>
           </article>
         </div>
+      </div>
+    </section>
+
+    <section id="tour">
+      <div class="container">
+        <div class="sec-head">
+          <h2 data-i18n="tour.title">Feature Tour (55s)</h2>
+          <p data-i18n="tour.sub">See the Diver themes, calm Focus inbox, right-side AI dock, Snooze &amp; Subscriptions cleanup, Cron-style calendar, and 1-click MCP setup in action.</p>
+        </div>
+        <div class="tour-box">
+          <video controls preload="metadata" playsinline poster="video/poster.png">
+            <source src="video/postdive-tour.mp4" type="video/mp4" />
+          </video>
+        </div>
+        <p class="tour-foot">
+          <a href="https://github.com/diver80/postdive/releases/download/v0.8.0/postdive-tour.mp4" target="_blank" rel="noopener" data-i18n="tour.download">Download MP4 (1080p, 2.7 MB) ↓</a>
+        </p>
       </div>
     </section>
 
@@ -682,12 +725,14 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
     const i18n = {
       en: {
         "nav.features": "Features",
+        "nav.tour": "Video",
         "nav.screenshots": "Screenshots",
         "nav.platforms": "Platforms",
         "hero.badge": "In active development · Daily-driven on macOS · MIT License",
         "hero.title": "Native Email, Calendar & Contacts — with Flexible Local & Cloud AI",
         "hero.lead": "PostDive is a fast, standalone desktop & mobile suite written in Go and mygo — featuring Diver themes, a calm inbox, Cron-style calendar, inline Quick-Reply, consistent right-side AI dock, and 1-click local MCP setup with zero Electron bloat.",
         "hero.download": "Download Latest Release",
+        "hero.tour": "▶ Watch Feature Tour",
         "hero.source": "View on GitHub",
         "hero.screens": "Explore Screenshots",
         "feat.title": "Built for speed, privacy, and real daily work",
@@ -713,6 +758,9 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         "f5.t3": "Rule Editor",
         "f6.title": "Diver Themes & Cross-Platform Parity",
         "f6.desc": "Native builds for macOS (Apple Silicon & Intel), Linux (x64 & arm64 with live Omarchy theme sync), Windows (x64 & arm64), and Android via mygo — with full mobile UI parity, single Go codebase, and 24 built-in themes led by Diver and Diver Light.",
+        "tour.title": "Feature Tour (55s)",
+        "tour.sub": "See the Diver themes, calm Focus inbox, right-side AI dock, Snooze & Subscriptions cleanup, Cron-style calendar, and 1-click MCP setup in action.",
+        "tour.download": "Download MP4 (1080p, 2.7 MB) ↓",
         "shots.title": "Screenshots",
         "shots.sub": "Click any screenshot to inspect full size.",
         "s1.t": "Diver Theme, Focus & Quick-Reply",
@@ -801,6 +849,8 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         "hero.title": "Nativer E-Mail-, Kalender- & Kontakt-Client — mit flexibler lokaler & Cloud-KI",
         "hero.lead": "PostDive ist eine schnelle, eigenständige Suite in Go und mygo — mit Diver-Themes, ruhigem Postfach, Cron-Kalender, Schnellantwort, einheitlichem KI-Panel rechts und 1-Klick-MCP-Setup ganz ohne Electron-Ballast.",
         "hero.download": "Aktuelles Release laden",
+        "nav.tour": "Video",
+        "hero.tour": "▶ Feature-Tour ansehen",
         "hero.source": "Auf GitHub ansehen",
         "hero.screens": "Screenshots ansehen",
         "feat.title": "Gebaut für Tempo, Sicherheit und den echten Arbeitsalltag",
@@ -826,6 +876,9 @@ cd postdive && ./build.sh && ./install.sh</code></pre>
         "f5.t3": "Regel-Editor",
         "f6.title": "Diver-Themes & Plattform-Parität",
         "f6.desc": "Native Builds für macOS (Apple Silicon & Intel), Linux (x64 & arm64 inkl. Omarchy-Live-Theme), Windows (x64 & arm64) und Android über mygo – mit voller Mobile-Parität aus einer Codebasis und 24 eingebauten Designs rund um Diver und Diver Light.",
+        "tour.title": "Feature-Tour (55 Sek.)",
+        "tour.sub": "Diver-Themes, ruhiger Fokus-Posteingang, KI-Panel rechts, Snooze & Abo-Aufräumer, Cron-Kalender und 1-Klick-MCP-Setup in Aktion.",
+        "tour.download": "MP4 herunterladen (1080p, 2,7 MB) ↓",
         "shots.title": "Screenshots",
         "shots.sub": "Klicke auf einen Screenshot für die Vollbild-Ansicht.",
         "s1.t": "Diver-Design, Fokus & Schnellantwort",

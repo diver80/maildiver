@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://diver80.github.io/postdive/?lang=en">🌐 Website (EN)</a> ·
   <a href="https://diver80.github.io/postdive/?lang=de">🌐 Webseite (DE)</a> ·
+  <a href="https://diver80.github.io/postdive/#tour">🎬 Feature Tour</a> ·
   <a href="https://github.com/diver80/postdive/releases/latest">⬇️ Latest Release</a> ·
   <a href="docs/MCP.md">🔌 MCP Server</a> ·
   <a href="docs/LOCAL_AI.md">🤖 Local AI Guide</a> ·
@@ -48,6 +49,14 @@
 - **Kalender im Cron-Stil:** **24h-Tag / Woche / Monat / Agenda**, einklappbare **Seitenleiste mit Mini-Monat & Kalender-Filter** inkl. Farbpunkten, **Live-Meeting-Pill** in der Toolbar (`jetzt` / `in Xm`) mit direktem Beitritts-Button (Teams/Meet/Zoom), sowie **Frei/Belegt-Prüfung** bei `.ics`-Einladungen mit Zielkalender-Auswahl und bidirektionaler **Google- & CalDAV**-Synchronisation.
 - **Native Performance, Sicherheit & Datenschutz:** Ein einziges kompiliertes Go-Binary mit GPU-beschleunigter [mygo](https://github.com/egoist/mygo)-Oberfläche ohne Electron-Ballast. Sofortige SQLite-FTS5-Suche, IMAP IDLE, **Formatiert / Text / Quelltext**-Ansicht, eingebettete Jira-Vorschau, vollständiges **S/MIME** & **natives OpenPGP** (ohne externes `gpg`), blockierte Remote-Bilder, strikter HTML-Sanitizer, nur TLS/STARTTLS, **LAN-QR-Code-Transfer** (AES-256-GCM) und rein lesender **1-Klick-Thunderbird-Import**.
 - **Plattformübergreifend konsistent:** Native Builds für **macOS** (Universal `.app`), **Linux** (`x64`/`arm64`, Omarchy), **Windows** (`x64`/`arm64`) und **Android** (Telefon-UI mit voller Feature-Parität: Filter-Pills, Snooze, Schnellantwort, Live-Meeting-Leiste & Hintergrund-Sync).
+
+---
+
+## Feature Tour Video (55s · 1080p)
+
+[![PostDive 0.8.0 Feature Tour](docs/video/poster.png)](https://diver80.github.io/postdive/#tour)
+
+▶ **[Watch inline on website (EN)](https://diver80.github.io/postdive/?lang=en#tour)** · **[Im Browser ansehen (DE)](https://diver80.github.io/postdive/?lang=de#tour)** · **[Download MP4 (2.7 MB)](https://github.com/diver80/postdive/releases/download/v0.8.0/postdive-tour.mp4)**
 
 ---
 
